@@ -76,7 +76,7 @@ for (const [name, src] of PICKERS) {
     assert.doesNotMatch(src, /getStripeAccountStatus/, "a Stripe read here would be a second copy of the rule");
     assert.doesNotMatch(src, /stripeStatus/, "the old Stripe-only lock state is gone");
     assert.doesNotMatch(src, /Verify your business via Stripe to unlock/);
-    assert.match(src, /\{unlocksWhen\("(Your|This) name"\)\}/, "the copy is the one sentence every unlock surface uses");
+    assert.match(src, /\{unlocksWhen\("(Your|An event) domain"\)\}/, "the copy is the one sentence every unlock surface uses");
   });
 
   test(`${name} re-reads the verdict, never assumes it, when Stripe reports complete`, () => {

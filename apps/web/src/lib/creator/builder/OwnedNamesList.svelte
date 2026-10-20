@@ -34,11 +34,11 @@
 </script>
 
 {#if state === "loading"}
-  <div class="loading"><span class="spinner"></span><span class="muted-sm">Loading your names…</span></div>
+  <div class="loading"><span class="spinner"></span><span class="muted-sm">Loading your domains…</span></div>
 {:else if state === "error"}
-  <p class="msg msg--warn">Couldn't load your names.{#if onretry} <button class="link-btn" onclick={onretry}>Retry</button>{/if}</p>
+  <p class="msg msg--warn">Couldn't load your domains.{#if onretry} <button class="link-btn" onclick={onretry}>Retry</button>{/if}</p>
 {:else if state === "empty"}
-  <p class="muted-sm">{emptyText ?? "You don't own any .woco.eth names yet."}</p>
+  <p class="muted-sm">{emptyText ?? "You don't own any .woco.eth domains yet."}</p>
 {:else if state === "ready"}
   <div class="name-list">
     {#each names as n (n.label)}
@@ -47,7 +47,7 @@
         class:name-row--active={selectable && selected === n.label}
         class:name-row--static={!selectable}
         title={ondiscard && n.role === "profile"
-          ? "This is your profile name — change it from your profile first"
+          ? "This is your profile domain. Change it from your profile first."
           : undefined}
       >
         {#if selectable}
@@ -73,7 +73,7 @@
         {#if n.previewUrl || ondiscard}
           <span class="name-actions">
             {#if n.previewUrl}
-              <a class="preview-link preview-link--open" href={subEnsWebUrl(n.label)} target="_blank" rel="noopener" title="Live on ENS — open this address">
+              <a class="preview-link preview-link--open" href={subEnsWebUrl(n.label)} target="_blank" rel="noopener" title="Open this domain">
                 Open ↗
               </a>
             {/if}
@@ -81,7 +81,7 @@
                  profile_name) and the way out is to change the profile name
                  first, which the row's tooltip says. -->
             {#if ondiscard && n.role !== "profile"}
-              <button type="button" class="discard-btn" onclick={() => ondiscard(n.label)} title="Give up this name for good">
+              <button type="button" class="discard-btn" onclick={() => ondiscard(n.label)} title="Give up this domain for good">
                 Discard
               </button>
             {/if}

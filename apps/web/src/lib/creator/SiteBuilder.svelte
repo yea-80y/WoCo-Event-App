@@ -280,7 +280,7 @@
     if (intent.mode === "none") return;
     if (intent.mode === "new" && !intent.label) {
       subEnsPhase = "error";
-      subEnsError = "Enter and confirm an available name in step 2 before deploying.";
+      subEnsError = "Enter and confirm an available domain in step 2 before deploying.";
       return;
     }
 
@@ -306,7 +306,7 @@
       }
     } catch (e) {
       subEnsPhase = "error";
-      subEnsError = e instanceof Error ? e.message : "Sub-ENS update failed";
+      subEnsError = e instanceof Error ? e.message : "Couldn't claim the domain";
       return;
     }
     await pointName();
@@ -340,13 +340,13 @@
       if (outcome.kind === "refused") {
         subEnsPhase = "error";
         subEnsNoRetry = true;
-        subEnsError = outcome.error instanceof Error ? outcome.error.message : "Couldn't point the name";
+        subEnsError = outcome.error instanceof Error ? outcome.error.message : "Couldn't point the domain";
         return;
       }
       // Only the relay's refusals say something to act on; a name the RPC has not
       // caught up with yet reads as an alarming digest mismatch, and the button works.
       if (outcome.error instanceof ApiError) {
-        const d = subEnsErrorFrom(outcome.error, "Couldn't point the name");
+        const d = subEnsErrorFrom(outcome.error, "Couldn't point the domain");
         const detail = subEnsErrorDetail(d);
         pointerNote = `${d.title}${detail ? ` ${detail}` : ""}`;
       } else if (outcome.error) {
@@ -376,7 +376,7 @@
     const warn = (reason: string | undefined) => {
       const described = describeSubEnsError({ error: reason });
       subEnsStampWarning = {
-        title: "Registered, but the event page can't show the name yet.",
+        title: "Claimed, but the event page can't show the domain yet.",
         detail: subEnsErrorDetail(described) ?? described.title,
       };
     };
@@ -489,8 +489,8 @@
     <div class="step-content">
       <h2>Step 1 — Create your event</h2>
       <p class="step-intro">
-        Fill in your event details. Everything is signed with your identity and
-        stored on Swarm.
+        Fill in your event details. Everything is signed with your account, so only
+        you can change it.
       </p>
 
       {#if !auth.isConnected}
@@ -559,7 +559,7 @@
     <div class="step-content">
       <h2>Step 2 — Deploy</h2>
       <p class="step-intro">
-        Choose your deploy targets and push your event site to Swarm in one click.
+        Choose where your event appears, then deploy your event page in one click.
       </p>
 
       {#if createdEventId}
@@ -602,7 +602,7 @@
       {#if deploying}
         <div class="progress-status">
           <div class="spinner"></div>
-          <span>Building and uploading to Swarm… this takes 20–60 seconds.</span>
+          <span>Deploying your event page. This takes 20–60 seconds…</span>
         </div>
       {/if}
 
@@ -621,7 +621,7 @@
           disabled={deploying || !createdEventId}
           onclick={handleDeploy}
         >
-          {deploying ? "Deploying…" : "Deploy to Swarm →"}
+          {deploying ? "Deploying…" : "Deploy event page →"}
         </button>
       </div>
     </div>
@@ -632,7 +632,7 @@
       <h2>Step 3 — Live</h2>
 
       <div class="deploy-done-banner">
-        &#9989; Site deployed to Swarm
+        &#9989; Your event page is deployed
       </div>
 
       <!-- Event site URL -->
@@ -662,7 +662,7 @@
           <code class="output-url">{dashboardUrl}</code>
           <button class="btn-ghost copy-btn" onclick={() => copyText(dashboardUrl)}>Copy</button>
         </div>
-        <p class="output-hint">Sign in with your wallet to view orders and manage approvals. Bookmark this.</p>
+        <p class="output-hint">Sign in to see your orders and manage your event. Bookmark this.</p>
       </div>
 
       <!-- Announce — the moment the event goes live is the moment the organiser
@@ -686,39 +686,16 @@
 
       <BackupNudge />
 
-      <!-- ENS -->
-      <div class="output-section">
-        <div class="output-section-header">
-          <span class="output-section-title">ENS content hash</span>
-        </div>
-        {#if pointerFollowsFeed}
-          <div class="output-url-row">
-            <code class="output-url">{ensHash}</code>
-            <button class="btn-ghost copy-btn" onclick={() => copyText(ensHash)}>Copy</button>
-          </div>
-          <p class="output-hint">
-            Feed manifest — set as your ENS content record at
-            <a href="https://app.ens.domains" target="_blank" rel="noopener">app.ens.domains</a>.
-            Stays stable across redeploys.
-          </p>
-        {:else if deployResult}
-          <div class="output-url-row">
-            <code class="output-url">bzz://{deployResult.contentHash}</code>
-            <button class="btn-ghost copy-btn" onclick={() => copyText(`bzz://${deployResult!.contentHash}`)}>Copy</button>
-          </div>
-        {/if}
-      </div>
-
-      <!-- Sub-ENS (.woco.eth) result -->
+      <!-- The event's free .woco.eth domain -->
       {#if subEnsPhase !== "idle"}
         <div class="output-section subens-section" class:subens-done={subEnsPhase === "done"}>
           <div class="output-section-header">
-            <span class="output-section-title">Web3 address</span>
+            <span class="output-section-title">Event domain</span>
           </div>
           {#if subEnsPhase === "pending"}
             <div class="progress-status">
               <div class="spinner"></div>
-              <span>Registering <code>{subEnsName}</code> on Arbitrum…</span>
+              <span>Claiming <code>{subEnsName}</code>…</span>
             </div>
           {:else if subEnsPhase === "pointing"}
             <div class="progress-status">
@@ -742,11 +719,11 @@
             <div class="subens-claimed">
               <span class="subens-name">{subEnsName}</span>
               <span class="subens-arrow">→ this event</span>
-              <a class="subens-open" href={subEnsWebUrl(subEnsLabel)} target="_blank" rel="noopener" title="Live on ENS — open this address">
+              <a class="subens-open" href={subEnsWebUrl(subEnsLabel)} target="_blank" rel="noopener" title="Open this domain">
                 Open ↗
               </a>
             </div>
-            <p class="output-hint">Registered on Arbitrum and live on ENS — view the record on Arbiscan.</p>
+            <p class="output-hint">Your event domain now opens this event page.</p>
           {:else if subEnsPhase === "error"}
             <div class="create-error" style="margin: 0;">{subEnsError}</div>
             {#if !subEnsNoRetry && !(domainIntent.mode === "new" && !domainIntent.label)}
@@ -766,7 +743,7 @@
       <!-- Custom domain -->
       <div class="output-section">
         <div class="output-section-header">
-          <span class="output-section-title">Custom domain</span>
+          <span class="output-section-title">Your own domain</span>
         </div>
 
         {#if domainEntry?.verified}
@@ -846,22 +823,27 @@
         </div>
       {/if}
 
-      <!-- Raw hashes -->
+      <!-- Advanced: the raw hashes, for an organiser pointing a .eth domain of their own -->
       {#if deployResult}
         <details class="hash-details">
-          <summary>Raw hashes</summary>
-          <div class="hash-row">
-            <span class="hash-label">Content hash</span>
-            <code class="hash-val">{deployResult.contentHash}</code>
-            <button class="btn-ghost copy-btn" onclick={() => copyText(deployResult!.contentHash)}>Copy</button>
-          </div>
-          {#if deployResult.feedManifestHash}
+          <summary>Advanced</summary>
+          <p class="output-hint">
+            For a .eth domain you already own: set its content record at
+            <a href="https://app.ens.domains" target="_blank" rel="noopener">app.ens.domains</a>
+            to {pointerFollowsFeed ? "the stable address below. It stays the same when you redeploy." : "this version's address below."}
+          </p>
+          {#if pointerFollowsFeed}
             <div class="hash-row">
-              <span class="hash-label">Feed manifest</span>
-              <code class="hash-val">{deployResult.feedManifestHash}</code>
-              <button class="btn-ghost copy-btn" onclick={() => copyText(deployResult!.feedManifestHash)}>Copy</button>
+              <span class="hash-label">Stable address</span>
+              <code class="hash-val">{ensHash}</code>
+              <button class="btn-ghost copy-btn" onclick={() => copyText(ensHash)}>Copy</button>
             </div>
           {/if}
+          <div class="hash-row">
+            <span class="hash-label">This version</span>
+            <code class="hash-val">bzz://{deployResult.contentHash}</code>
+            <button class="btn-ghost copy-btn" onclick={() => copyText(`bzz://${deployResult!.contentHash}`)}>Copy</button>
+          </div>
         </details>
       {/if}
 

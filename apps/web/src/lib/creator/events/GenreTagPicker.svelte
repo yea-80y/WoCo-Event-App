@@ -100,7 +100,7 @@
     white-space: nowrap;
   }
 
-  .pill:hover:not(:disabled) {
+  .pill:hover:not(:disabled):not(.pill--active) {
     border-color: var(--border-hover);
     color: var(--text);
   }

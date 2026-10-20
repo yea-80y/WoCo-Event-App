@@ -12,8 +12,17 @@
 export const ORGANISER_PASSKEY_MESSAGE =
   "Organising uses a passkey account. Create one to host events - this account keeps your tickets.";
 
-/** Every passkey is lost = no way back in: said once, where an organiser signs up. */
+/** Every passkey is lost = no way back in: said where an existing account gives up its email (UpgradeToPasskey). */
 export const PASSKEY_ONLY_RECOVERY_NOTE = "If every passkey is lost, the account can't be recovered.";
+
+/**
+ * The same fact, said once while an organiser CREATES their account (the sign-in
+ * sheet's passkey scene), never to a returning organiser signing in. "Once you're
+ * set up": adding a passkey or a device waits for an unlock - Stripe, a ticket or
+ * a confirmed invite (server `routes/device-grants.ts`) - so not "once you're in".
+ */
+export const ORGANISER_NEW_PASSKEY_NOTE =
+  "There's no password to reset - your passkey is how you get in. Once you're set up, add a backup passkey or a second device so a lost phone never locks you out.";
 
 export function canOrganise(kind: string | null | undefined): boolean {
   return kind === "passkey";

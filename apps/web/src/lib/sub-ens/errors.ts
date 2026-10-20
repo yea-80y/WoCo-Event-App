@@ -58,8 +58,8 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
       // recorded end — a block timestamp, so UNIX SECONDS.
       const secs = env.data?.windowResetsAt;
       return {
-        title: "You've registered as many names as you can for now.",
-        detail: "You can register another one after the wait ends.",
+        title: "You've claimed as many domains as you can for now.",
+        detail: "You can claim another one after the wait ends.",
         ...(typeof secs === "number" && secs > 0 ? { retryAt: secs * MS_PER_SECOND } : {}),
       };
     }
@@ -67,8 +67,8 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
       // The registrar-wide cap: names are busy for everyone, not this caller.
       const secs = env.data?.windowResetsAt;
       return {
-        title: "Lots of names are being registered right now.",
-        detail: "Nothing was registered — try again after the wait.",
+        title: "Lots of domains are being claimed right now.",
+        detail: "Nothing was claimed. Try again after the wait.",
         ...(typeof secs === "number" && secs > 0 ? { retryAt: secs * MS_PER_SECOND } : {}),
       };
     }
@@ -77,25 +77,25 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
       // both already epoch ms — scaling this one would put the retry 50 years out.
       const at = env.nextChangeAllowedAt;
       return {
-        title: "Your profile name was changed recently.",
+        title: "Your profile domain was changed recently.",
         detail: "You can change it again once the cooldown ends.",
         ...(typeof at === "number" && at > 0 ? { retryAt: at } : {}),
       };
     }
     case "profile_name":
       return {
-        title: "That's your profile name.",
-        detail: "It can't be used as a site or event address — pick a different name.",
+        title: "That's your profile domain.",
+        detail: "It can't be used for a site or event. Pick a different domain.",
       };
     case "rate_limited":
       return { title: "Too many requests right now.", detail: "Wait a few minutes and try again." };
     case "release_in_flight":
-      return { title: "That name is already being released.", detail: "Give it a minute, then refresh." };
+      return { title: "That domain is already being released.", detail: "Give it a minute, then refresh." };
     case "pointer_in_flight":
-      return { title: "That name is already being updated.", detail: "Give it a minute, then refresh." };
+      return { title: "That domain is already being updated.", detail: "Give it a minute, then refresh." };
     case "signature_not_authorised":
       return {
-        title: "That signature isn't from the account holding this name.",
+        title: "That signature isn't from the account holding this domain.",
         detail: "Nothing was changed. Sign in with the account that holds it and try again.",
       };
     case "signature_expired":
@@ -104,12 +104,12 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
       return { title: "Couldn't reach the network to check the time.", detail: "Nothing was changed — try again in a minute." };
     case "no_feed_manifest":
       return {
-        title: "This publish has no stable address for your name yet.",
-        detail: "Publish again and your name will be offered it.",
+        title: "This publish has no stable address for your domain yet.",
+        detail: "Publish again and your domain will be offered it.",
       };
     case "has_children":
       return {
-        title: "This name has names beneath it.",
+        title: "This domain has other domains beneath it.",
         detail: "Release or move those first, then this one.",
       };
     case "expiration_too_far":
@@ -121,7 +121,7 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
       return { title: "That signature expired before it reached us.", detail: "Try again." };
     case "not_owner":
       return {
-        title: "You don't own that name any more.",
+        title: "You don't own that domain any more.",
         detail: "It was transferred or released, so it can't be updated from here.",
       };
     // Two spellings of one outcome: the deploy response says `unverified`, the
@@ -130,14 +130,14 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
     case "unverified":
     case "ownership_unverified":
       return {
-        title: "Couldn't confirm your name on-chain right now.",
+        title: "Couldn't confirm your domain right now.",
         detail: "Nothing was changed — try again in a minute.",
       };
     // Handled by the attendee-gate flow, which opens the gate rather than
     // showing text. Described here only so a caller that reaches the fallback
     // path still shows a sentence.
     case "ticket_required":
-      return { title: unlocksWhen("Your name") };
+      return { title: unlocksWhen("Your domain") };
     default:
       // Several routes answer with prose already ("You do not own that name").
       // Pass it through rather than replacing a specific message with a vague one.
@@ -157,9 +157,9 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
 export function unroutableReleaseRefusal(error: string | undefined): string | null {
   switch (error) {
     case "profile_name":
-      return "That's the name your profile is known by. Change your profile name first, then release this one.";
+      return "That's your profile domain. Change your profile domain first, then release this one.";
     case "has_children":
-      return "This name has names beneath it. Release or move those first, then this one.";
+      return "This domain has other domains beneath it. Release or move those first, then this one.";
     default:
       return null;
   }

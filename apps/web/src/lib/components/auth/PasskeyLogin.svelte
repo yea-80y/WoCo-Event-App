@@ -13,22 +13,23 @@
   } from "../../auth/passkey-refusal-copy.js";
   import { PASSKEY_PROVIDERS } from "@woco/shared";
   import PasskeyReadyNotice from "./PasskeyReadyNotice.svelte";
-  import { onMount } from "svelte";
-  import { PASSKEY_ONLY_RECOVERY_NOTE } from "../../auth/organiser-account.js";
+  import { onMount, type Snippet } from "svelte";
 
   interface Props {
     oncomplete?: () => void;
-    /** Attempt started — the modal swaps to its authenticating scene. */
-    onstart?: () => void;
+    /** Attempt started — the modal swaps to its authenticating scene (which says more for a create). */
+    onstart?: (mode: "signin" | "create") => void;
     /** Attempt settled (either way) — the modal returns to the picker. */
     onsettle?: () => void;
     /** "Link this device" (#746 step 4) was chosen: the modal closes for its screen. */
     onlink?: () => void;
     /** An organiser sign-in (`isOrganiserSignIn`): a passkey is the only way in, so say so where it can't work. */
     organiser?: boolean;
+    /** The sheet's other main way in (email / Google), placed right under the passkey button. */
+    alternative?: Snippet;
   }
 
-  let { oncomplete, onstart, onsettle, onlink, organiser = false }: Props = $props();
+  let { oncomplete, onstart, onsettle, onlink, organiser = false, alternative }: Props = $props();
   let error = $state<string | null>(null);
   let supported = $state(false);
   /** Set with `supported` on mount, so the no-passkey line never flashes before the check. */
@@ -62,7 +63,7 @@
     let apple: ReturnType<typeof appleDevice> = null;
     error = null;
     otherDevice = false;
-    onstart?.();
+    onstart?.(mode);
     try {
       const res = await auth.loginPasskeyResult(mode);
       if (res.ok) {
@@ -112,6 +113,7 @@
 </script>
 
 {#if supported && stays}
+  <!-- Signed in already: `alternative` is not offered beside "Got it", where it would read as a second choice. -->
   <div class="passkey-login stays" role="status">
     <p class="stays-title">Your passkey is in {stays.name}</p>
     <p class="stays-body">
@@ -139,43 +141,51 @@
       {/if}
     </button>
 
+    <!-- Right under the button it is about, and still right above the email
+         button that the refusal advice points to ("... below"). -->
+    {#if error && !otherDevice}
+      <p class="error" role="alert">{error}</p>
+    {/if}
+
+    <!-- The two real choices sit together, so the second is seen without scrolling. -->
+    {@render alternative?.()}
+
+    <!-- Below both choices: on an iPhone it is a long paragraph, and it is about Create. -->
     <PasskeyReadyNotice invite={organiser} />
 
-    <!-- Always present, always secondary. `hasStoredPasskeyCredential` only
-         knows about THIS device, so it cannot tell a brand-new user from a
-         returning one on a new device — promoting create on its say-so is how a
-         returning user ends up with a second account. Let the user say which. -->
-    <button
-      class="create-btn"
-      class:emphasised={offerCreate}
-      onclick={() => run("create")}
-      disabled={auth.busy}
-    >
-      New to WoCo? Create a passkey account
-    </button>
-    {#if organiser}
-      <!-- An organiser's account has no email or wallet backup (#746 step 5): said before it exists. -->
-      <p class="recovery-note">{PASSKEY_ONLY_RECOVERY_NOTE} Link a second device once you're in.</p>
-    {/if}
+    <div class="more">
+      <!-- Always present, always secondary. `hasStoredPasskeyCredential` only
+           knows about THIS device, so it cannot tell a brand-new user from a
+           returning one on a new device — promoting create on its say-so is how a
+           returning user ends up with a second account. Let the user say which. -->
+      <button
+        class="create-btn"
+        class:emphasised={offerCreate}
+        onclick={() => run("create")}
+        disabled={auth.busy}
+      >
+        New to WoCo? Create a passkey account
+      </button>
 
-    {#if onlink}
-      {#if otherDevice && error}
-        <p class="error" role="alert">{error}</p>
+      {#if onlink}
+        {#if otherDevice && error}
+          <p class="error" role="alert">{error}</p>
+        {/if}
+        <button class="create-btn" class:emphasised={otherDevice} onclick={onlink} disabled={auth.busy}>
+          Already use WoCo on another device? Add this device
+        </button>
       {/if}
-      <button class="create-btn" class:emphasised={otherDevice} onclick={onlink} disabled={auth.busy}>
-        Already use WoCo on your phone? Add this device
-      </button>
-    {/if}
 
-    {#if !showHelp}
-      <button class="help-link" onclick={() => (showHelp = true)} disabled={auth.busy}>
-        Can't find your passkey on this device?
-      </button>
-    {:else}
-      {#await import("./PasskeyHelp.svelte") then { default: PasskeyHelp }}
-        <PasskeyHelp busy={auth.busy} onretry={() => run("signin")} {onlink} />
-      {/await}
-    {/if}
+      {#if !showHelp}
+        <button class="help-link" onclick={() => (showHelp = true)} disabled={auth.busy}>
+          Can't find your passkey?
+        </button>
+      {:else}
+        {#await import("./PasskeyHelp.svelte") then { default: PasskeyHelp }}
+          <PasskeyHelp busy={auth.busy} onretry={() => run("signin")} {onlink} />
+        {/await}
+      {/if}
+    </div>
 
     <div class="providers">
       <span class="provider-label">Secured by</span>
@@ -208,18 +218,17 @@
 
     <p class="hint">
       Your passkey produces the same account on any synced device. Creating a new
-      one makes a separate account — it will not restore an existing one.
+      one makes a separate account, and won't restore an existing one.
     </p>
-
-    {#if error && !otherDevice}
-      <p class="error" role="alert">{error}</p>
-    {/if}
   </div>
 {:else if checked && organiser}
   <!-- Nothing else is offered to an organiser, so an empty sheet here would be a dead end. -->
   <p class="error" role="alert">
     This browser can't use passkeys, and organising needs one - open WoCo in Chrome, Brave, Edge or Safari to continue.
   </p>
+{:else if checked}
+  <!-- No passkeys in this browser: the other way in is all there is. -->
+  {@render alternative?.()}
 {/if}
 
 <style>
@@ -275,11 +284,14 @@
     font-weight: 600;
   }
 
-  .recovery-note {
-    margin: 0;
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    text-align: center;
+  /* The secondary ways in, set apart from the two main choices above them. */
+  .more {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.375rem;
+    padding-top: 0.625rem;
+    border-top: 1px solid var(--border);
   }
 
   .create-btn {

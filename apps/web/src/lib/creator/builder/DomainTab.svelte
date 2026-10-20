@@ -28,9 +28,9 @@
     </div>
 
     <div class="empty-copy">
-      <p class="empty-headline">Connect your own address</p>
+      <p class="empty-headline">Use your own domain</p>
       <p class="empty-body">
-        Give visitors a clean URL — <em>events.mybar.com</em> or <em>www.thevenue.co.uk</em> — instead of a long Swarm link.
+        Already have a domain? Give visitors <em>events.mybar.com</em> or <em>www.thevenue.co.uk</em> instead of a long link.
         Takes about 5 minutes once your site is published.
       </p>
     </div>

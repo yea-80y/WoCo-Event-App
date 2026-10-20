@@ -234,7 +234,7 @@ export async function updateProfile(
   const unbinding = updates.subEnsLabel === null;
   if (unbinding) {
     const res = await authPost<{ ok: boolean }>("/api/profile/unbind-name", {});
-    if (!res.ok) throw apiError(res, "Failed to remove the name");
+    if (!res.ok) throw apiError(res, "Couldn't remove the domain");
   }
   let verifiedLabel: string | undefined;
   if (updates.subEnsLabel !== undefined && updates.subEnsLabel !== null && updates.subEnsLabel !== "") {

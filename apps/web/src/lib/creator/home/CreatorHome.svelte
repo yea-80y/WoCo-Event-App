@@ -674,12 +674,12 @@
           </div>
         {/if}
 
-        <!-- Web3 names panel -->
+        <!-- .woco.eth domains panel -->
         <div class="panel panel--wide">
           <div class="panel-head">
             <span class="panel-title">
               <Globe size={16} strokeWidth={2.25} />
-              Your names
+              Your domains
             </span>
           </div>
 
@@ -687,7 +687,7 @@
             <div class="panel-empty">Loading…</div>
           {:else if ownedNames.length === 0}
             <div class="panel-empty">
-              <span>No <span class="mono">.woco.eth</span> names yet.</span>
+              <span>No <span class="mono">.woco.eth</span> domains yet.</span>
               <button class="inline-link" onclick={openProfile}>
                 <Plus size={14} strokeWidth={2.5} /> Claim one
               </button>

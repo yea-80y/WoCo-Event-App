@@ -173,9 +173,9 @@
   {#if code?.kind === "page"}
     <p class="note">Opens {code.title} at its own web address.</p>
   {:else if code?.name}
-    <p class="note">Uses your name, so the code stays simple to scan.</p>
+    <p class="note">Uses your profile domain, so the code stays simple to scan.</p>
   {:else if code && !inputs.profileName}
-    <p class="note">Claim a name and your codes show it, and get simpler to scan.</p>
+    <p class="note">Claim a free domain and your codes show it, and get simpler to scan.</p>
   {/if}
 </div>
 

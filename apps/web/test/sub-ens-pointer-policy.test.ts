@@ -22,7 +22,7 @@ test("a name never follows a feed this account does not sign - sites and event p
   for (const kind of SIGNERS) {
     for (const purpose of ["site", "event-page"] as const) {
       for (const owner of ["platform", undefined] as const) {
-        assert.match(pointerBlockedReason(kind, purpose, owner, true, NAME) ?? "", /own key/, `${kind}/${purpose}/${owner}`);
+        assert.match(pointerBlockedReason(kind, purpose, owner, true, NAME) ?? "", /your own account/, `${kind}/${purpose}/${owner}`);
       }
     }
   }
