@@ -172,7 +172,7 @@
     font-weight: 600;
     border-radius: var(--radius-sm);
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     white-space: nowrap;
     transition: background var(--transition);
   }

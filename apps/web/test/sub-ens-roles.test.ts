@@ -51,8 +51,8 @@ test("filtering does not mutate the list it was given", () => {
 });
 
 test("each role reads as a person would say it", () => {
-  assert.equal(roleLabel("profile"), "profile name");
-  assert.equal(roleLabel("url"), "site address");
+  assert.equal(roleLabel("profile"), "profile domain");
+  assert.equal(roleLabel("url"), "site domain");
   assert.equal(roleLabel("free"), "not pointed anywhere yet");
 });
 

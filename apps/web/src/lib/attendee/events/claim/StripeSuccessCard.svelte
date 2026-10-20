@@ -202,7 +202,7 @@
     width: 100%;
     padding: 0.75rem 1rem;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     font-weight: 600;
     font-size: 0.9375rem;
     border: none;

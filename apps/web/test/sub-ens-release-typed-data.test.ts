@@ -95,8 +95,8 @@ test("the expiration stays far inside the registry's 48-hour ceiling", () => {
 });
 
 test("a name with names beneath it is shown, never routed round", () => {
-  assert.match(unroutableReleaseRefusal("has_children") ?? "", /names beneath it/);
-  assert.match(unroutableReleaseRefusal("profile_name") ?? "", /profile is known by/);
+  assert.match(unroutableReleaseRefusal("has_children") ?? "", /domains beneath it/);
+  assert.match(unroutableReleaseRefusal("profile_name") ?? "", /That's your profile domain/);
   for (const code of ["signature_not_authorised", "expiration_too_far", "rate_limited", undefined]) {
     assert.equal(unroutableReleaseRefusal(code), null, `${code} should fall back to the holder's own rail`);
   }
@@ -136,7 +136,7 @@ test("the holder signer puts a wallet on the domain's chain first, and refuses C
   assert.doesNotMatch(body, /_passkeyPrivateKey|_web3authPrivateKey|createLocalSigner/);
   // Coinbase falls through to the refusal: no branch may sign for it.
   assert.doesNotMatch(body, /_kind === "coinbase"/, "a CSW signature can never verify on the names' chain");
-  assert.match(body, /throw new Error\("Signing for a name isn't available for this sign-in method yet/);
+  assert.match(body, /throw new Error\("Signing for a domain isn't available for this sign-in method yet/);
 });
 
 test("the release uses the chain's digest as the reference, and refuses on a mismatch", () => {

@@ -197,7 +197,7 @@
     </p>
     <div class="actions">
       <button class="primary-btn" onclick={() => navigate("/tickets")}>See my passport</button>
-      <button class="ghost-btn" onclick={() => navigate("/profile")}>Claim your name</button>
+      <button class="ghost-btn" onclick={() => navigate("/profile")}>Claim your domain</button>
     </div>
 
   {:else if phase === "consumed"}

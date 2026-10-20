@@ -23,6 +23,8 @@
   import StripeVerifyGate from "../events/StripeVerifyGate.svelte";
   import { onMount } from "svelte";
   import { listKeysOf } from "./list-keys.js";
+  import { buildContactsCsv, contactsCsvFilename } from "./csv-export.js";
+  import { downloadCsv } from "../../utils/csv.js";
   import {
     addRemoved,
     clearRemoved,
@@ -281,6 +283,22 @@
     return out;
   });
 
+  /**
+   * The download is built in the browser from the list this screen has already
+   * opened: no request, no extra unlock. Off while the screen does not know who
+   * unsubscribed, because a copy that showed them as mailable is how an
+   * unsubscriber gets emailed from another platform.
+   */
+  const canDownload = $derived(contacts.length > 0 && !listLocked && !consentUnknown && !saving);
+
+  function downloadList(): void {
+    if (!canDownload) return;
+    const csv = buildContactsCsv(contacts, (email) =>
+      contactConsentState(email, suppressedEmails, consentedEmails, softOptInEmails),
+    );
+    downloadCsv(contactsCsvFilename(new Date()), csv);
+  }
+
   // Single-fire load once auth is ready (covers both mount-already-connected
   // and connect-after-mount without double-fetching).
   let loadStarted = false;
@@ -388,6 +406,21 @@
           }}
         >Browse contacts</button>
       </div>
+
+      {#if contacts.length > 0}
+        <div class="export">
+          <button class="btn-ghost" onclick={downloadList} disabled={!canDownload}>Download your list (CSV)</button>
+          <p class="export-note">
+            {#if consentUnknown}
+              We couldn't check who unsubscribed, so the download is paused: a copy that showed them as
+              mailable could get them emailed from somewhere else. Reload the page to try again.
+            {:else}
+              A copy of everyone on your list, to keep or take elsewhere. Anyone on it who unsubscribed
+              is marked, so you don't email them by mistake. It holds personal details - store it safely.
+            {/if}
+          </p>
+        </div>
+      {/if}
     {/if}
 
     <AudienceSyncStatus />
@@ -548,4 +581,21 @@
 
   .btn-ghost:hover { border-color: var(--border-hover); color: var(--text); }
   .btn-ghost.active { border-color: var(--accent); color: var(--accent-text); }
+  .btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-ghost:disabled:hover { border-color: var(--border); color: var(--text-secondary); }
+
+  .export {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.375rem;
+  }
+
+  .export-note {
+    margin: 0;
+    max-width: 52ch;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+  }
 </style>

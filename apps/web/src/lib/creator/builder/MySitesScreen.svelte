@@ -267,7 +267,7 @@
     gap: 0.5rem;
     padding: 0.625rem 1.25rem;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-md);
     font-size: 0.9375rem;
     font-weight: 700;
@@ -331,7 +331,7 @@
     margin-top: 0.5rem;
     padding: 0.75rem 1.75rem;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-md);
     font-size: 1rem;
     font-weight: 700;
@@ -648,7 +648,7 @@
     font-size: 0.8125rem;
     font-weight: 600;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-sm);
     white-space: nowrap;
   }

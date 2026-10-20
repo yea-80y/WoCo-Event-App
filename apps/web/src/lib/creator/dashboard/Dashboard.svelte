@@ -26,6 +26,7 @@
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
   import { OpenedOrders, ORDERS_POLL_MS, createOrdersPoller } from "./live-orders.js";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
+  import { buildCsv, downloadCsv } from "../../utils/csv.js";
 
   interface Props {
     eventId: string;
@@ -197,13 +198,6 @@
     return map;
   }
 
-  function escapeCSV(val: string): string {
-    if (val.includes(",") || val.includes('"') || val.includes("\n")) {
-      return `"${val.replace(/"/g, '""')}"`;
-    }
-    return val;
-  }
-
   function downloadCSV(seriesName: string, seriesOrders: OrderEntry[], fields: OrderField[]) {
     const headers = ["Edition", "Claimer", "Email", "Paid via", "Refund", "Claimed At", ...fields.map((f) => f.label)];
     const rows = seriesOrders.map((order) => {
@@ -229,18 +223,8 @@
       ];
     });
 
-    const csv = [
-      headers.map(escapeCSV).join(","),
-      ...rows.map((r) => r.map(escapeCSV).join(",")),
-    ].join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${seriesName.replace(/[^a-zA-Z0-9]/g, "_")}_orders.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    // The shared writer guards formula cells: names and answers here are typed by buyers.
+    downloadCsv(`${seriesName.replace(/[^a-zA-Z0-9]/g, "_")}_orders.csv`, buildCsv([headers, ...rows]));
   }
 
   // ---------------------------------------------------------------------------

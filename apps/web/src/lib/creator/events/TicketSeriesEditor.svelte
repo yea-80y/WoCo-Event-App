@@ -1347,17 +1347,13 @@
     white-space: nowrap;
   }
 
-  .fee-mode-btn:hover {
+  .fee-mode-btn:not(.fee-mode-btn--active):hover {
     color: var(--text-secondary);
   }
 
   .fee-mode-btn--active {
     background: var(--accent);
-    color: #fff;
-  }
-
-  .fee-mode-btn--active:hover {
-    color: #fff;
+    color: var(--accent-ink);
   }
 
   .buyer-fee-field {
@@ -1627,7 +1623,7 @@
     padding: 0.5rem 0.875rem;
     font-size: 0.8125rem;
     font-weight: 600;
-    color: #fff;
+    color: var(--accent-ink);
     background: var(--accent);
     border: none;
     border-radius: var(--radius-sm);

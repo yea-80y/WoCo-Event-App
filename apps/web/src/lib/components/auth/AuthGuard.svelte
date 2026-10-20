@@ -45,6 +45,6 @@
   .sign-in-btn:hover {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
   }
 </style>
