@@ -12,6 +12,7 @@ import type { MarketingContact } from "@woco/shared";
 // The SAME rule the server applies, so a row this wizard accepts can never be a
 // row the send path rejects.
 import { MAILABLE_EMAIL_RE } from "@woco/shared";
+import { unguardCsvCell } from "../../utils/csv.js";
 
 /**
  * Fields that can be mapped to a CSV column.
@@ -484,13 +485,15 @@ export function buildImportReport(
       continue;
     }
 
+    // Unguarded so a file from our own export comes back as it went out ("+44...", not "'+44...").
+    const cell = (header: string): string => unguardCsvCell((row[header] ?? "").trim()).trim();
     const pick = (field: ImportField): string | undefined =>
-      mapping[field] ? (row[mapping[field]] ?? "").trim() || undefined : undefined;
+      mapping[field] ? cell(mapping[field]) || undefined : undefined;
 
     let firstName = pick("firstName");
     let lastName = pick("lastName");
     if (mapping.fullName && (!firstName || !lastName)) {
-      const split = splitFullName(row[mapping.fullName] ?? "");
+      const split = splitFullName(cell(mapping.fullName));
       firstName ??= split.firstName;
       lastName ??= split.lastName;
     }
