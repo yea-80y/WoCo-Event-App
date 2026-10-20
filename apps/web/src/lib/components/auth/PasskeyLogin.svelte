@@ -171,7 +171,7 @@
           <p class="error" role="alert">{error}</p>
         {/if}
         <button class="create-btn" class:emphasised={otherDevice} onclick={onlink} disabled={auth.busy}>
-          Already use WoCo on another device? Add this one
+          Already use WoCo on another device? Add this device
         </button>
       {/if}
 

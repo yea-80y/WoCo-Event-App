@@ -91,26 +91,28 @@ test("a browser with no passkeys still gets the email sign-in; the signed-in 'Go
   assert.ok(!organiser.includes("{@render alternative"), "an organiser is never offered email");
 });
 
-test("the email button names what it is: email or Google, with only those two marks", () => {
-  assert.ok(emailMarkup.includes("Continue with email or Google"));
+test("the email button names what it is: email or social, with the best-known marks and + more", () => {
+  assert.ok(emailMarkup.includes("Continue with email or social"));
   assert.ok(!emailMarkup.includes("Continue with Email"));
-  const icons = emailMarkup.slice(emailMarkup.indexOf('<span class="w3a-icons" aria-hidden="true">'), emailMarkup.indexOf("Continue with email or Google"));
-  assert.equal(icons.split("<svg").length - 1, 2, "a mail icon and the Google G");
-  // Each extra provider is a separate account, and the dashboard's list is not confirmed.
-  assert.ok(!/facebook|apple|twitter|discord|github|microsoft|linkedin|reddit|twitch/i.test(emailMarkup));
-  assert.match(email, /\.w3a-btn--main \{\s*padding: 0\.875rem/, "as tall as the passkey button");
+  assert.ok(!emailMarkup.includes("Continue with email or Google"));
+  const start = emailMarkup.indexOf('<span class="w3a-icons" aria-hidden="true">');
+  const icons = emailMarkup.slice(start, emailMarkup.indexOf("</button>", start));
+  assert.equal(icons.split("<svg").length - 1, 5, "mail, Google, Apple, Facebook and X");
+  assert.ok(icons.includes('<span class="w3a-more">+ more</span>'), "the modal offers more than the marks show");
+  assert.ok(emailMarkup.indexOf("Continue with email or social") < start, "label first, marks under it");
+  assert.match(email, /\.w3a-btn--main \{\s*flex-direction: column;/, "label and marks stacked");
 });
 
 test("the email hint is gone outside an app's browser; the in-app line and the stalled panel stay", () => {
   assert.ok(!email.includes("Use your email address or Google account"));
-  assert.match(emailMarkup, /\{#if inApp\}\s*<p class="hint">Google or email sign-in may not complete in this browser\.<\/p>\s*\{\/if\}/);
+  assert.match(emailMarkup, /\{#if inApp\}\s*<p class="hint">Email or social sign-in may not complete in this browser\.<\/p>\s*\{\/if\}/);
   assert.ok(emailMarkup.includes("<p class=\"stalled-title\">Still waiting for your sign-in to come back</p>"));
   assert.ok(emailMarkup.includes('<button type="button" class="w3a-btn" onclick={retry}>Try again</button>'), "Try again keeps the plain button");
 });
 
 test("the secondary lines read as one group, with no em dash in the new words", () => {
   const { full } = branches();
-  for (const line of ["New to WoCo? Create a passkey account", "Already use WoCo on another device? Add this one", "Can't find your passkey?"]) {
+  for (const line of ["New to WoCo? Create a passkey account", "Already use WoCo on another device? Add this device", "Can't find your passkey?"]) {
     assert.ok(full.includes(line), line);
   }
   assert.ok(!full.includes("Already use WoCo on your phone?"));

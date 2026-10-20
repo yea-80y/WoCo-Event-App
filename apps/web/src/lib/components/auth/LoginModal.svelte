@@ -123,7 +123,7 @@
   const sceneCopy: Record<Method, { name: string; waiting: string; finalizing: string }> = {
     passkey: {
       name: "Passkey",
-      waiting: "Check your device — approve with Face ID, fingerprint, or PIN.",
+      waiting: "Check your device and approve with Face ID, fingerprint, or PIN.",
       finalizing: "Unlocking your account…",
     },
     email: {
@@ -448,8 +448,7 @@
     border-bottom: 1px solid var(--border);
   }
 
-  /* A phone: less frame, so "Continue with email or Google" keeps to one line
-     (it wrapped by a few px at 375 wide) and both main buttons sit high. After
+  /* A phone: less frame, so both main buttons sit high. After
      .modal and header, so it overrides both. */
   @media (max-width: 420px) {
     .modal {

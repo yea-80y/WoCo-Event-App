@@ -8,7 +8,7 @@
 export function passkeyRefusalAdvice(host: string, invite: boolean): string {
   const where = "open WoCo in Chrome, Brave, Edge or Safari";
   if (invite) return `This browser can't use passkeys on ${host}, and hosting events needs one - ${where} to continue.`;
-  return `This browser can't use passkeys on ${host}. To host events you need a passkey - ${where}. Just buying tickets? Sign in with email below.`;
+  return `This browser can't use passkeys on ${host}. To host events you need a passkey - ${where}. Just buying tickets? Sign in with email or social below.`;
 }
 
 /** An iPhone or iPad, from what the page can see. iPadOS Safari reports a desktop
@@ -57,7 +57,7 @@ export function passkeyCreateRefusedAdvice(device: "iPhone" | "iPad", invite: bo
     `If your ${device} said "Choose how to manage your passkeys", it is not set up for passkeys yet. Check, in this order: ` +
     `${passkeySetupSteps(device)} Then tap Create again ` +
     `(not More Options - that puts the passkey on another device or a security key). If you closed the prompt yourself, just tap Create again.`;
-  return invite ? `No passkey was saved. ${steps}` : `No passkey was saved. ${steps} Just buying tickets? Continue with email or Google below.`;
+  return invite ? `No passkey was saved. ${steps}` : `No passkey was saved. ${steps} Just buying tickets? Continue with email or social below.`;
 }
 
 /**
@@ -90,7 +90,7 @@ export function passkeyNoSecretAdvice(
   provider: { id: string; name: string } | null,
   invite: boolean,
 ): string {
-  const tail = invite ? "" : " Just buying tickets? Continue with email or Google below.";
+  const tail = invite ? "" : " Just buying tickets? Continue with email or social below.";
   if (provider?.id === "apple-passwords") {
     // Apple's own manager gives the secret from iOS 18; before that, "save it in
     // Passwords" would send the person round in a circle.

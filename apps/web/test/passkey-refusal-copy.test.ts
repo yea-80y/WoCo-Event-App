@@ -20,7 +20,7 @@ test("the sign-in sheet: hosting needs a passkey in another browser; tickets can
   assert.match(s, /can't use passkeys on woco\.eth\.limo/);
   assert.match(s, /To host events you need a passkey/);
   assert.match(s, /Chrome, Brave, Edge or Safari/);
-  assert.match(s, /Sign in with email below/);
+  assert.match(s, /Sign in with email or social below/);
   assert.ok(!s.includes("—"), "owner copy: spaced hyphen, never an em dash");
 });
 
