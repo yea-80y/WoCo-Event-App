@@ -158,14 +158,14 @@
           </svg>
         </span>
         <div class="lock-text">
-          <p class="dp-title">Give this event a <code class="inline-code">.woco.eth</code> address</p>
+          <p class="dp-title">Give this event a free <code class="inline-code">.woco.eth</code> domain</p>
           <p class="muted-sm">
-            {#if lock === "signed-out"}Connect your wallet to get started.
-            {:else}{unlocksWhen("This name")} Stripe takes about 2 minutes.{/if}
+            {#if lock === "signed-out"}Sign in to get started.
+            {:else}{unlocksWhen("An event domain")} Stripe takes about 2 minutes.{/if}
           </p>
         </div>
         <button class="setup-btn" onclick={openStripeSetup}>
-          {#if lock === "signed-out"}Connect wallet →{:else}Set up Stripe →{/if}
+          {#if lock === "signed-out"}Sign in →{:else}Set up Stripe →{/if}
         </button>
       </div>
     {/if}
@@ -184,28 +184,28 @@
           <path d="M7.5 1L9.5 5.5H14.5L10.5 8.5L12 13.5L7.5 10.5L3 13.5L4.5 8.5L0.5 5.5H5.5L7.5 1Z"
                 fill="#C7F23A" opacity="0.12" stroke="#C7F23A" stroke-width="1.2" stroke-linejoin="round"/>
         </svg>
-        ENS
+        Free
       </span>
       <div class="dp-head-text">
-        <p class="dp-title">Web3 address for this event <span class="dp-opt">optional</span></p>
-        <p class="muted-sm">Point a permanent <code class="inline-code">.woco.eth</code> name at this event's page once it deploys.</p>
+        <p class="dp-title">Event domain <span class="dp-opt">optional</span></p>
+        <p class="muted-sm">Give this event's page a free, permanent <code class="inline-code">.woco.eth</code> domain once it deploys.</p>
       </div>
     </div>
 
     <!-- Option rows -->
-    <div class="opts" role="radiogroup" aria-label="Sub-ENS for this event">
+    <div class="opts" role="radiogroup" aria-label="Domain for this event">
       <!-- None -->
       <button type="button" class="opt" class:opt--active={mode === "none"} role="radio" aria-checked={mode === "none"} onclick={() => selectMode("none")}>
         <span class="opt-dot" aria-hidden="true"></span>
-        <span class="opt-label">No web3 address</span>
-        <span class="opt-sub">Skip — deploy without an ENS name.</span>
+        <span class="opt-label">No domain</span>
+        <span class="opt-sub">Deploy without a domain.</span>
       </button>
 
       <!-- New -->
       <button type="button" class="opt" class:opt--active={mode === "new"} role="radio" aria-checked={mode === "new"} onclick={() => selectMode("new")}>
         <span class="opt-dot" aria-hidden="true"></span>
-        <span class="opt-label">Claim a new name</span>
-        <span class="opt-sub">Register a fresh <code class="inline-code">.woco.eth</code> for this event — free, on Arbitrum.</span>
+        <span class="opt-label">Claim a new domain</span>
+        <span class="opt-sub">Claim a free <code class="inline-code">.woco.eth</code> domain just for this event.</span>
       </button>
 
       {#if mode === "new"}
@@ -235,10 +235,10 @@
           {#if checkPhase === "ok"}
             <p class="msg msg--ok">
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 6.2l2.8 2.8L10 4" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              Available — set as your address on deploy.
+              Available. It becomes this event's domain when you deploy.
             </p>
           {:else if checkPhase === "taken"}
-            <p class="msg msg--bad">{checkMsg || "Already taken — try a different name"}</p>
+            <p class="msg msg--bad">{checkMsg || "Already taken. Try a different domain."}</p>
           {:else if checkPhase === "invalid"}
             <p class="msg msg--warn">{checkMsg}</p>
           {/if}
@@ -249,8 +249,8 @@
       <!-- Existing -->
       <button type="button" class="opt" class:opt--active={mode === "existing"} role="radio" aria-checked={mode === "existing"} onclick={() => selectMode("existing")}>
         <span class="opt-dot" aria-hidden="true"></span>
-        <span class="opt-label">Use a name I own</span>
-        <span class="opt-sub">Repoint one of your existing names at this event.</span>
+        <span class="opt-label">Use a domain I own</span>
+        <span class="opt-sub">Point one of your domains at this event instead.</span>
       </button>
 
       {#if mode === "existing"}
@@ -261,12 +261,12 @@
             selected={selectedExisting}
             onselect={(label) => selectedExisting = label}
             onretry={() => { ownedState = "idle"; loadOwned(); }}
-            emptyText="You don't own any .woco.eth names yet — choose “Claim a new name” above."
+            emptyText="You don't own any .woco.eth domains yet. Choose “Claim a new domain” above."
           />
           <!-- Also shown over the empty state: an organiser whose ONLY name is
                their profile name would otherwise read "you don't own any names". -->
           {#if profileHidden && (ownedState === "ready" || ownedState === "empty")}
-            <p class="hidden-hint">Your profile name can't be a site or event address.</p>
+            <p class="hidden-hint">Your profile domain can't be used for a site or event.</p>
           {/if}
         </div>
       {/if}

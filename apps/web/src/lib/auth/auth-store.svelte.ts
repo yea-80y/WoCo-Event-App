@@ -4043,7 +4043,7 @@ async function signTypedDataAsHolder(
     const { createKernelTypedDataSigner } = await import("./kernel-account.js");
     return createKernelTypedDataSigner(_kernel.account)(typed.domain, typed.types, typed.message);
   }
-  throw new Error("Signing for a name isn't available for this sign-in method yet. Nothing was signed.");
+  throw new Error("Signing for a domain isn't available for this sign-in method yet. Nothing was signed.");
 }
 
 // ---------------------------------------------------------------------------

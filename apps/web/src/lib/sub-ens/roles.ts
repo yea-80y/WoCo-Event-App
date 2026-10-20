@@ -46,8 +46,8 @@ export function hidesProfileName(names: readonly RoledName[]): boolean {
  */
 export function roleLabel(role: SubEnsNameRole | undefined): string | undefined {
   switch (role) {
-    case "profile": return "profile name";
-    case "url":     return "site address";
+    case "profile": return "profile domain";
+    case "url":     return "site domain";
     case "free":    return "not pointed anywhere yet";
     default:        return undefined;
   }

@@ -37,7 +37,7 @@ test("smart-account logins are refused while the account is on another chain", (
     const plan = releaseRails(kind, KERNEL_TODAY, NAME_CHAIN);
     assert.equal(plan.available, false, `${kind} must not be offered today`);
     assert.deepEqual(plan.rails, []);
-    assert.match(plan.reason ?? "", /Arbitrum One account move/);
+    assert.match(plan.reason ?? "", /coming soon/);
     // The copy must not read as loss — the name is untouched.
     assert.match(plan.reason ?? "", /stays yours/);
   }

@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   chainEventEndMs,
   checkEndDateExtension,
+  END_DATE_PAST_SALES_CLOSE,
   _resetChainEndMemoForTests,
 } from "../src/lib/event/end-date-guard.js";
 import { checkoutExpiresAt, CHECKOUT_EXPIRES_MIN_S, CHECKOUT_EXPIRES_SKEW_S } from "../src/lib/event/checkout-expiry.js";
@@ -64,7 +65,7 @@ test("an extension past the earliest registered chain end refuses, with the stab
     read: reader({ "0xa": END_SEC, "0xlater": END_SEC + 9999 }),
   });
   assert.equal(v.ok, false);
-  assert.ok(!v.ok && v.error.startsWith("endDate cannot extend past the on-chain sales end"));
+  assert.ok(!v.ok && v.error.startsWith(END_DATE_PAST_SALES_CLOSE));
 });
 
 test("an extension at or under every chain end is allowed", async () => {
@@ -85,7 +86,7 @@ test("an unreadable chain refuses the extension — never allows unverifiable", 
     read: reader({}),
   });
   assert.equal(v.ok, false);
-  assert.ok(!v.ok && v.error.startsWith("Could not verify the on-chain sales end"));
+  assert.ok(!v.ok && v.error.startsWith("Could not verify when ticket sales close"));
 });
 
 // ── checkout-expiry chain cap ────────────────────────────────────────────────

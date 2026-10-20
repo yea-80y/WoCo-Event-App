@@ -570,10 +570,10 @@
         subEnsNotice = { tone: 'info', text: `${subEnsName(p.label)} now points at this site. It follows every publish from here.` };
       } else if (outcome.kind === 'refused') {
         subEnsPointer = null;
-        subEnsNotice = { tone: 'warn', text: outcome.error instanceof Error ? outcome.error.message : "Couldn't point the name" };
+        subEnsNotice = { tone: 'warn', text: outcome.error instanceof Error ? outcome.error.message : "Couldn't point the domain" };
       } else if (outcome.error instanceof ApiError) {
         // Only the relay's refusals say something to act on (see SiteBuilder).
-        const d = subEnsErrorFrom(outcome.error, "Couldn't point the name");
+        const d = subEnsErrorFrom(outcome.error, "Couldn't point the domain");
         const detail = subEnsErrorDetail(d);
         subEnsPointerNote = `${d.title}${detail ? ` ${detail}` : ''}`;
       } else if (outcome.error) {
@@ -883,12 +883,12 @@
           <span class="deploy-label feed-label">Feed hash</span>
           <span class="deploy-siteid">{feedHash}</span>
           <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(feedHash)} title="Copy feed hash">Copy</button>
-          <span class="feed-hint">← stable · use this for ENS</span>
+          <span class="feed-hint">← stable · use this for a .eth domain you own</span>
         </div>
         {#if publishState === 'done' && !site.subEnsLabel}
           <div class="deploy-row">
             <span class="deploy-label">Share</span>
-            <button class="deploy-copy" onclick={() => { tab = 'domain'; }}>Get a free .woco.eth address</button>
+            <button class="deploy-copy" onclick={() => { tab = 'domain'; }}>Get a free .woco.eth domain</button>
           </div>
         {/if}
       </div>

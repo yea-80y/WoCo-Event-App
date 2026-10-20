@@ -45,7 +45,7 @@ async function verifyV2(series: CheckinSeries, ticket: TicketQr): Promise<Verify
     return { status: "invalid", reason: "No ticket issued for this edition", ticket, code: "no-owner" };
   }
   if (!/^0x[0-9a-f]{130}$/i.test(ticket.sig)) {
-    return { status: "invalid", reason: "Malformed signature", ticket };
+    return { status: "invalid", reason: "Damaged ticket code", ticket };
   }
   let recovered: string;
   try {
@@ -56,10 +56,10 @@ async function verifyV2(series: CheckinSeries, ticket: TicketQr): Promise<Verify
     });
     recovered = await recoverMessageAddress({ message, signature: ticket.sig as `0x${string}` });
   } catch {
-    return { status: "invalid", reason: "Signature does not verify", ticket };
+    return { status: "invalid", reason: "Not a genuine ticket", ticket };
   }
   if (recovered.toLowerCase() !== owner.toLowerCase()) {
-    return { status: "invalid", reason: "Signature does not match the on-chain ticket owner", ticket };
+    return { status: "invalid", reason: "Not a genuine ticket - it doesn't match the one sold", ticket };
   }
   // Only now, with the ticket proven genuine: a refund is a fact about a real
   // ticket, so a forged QR for a refunded slot must still read invalid above.
@@ -83,7 +83,7 @@ export async function verifyTicket(raw: string, pack: CheckinPack): Promise<Veri
   // Fail closed: without an on-chain event there is no trustworthy owner to
   // recover against, so there is nothing to verify a signature with.
   if (!series.onChainEventId) {
-    return { status: "invalid", reason: "Ticket type is not registered on-chain", ticket };
+    return { status: "invalid", reason: "This ticket type hasn't been set up for sale", ticket };
   }
 
   return verifyV2(series, ticket);

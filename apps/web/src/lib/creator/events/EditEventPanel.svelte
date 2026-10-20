@@ -127,7 +127,7 @@
         feedSigner = await auth.getContentFeedSigner();
         if (!feedSigner || feedSigner.address.toLowerCase() !== event.creatorFeedSigner.toLowerCase()) {
           throw new Error(
-            "This event's feed is owned by a different signing key than your current account — cannot save.",
+            "This event belongs to a different account than the one you're signed in with, so it can't be saved here.",
           );
         }
       }
@@ -161,7 +161,7 @@
         feedSigner = await auth.getContentFeedSigner();
         if (!feedSigner || feedSigner.address.toLowerCase() !== event.creatorFeedSigner.toLowerCase()) {
           throw new Error(
-            "This event's feed is owned by a different signing key than your current account — cannot delete.",
+            "This event belongs to a different account than the one you're signed in with, so it can't be deleted here.",
           );
         }
       }
@@ -177,8 +177,8 @@
 
 <div class="edit-panel">
   <p class="edit-note">
-    Ticket tiers, pricing and supply are locked once published — they're committed
-    on-chain. Everything below can be changed freely.
+    Ticket tiers, pricing and supply are locked once published. Everything below
+    can be changed freely.
   </p>
 
   <ImageUpload bind:imageDataUrl onchange={(url) => (imageDataUrl = url)} />
@@ -221,13 +221,13 @@
     <div class="name-row">
       <label class="name-toggle">
         <input type="checkbox" bind:checked={removeName} />
-        <span>Remove <strong>{event.subEnsLabel}.woco.eth</strong> from this event</span>
+        <span>Remove the domain <strong>{event.subEnsLabel}.woco.eth</strong> from this event</span>
       </label>
       {#if removeName}
         <p class="name-hint">
-          You keep the name. The web address itself can't be blanked — it goes on
-          resolving to whatever it points at now until you point it somewhere
-          else, so posters and links already sharing it will not change.
+          You keep the domain. It can't be left blank, so it keeps opening
+          whatever it opens now until you point it somewhere else. Posters and
+          links already sharing it will not change.
         </p>
       {/if}
     </div>
