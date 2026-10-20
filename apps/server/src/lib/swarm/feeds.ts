@@ -6,7 +6,8 @@ import type { BatchSelection } from "../etherna/batch-router.js";
 import { writeEthernaFeedPage } from "../etherna/upload.js";
 import { decideFeedWriteRetry } from "./feed-write-retry.js";
 import { feedSources, firstFreeIndex, readFeedUpdate, type FeedDest } from "./feed-index.js";
-import { ethernaSource, wocoBeeSource } from "./soc-read.js";
+import { ethernaSource, isOnlyBeeChunk500, wocoBeeSource } from "./soc-read.js";
+import { FeedLookupCooldownError } from "./storage-busy.js";
 
 // ---------------------------------------------------------------------------
 // Binary packing (128 slots x 32 bytes = 4096 bytes)
@@ -217,6 +218,10 @@ function beeErrorMessage(err: unknown): string {
  * `pkg/api/feed.go`). Only the first is absent: reading the second as absent let
  * a bee hiccup bootstrap an empty index over a live one. Any other 404 is checked
  * against index 0 directly, so a reworded message costs a read, never a wipe.
+ *
+ * "lookup at failed" with index 0 answering only our bee's 500 is the shape of a
+ * feed nobody has written once bee 2.8 has skipped its first chunk for a minute
+ * (`storage-busy.ts`, #943): still an error, typed so a first save can be retried.
  */
 async function lookupFeed(topic: Topic, ownerHex: string): Promise<FeedLookup> {
   try {
@@ -229,9 +234,18 @@ async function lookupFeed(topic: Topic, ownerHex: string): Promise<FeedLookup> {
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     if (errorStatus(err) !== 404) return { status: "error", error };
-    if (beeErrorMessage(err) === "no update found") return { status: "absent" };
+    const message = beeErrorMessage(err);
+    if (message === "no update found") return { status: "absent" };
     const first = await readFeedUpdate(ownerHex, topic, 0n, feedSources("woco"));
-    return first.status === "absent" ? { status: "absent" } : { status: "error", error };
+    if (first.status === "absent") return { status: "absent" };
+    if (message === "lookup at failed" && isOnlyBeeChunk500(first)) {
+      const name = topic.toHex().slice(0, 16);
+      return {
+        status: "error",
+        error: new FeedLookupCooldownError(`feed ${name}: lookup at failed and index 0 unreadable (${first.reason})`, { cause: error }),
+      };
+    }
+    return { status: "error", error };
   }
 }
 

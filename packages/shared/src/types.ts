@@ -12,6 +12,8 @@ export interface ApiResponse<T = unknown> {
   /** Machine-readable error code (e.g. BATCH_PURCHASE_REQUIRED) — UI branches on
    *  this, never on the human-readable `error` text. */
   code?: string;
+  /** With a retryable refusal (e.g. STORAGE_BUSY): how long to wait before one retry. */
+  retryAfterMs?: number;
   /** HTTP status of the response. Populated client-side by the api client so
    *  callers can distinguish an auth rejection from a business-rule failure —
    *  both arrive as `{ ok: false }` and were previously indistinguishable. */

@@ -63,12 +63,22 @@ test("the creator gate runs before anything is uploaded", () => {
 });
 
 test("the page feed is prepared only for a signing client, owned by the pinned signer", () => {
-  assert.match(route, /if \(body\.clientFeed === true\) \{\s*const prep = await prepareEthernaFeedUpdate\(/);
+  assert.match(route, /const pagePrep = body\.clientFeed === true\s*\?\s*await prepareEthernaFeedIndex\(/);
+  assert.match(route, /: null;/);
+  assert.match(route, /if \(body\.clientFeed === true && pagePrep\) \{\s*const prep = \{ \.\.\.pagePrep, chunkBytes: await fetchEthernaRootChunk\(contentHash\) \};/);
   assert.match(route, /ownerHex: gate\.signer\.replace/);
   assert.match(route, /owner: gate\.signer,/);
   // Declared empty; the only assignment of a manifest is the client-owned branch.
   assert.match(route, /let feedManifestHash = "";/);
   assert.equal(route.match(/^\s+feedManifestHash = /gm)?.length, 1);
+});
+
+test("the page feed's index is resolved before the page is uploaded, once (#943)", () => {
+  // After the upload, a refusal there cost the whole upload - and the retry did it again.
+  const resolve = route.indexOf("await prepareEthernaFeedIndex(");
+  const upload = route.indexOf("uploadCollectionToEtherna(");
+  assert.ok(resolve > 0 && upload > resolve);
+  assert.equal(route.match(/prepareEthernaFeed(Index|Update)\(/g)?.length, 1, "no second resolution after the upload");
 });
 
 test("the carrier baked into the page comes from the same record", () => {

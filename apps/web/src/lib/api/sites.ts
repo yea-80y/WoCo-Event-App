@@ -10,6 +10,7 @@ import { authPost, authDelete, authGet, get } from "./client.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
 import { feedRouteFor } from "../swarm/gateways.js";
 import { signAndUploadSoc } from "../swarm/client-soc.js";
+import { retryOnceIfStorageBusy, type StorageBusyRetryOptions } from "./storage-busy.js";
 
 export interface SiteEventsFull {
   index: SiteEventsIndex;
@@ -22,6 +23,10 @@ export interface SiteEventsFull {
  * OWNER's client-owned SOC first, and the server only writes a `SitePointer`
  * + the (still platform-signed) events index and directory carrier. Without a
  * signer (kinds that can't own feeds yet) the legacy platform-written path runs.
+ *
+ * A new site's first save can be refused for about a minute (`storage-busy.ts`,
+ * #943): the server request alone is sent once more after the wait - the config
+ * SOC above it is already up and is not signed again.
  */
 export async function publishSite(
   site: Site,
@@ -32,6 +37,7 @@ export async function publishSite(
    *  as `deploySite`'s is: a missing one stamped the config on WoCo while the
    *  deploy went to Etherna. */
   gatewayUrl: string,
+  retry: StorageBusyRetryOptions = {},
 ) {
   const gw = { gatewayUrl };
   if (feedSigner) {
@@ -41,9 +47,12 @@ export async function publishSite(
       data: { ...site, updatedAt: Date.now() },
       route: feedRouteFor(gatewayUrl),
     });
-    return authPost<{ siteId: string }>("/api/sites", { site, events, siteFeedSigner: feedSigner.address, ...gw });
+    return retryOnceIfStorageBusy(
+      () => authPost<{ siteId: string }>("/api/sites", { site, events, siteFeedSigner: feedSigner.address, ...gw }),
+      retry,
+    );
   }
-  return authPost<{ siteId: string }>("/api/sites", { site, events, ...gw });
+  return retryOnceIfStorageBusy(() => authPost<{ siteId: string }>("/api/sites", { site, events, ...gw }), retry);
 }
 
 export async function uploadSiteImage(imageBase64: string, gatewayUrl?: string) {
@@ -74,16 +83,18 @@ export interface DeploySiteResult {
  * back the sequence-feed update material and the OWNER signs the pointer-feed
  * update here (identifier derived LOCALLY from siteId — never trusted from the
  * response). The payload is the deployed collection's root chunk, so what the
- * feed serves is exactly what the server reported deploying.
+ * feed serves is exactly what the server reported deploying. A first deploy the
+ * server refused as busy (nothing was uploaded) is sent once more after the wait.
  */
 export async function deploySite(
   siteId: string,
   opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site?: Site },
   feedSigner?: ContentFeedSigner | null,
+  retry: StorageBusyRetryOptions = {},
 ) {
-  const res = await authPost<DeploySiteResult>(
-    `/api/sites/${siteId}/deploy`,
-    { ...opts, ...(feedSigner ? { clientFeed: true } : {}) },
+  const res = await retryOnceIfStorageBusy(
+    () => authPost<DeploySiteResult>(`/api/sites/${siteId}/deploy`, { ...opts, ...(feedSigner ? { clientFeed: true } : {}) }),
+    retry,
   );
   if (res.ok && res.data?.multisiteFeed && feedSigner) {
     const { nextIndex, rootChunkPayloadB64 } = res.data.multisiteFeed;
@@ -126,20 +137,26 @@ export interface DeployEventPageResult {
  * organiser's own: the server prepares the update and it is signed HERE, only
  * when the server prepared it for this very signer and its bytes are the page
  * that was deployed. `feedSigned` says whether that happened - a name may
- * follow the feed only then, never on the server's word alone.
+ * follow the feed only then, never on the server's word alone. A first publish
+ * refused as busy (nothing was uploaded) is sent once more after the wait.
  */
 export async function deployEventPage(
   eventId: string,
   opts: { apiUrl: string; gatewayUrl: string; subEnsLabel?: string },
   feedSigner?: ContentFeedSigner | null,
+  retry: StorageBusyRetryOptions = {},
 ): Promise<ApiResponse<DeployEventPageResult> & { feedSigned: boolean }> {
-  const res = await authPost<DeployEventPageResult>("/api/site/deploy", {
-    eventId,
-    apiUrl: opts.apiUrl,
-    gatewayUrl: opts.gatewayUrl,
-    ...(opts.subEnsLabel ? { subEnsLabel: opts.subEnsLabel } : {}),
-    ...(feedSigner ? { clientFeed: true } : {}),
-  });
+  const res = await retryOnceIfStorageBusy(
+    () =>
+      authPost<DeployEventPageResult>("/api/site/deploy", {
+        eventId,
+        apiUrl: opts.apiUrl,
+        gatewayUrl: opts.gatewayUrl,
+        ...(opts.subEnsLabel ? { subEnsLabel: opts.subEnsLabel } : {}),
+        ...(feedSigner ? { clientFeed: true } : {}),
+      }),
+    retry,
+  );
   const pageFeed = res.ok ? res.data?.pageFeed : undefined;
   if (!res.ok || !res.data || !pageFeed || !feedSigner) return { ...res, feedSigned: false };
 

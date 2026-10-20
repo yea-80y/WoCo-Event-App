@@ -4,7 +4,7 @@
   import type { Site, SiteDeploySubEns, SiteEventEntry, TemplateId } from "@woco/shared";
   import { multisiteFeedTopic, newSiteFromTemplate, siteConfigTopic, subEnsName, FEATURES } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { publishSite, deploySite, loadSite, getSiteEvents, uploadSiteImage, type DeploySiteResult } from "../../api/sites.js";
   import { getMySitesSWR } from "../../api/creator-cache.js";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
@@ -113,6 +113,11 @@
   type PublishState = 'idle' | 'publishing' | 'done' | 'error';
   let publishState = $state<PublishState>('idle');
   let publishError = $state('');
+  /** Set while a new site's first save waits out storage's one-minute pause (#943). */
+  let publishWaitNote = $state('');
+  /** The running publish's wait: nothing more is sent once the builder is gone. */
+  let publishAbort: AbortController | null = null;
+  onDestroy(() => publishAbort?.abort());
   /** What the last deploy did with this site's sub-ENS name. The name update is
    *  fire-and-forget on the server, so a skip used to leave no trace anywhere
    *  the organiser could see it (#484). */
@@ -435,6 +440,15 @@
 
     publishState = 'publishing';
     publishError = '';
+    publishWaitNote = '';
+    publishAbort?.abort();
+    const abort = new AbortController();
+    publishAbort = abort;
+    /** Storage refused a first save for about a minute: say so, the retry is automatic. */
+    const retry = {
+      signal: abort.signal,
+      onWait: () => { publishWaitNote = 'Saving your site… (this can take about a minute the first time)'; },
+    };
     subEnsNotice = null;
     subEnsPointer = null;
     subEnsPointerNote = null;
@@ -461,11 +475,13 @@
       // Phase B: with a content-feed signer the site config becomes a
       // CLIENT-OWNED SOC (null → legacy platform-written path).
       const feedSigner = await auth.getContentFeedSigner();
-      const feedRes = await publishSite($state.snapshot(site), $state.snapshot(siteEvents), feedSigner, gatewayUrl);
+      const feedRes = await publishSite($state.snapshot(site), $state.snapshot(siteEvents), feedSigner, gatewayUrl, retry);
+      publishWaitNote = '';
       if (feedRes.code === 'STRIPE_VERIFICATION_REQUIRED') throw new StripeVerificationNeeded(feedRes.error);
       if (!feedRes.ok) throw new Error(feedRes.error ?? 'Publish failed');
 
-      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) }, feedSigner);
+      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) }, feedSigner, retry);
+      publishWaitNote = '';
       if (!deployRes.ok || !deployRes.data) {
         if (deployRes.code === 'BATCH_PURCHASE_REQUIRED') throw new BatchPurchaseNeeded();
         if (deployRes.code === 'STRIPE_VERIFICATION_REQUIRED') throw new StripeVerificationNeeded(deployRes.error);
@@ -543,7 +559,14 @@
 
       publishState = 'done';
     } catch (err) {
+      // The builder is gone (or a new publish replaced this one): nothing to show.
+      if (abort.signal.aborted) return;
       showPublishError(err);
+    } finally {
+      if (publishAbort === abort) {
+        publishAbort = null;
+        publishWaitNote = '';
+      }
     }
   }
 
@@ -902,6 +925,10 @@
         onrecheck={() => void handlePublish()}
         onpublishanyway={() => { publishBeforeNotice = true; noticePrompt = null; void handlePublish(); }}
       />
+    {/if}
+
+    {#if publishState === 'publishing' && publishWaitNote}
+      <div class="publish-wait-note" role="status">{publishWaitNote}</div>
     {/if}
 
     {#if publishState === 'error' && publishError}
@@ -1381,6 +1408,14 @@
     color: var(--text);
     border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
     background: color-mix(in srgb, var(--warning) 8%, transparent);
+  }
+
+  /* A first save waiting out storage's pause: progress, not a failure. */
+  .publish-wait-note {
+    padding: 0.5rem 1.5rem;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
   }
 
   /* Error bar */
