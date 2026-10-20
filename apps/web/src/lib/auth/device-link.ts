@@ -101,6 +101,8 @@ export function parseLinkAnswer(v: unknown): LinkAnswer | null {
 
 export const LINK_CODE_UNREADABLE = "That isn't a WoCo code. Scan the code on the other device, or type it in.";
 export const LINK_CODE_UNKNOWN = "The other device sent something this one doesn't understand. Update WoCo on both and start again.";
+export const LINK_ANSWERED_ELSEWHERE =
+  "Someone else answered this code first. Nothing was linked here - don't trust what the other device shows; start again.";
 
 // ---------------------------------------------------------------------------
 // The new device
@@ -343,11 +345,18 @@ export async function runApproveDeviceLink(
       await channel.seal("answer", { v: 1, kind: "link", sealed }),
     );
   } catch (e) {
-    if (e instanceof ch.PairingExpiredError) {
+    const answered = e instanceof ch.PairingAnsweredError;
+    if (answered || e instanceof ch.PairingExpiredError) {
       // Certainly not delivered: a grant for a passkey that will never sign in is a
       // slot taken and a row that lies. Best effort - it can be removed by hand.
+      // Answered first by someone else: the new device may be on their account now,
+      // whatever it shows (Fable design consult 2026-10-20).
       await ctx.revoke(offer.grantee).catch(() => {});
-      throw new Error("The other device's code expired before it could finish. Nothing was linked - start again there.");
+      throw new Error(
+        answered
+          ? LINK_ANSWERED_ELSEWHERE
+          : "The other device's code expired before it could finish. Nothing was linked - start again there.",
+      );
     }
     // Maybe delivered: the other device may be signing in now.
     throw new Error("Couldn't reach the other device. If it doesn't finish linking, remove it from Your passkeys.");

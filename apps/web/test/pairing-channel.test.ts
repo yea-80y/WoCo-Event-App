@@ -8,13 +8,16 @@
  *    sealed for, unaltered;
  *  - the seed opens only with the one-pairing key, for the grantee it was sealed
  *    to, and that key can be wiped;
- *  - waiting ends on the message, on expiry or on cancel - never on a blip.
+ *  - waiting ends on the message, on expiry or on cancel - never on a blip;
+ *  - a second answer is told apart from an expired code; nothing else is.
  */
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   PAIRING_QR_PREFIX,
+  PairingAnsweredError,
   PairingExpiredError,
   formatPairingCode,
   httpPairingTransport,
@@ -142,7 +145,7 @@ test("waiting: returns the message, retries blips, ends on expiry and cancel", a
   });
 });
 
-test("http transport: no credentials; expiry and conflicts read as expired", async () => {
+test("http transport: no credentials; a second answer is told apart, every other refusal reads as expired", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const replies: Response[] = [];
   const fetchFn = (async (url: string, init?: RequestInit) => {
@@ -158,12 +161,43 @@ test("http transport: no credentials; expiry and conflicts read as expired", asy
   assert.equal(calls[0].init?.credentials, "omit");
   assert.equal(calls[0].init?.body, JSON.stringify({ box: "box" }));
 
-  replies.push(json(409, { ok: false }), json(410, { ok: false }));
-  await assert.rejects(t.post("ab", "answer", "x"), PairingExpiredError);
-  await assert.rejects(t.post("ab", "answer", "x"), PairingExpiredError);
+  // The mailbox's own refusals (`apps/server/src/routes/pairing.ts` PUT_REFUSALS).
+  const refusal = (status: number, error: string, code: string) => json(status, { ok: false, error, code });
+  const answeredFirst = () => refusal(409, "Already sent", "exists");
+
+  replies.push(answeredFirst());
+  await assert.rejects(t.post("ab", "answer", "x"), (e: unknown) => {
+    assert.ok(e instanceof PairingAnsweredError);
+    assert.ok(!(e instanceof PairingExpiredError), "never read as expired by a caller that checks for that");
+    return true;
+  });
+  for (const [slot, reply] of [
+    ["answer", () => refusal(410, "This code has expired", "gone")],
+    ["offer", answeredFirst],
+    ["reply", answeredFirst],
+    ["answer", () => refusal(409, "Not expected yet", "out-of-order")],
+    ["answer", () => json(409, { ok: false })],
+    ["answer", () => new Response("not json", { status: 409 })],
+  ] as const) {
+    replies.push(reply());
+    await assert.rejects(t.post("ab", slot, "x"), PairingExpiredError, `${slot}`);
+  }
+  replies.push(json(429, { ok: false }), json(503, { ok: false, code: "full" }), json(500, { ok: false, code: "exists" }));
+  await assert.rejects(t.post("ab", "answer", "x"), /Too many tries/);
+  await assert.rejects(t.post("ab", "answer", "x"), /Couldn't reach WoCo/);
+  await assert.rejects(t.post("ab", "answer", "x"), /Couldn't reach WoCo/);
 
   replies.push(json(200, { ok: true, data: { box: null } }), json(200, { ok: true, data: { box: "b" } }), json(410, {}));
   assert.equal(await t.read("ab", "answer"), null);
   assert.equal(await t.read("ab", "answer"), "b");
   assert.equal(await t.read("ab", "answer"), "gone");
+});
+
+test("http transport: matches what the mailbox really sends for a second answer and an expired code", () => {
+  const route = readFileSync(new URL("../../server/src/routes/pairing.ts", import.meta.url), "utf8");
+  assert.match(route, /exists: \{ status: 409, error: "Already sent" \},/);
+  assert.match(route, /gone: \{ status: 410, error: "This code has expired" \},/);
+  assert.match(route, /return c\.json\(\{ ok: false, error, code: result \}, status\);/);
+  const mailbox = readFileSync(new URL("../../server/src/lib/auth/pairing-mailbox.ts", import.meta.url), "utf8");
+  assert.match(mailbox, /if \(p\.slots\[slot\] !== undefined\) return "exists";/);
 });
