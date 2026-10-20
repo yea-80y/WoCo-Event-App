@@ -506,3 +506,13 @@ test("the profile page retries the feed writes late, shows it, and cancels with 
   // The template from the raw source: `accept="image/*"` reads as a comment opener to `code`.
   assert.match(readFileSync(SRC + "lib/components/profile/ProfilePage.svelte", "utf8"), /\{#if saveWaiting\}[\s\S]*Still saving/);
 });
+
+test("the notice editor reads afresh past five minutes and says when a publish isn't confirmed yet (Fable, #945 N1)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const s = readFileSync(new URL("../src/lib/creator/privacy/PrivacyNoticeEditor.svelte", import.meta.url), "utf-8");
+  assert.match(s, /const WRITE_BASE_MAX_AGE_MS = 5 \* 60_000;/);
+  assert.match(s, /let base = writeBase && Date\.now\(\) - writeBaseAt < WRITE_BASE_MAX_AGE_MS \? writeBase : null;/);
+  assert.match(s, /publishedUnconfirmed = out\.base === null;/);
+  assert.ok(s.includes("Published - it may take a minute to show."));
+  assert.ok(!s.includes("—"), "owner copy: no em dash");
+});

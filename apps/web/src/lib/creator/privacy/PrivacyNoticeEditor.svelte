@@ -77,6 +77,7 @@
   let publishing = $state(false);
   let publishError = $state<string | null>(null);
   let justPublished = $state(false);
+  let publishedUnconfirmed = $state(false);
   /** Which read is waiting out bee's one-minute skip list before its one retry (#943). */
   let waiting = $state<"load" | "publish" | null>(null);
   /**
@@ -84,6 +85,10 @@
    * reactive. Set by the load and by each publish this screen confirms.
    */
   let writeBase: ContentFeedWriteBase<unknown> | null = null;
+  /** When `writeBase` was read. Older than this, a publish reads afresh: by then
+   *  bee's one-minute skip list has lapsed, so that read is clean (Fable, #945 N1). */
+  let writeBaseAt = 0;
+  const WRITE_BASE_MAX_AGE_MS = 5 * 60_000;
   /**
    * Cancels a waiting retry when the account changes or the screen closes: a
    * notice must not be published a minute later where nobody sees it happen, and
@@ -179,6 +184,7 @@
         return;
       }
       writeBase = own.base;
+      writeBaseAt = Date.now();
       if (own.status === "found") {
         const n = own.notice;
         saved = n;
@@ -221,7 +227,7 @@
     // What the organiser confirmed, as they pressed Publish - a late retry
     // publishes this, never edits made while it waited.
     const confirmed = payload();
-    let base = writeBase;
+    let base = writeBase && Date.now() - writeBaseAt < WRITE_BASE_MAX_AGE_MS ? writeBase : null;
     const life = lifetime;
     try {
       const signer = await auth.getContentFeedSigner();
@@ -240,6 +246,9 @@
       }, { signal: life?.signal, onWait: () => { waiting = "publish"; } });
       saved = out.notice;
       writeBase = out.base;
+      writeBaseAt = Date.now();
+      // No base back = the read-back could not confirm it yet (#945 N1).
+      publishedUnconfirmed = out.base === null;
       justPublished = true;
       checked = false;
     } catch (e) {
@@ -368,7 +377,13 @@
             <p class="muted" role="status">Still publishing - the storage network needs a minute, so we'll try again automatically. Keep this page open until it's done.</p>
           {/if}
           {#if publishError}<p class="error" role="alert">{publishError}</p>{/if}
-          {#if justPublished}<p class="ok" role="status">Published. Attendees now see your notice, and your tickets can go on sale.</p>{/if}
+          {#if justPublished}
+            {#if publishedUnconfirmed}
+              <p class="ok" role="status">Published - it may take a minute to show. Your tickets can go on sale once it does.</p>
+            {:else}
+              <p class="ok" role="status">Published. Attendees now see your notice, and your tickets can go on sale.</p>
+            {/if}
+          {/if}
           <button class="primary" type="submit" disabled={!valid || !checked || publishing}>
             {publishing ? "Publishing…" : saved ? "Publish changes" : "Publish"}
           </button>
