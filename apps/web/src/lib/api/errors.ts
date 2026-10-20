@@ -78,6 +78,18 @@ export class ApiError extends Error {
 }
 
 /**
+ * The sentence to show for a refusal. Some routes put a machine code in `error`
+ * and the readable sentence in `message` (`register-on-chain` answers
+ * `registry_unavailable` this way, #937), so a sentence wins over a code; a
+ * route that sends no `message` keeps its `error`.
+ */
+export function refusalText(resp: { error?: unknown; message?: unknown }, fallback: string): string {
+  if (typeof resp.message === "string" && resp.message.trim()) return resp.message;
+  if (typeof resp.error === "string" && resp.error.trim()) return resp.error;
+  return fallback;
+}
+
+/**
  * Turn a failed `ApiResponse` into the right Error to throw. Callers keep their
  * own fallback message for the codeless case.
  */

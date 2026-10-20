@@ -61,6 +61,13 @@ test("register-on-chain answers a rebind conflict with 409 registration_conflict
   assert.equal(res.body.ok, false);
   assert.equal(res.body.error, "registration_conflict");
   assert.ok(res.body.message && res.body.message.length > 0, "the organiser needs a sentence, not a code");
+  // #937: the client shows `message`, so it is plain English and, like the 503,
+  // never invites a retry that cannot succeed.
+  assert.equal(
+    res.body.message,
+    "We hit a problem with our records for these tickets, so we can't finish setting them up - please contact support.",
+  );
+  assert.ok(!/try again/i.test(res.body.message));
 });
 
 test("the 409 body leaks no internals — not the ids, not the thrown message", () => {
@@ -82,6 +89,10 @@ test("an unreadable registry file answers 503 registry_unavailable — never 'pl
   assert.equal(res.status, 503);
   assert.equal(res.body.error, "registry_unavailable");
   assert.ok(res.body.message && !/try again/i.test(res.body.message), "a retry never succeeds here");
+  assert.equal(
+    res.body.message,
+    "We can't set up tickets right now because of a problem on our side - please contact support.",
+  );
   const serialised = JSON.stringify(res.body);
   assert.ok(!serialised.includes("evt-secret") && !serialised.includes("onchain-events.json"), "internals reached the caller");
 });
@@ -89,11 +100,12 @@ test("an unreadable registry file answers 503 registry_unavailable — never 'pl
 test("every other failure keeps its 500 — the 409 is for the one thing retry cannot fix", () => {
   const res = registerOnChainErrorResponse(new Error("timeout"));
   assert.equal(res.status, 500);
-  assert.equal(res.body.error, "Registration failed. Please try again.");
+  assert.equal(res.body.error, "We couldn't set up your tickets just now. Please try again.");
+  assert.equal(res.body.message, undefined, "the 500's sentence is its error: no code to hide");
 
   const nonError = registerOnChainErrorResponse("nope");
   assert.equal(nonError.status, 500);
-  assert.equal(nonError.body.error, "Registration failed. Please try again.");
+  assert.equal(nonError.body.error, "We couldn't set up your tickets just now. Please try again.");
 });
 
 test("a 500 carries the failure class, never the RPC error text (#540)", () => {
@@ -104,7 +116,7 @@ test("a 500 carries the failure class, never the RPC error text (#540)", () => {
   );
   const res = registerOnChainErrorResponse(rpcError);
   assert.equal(res.status, 500);
-  assert.equal(res.body.error, "Registration failed (rpc SERVER_ERROR). Please try again.");
+  assert.equal(res.body.error, "We couldn't set up your tickets just now (rpc SERVER_ERROR). Please try again.");
   assert.ok(!JSON.stringify(res.body).includes("SECRETKEY123"), "the keyed RPC URL reached the caller");
 });
 
