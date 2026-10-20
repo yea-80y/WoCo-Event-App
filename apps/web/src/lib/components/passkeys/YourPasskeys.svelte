@@ -14,6 +14,11 @@
    * Account & security, with the backup and add-a-device sections below the list.
    */
 
+  // Profile's "Add a device" (`#/account?add-device`), taken by the page: cleared here
+  // when this screen's first read of your passkeys answers, and opens the scanner only
+  // where the [Add a device] button is offered. Otherwise the page shows as it is.
+  let { addDevice = $bindable(false) }: { addDevice?: boolean } = $props();
+
   let rows = $state<PasskeyRow[]>([]);
   let canAdd = $state(false);
   let coOwned = $state(false);
@@ -43,6 +48,10 @@
   const isPasskey = $derived(auth.kind === "passkey");
   const linkedOnly = $derived(!auth.isAccountOwner);
   const busy = $derived(linking || (adding !== "closed" && adding !== "explain" && adding !== "done") || removing !== null);
+  // The backup and add-a-device sections: no flow open, never on a device linked the old way.
+  const sectionsShown = $derived(auth.isConnected && isPasskey && loaded && !linkedOnly && !linking && adding === "closed");
+  // Where the [Add a device] button is shown and can be pressed (its section, past `{#if !canAdd}`).
+  const addDeviceOffered = $derived(sectionsShown && canAdd && !busy);
   const current = $derived(rows.find((r) => r.signedInWith) ?? null);
   // Passkeys on the account's list: a device linked the old way is not a backup.
   const fullPasskeys = $derived(rows.filter((r) => !r.linkedBefore).length);
@@ -87,6 +96,13 @@
       autoTried = true;
       void load();
     }
+  });
+
+  // Once: the flag waits for the first read to answer, then is spent either way.
+  $effect(() => {
+    if (!addDevice || loading || (!loaded && loadError === null)) return;
+    addDevice = false;
+    if (addDeviceOffered) { linkMode = "link"; linking = true; }
   });
 
   async function add(): Promise<void> {
@@ -310,7 +326,7 @@
   {/if}
 </section>
 
-{#if auth.isConnected && isPasskey && loaded && !linkedOnly && !linking && adding === "closed"}
+{#if sectionsShown}
   <section class="block" aria-labelledby="backup-title">
     <h2 id="backup-title">Backup passkey</h2>
     <div class="backup" class:callout={fullPasskeys <= 1}>

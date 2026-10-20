@@ -76,9 +76,10 @@
     </button>
   {:else if stage === "waiting"}
     <p class="muted">
-      On your phone (or any device already signed in), open WoCo and go to Account & security, then tap Add a device.
-      Scan this code, or type it there:
+      On your phone, open WoCo, then tap Profile, Account & security, Add a device, Scan the code. Point it at this
+      code, or type the code there.
     </p>
+    <p class="muted">Your phone's own camera app can't read this code - use the scanner inside WoCo.</p>
     {#if code}<PairingCode qr={code.qr} typed={code.typed} />{/if}
     <p class="muted">Waiting for your other device… The code works for 10 minutes.</p>
     <button class="btn btn--ghost" onclick={() => controller?.abort()}>Cancel</button>
