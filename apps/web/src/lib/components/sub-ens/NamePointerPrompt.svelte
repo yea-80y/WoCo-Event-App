@@ -67,7 +67,7 @@
       ondone?.();
     } catch (err) {
       refused = err instanceof Error && err.name === "FeedManifestMismatchError";
-      const d = subEnsErrorFrom(err, "Couldn't point the name");
+      const d = subEnsErrorFrom(err, "Couldn't point the domain");
       const detail = subEnsErrorDetail(d);
       errText = `${d.title}${detail ? ` ${detail}` : ""}`;
       phase = "ask";

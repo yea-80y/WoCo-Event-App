@@ -6,6 +6,7 @@
   import EventPage from './lib/components/site/EventPage.svelte';
   import ShopOrderScreen from './lib/attendee/shop/ShopOrderScreen.svelte';
   import OrganiserNotice from './lib/legal/OrganiserNotice.svelte';
+  import { accentInk } from './lib/utils/accent-ink.js';
   // True when config arrives via the builder preview channel (localStorage
   // handoff or postMessage) rather than the baked-at-deploy SITE_CONFIG. Only
   // preview contexts keep listening for config messages — a deployed site must
@@ -91,6 +92,7 @@
     root.style.setProperty('--muted', palette.muted);
     root.style.setProperty('--accent', palette.accent);
     root.style.setProperty('--accent-hover', palette.accentHover);
+    root.style.setProperty('--accent-ink', accentInk(palette.accent, palette.accentHover));
     root.style.setProperty('--border', palette.border);
     root.style.setProperty('--card-bg', palette.cardBg);
     root.style.setProperty('--bg-base', palette.bg);

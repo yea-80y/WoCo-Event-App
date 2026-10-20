@@ -117,7 +117,7 @@
         <span class="verdict-title">CHECKED IN</span>
         {@render who(outcome.attendee)}
         <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
-        <span class="verdict-badge">✓ on-chain signature verified</span>
+        <span class="verdict-badge">✓ Ticket verified</span>
       {:else if outcome.kind === "duplicate"}
         <span class="verdict-title">ALREADY IN</span>
         {@render who(outcome.attendee)}

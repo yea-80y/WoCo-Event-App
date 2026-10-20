@@ -97,7 +97,7 @@
     display: inline-block;
     padding: 0.75rem 2rem;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     font-weight: 600;
     font-size: 0.9375rem;
     border-radius: var(--radius-sm);

@@ -179,12 +179,12 @@ export async function createEventStreaming(
       result = { ...result, eventFeed: pendingFeed };
     } else {
       try {
-        onProgress?.({ type: "progress", phase: "finalize", current: 0, total: 1, message: "Signing event feed..." });
+        onProgress?.({ type: "progress", phase: "finalize", current: 0, total: 1, message: "Publishing your event page…" });
         await signEventFeedSoc(pendingFeed, feedSigner, 0);
-        onProgress?.({ type: "progress", phase: "finalize", current: 1, total: 1, message: "Event feed signed" });
+        onProgress?.({ type: "progress", phase: "finalize", current: 1, total: 1, message: "Event page published" });
         result = { ...result, eventFeed: pendingFeed };
       } catch (e) {
-        return { ok: false, error: `Failed to sign event feed: ${e instanceof Error ? e.message : String(e)}` };
+        return { ok: false, error: `Couldn't publish your event page: ${e instanceof Error ? e.message : String(e)}` };
       }
     }
   }
@@ -361,7 +361,7 @@ export async function registerSeriesOnChain(
     { seriesId },
   )) as { ok: boolean; error?: string; onChainEventId?: string; txHash?: string; eventFeed?: EventFeed };
   if (!resp.ok || !resp.onChainEventId) {
-    throw new Error(resp.error || "register-on-chain failed");
+    throw new Error(resp.error || "please try again");
   }
   return { onChainEventId: resp.onChainEventId, txHash: resp.txHash, eventFeed: resp.eventFeed };
 }

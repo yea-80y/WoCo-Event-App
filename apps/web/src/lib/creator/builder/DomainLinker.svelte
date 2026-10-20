@@ -167,7 +167,7 @@
         <path d="M5.5 7.5a3.5 3.5 0 0 0 5 0l1.5-1.5a3.536 3.536 0 0 0-5-5L6 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         <path d="M7.5 5.5a3.5 3.5 0 0 0-5 0L1 7a3.536 3.536 0 0 0 5 5L7 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
-      <span class="row-label">Custom domain</span>
+      <span class="row-label">Your own domain</span>
     </div>
 
     {#if loadingInit}

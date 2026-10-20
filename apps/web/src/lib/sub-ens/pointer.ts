@@ -59,7 +59,7 @@ export async function preparePointer(label: string, swarmHash: string): Promise<
   const contenthash = swarmContenthash(swarmHash);
 
   const latest = await provider.getBlock("latest");
-  if (!latest) throw new Error("Could not read the names chain's clock. Nothing was signed.");
+  if (!latest) throw new Error("Couldn't reach the network to check the time. Nothing was signed.");
   const expiration = latest.timestamp + POINTER_TTL_SECS;
   const [nonce, onChainDigest] = await Promise.all([
     registrar.pointerNonce(node) as Promise<bigint>,
@@ -103,7 +103,7 @@ export async function pointNameAt(
     expiration: typed.message.expiration,
     signature,
   });
-  if (!resp.ok || !resp.data) throw apiError(resp, "Couldn't point the name");
+  if (!resp.ok || !resp.data) throw apiError(resp, "Couldn't point the domain");
   return resp.data.txHash;
 }
 

@@ -28,11 +28,11 @@ export function pointerBlockedReason(
   targetIsFeed: boolean,
   name: string,
 ): string | null {
-  if (kind === "coinbase") return `Pointing ${name} from this account arrives soon — the name stays yours.`;
-  if (kind !== "web3" && kind !== "passkey" && kind !== "web3auth") return "Sign in to point your name.";
+  if (kind === "coinbase") return `Pointing ${name} from this account arrives soon. The domain stays yours.`;
+  if (kind !== "web3" && kind !== "passkey" && kind !== "web3auth") return "Sign in to point your domain.";
   if (targetIsFeed && purpose !== "profile" && feedOwner !== "client") {
     const what = purpose === "site" ? "site" : "page";
-    return `This ${what} isn't published under your own key yet. Publish it again, then point ${name} at it.`;
+    return `This ${what} isn't published from your own account yet. Publish it again, then point ${name} at it.`;
   }
   return null;
 }

@@ -32,6 +32,7 @@ import { SWARM_READ_MAX_BYTES, readCappedJson, readPrefix } from "../lib/http/re
 import { failureSentence } from "../lib/http/error-class.js";
 import { orderFieldsRefusal } from "../lib/event/order-fields.js";
 import { saleBoundsRefusal } from "../lib/event/series-window.js";
+import { END_DATE_PAST_SALES_CLOSE } from "../lib/event/end-date-guard.js";
 const events = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
@@ -578,7 +579,7 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
       msg === "Not the event creator" ? 403 :
       msg === "Invalid event dates" || msg === "endDate is before startDate" ? 400 :
       msg === EVENT_PLACE_REQUIRED ? 400 :
-      msg.startsWith("endDate cannot extend past the on-chain sales end") ? 400 :
+      msg.startsWith(END_DATE_PAST_SALES_CLOSE) ? 400 :
       // The on-chain sales end, or the event's own latest version (#657).
       msg.startsWith("Could not verify") ? 503 : 500;
     if (status === 500) console.error("[api] update-meta failed:", err);
@@ -924,7 +925,7 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const feed = await getEventForOwner(eventId, parentAddress);
   if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
   if (feed.creatorAddress.toLowerCase() !== parentAddress) {
-    return c.json({ ok: false, error: "Only the event creator can register on-chain" }, 403);
+    return c.json({ ok: false, error: "Only the event's creator can set up its tickets" }, 403);
   }
 
   const series = feed.series.find((s) => s.seriesId === seriesId);
@@ -960,7 +961,7 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
       const digestBytes = manifestV2Digest(blob.signedManifest.body);
       manifestRef = `0x${bytesToHex0x(digestBytes).replace(/^0x/, "")}` as Hex0x;
     } catch {
-      return c.json({ ok: false, error: "Failed to fetch manifest from Swarm" }, 500);
+      return c.json({ ok: false, error: "This event's tickets didn't load - please try again" }, 500);
     }
   }
 

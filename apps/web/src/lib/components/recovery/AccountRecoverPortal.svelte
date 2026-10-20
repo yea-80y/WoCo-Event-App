@@ -176,7 +176,7 @@
           // #177: a lookup nobody answered must never render as "no backup
           // found" — that copy tells a recoverable, locked-out user to stop
           // trying (the #169 rule, applied to the name route).
-          errorMsg = "Couldn't look up that name — please try again in a moment";
+          errorMsg = "Couldn't look up that domain. Please try again in a moment.";
           phase = "error";
           return;
         }
@@ -498,7 +498,7 @@
             {#if autoFindNote}
               <p class="step-hint" role="note">{autoFindNote}</p>
             {/if}
-            <p class="step-hint">Enter your WoCo name (e.g. you.woco.eth) or your account address.</p>
+            <p class="step-hint">Enter your WoCo domain (e.g. you.woco.eth) or your account address.</p>
             <div class="row">
               <input
                 class="input"
@@ -575,7 +575,7 @@
         <div class="result">
           <p class="result-title">No backup found for that account</p>
           <p class="result-body">
-            Double-check the name or address, or make sure you set up a backup on your old device.
+            Double-check the domain or address, or make sure you set up a backup on your old device.
             If you never added one, recovery isn't possible for this account.
           </p>
         </div>
