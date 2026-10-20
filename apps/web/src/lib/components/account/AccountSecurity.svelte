@@ -1,7 +1,7 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { navigate } from "../../router/router.svelte.js";
+  import { navigate, replaceRoute, router } from "../../router/router.svelte.js";
   import { authPost } from "../../api/client.js";
   import { authKindLabel, authKindColor } from "../../auth/kind-label.js";
   import { canProtectAccount } from "../../auth/backup-prompt.js";
@@ -17,6 +17,16 @@
   const shortAddr = $derived(address ? `${address.slice(0, 6)}...${address.slice(-4)}` : "");
   // Email accounts back up on Protect, while that rail is on (FEATURES.accountBackupsAllowed).
   const protectHere = $derived(auth.kind !== "passkey" && canProtectAccount(auth.kind));
+
+  // Profile's "Add a device" lands here as `#/account?add-device` - a flag, never a
+  // code. Taken once and replaced out of the address, so a reload or Back never opens
+  // the scanner again. YourPasskeys opens it only where its own button is offered.
+  let addDevice = $state(false);
+  $effect(() => {
+    if (router.params.addDevice !== "1") return;
+    addDevice = true;
+    replaceRoute("/account");
+  });
 
   let addressCopied = $state(false);
   let revokingAll = $state(false);
@@ -93,7 +103,7 @@
     </section>
 
     {#if auth.kind === "passkey"}
-      <YourPasskeys />
+      <YourPasskeys bind:addDevice />
     {/if}
 
     <section class="block" aria-labelledby="sessions-title">

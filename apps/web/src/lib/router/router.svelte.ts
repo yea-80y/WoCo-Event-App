@@ -19,7 +19,8 @@
  *     /verify                      verify
  *     /signup                      signup (email-CTA landing; ?gt= gate token)
  *     /profile, /profile/:addr     profile
- *     /account   (and /passkeys)   account (Account & security: sign-in, passkeys, devices, sessions)
+ *     /account   (and /passkeys)   account (Account & security: sign-in, passkeys, devices, sessions;
+ *                                  ?add-device = Profile's shortcut to the scanner)
  *     /shops/:id/tap               shop-tap (tap-to-pay activation)
  *     /shop/:shopId/order/:code    shop-order (Stripe return — success/cancel)
  *     /coaster/:subject            coaster (log a lap — reached by QR/link, not nav)
@@ -164,7 +165,11 @@ function matchRoute(pathWithQuery: string): Match {
   }
   if (path === "/protect") return { route: "protect", params: {}, surface: "attendee" };
   // /passkeys was "Your passkeys" before Account & security; emails and screens may still link it.
-  if (path === "/account" || path === "/passkeys") return { route: "account", params: {}, surface: "attendee" };
+  // ?add-device - Profile's "Add a device": a flag, never a code. The page takes it once.
+  if (path === "/account" || path === "/passkeys") {
+    const addDevice = new URLSearchParams(query).has("add-device");
+    return { route: "account", params: addDevice ? { addDevice: "1" } : {}, surface: "attendee" };
+  }
   if (path === "/link") return { route: "link", params: {}, surface: "attendee" };
   if (path === "/recover") return { route: "recover", params: {}, surface: "attendee" };
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };
@@ -278,6 +283,14 @@ if (typeof window !== "undefined") {
 
 export function navigate(path: string) {
   window.location.hash = path;
+}
+
+/** Swap the current route in place, with no new history entry: a one-shot flag
+ *  taken from the hash must not come back on Back or a reload. `replaceState`
+ *  fires no hashchange, so the router is told here. Absolute, as `routeHref`. */
+export function replaceRoute(path: string) {
+  window.history.replaceState(window.history.state, "", new URL(`#${path}`, window.location.href).href);
+  update();
 }
 
 /** An in-app link on THIS page's host. A bare `href="#/…"` resolves against the

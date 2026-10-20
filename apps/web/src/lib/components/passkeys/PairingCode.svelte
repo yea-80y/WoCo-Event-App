@@ -13,13 +13,17 @@
     }
     return { size: data.length, path };
   });
+
+  // Typing it is as real a path as scanning it, so it is as big as the QR. Lines break
+  // only between groups; the text selected or copied is still exactly `typed`.
+  const groups = $derived(typed.split("-"));
 </script>
 
 <svg class="qr" viewBox="0 0 {matrix.size} {matrix.size}" shape-rendering="crispEdges" role="img" aria-label="Code for your other device">
   <rect width={matrix.size} height={matrix.size} class="paper" />
   <path d={matrix.path} class="ink" />
 </svg>
-<p class="code">{typed}</p>
+<p class="code">{#each groups as g, i}{#if i > 0}-<wbr />{/if}<span class="group">{g}</span>{/each}</p>
 
 <style>
   .qr {
@@ -33,12 +37,18 @@
   .ink {
     fill: var(--bg);
   }
+  /* The QR's width, so the groups wrap two to a line under it, on a 320px screen too. */
   .code {
     margin: 0;
+    max-width: min(16rem, 100%);
     font-family: var(--font-mono);
-    font-size: 1.1rem;
-    letter-spacing: 0.04em;
+    font-size: 1.75rem;
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: 0.06em;
     color: var(--text);
-    word-break: break-all;
+  }
+  .group {
+    white-space: nowrap;
   }
 </style>
