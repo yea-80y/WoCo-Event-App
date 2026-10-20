@@ -2,6 +2,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
+  import { joinedAccountLabel } from "./joined-label.js";
   import PairingCode from "./PairingCode.svelte";
 
   /**
@@ -13,8 +14,8 @@
   let stage = $state<"intro" | "creating" | "waiting" | "linking" | "done">("intro");
   let code = $state<{ typed: string; qr: string } | null>(null);
   // Which account this device joined - the one check a person has that the answer
-  // came from their own main device (Fable sign-off SHOULD-8).
-  let joined = $state<string | null>(null);
+  // came from their own main device (Fable sign-off SHOULD-8). Address only (joined-label.ts).
+  let joinedLabel = $state<string | null>(null);
   let error = $state<string | null>(null);
   let controller: AbortController | null = null;
 
@@ -49,15 +50,7 @@
   }
 
   async function name(parent: string | null): Promise<void> {
-    if (!parent) return;
-    joined = `${parent.slice(0, 6)}…${parent.slice(-4)}`;
-    try {
-      const { getProfile } = await import("../../api/profiles.js");
-      const profile = await getProfile(parent);
-      if (profile?.displayName) joined = profile.displayName;
-    } catch {
-      /* the short address stays */
-    }
+    if (parent) joinedLabel = joinedAccountLabel(parent);
   }
 
   // Leaving the screen ends the wait; the passkey already made is reused next time.
@@ -94,9 +87,10 @@
     <p class="muted">Linking…</p>
   {:else}
     <p class="ok">
-      This device is on your account{joined ? `, ${joined}` : ""}. It signs in with the passkey you just made and can do
-      everything your other device can.
+      This device is on your account{joinedLabel ? `, ${joinedLabel}` : ""}. It signs in with the passkey you just made and
+      can do everything your other device can.
     </p>
+    {#if joinedLabel}<p class="muted">If that isn't the account on your phone, remove this device from your phone now.</p>{/if}
     <button class="btn btn--primary" onclick={() => navigate("/home")}>Continue</button>
   {/if}
   {#if error}<p class="err">{error}</p>{/if}

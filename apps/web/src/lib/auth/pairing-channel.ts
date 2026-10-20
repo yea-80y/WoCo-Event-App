@@ -234,6 +234,24 @@ export class PairingExpiredError extends Error {
   }
 }
 
+/**
+ * The answer slot already held an answer: someone else with the code answered first
+ * (Fable design consult 2026-10-20). The mailbox authenticates no writer, so the new
+ * device may now be on that other account. Ours was not stored.
+ */
+export class PairingAnsweredError extends Error {
+  constructor() {
+    super("Someone else answered this code first.");
+    this.name = "PairingAnsweredError";
+  }
+}
+
+/** The mailbox's refusal code (`routes/pairing.ts` sends `{ ok: false, error, code }`). */
+async function refusalCode(res: Response): Promise<unknown> {
+  const body = (await res.json().catch(() => null)) as { code?: unknown } | null;
+  return body?.code;
+}
+
 /** The server mailbox (`/api/pairing`). Plain fetch: no session, no cookies. */
 export function httpPairingTransport(base: string, fetchFn: typeof fetch = fetch): PairingTransport {
   const url = (id: string, slot: PairingSlot) => `${base}/api/pairing/${id}/${slot}`;
@@ -246,6 +264,9 @@ export function httpPairingTransport(base: string, fetchFn: typeof fetch = fetch
         body: JSON.stringify({ box }),
       });
       if (res.ok) return;
+      // Only a second answer is told apart; every other refusal (410, an offer's 409,
+      // out of order, an unreadable body) still reads as expired.
+      if (slot === "answer" && res.status === 409 && (await refusalCode(res)) === "exists") throw new PairingAnsweredError();
       if (res.status === 410 || res.status === 409) throw new PairingExpiredError();
       throw new Error(res.status === 429 ? "Too many tries just now - wait a minute and start again." : "Couldn't reach WoCo - check your connection and try again.");
     },
