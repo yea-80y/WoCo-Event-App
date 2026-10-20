@@ -134,8 +134,17 @@
     }
   }
 
+  // What the organiser gets at each server phase, in our own words: the server's
+  // progress messages describe the storage layer.
+  const PHASE_STEP: Record<string, string> = {
+    image: "Saving your event image…",
+    objects: "Creating your tickets…",
+    manifests: "Creating your tickets…",
+    finalize: "Publishing your event page…",
+  };
+
   function handleProgress(p: PublishProgress) {
-    step = p.message;
+    step = PHASE_STEP[p.phase] ?? "Publishing your event…";
     phase = "uploading";
     if (p.phase === "objects" && p.total > 0) {
       progress = 20 + Math.round((p.current / p.total) * 55);
@@ -213,7 +222,7 @@
 
       // ── Build manifests ───────────────────────────────────────────────
       phase = "building";
-      step = "Building manifests...";
+      step = "Creating your tickets…";
 
       // Strip data: URL prefix to get raw base64, then upload image to get hash.
       // The image hash is embedded in object metadata so it matches the event feed.
@@ -232,7 +241,7 @@
 
       // ── Upload to server ──────────────────────────────────────────────
       phase = "uploading";
-      step = "Publishing to Swarm...";
+      step = "Publishing your event…";
       progress = 20;
 
       // Phase B: the event feed is ALWAYS client-owned. We never platform-sign an
@@ -345,7 +354,7 @@
     for (const s of series) {
       if (!s.payment) continue; // free series are not registered on-chain
 
-      step = `Registering "${s.name}" on-chain...`;
+      step = `Setting up "${s.name}" tickets…`;
       try {
         // The server runs the tx and returns onChainEventId; it does NOT write the
         // client-owned event feed. It returns the server-verified updated feed, and
@@ -360,7 +369,7 @@
           if (ss) ss.onChainEventId = onChainEventId;
         }
       } catch (e) {
-        error = `On-chain registration failed for "${s.name}": ${e instanceof Error ? e.message : String(e)}`;
+        error = `Couldn't finish setting up "${s.name}" tickets: ${e instanceof Error ? e.message : String(e)}`;
         // The deferred SOC hasn't been written yet — without it the event is
         // unreadable once the server cache expires. Best-effort write with what we
         // have, so the event page still works and the failure is retryable.
@@ -372,7 +381,7 @@
     }
 
     if (pendingFeed && feedSigner) {
-      step = "Finalising event feed...";
+      step = "Putting your event live…";
       let signErr: unknown = null;
       // After the server cache expires this SOC is the event's only readable form,
       // so retry transient upload blips before failing. (A retry after a landed-but-
@@ -388,7 +397,7 @@
         }
       }
       if (signErr) {
-        error = `Failed to finalise event feed: ${signErr instanceof Error ? signErr.message : String(signErr)}`;
+        error = `Couldn't put your event live: ${signErr instanceof Error ? signErr.message : String(signErr)}`;
         return false;
       }
     }
@@ -463,7 +472,7 @@
     {#if publishing}
       {step}
     {:else if pendingEventId}
-      Retry registration
+      Finish publishing
     {:else}
       {label ?? "Publish Event"}
     {/if}
@@ -471,8 +480,8 @@
 
   {#if pendingEventId && !publishing}
     <p class="hint pending">
-      Your event was created and is safe — only the on-chain registration failed.
-      Retrying finishes it; it will not create a second event.
+      Your event was created and is safe, but publishing didn't finish.
+      Finish publishing completes it. It will not create a second event.
     </p>
   {/if}
 
@@ -482,13 +491,13 @@
     </div>
     <p class="progress-label">
       {#if phase === "auth"}
-        Setting up auth...
+        Setting up your account…
       {:else if phase === "building"}
-        Building manifests...
+        Creating your tickets…
       {:else if phase === "uploading"}
-        Uploading to Swarm ({progress}%)
+        Publishing your event ({progress}%)
       {:else if phase === "chain"}
-        Registering your event on-chain — this can take a few seconds…
+        Setting up your tickets. This can take a few seconds…
       {:else}
         Done!
       {/if}
