@@ -217,7 +217,7 @@
 
     <p class="hint">
       Your passkey produces the same account on any synced device. Creating a new
-      one makes a separate account — it will not restore an existing one.
+      one makes a separate account, and won't restore an existing one.
     </p>
   </div>
 {:else if checked && organiser}
