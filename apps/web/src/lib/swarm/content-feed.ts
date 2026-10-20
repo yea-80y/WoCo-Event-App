@@ -386,6 +386,62 @@ export async function readContentFeedResult<T>(
 }
 
 /**
+ * A THOROUGH read of a feed, and the version a write after it must target (#943).
+ *
+ * A save whose base read was thorough and conclusive already knows the next
+ * version. Probing for it again at write time asks the same never-written chunk
+ * once more, and on a never-written feed that is the question bee 2.8 stops
+ * answering for a minute (its per-chunk skip list) - so the first save of every
+ * new feed refused "probe inconclusive", and so did trying again.
+ *
+ * `nextVersion` is set only from a definitive verdict, and is null otherwise:
+ * - `absent` -> 0. `readVersionedContentFeed` says absent only after a CLEAN scan.
+ * - `found` under a clean scan -> version + 1 (the legacy chunk, -1, gives 0, as
+ *   the probing writer does). Under a dirty scan the version may not be the head.
+ * - `unusableAt` -> one past it: that version exists and is spent. Set only
+ *   under a clean scan.
+ * - any other unanswered read proves nothing.
+ *
+ * Thorough by construction, with no way to turn it off: a display read's absent
+ * trusts our gateway's 404 and its gate, and a write must not. The base names the
+ * owner, topic and route it was read under, so it can never steer a write to a
+ * different feed (a key-ring rotation changes the signer under an open editor).
+ * Write from it with `writeAtNextVersion` (verified-write.ts), which reads back
+ * the exact version: one taken since this read comes back `superseded`, never as
+ * a silently lost write.
+ */
+export interface ContentFeedWriteBase<T> {
+  read: ContentFeedResult<T>;
+  nextVersion: number | null;
+  /** Lowercase, no `0x`. */
+  owner: string;
+  topic: string;
+  route: FeedRoute;
+}
+
+/** Exported for the test that pins it - see {@link ContentFeedWriteBase}. */
+export function nextVersionAfter(read: ContentFeedResult<unknown>): number | null {
+  if (read.status === "absent") return 0;
+  if (read.status === "found") return read.scanClean ? read.version + 1 : null;
+  return read.unusableAt !== undefined ? read.unusableAt + 1 : null;
+}
+
+export async function readContentFeedWriteBase<T>(
+  ownerAddress: string,
+  topic: string,
+  /** `route`: see {@link FeedRoute}. `skipLegacy`: as for {@link readContentFeedResult}. */
+  opts: { route: FeedRoute; skipLegacy?: boolean },
+): Promise<ContentFeedWriteBase<T>> {
+  const read = await readContentFeedResult<T>(ownerAddress, topic, {
+    route: opts.route,
+    skipLegacy: opts.skipLegacy,
+    thorough: true,
+  });
+  const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
+  return { read, nextVersion: nextVersionAfter(read), owner, topic, route: opts.route };
+}
+
+/**
  * Read ONE known version of a content feed, with no version resolution at all.
  *
  * For walking a feed whose versions are a SEQUENCE the caller already knows the

@@ -4,14 +4,10 @@ import { profileDataContentTopic, profileAvatarContentTopic, mergeProfileText } 
 import { authPost, authGet, get } from "./client.js";
 import { apiError } from "./errors.js";
 import { auth } from "../auth/auth-store.svelte.js";
-import {
-  writeContentFeed,
-  readContentFeed,
-  readContentFeedResult,
-  type ContentFeedResult,
-} from "../swarm/content-feed.js";
+import { readContentFeed } from "../swarm/content-feed.js";
 import { FEED_ROUTES } from "../swarm/gateways.js";
-import { profileSaveBase } from "./profile-save.js";
+import { retryOnceIfInconclusive, type LateRetry } from "../swarm/late-retry.js";
+import { writeProfileAvatar, writeProfileData } from "./profile-save.js";
 import { logFeedToManifest } from "../manifest/feed-log.js";
 import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../cache/cache.js";
 import type { ProfileNameStatus } from "../sub-ens/rename.js";
@@ -206,6 +202,12 @@ export type { ProfileBindWarning, ProfileBindOutcome } from "../sub-ens/pointer-
 export async function updateProfile(
   updates: UpdateProfileRequest,
   onBind?: (outcome: ProfileBindOutcome) => void,
+  /**
+   * `lateRetry`: when the base read cannot say, ask once more after bee's skip
+   * list has expired instead of failing at once (#943). Only the feed read and
+   * write are retried - never the name calls above them.
+   */
+  opts: { lateRetry?: LateRetry } = {},
 ): Promise<UserProfile | null> {
   const signer = await auth.getContentFeedSigner();
   const parent = auth.parent?.toLowerCase();
@@ -248,7 +250,8 @@ export async function updateProfile(
     if (outcome) onBind?.(outcome);
   }
 
-  // Self-read the existing data feed to carry forward unedited fields.
+  // Self-read the existing data feed to carry forward unedited fields, then write
+  // at the version that read proved next (`writeProfileData`, #943).
   //
   // This is a read-modify-write, so it MUST NOT merge against an unknown base. The
   // lenient read returns null for "no profile yet" AND "couldn't read it", and every
@@ -257,45 +260,35 @@ export async function updateProfile(
   // sub-ENS label silently blanked, and report success (#171). The label is the one
   // the user cannot simply retype; it was bound by a verification step.
   //
-  // Only a definitive "no profile here" may proceed with an empty base.
-  const existingRead = await readContentFeedResult<UserProfile>(
-    signer.address,
-    profileDataContentTopic(addr),
-    // THOROUGH: this read is the base of a whole-object rewrite. A false absent
-    // here does not fail — it succeeds, having blanked bio, website, socials and
-    // the verified sub-ENS label the user cannot simply retype. That is #171
-    // again, reached through the gateway gate rather than through a lenient
-    // read, and the `unavailable` guard below cannot catch it because a gate
-    // refusal reads as ABSENT, not as unavailable.
-    //
-    // ROUTED to Etherna, where the write below lands: our bee sees an Etherna
-    // write minutes later, so a second save inside that window would otherwise
-    // merge onto the version BEFORE the first save and revert it (#651).
-    { thorough: true, route: FEED_ROUTES.profile },
-  ).catch((e: unknown): ContentFeedResult<UserProfile> => ({ status: "unavailable", reason: String(e) }));
-  const base = profileSaveBase(existingRead);
-  if (!base.ok) throw new Error(base.error);
-  const existing = base.base;
-
-  const profile: UserProfile = {
-    v: 1,
-    address: addr,
-    ...mergeProfileText(updates, existing),
-    // Carry forward the bound name unless this call set a freshly-verified one
-    // — or explicitly removed it, which `??` alone cannot express.
-    subEnsLabel: unbinding ? undefined : (verifiedLabel ?? existing?.subEnsLabel),
-    updatedAt: new Date().toISOString(),
+  // Only a definitive "no profile here" may proceed with an empty base: the read is
+  // THOROUGH (a gate refusal would otherwise read as absent - #171 again) and
+  // `profileSaveBase` decides what may be merged onto.
+  //
+  // ROUTED to Etherna, where the write lands: our bee sees an Etherna write minutes
+  // later, so a second save inside that window would otherwise merge onto the
+  // version BEFORE the first save and revert it (#651).
+  const save = async (): Promise<UserProfile> => {
+    // Re-checked on a late retry: the person may have switched account while it waited.
+    if (auth.parent?.toLowerCase() !== parent) throw new Error("You switched account while saving, so nothing was changed.");
+    return writeProfileData({
+      signer,
+      topic: profileDataContentTopic(addr),
+      route: FEED_ROUTES.profile,
+      build: (existing) => ({
+        v: 1,
+        address: addr,
+        ...mergeProfileText(updates, existing),
+        // Carry forward the bound name unless this call set a freshly-verified one
+        // — or explicitly removed it, which `??` alone cannot express.
+        subEnsLabel: unbinding ? undefined : (verifiedLabel ?? existing?.subEnsLabel),
+        updatedAt: new Date().toISOString(),
+      }),
+    });
   };
-
   // Profile data is user content: the Etherna gateway signal routes the stamp
   // to the user's own batch when they have one, the shared Etherna platform
   // batch otherwise (#48). Reads are batch-agnostic (computed chunk address).
-  await writeContentFeed({
-    signerPrivKey: signer.privKey,
-    topic: profileDataContentTopic(addr),
-    data: profile,
-    route: FEED_ROUTES.profile,
-  });
+  const profile = opts.lateRetry ? await retryOnceIfInconclusive(save, opts.lateRetry) : await save();
 
   void logFeedToManifest({ kind: "profile", topic: profileDataContentTopic(addr) });
 
@@ -304,7 +297,11 @@ export async function updateProfile(
 }
 
 /** Upload avatar for the authenticated user. Returns the Swarm ref. */
-export async function uploadAvatar(imageDataUrl: string): Promise<string> {
+export async function uploadAvatar(
+  imageDataUrl: string,
+  /** `lateRetry`: as for {@link updateProfile} - only the feed write is retried, never the image upload. */
+  opts: { lateRetry?: LateRetry } = {},
+): Promise<string> {
   const signer = await auth.getContentFeedSigner();
   const parent = auth.parent?.toLowerCase();
 
@@ -324,12 +321,12 @@ export async function uploadAvatar(imageDataUrl: string): Promise<string> {
   if (!resp.ok || !resp.data) throw new Error(resp.error ?? "Failed to upload avatar");
   const avatarRef = resp.data.avatarRef;
 
-  await writeContentFeed({
-    signerPrivKey: signer.privKey,
-    topic: profileAvatarContentTopic(parent),
-    data: { v: 1, avatarRef },
-    route: FEED_ROUTES.profile,
-  });
+  const point = async (): Promise<void> => {
+    if (auth.parent?.toLowerCase() !== parent) throw new Error("You switched account while saving, so your photo wasn't changed.");
+    return writeProfileAvatar({ signer, topic: profileAvatarContentTopic(parent), route: FEED_ROUTES.profile, avatarRef });
+  };
+  if (opts.lateRetry) await retryOnceIfInconclusive(point, opts.lateRetry);
+  else await point();
 
   // Log the NEW image ref as the entry's only ref — the manifest merge moves a
   // previously-logged avatar ref to trash (displaced → dies with the old batch).
