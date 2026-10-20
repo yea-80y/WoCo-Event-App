@@ -237,7 +237,7 @@ test("the advice names the sheet, the exact Settings path and the way past More 
   assert.match(s, /Check, in this order: 1\) Settings › General › AutoFill & Passwords: turn on AutoFill Passwords and Passkeys and tick Passwords/);
   assert.match(s, /not More Options - that puts the passkey on another device or a security key/);
   assert.match(s, /If you closed the prompt yourself, just tap Create again\./);
-  assert.match(s, /Continue with Email below/);
+  assert.match(s, /Continue with email or Google below/);
   assert.ok(!s.includes("—"), "owner copy: spaced hyphen, never an em dash");
 });
 

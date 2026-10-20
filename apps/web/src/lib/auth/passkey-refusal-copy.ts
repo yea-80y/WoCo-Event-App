@@ -57,7 +57,7 @@ export function passkeyCreateRefusedAdvice(device: "iPhone" | "iPad", invite: bo
     `If your ${device} said "Choose how to manage your passkeys", it is not set up for passkeys yet. Check, in this order: ` +
     `${passkeySetupSteps(device)} Then tap Create again ` +
     `(not More Options - that puts the passkey on another device or a security key). If you closed the prompt yourself, just tap Create again.`;
-  return invite ? `No passkey was saved. ${steps}` : `No passkey was saved. ${steps} Just buying tickets? Continue with Email below.`;
+  return invite ? `No passkey was saved. ${steps}` : `No passkey was saved. ${steps} Just buying tickets? Continue with email or Google below.`;
 }
 
 /**
@@ -90,7 +90,7 @@ export function passkeyNoSecretAdvice(
   provider: { id: string; name: string } | null,
   invite: boolean,
 ): string {
-  const tail = invite ? "" : " Just buying tickets? Continue with Email below.";
+  const tail = invite ? "" : " Just buying tickets? Continue with email or Google below.";
   if (provider?.id === "apple-passwords") {
     // Apple's own manager gives the secret from iOS 18; before that, "save it in
     // Passwords" would send the person round in a circle.

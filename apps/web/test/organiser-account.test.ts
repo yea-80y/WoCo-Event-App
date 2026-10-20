@@ -9,7 +9,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { canOrganise, isOrganiserSignIn, PASSKEY_ONLY_RECOVERY_NOTE } from "../src/lib/auth/organiser-account.js";
+import {
+  canOrganise,
+  isOrganiserSignIn,
+  ORGANISER_NEW_PASSKEY_NOTE,
+  PASSKEY_ONLY_RECOVERY_NOTE,
+} from "../src/lib/auth/organiser-account.js";
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
@@ -19,6 +24,17 @@ test("only a passkey account organises", () => {
     assert.equal(canOrganise(kind), false, String(kind));
   }
   assert.equal(PASSKEY_ONLY_RECOVERY_NOTE, "If every passkey is lost, the account can't be recovered.");
+});
+
+test("the note for a new organiser account: positive, no em dash, never against email", () => {
+  assert.equal(
+    ORGANISER_NEW_PASSKEY_NOTE,
+    "There's no password to reset - your passkey is how you get in. Once you're set up, add a backup passkey or a second device so a lost phone never locks you out.",
+  );
+  assert.ok(!ORGANISER_NEW_PASSKEY_NOTE.includes("—"));
+  assert.ok(!/quantum|email|insecure/i.test(ORGANISER_NEW_PASSKEY_NOTE));
+  // UpgradeToPasskey's confirm step still says the plain fact before an account gives up its email.
+  assert.ok(read("../src/lib/creator/gate/UpgradeToPasskey.svelte").includes("{PASSKEY_ONLY_RECOVERY_NOTE}"));
 });
 
 test("the workspace checks before ANY organiser route, so a deep link lands on the explanation", () => {
@@ -44,14 +60,23 @@ test("an organiser sign-in is decided by where it was asked from", () => {
   assert.equal(isOrganiserSignIn("ticket", "creator"), false);
 });
 
-test("an organiser sign-in offers a passkey only, and says what losing every passkey means", () => {
+test("an organiser sign-in offers a passkey only, and says how the account is kept only while one is created", () => {
   const modal = read("../src/lib/components/auth/LoginModal.svelte");
   assert.match(modal, /const organiserSignIn = \$derived\(isOrganiserSignIn\(loginRequest\.context, router\.surface\)\)/);
   const only = modal.indexOf("{#if !organiserSignIn}", modal.indexOf("<PasskeyLogin"));
   assert.ok(only > 0 && only < modal.indexOf("<Web3AuthLogin", only) && only < modal.indexOf('class="wallet-door"'));
   assert.match(modal, /<PasskeyLogin\s+organiser=\{organiserSignIn\}/);
   const passkey = read("../src/lib/components/auth/PasskeyLogin.svelte");
-  assert.match(passkey, /\{#if organiser\}\s*<!--[^>]*-->\s*<p class="recovery-note">\{PASSKEY_ONLY_RECOVERY_NOTE\}/);
+  // Not on the sign-in screen: every returning organiser saw it, and "link a
+  // second device once you're in" is refused until the account is unlocked.
+  assert.ok(!passkey.includes("PASSKEY_ONLY_RECOVERY_NOTE") && !passkey.includes("recovery-note"));
+  // In the scene of an organiser's CREATE only - the mode comes from the button that started it.
+  assert.ok(passkey.includes("onstart?.(mode);"));
+  assert.ok(modal.includes('onstart={(mode) => start("passkey", mode === "create")}'));
+  assert.match(modal, /function start\(method: Method, create = false\) \{\s*authing = method;\s*creatingPasskey = create;/);
+  const scene = modal.slice(modal.indexOf("{#if authing && sceneShown}"), modal.indexOf("{#if !offCanonicalHost}"));
+  assert.match(scene, /\{#if authing === "passkey" && creatingPasskey && organiserSignIn\}\s*<!--[^>]*-->\s*<p class="scene-note">\{ORGANISER_NEW_PASSKEY_NOTE\}<\/p>/);
+  assert.equal(modal.split("ORGANISER_NEW_PASSKEY_NOTE").length - 1, 2, "imported once, shown once");
   // A browser with no passkeys gets a way out, never an empty sheet.
   assert.match(passkey, /\{:else if checked && organiser\}[\s\S]*?can't use passkeys, and organising needs one/);
 });
