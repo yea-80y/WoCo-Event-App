@@ -10,10 +10,11 @@
  *  - the new device: offer filed before the code is shown; signs in only with what
  *    the main sealed for it, and keeps nothing before that sign-in succeeds;
  *  - the main: the grant before the answer, never to itself, and no answer when
- *    the grant is refused;
+ *    the grant is refused; a code someone else answered first takes the grant back
+ *    and says so;
  *  - the auth store: a passkey sheet every time on the main, whatever the window;
  *  - the screens: WoCo's own scanner only, nothing the other device wrote shown on
- *    the confirm, no camera until asked for.
+ *    the confirm, no camera until asked for; both show the account's address.
  */
 
 import test from "node:test";
@@ -21,6 +22,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  LINK_ANSWERED_ELSEWHERE,
   LINK_CODE_UNKNOWN,
   LINK_CODE_UNREADABLE,
   parseLinkAnswer,
@@ -32,6 +34,7 @@ import {
   type LinkOffer,
 } from "../src/lib/auth/device-link.ts";
 import {
+  PairingAnsweredError,
   PairingExpiredError,
   formatPairingCode,
   newPairingCode,
@@ -107,7 +110,9 @@ function mailbox(): Mailbox {
   const m: Mailbox = {
     log: [],
     async post(id, slot, box) {
-      if (slots.has(`${id}/${slot}`)) throw new PairingExpiredError();
+      // As the server mailbox reads through `httpPairingTransport`: a second answer is
+      // told apart, any other repeat reads as expired.
+      if (slots.has(`${id}/${slot}`)) throw slot === "answer" ? new PairingAnsweredError() : new PairingExpiredError();
       m.log.push(`post:${slot}`);
       slots.set(`${id}/${slot}`, box);
     },
@@ -259,7 +264,11 @@ test("main: an answer that certainly never arrived takes its grant back; one tha
     await m.post(ch.id, "offer", await ch.seal("offer", real));
     return { m, one };
   };
-  for (const [error, revokes] of [[new PairingExpiredError(), true], [new Error("offline"), false]] as const) {
+  for (const [error, revokes, message] of [
+    [new PairingExpiredError(), true, "The other device's code expired before it could finish. Nothing was linked - start again there."],
+    [new PairingAnsweredError(), true, LINK_ANSWERED_ELSEWHERE],
+    [new Error("offline"), false, "Couldn't reach the other device. If it doesn't finish linking, remove it from Your passkeys."],
+  ] as const) {
     const { m, one } = await offerFor();
     const log: string[] = [];
     const run = runApproveDeviceLink(one, real as LinkOffer, {
@@ -271,9 +280,57 @@ test("main: an answer that certainly never arrived takes its grant back; one tha
       grant: async (g) => void log.push(`grant:${g}`),
       revoke: async (g) => void log.push(`revoke:${g}`),
     });
-    await assert.rejects(run, revokes ? /code expired/ : /remove it from Your passkeys/);
+    await assert.rejects(run, { message });
     assert.deepEqual(log, revokes ? [`grant:${offer.grantee}`, `revoke:${offer.grantee}`] : [`grant:${offer.grantee}`]);
   }
+});
+
+test("two phones, one code: the first answer is the one the new device opens; the second phone says so and takes its grant back", async () => {
+  const m = mailbox();
+  const OTHER_PARENT = "0x" + "78".repeat(20);
+  const OTHER_SEED = "9a".repeat(32);
+  const signedIn: Array<{ parent: string; seed: string }> = [];
+  const phone = (parent: string, seed: string, self: string, code: Uint8Array, got: LinkOffer) =>
+    runApproveDeviceLink(code, got, {
+      apiBase: "",
+      parent,
+      self,
+      seed,
+      transport: m,
+      grant: async (g) => void m.log.push(`grant:${parent}:${g}`),
+      revoke: async (g) => void m.log.push(`revoke:${parent}:${g}`),
+    });
+  let second!: Promise<void>;
+  await runLinkThisDevice(
+    {
+      onCode: ({ typed }) => {
+        const both = (async () => {
+          const { code, offer: got } = await readPairingOffer(typed, { apiBase: "", transport: m });
+          await phone(OTHER_PARENT, OTHER_SEED, "0x" + "bc".repeat(20), code, got as LinkOffer);
+          second = phone(PARENT, SEED, MAIN, code, got as LinkOffer);
+          await second.catch(() => {});
+        })();
+        m.hold = both;
+      },
+    },
+    {
+      apiBase: "",
+      transport: m,
+      passkey: async () => laptop,
+      signIn: async (_account, secret) => void signedIn.push(secret),
+      settle: async () => {},
+    },
+  );
+  assert.deepEqual(signedIn, [{ parent: OTHER_PARENT, seed: OTHER_SEED }]);
+  await assert.rejects(second, { message: LINK_ANSWERED_ELSEWHERE });
+  const g = laptop.address.toLowerCase();
+  assert.deepEqual(m.log, [
+    "post:offer",
+    `grant:${OTHER_PARENT}:${g}`,
+    "post:answer",
+    `grant:${PARENT}:${g}`,
+    `revoke:${PARENT}:${g}`,
+  ]);
 });
 
 test("main: a code that is not ours, expired, or carries something else is refused before any confirm", async () => {
@@ -356,6 +413,27 @@ test("main screen: WoCo's scanner only, one code at a time, no camera until aske
   assert.doesNotMatch(LINK_ANOTHER + LINK_THIS, /href=/);
 });
 
+test("both screens show the account's address: the phone what it seals, the new device what it signed in to", () => {
+  // The phone: its own account, the parent `approveDeviceLink` seals - never anything the other device wrote.
+  assert.match(LINK_ANOTHER, /import \{ shortRef \} from "\.\.\/\.\.\/campaign\/referral-capture\.js";/);
+  assert.match(LINK_ANOTHER, /const account = \$derived\(auth\.parent \? shortRef\(auth\.parent\.toLowerCase\(\)\) : null\);/);
+  assert.match(body(STORE, "async function approveDeviceLink("), /const parent = _parent\?\.toLowerCase\(\);[\s\S]*runApproveDeviceLink\(code, offer, \{\s*apiBase,\s*parent,/);
+  const another = LINK_ANOTHER.slice(LINK_ANOTHER.indexOf("</script>"));
+  const confirm = another.slice(another.indexOf("Add this device to your account?"));
+  assert.match(confirm, /^Add this device to your account\?<\/p>\s*\{#if account\}<p>Your account: \{accountName \? `\$\{accountName\} - ` : ""\}\{account\}<\/p>\{\/if\}/);
+  assert.match(another, /"Added\. Finish on the other device\."/);
+  assert.match(another, /\{#if !gaveKeys && account\}<p>The other device should say it joined \{account\}\.<\/p>\{\/if\}/);
+
+  // The new device: the parent its sign-in committed (`_loginAddedPasskey` sets it from the opened answer).
+  assert.match(LINK_THIS, /stage = "done";\s*void name\(auth\.parent\);/);
+  assert.match(body(STORE, "async function _loginAddedPasskey("), /const parent = start\.parent\.toLowerCase\(\);[\s\S]*_parent = parent;/);
+  assert.match(LINK_THIS, /if \(parent\) joinedLabel = joinedAccountLabel\(parent\);/);
+  assert.ok(!/getProfile|displayName/.test(LINK_THIS), "the new device never shows the joined account's name (#936 review)");
+  const done = LINK_THIS.slice(LINK_THIS.lastIndexOf("{:else}"));
+  assert.match(done.replace(/\s+/g, " "), /This device is on your account\{joinedLabel \? `, \$\{joinedLabel\}` : ""\}\. It signs in/);
+  assert.match(done, /\{#if joinedLabel\}<p class="muted">If that isn't the account on your phone, remove this device from your phone now\.<\/p>\{\/if\}/);
+});
+
 test("new device screen: leaving it ends the wait; a signed-in device is not offered a link", () => {
   assert.match(LINK_THIS, /\$effect\(\(\) => \(\) => controller\?\.abort\(\)\);/);
   assert.match(LINK_THIS, /\{#if auth\.isConnected && stage !== "done"\}/);
@@ -372,4 +450,9 @@ test("linking has its own screens, each loaded only when opened", () => {
 test("sign-in sheet: the link entry closes the sheet and opens its own screen", () => {
   assert.match(read("../src/lib/components/auth/PasskeyLogin.svelte"), /\{#if onlink\}/);
   assert.match(read("../src/lib/components/auth/LoginModal.svelte"), /onlink=\{\(\) => \{ close\(\); navigate\("\/link"\); \}\}/);
+});
+
+test("the joined account is the short address, never a name (#936)", async () => {
+  const { joinedAccountLabel } = await import("../src/lib/components/passkeys/joined-label.ts");
+  assert.equal(joinedAccountLabel("0xC2B9DFE0B326586202EF617A0635066869591038"), "0xc2b9…1038");
 });

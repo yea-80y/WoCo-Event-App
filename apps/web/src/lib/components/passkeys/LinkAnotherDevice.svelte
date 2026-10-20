@@ -1,6 +1,7 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
   import { apiBase } from "../../api/http.js";
+  import { shortRef } from "../../campaign/referral-capture.js";
   import type { PairingOffer } from "../../auth/device-link.js";
 
   /**
@@ -22,6 +23,23 @@
   let gaveKeys = $state(false);
   // The code read asks for keys (#186), not to add a device.
   let keysRequest = $state(false);
+  // This account's address, the one the answer seals: the other device's success
+  // screen shows the same one, so a code someone else answered first is noticed
+  // (Fable design consult 2026-10-20). The name is only a label beside it.
+  const account = $derived(auth.parent ? shortRef(auth.parent.toLowerCase()) : null);
+  let accountName = $state<string | null>(null);
+
+  async function loadAccountName(): Promise<void> {
+    const parent = auth.parent;
+    if (!parent) return;
+    try {
+      const { getProfile } = await import("../../api/profiles.js");
+      const profile = await getProfile(parent);
+      if (auth.parent === parent) accountName = profile?.displayName || null;
+    } catch {
+      /* the address alone */
+    }
+  }
 
   const loadCamera = () => import("../../scanner/QrCamera.svelte");
 
@@ -45,6 +63,7 @@
     try {
       pending = await link.readPairingOffer(input, { apiBase });
       keysRequest = pending.offer.kind === "keys";
+      if (!keysRequest) void loadAccountName();
       stage = "confirm";
     } catch (e) {
       error = e instanceof Error ? e.message : link.LINK_CODE_UNKNOWN;
@@ -127,6 +146,7 @@
     <p class="muted">Your device will ask you to confirm it's you.</p>
   {:else if stage === "confirm" || stage === "working"}
     <p class="panel-title">Add this device to your account?</p>
+    {#if account}<p>Your account: {accountName ? `${accountName} - ` : ""}{account}</p>{/if}
     <p>Only continue if you started this yourself, on your own device, a moment ago.</p>
     <p>It will be able to do everything this device can - including removing your other passkeys.</p>
     <button class="btn btn--primary" onclick={approve} disabled={stage === "working"}>
@@ -136,6 +156,7 @@
     <p class="muted">Your device will ask you to confirm it's you.</p>
   {:else}
     <p class="ok">{gaveKeys ? "Keys saved. Finish on the other device." : "Added. Finish on the other device."}</p>
+    {#if !gaveKeys && account}<p>The other device should say it joined {account}.</p>{/if}
     <button class="btn btn--ghost" onclick={onclose}>Done</button>
   {/if}
   {#if error}<p class="err">{error}</p>{/if}
