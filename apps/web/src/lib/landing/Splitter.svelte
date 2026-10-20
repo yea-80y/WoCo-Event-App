@@ -71,7 +71,8 @@
 
       <p class="hero-sub">
         Sell tickets from your own page and build a following that stays
-        yours, even if you leave. 1.5% when you sell, no monthly bill.
+        yours, even if you leave. No upfront cost, no monthly bill, and any
+        booking fee goes to you, not us.
       </p>
 
       <div class="hero-ctas">
@@ -99,7 +100,7 @@
       </div>
 
       <div class="hero-meta">
-        <span class="mono-kicker">1.5% FEE, NEVER MORE</span>
+        <span class="mono-kicker">NO UPFRONT COST</span>
         <span class="dot">·</span>
         <span class="mono-kicker">NO MONTHLY BILL</span>
         <span class="dot">·</span>
@@ -198,9 +199,9 @@
         yours. We take 1.5% of the ticket price, nothing else.
       </p>
       <p>
-        A £20 ticket with a 10% booking fee: the buyer pays £22, 30p comes to
-        us, and the rest is yours once the card fee's paid. Or charge nothing at
-        all. Your call, event by event.
+        A £20 ticket with a 10% booking fee: the buyer pays £22. We take 30p,
+        Stripe takes its standard payment fee, and the rest is yours. Or charge
+        nothing at all. Your call, event by event.
       </p>
     </article>
 
@@ -219,7 +220,8 @@
       </p>
       <p>
         Then email your people from here. Emailing your own ticket buyers is
-        free, and always will be.
+        free, and always will be. Coming soon: send from your own domain, so
+        your emails arrive in your name.
       </p>
       <p>
         Fans can follow you too, and you'll see your following grow on your
@@ -294,10 +296,11 @@
           <p>
             The answers people give on your order form are encrypted to a key
             only you hold. They're sealed before they're stored, and we can't
-            open them.
+            open them. We use post-quantum encryption, designed to stay sealed
+            even against the quantum computers of the future.
           </p>
           <p>Your mailing list is stored the same way.</p>
-          <span class="built-spec mono">X25519 + AES-256-GCM</span>
+          <span class="built-spec mono">Post-quantum · X-Wing (ML-KEM + X25519)</span>
         </article>
       </div>
 
