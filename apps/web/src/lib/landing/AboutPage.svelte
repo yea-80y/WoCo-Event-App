@@ -4,7 +4,8 @@
 
   Every claim here is checked against the code or the design docs it cites
   (docs/ARCHITECTURE.md, docs/IDENTITY_AND_KEYS.md, docs/legal/DATA_INVENTORY.md
-  §4, apps/web/src/lib/scanner/verify.ts). The rule is the same as for legal
+  §4, apps/web/src/lib/scanner/verify.ts + admission.ts,
+  packages/shared/src/crypto/sealed-box.ts + xwing.ts). The rule is the same as for legal
   copy: confident register, never more than the code does. If a mechanism
   changes, this page changes with it.
 -->
@@ -125,22 +126,28 @@
         <span class="block-label mono">02 · Identity</span>
         <h2>Your account</h2>
         <p>
-          Sign in with a passkey, your email or Google account, or a crypto
-          wallet. Signing in doesn't sign anything. The first time you do
-          something that needs it, your account approves two things: a session
-          key that signs each request you make to our API and expires after 30
-          days, and one fixed signature that your browser turns into your
-          long-term keys.
+          Sign in with a passkey, or with your email or Google account.
+          Organising uses a passkey account. Your account sets up two things: a
+          session key that signs each request you make to our API and expires
+          after 30 days, and your long-term keys. A passkey account makes those
+          keys from a secret only the passkey can produce, with no signature
+          involved. An email or Google account makes them from one fixed
+          signature, which your browser turns into keys.
         </p>
         <ul class="keys">
           <li><span class="mono">Content key</span><span>Owns everything you publish to Swarm.</span></li>
-          <li><span class="mono">Issuing key</span><span>Signs the tickets an organiser issues.</span></li>
-          <li><span class="mono">Encryption key</span><span>Opens the order details your buyers send you.</span></li>
+          <li><span class="mono">Issuing key</span><span>Signs each ticket type's manifest, which commits to every ticket in it.</span></li>
+          <li><span class="mono">Encryption key</span><span>An X-Wing key that opens the order details your buyers send you.</span></li>
         </ul>
         <p>
-          Because that signature is the same every time, the same account on
-          another device gets the same keys. Nothing needs copying across, and
-          our servers never hold them. Passkey and email accounts are smart
+          An email or Google account makes the same keys again on any device,
+          and so does a passkey that syncs to your other devices. To add a
+          device with its own passkey, the new device shows a code and one you
+          already use scans it. Your keys are then sealed to the new device, so
+          only it can open them on the way across. Our servers never hold them.
+          Removing a passkey moves your content and encryption keys to a new
+          random secret. It is sealed to each passkey you keep, in a key ring
+          your account names onchain. Passkey and email accounts are smart
           accounts on Arbitrum One.
         </p>
       </section>
@@ -163,7 +170,15 @@
         <p>
           At the door, the scanner works out who signed the QR and compares it
           with the holder onchain. It downloads the holders before doors open,
-          so the check happens on the phone, with or without signal.
+          so that check happens on the phone.
+        </p>
+        <p>
+          Each ticket gets in once. A door run from one phone keeps its own
+          record and works with no signal. With several phones, each scan is
+          confirmed online, so a ticket can't get in twice, and check-in pauses
+          if the signal drops. Door phones also carry a live attendee list,
+          updated as tickets sell, so staff can look a guest up by name or
+          email.
         </p>
       </section>
 
@@ -173,10 +188,25 @@
         <h2>Privacy</h2>
         <p>
           Answers to an organiser's order form are encrypted to that organiser's
-          key, using X25519 key agreement and AES-256-GCM. Our server can seal
-          data to an organiser, but it has no way to open it: only the
-          organiser's browser can. Organisers' mailing lists are stored the same
-          way.
+          key with hybrid post-quantum encryption: HPKE with X-Wing (ML-KEM-768
+          plus X25519), HKDF-SHA256 and AES-256-GCM. It's designed to stay
+          sealed against future quantum computers. Mailing lists, the live door
+          list, the key ring and device linking use X-Wing too. The
+          post-quantum code comes from @noble/post-quantum, which is widely used
+          but not yet independently audited. The design is hybrid, so it is
+          never weaker than X25519 alone.
+        </p>
+        <p>
+          Our server can seal data to an organiser, but it has no way to open
+          it: only the organiser's browser can. The one exception is the door
+          list of names and email addresses, which door phones holding the
+          organiser's door pass can also open.
+        </p>
+        <p>
+          Signatures are a different matter. Tickets and accounts use today's
+          elliptic-curve signatures, the same kind Ethereum uses. A ticket's
+          signature only needs to hold while the ticket is live, and WoCo will
+          move with Ethereum when it adopts post-quantum signatures.
         </p>
         <p>
           Where we need to recognise an email address, for unsubscribes and
@@ -184,9 +214,11 @@
           the address itself.
         </p>
         <p>
-          Two things sit outside that: we see a buyer's email address when we
-          send their ticket, because we have to, and Stripe holds payment
-          details under its own policies.
+          A few things sit outside that. We see a buyer's email address when we
+          send their ticket, because we have to, and at that point we seal it,
+          with the name on their card, for the door list. When an organiser
+          emails their list, the addresses pass through our server while the
+          send runs. Stripe holds payment details under its own policies.
         </p>
         <button class="doc-link" onclick={() => navigate("/legal/privacy")}>
           Privacy policy <ArrowRight size={14} strokeWidth={2.5} />
@@ -221,8 +253,8 @@
           is a new statement, not a deletion.
         </p>
         <p>
-          Follower counts are worked out by reading those feeds, so anyone can
-          count them again and get the same answer.
+          Follower counts are worked out by reading those feeds, so anyone who
+          reads the same feeds gets the same answer.
         </p>
       </section>
 
@@ -256,10 +288,11 @@
           at 1.5% and stop any update to those terms raising the cap.
         </p>
         <!-- DELETE AT LAUNCH, alongside ClaimButton's test-card line: both name
-             the test rails (Stripe test mode, Arbitrum Sepolia). -->
+             the one remaining test rail, Stripe test mode. Tickets already mint
+             on Arbitrum One (chain 42161) since the 2026-10-19 server flip. -->
         <p class="note">
           WoCo is pre-launch. Until launch, card payments run in Stripe's test
-          mode and tickets are recorded on Arbitrum Sepolia, a test network.
+          mode. Tickets are already recorded on Arbitrum One.
         </p>
         <button class="doc-link" onclick={() => navigate("/legal/organiser-terms")}>
           Organiser terms <ArrowRight size={14} strokeWidth={2.5} />

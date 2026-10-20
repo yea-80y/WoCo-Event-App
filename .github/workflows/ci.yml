@@ -16,7 +16,9 @@ concurrency:
 jobs:
   build:
     name: Typecheck & build
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moves to Ubuntu 26 from 2026-10-19, and a launch-week
+    # build should not change OS under us. Move to 26 deliberately, in its own PR.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:

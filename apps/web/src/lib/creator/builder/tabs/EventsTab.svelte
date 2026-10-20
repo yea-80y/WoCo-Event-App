@@ -495,7 +495,7 @@
   .toggle-btn.on {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
   }
 
   .toggle-btn:hover:not(.on) {

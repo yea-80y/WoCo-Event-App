@@ -559,7 +559,7 @@
     font-weight: 600;
     border-radius: var(--radius-sm);
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     transition: background var(--transition);
   }
 

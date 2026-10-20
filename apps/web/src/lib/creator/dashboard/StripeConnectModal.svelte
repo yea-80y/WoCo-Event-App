@@ -720,6 +720,7 @@
 
   .modal-cta--login {
     background: var(--accent);
+    color: var(--accent-ink);
     box-shadow: 0 1px 3px rgba(124, 108, 240, 0.15);
   }
 
