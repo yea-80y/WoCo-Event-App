@@ -160,7 +160,7 @@
   .sign-in-btn:hover {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
   }
 
   .loading {
@@ -203,7 +203,7 @@
     font-size: 0.875rem;
     font-weight: 600;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-sm);
     transition: background var(--transition);
   }

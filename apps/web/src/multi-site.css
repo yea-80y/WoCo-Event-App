@@ -4,6 +4,8 @@
   --muted: #a0a0a0;
   --accent: #d4af37;
   --accent-hover: #b8962b;
+  /* Text on an accent fill. applyTheme replaces it per palette (accent-ink.ts). */
+  --accent-ink: #0B0B09;
   --border: #2a2a2a;
   --card-bg: #1a1a1a;
   --radius-sm: 4px;

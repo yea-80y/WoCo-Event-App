@@ -783,7 +783,7 @@
   .creator-bar-btn:hover {
     background: var(--accent);
     border-color: var(--accent);
-    color: var(--accent-ink, #fff);
+    color: var(--accent-ink);
   }
 
   /* ── Event header ─────────────────────────────────────────────────────────── */
@@ -1156,7 +1156,7 @@
   .get-tickets-btn--active {
     background: var(--accent);
     border-color: var(--accent);
-    color: var(--accent-ink, #fff);
+    color: var(--accent-ink);
     cursor: pointer;
   }
 
