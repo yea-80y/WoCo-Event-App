@@ -195,6 +195,8 @@ async function fetchRaw(url: string, init: RequestInit, timeoutMs: number): Prom
   return { status: r.status, body };
 }
 
+const beeHttpReason = (status: number) => `bee HTTP ${status}`;
+
 /** Our bee — a full node; its 404 ends a network search. */
 export const wocoBeeSource: SocSource = {
   name: "wocoBee",
@@ -205,12 +207,23 @@ export const wocoBeeSource: SocSource = {
       if (r.status === 200) return { status: "found", raw: r.body };
       if (r.status === 404) return { status: "absent" };
       // 500 "read chunk failed", 503, 429 — retrieval faults, not answers.
-      return { status: "unavailable", reason: `bee HTTP ${r.status}` };
+      return { status: "unavailable", reason: beeHttpReason(r.status) };
     } catch (e) {
       return { status: "unavailable", reason: `bee unreachable: ${(e as Error)?.message ?? String(e)}` };
     }
   },
 };
+
+/**
+ * The read failed ONLY because our bee answered 500 "read chunk failed" - every
+ * other source asked said absent, or none was. On bee 2.8 that is what a chunk
+ * nobody has written reads as once every peer is on bee's one-minute skip list
+ * for it (`storage-busy.ts`, #943); it is also any other retrieval fault. Either
+ * way it stays `unavailable`: this only lets a refusal say "try again in a minute".
+ */
+export function isOnlyBeeChunk500(read: VerifiedSocRead): read is Extract<VerifiedSocRead, { status: "unavailable" }> {
+  return read.status === "unavailable" && read.reason === `${wocoBeeSource.name}: ${beeHttpReason(500)}`;
+}
 
 // The breaker lives in lib/etherna/breaker.ts (#912), shared with the writes;
 // re-exported so its existing importers keep working.

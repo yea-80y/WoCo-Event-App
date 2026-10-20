@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
   import { CANONICAL_APP_ORIGIN } from "../sub-ens/host-label.js";
   import { eventPageFeedTopic, subEnsWebUrl, type ClaimMode, type EventGeo, type EventTag, type OrderField, type PaymentConfig } from "@woco/shared";
@@ -105,6 +106,11 @@
   // Step 3 — live + domain (deploy state)
   let deploying = $state(false);
   let deployError = $state<string | null>(null);
+  /** Set while a first publish waits out storage's one-minute pause (#943). */
+  let deployWaitNote = $state("");
+  /** The running deploy's wait: nothing more is sent once the builder is gone. */
+  let deployAbort: AbortController | null = null;
+  onDestroy(() => deployAbort?.abort());
   let deployResult = $state<(DeployEventPageResult & { feedSigned: boolean }) | null>(null);
 
   let listingOnWoco = $state(false);
@@ -217,6 +223,9 @@
       // update, so a name bound to it follows every republish unsigned. The
       // name is sent only to ask whether it already follows the feed.
       const feedSigner = await auth.getContentFeedSigner();
+      deployAbort?.abort();
+      const abort = new AbortController();
+      deployAbort = abort;
       const json = await deployEventPage(
         createdEventId,
         {
@@ -225,7 +234,14 @@
           ...(domainIntent.mode === "existing" && domainIntent.label ? { subEnsLabel: domainIntent.label } : {}),
         },
         feedSigner,
-      );
+        {
+          signal: abort.signal,
+          onWait: () => { deployWaitNote = "Saving your page… (this can take about a minute the first time)"; },
+        },
+      ).finally(() => {
+        deployWaitNote = "";
+        if (deployAbort === abort) deployAbort = null;
+      });
       if (json.ok && json.data) {
         deployResult = { ...json.data, feedSigned: json.feedSigned };
         pageFeedOwner = json.feedSigned && feedSigner ? feedSigner.address : null;
@@ -602,7 +618,7 @@
       {#if deploying}
         <div class="progress-status">
           <div class="spinner"></div>
-          <span>Deploying your event page. This takes 20–60 seconds…</span>
+          <span>{deployWaitNote || "Deploying your event page. This takes 20–60 seconds…"}</span>
         </div>
       {/if}
 

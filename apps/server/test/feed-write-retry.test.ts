@@ -99,6 +99,8 @@ const net = {
   lookupAnswer: null as null | { status: number; message: string },
   /** GET /chunks on our bee answers 500. */
   beeChunks500: false,
+  /** GET /chunks on Etherna answers 500. */
+  ethernaChunks500: false,
   /** POST /soc on our bee answers this status instead of storing. */
   beeUploadFails: null as null | number,
   /** Etherna's GET /feeds: a status, and for 200 the next index it reports. */
@@ -219,7 +221,10 @@ const etherna: Server = createServer(async (req, res) => {
   }
   if (req.method === "POST" && path === "/token") return json(res, 200, { access_token: "t", expires_in: 3600 });
   if (req.method === "POST" && path.startsWith("/soc/")) return handleSocPost(req, res, "etherna");
-  if (req.method === "GET" && path.startsWith("/chunks/")) return handleChunkGet(res, path.split("/")[2]!);
+  if (req.method === "GET" && path.startsWith("/chunks/")) {
+    if (net.ethernaChunks500) return json(res, 500, { code: 500, message: "read chunk failed" });
+    return handleChunkGet(res, path.split("/")[2]!);
+  }
   if (req.method === "POST" && path.includes("/offers")) return json(res, 200, {});
   if (req.method === "POST" && path.startsWith("/feeds/")) return json(res, 201, { reference: "ee".repeat(32) });
   if (req.method === "GET" && path.startsWith("/feeds/")) {
@@ -235,6 +240,7 @@ let swarm: typeof import("../src/config/swarm.js");
 let feeds: typeof import("../src/lib/swarm/feeds.js");
 let socRead: typeof import("../src/lib/swarm/soc-read.js");
 let upload: typeof import("../src/lib/etherna/upload.js");
+let busy: typeof import("../src/lib/swarm/storage-busy.js");
 
 const ETHERNA = { target: "etherna" as const, batchId: "cd".repeat(32) };
 let topicSeq = 0;
@@ -272,6 +278,7 @@ before(async () => {
   feeds = await import("../src/lib/swarm/feeds.js");
   socRead = await import("../src/lib/swarm/soc-read.js");
   upload = await import("../src/lib/etherna/upload.js");
+  busy = await import("../src/lib/swarm/storage-busy.js");
   feeds.__feedWriteTestHooks.setBaseBackoffMs(0);
 });
 
@@ -291,6 +298,7 @@ beforeEach(() => {
     lookupBehind: 0,
     lookupAnswer: null,
     beeChunks500: false,
+    ethernaChunks500: false,
     beeUploadFails: null,
     ethernaFeeds: { status: 404 },
     feedLookups: 0,
@@ -478,6 +486,78 @@ describe("resolving the index (cold cache)", () => {
     seed(t, 1n, page("y"), OTHER_KEY);
     net.lookupBehind = 1;
     assert.equal(await feeds.resolveFeedNextIndex(t, `0x${OTHER_OWNER}`, "woco"), 2n);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bee 2.8's skip list on a feed nobody has written (#943)
+// ---------------------------------------------------------------------------
+
+describe("the skip-list shape is typed, and still refuses", () => {
+  const isBusy = (e: unknown) => busy.isStorageBusy(e);
+
+  test("'lookup at failed' + index 0 answering only our bee's 500: typed - the read is an error and nothing is written", async () => {
+    const t = freshTopic();
+    net.lookupAnswer = { status: 404, message: "lookup at failed" };
+    net.beeChunks500 = true;
+    const r = await feeds.readFeedPageStrict(t);
+    assert.equal(r.status, "error", "never absent");
+    assert.ok(r.status === "error" && isBusy(r.error) && r.error.cause !== undefined);
+    assert.equal(await feeds.readFeedPage(t), null);
+    await assert.rejects(feeds.writeFeedPage(t, page("a")), isBusy);
+    await assert.rejects(feeds.writeFeedPage(t, page("a"), { dest: ETHERNA }), isBusy);
+    await assert.rejects(feeds.resolveFeedNextIndex(t, `0x${OTHER_OWNER}`, "woco"), isBusy);
+    assert.equal(uploads.length, 0);
+    assert.equal(hooks().cachedEntry(t), undefined, "no index was noted from it");
+  });
+
+  test("a walk from a read's index meeting our bee's 500 at the free slot: typed, same message, nothing written", async () => {
+    const t = freshTopic();
+    assert.equal((await feeds.readFeedPageStrict(t)).status, "absent"); // primes next = 0, unconfirmed
+    net.beeChunks500 = true;
+    await assert.rejects(
+      feeds.writeFeedPage(t, page("a")),
+      (e: unknown) => isBusy(e) && /cannot tell whether index 0 is taken \(wocoBee: bee HTTP 500\)/.test((e as Error).message),
+    );
+    assert.equal(uploads.length, 0);
+  });
+
+  test("an Etherna pointer: Etherna says absent, our bee 500 - typed (deploys refuse before uploading)", async () => {
+    const t = freshTopic();
+    net.beeChunks500 = true;
+    await assert.rejects(
+      upload.prepareEthernaFeedIndex({ topic: t, batchId: ETHERNA.batchId, ownerHex: OTHER_OWNER }),
+      isBusy,
+    );
+    assert.equal(uploads.length, 0);
+  });
+
+  test("every other refusal stays a plain error", async () => {
+    const plain = async (setup: () => void, seedFirst = false) => {
+      const t = freshTopic();
+      if (seedFirst) seed(t, 0n, page("there"));
+      setup();
+      const r = await feeds.readFeedPageStrict(t);
+      assert.equal(r.status, "error");
+      assert.ok(r.status === "error" && !isBusy(r.error), r.status === "error" ? r.error.message : "");
+      Object.assign(net, { lookupAnswer: null, beeChunks500: false, ethernaChunks500: false });
+    };
+    // A lookup 500 is a bee fault.
+    await plain(() => (net.lookupAnswer = { status: 500, message: "boom" }));
+    // The walk failed on a feed whose index 0 IS there.
+    await plain(() => (net.lookupAnswer = { status: 404, message: "lookup at failed" }), true);
+    // Another 404 wording: only bee's exact "lookup at failed" is the shape.
+    await plain(() => {
+      net.lookupAnswer = { status: 404, message: "something new" };
+      net.beeChunks500 = true;
+    });
+    // Etherna could not answer at the free slot: not our bee's skip list.
+    const t = freshTopic();
+    net.ethernaChunks500 = true;
+    await assert.rejects(
+      upload.prepareEthernaFeedIndex({ topic: t, batchId: ETHERNA.batchId, ownerHex: OTHER_OWNER }),
+      (e: unknown) => e instanceof Error && !isBusy(e) && /cannot tell whether index 0/.test(e.message),
+    );
   });
 });
 

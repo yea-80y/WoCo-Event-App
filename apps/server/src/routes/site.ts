@@ -13,7 +13,9 @@ import {
 } from "../lib/etherna/batch-router.js";
 import { recordUpload } from "../lib/swarm/storage-ledger.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
-import { uploadCollectionToEtherna, registerEthernaOffer, prepareEthernaFeedUpdate } from "../lib/etherna/upload.js";
+import { uploadCollectionToEtherna, registerEthernaOffer, prepareEthernaFeedIndex, fetchEthernaRootChunk } from "../lib/etherna/upload.js";
+import { isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from "../lib/swarm/storage-busy.js";
+import { beginDeploy, DEPLOY_IN_PROGRESS_CODE, DEPLOY_IN_PROGRESS_MESSAGE } from "../lib/site/deploy-guard.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
 import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
 import {
@@ -57,6 +59,7 @@ function spawnPromise(cmd: string, args: string[]): Promise<void> {
 site.post("/deploy", requireAuth, async (c) => {
   let tmpDir: string | null = null;
   let tarPath: string | null = null;
+  let endDeploy: (() => void) | null = null;
 
   try {
     const parentAddress = (c.get("parentAddress") as string).toLowerCase();
@@ -106,6 +109,11 @@ site.post("/deploy", requireAuth, async (c) => {
     // owned by the signer pinned at create (#676) - never a request value.
     const gate = eventPageDeployGate(eventId, parentAddress);
     if (!gate.ok) return c.json({ ok: false, error: gate.error }, gate.status);
+
+    // The page feed's index is resolved before the upload and held through it
+    // (below): one deploy of a page at a time (deploy-guard.ts).
+    endDeploy = beginDeploy(`event-page:${eventId}`);
+    if (!endDeploy) return c.json({ ok: false, error: DEPLOY_IN_PROGRESS_MESSAGE, code: DEPLOY_IN_PROGRESS_CODE }, 409);
 
     if (!existsSync(DIST_SITE_PATH)) {
       return c.json({
@@ -175,6 +183,21 @@ site.post("/deploy", requireAuth, async (c) => {
     await spawnPromise("tar", ["-cf", tarPath, "-C", tmpDir, "."]);
     const tarData = await fs.readFile(tarPath);
 
+    // The page feed's next index, resolved BEFORE the upload (#943): a first
+    // publish's feed has never been written, bee skips such a chunk for a minute
+    // after a few misses, and resolving after the upload failed the deploy with
+    // the page already up - and the retry uploaded it again. Once: the deploy
+    // guard above keeps another deploy of this page from resolving the same index
+    // during the upload. Only for a signing client, owned by the signer pinned at
+    // create (step 5).
+    const pagePrep = body.clientFeed === true
+      ? await prepareEthernaFeedIndex({
+          topic: Topic.fromString(eventPageFeedTopic(eventId)),
+          batchId,
+          ownerHex: gate.signer.replace(/^0x/, ""),
+        })
+      : null;
+
     // 4) Upload the page to Etherna as a collection
     const contentHash = await uploadCollectionToEtherna({
       batchId,
@@ -205,13 +228,8 @@ site.post("/deploy", requireAuth, async (c) => {
     let feedManifestHash = "";
     let pageFeed: { owner: string; nextIndex: number; rootChunkPayloadB64: string } | undefined;
     let nameRecorded = true;
-    if (body.clientFeed === true) {
-      const prep = await prepareEthernaFeedUpdate({
-        topic: Topic.fromString(eventPageFeedTopic(eventId)),
-        contentHash,
-        batchId,
-        ownerHex: gate.signer.replace(/^0x/, ""),
-      });
+    if (body.clientFeed === true && pagePrep) {
+      const prep = { ...pagePrep, chunkBytes: await fetchEthernaRootChunk(contentHash) };
       feedManifestHash = prep.feedManifestHash;
       // The owner travels with the update so the browser refuses to sign a feed
       // it does not own; the span is stripped because the signer re-derives it.
@@ -256,6 +274,11 @@ site.post("/deploy", requireAuth, async (c) => {
     });
 
   } catch (e) {
+    if (isStorageBusy(e)) {
+      console.warn(`[site/deploy] storage busy: ${e.message}`);
+      c.header("Retry-After", STORAGE_BUSY_RETRY_AFTER_HEADER);
+      return c.json(storageBusyBody(), 503);
+    }
     console.error("[site/deploy]", e);
     return c.json({
       ok: false,
@@ -263,6 +286,7 @@ site.post("/deploy", requireAuth, async (c) => {
     }, 500);
 
   } finally {
+    endDeploy?.();
     // Best-effort cleanup of temp files
     if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     if (tarPath) await fs.unlink(tarPath).catch(() => {});

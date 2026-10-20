@@ -40,7 +40,9 @@ import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js
  *  Quota counts each site's LATEST deploy only (republish supersedes — see
  *  storage-ledger.ts), so 100MB ≈ 10 live sites at the ~8-10MB tar size. */
 const FREE_HOSTING_QUOTA_BYTES = Number(process.env.FREE_HOSTING_QUOTA_BYTES) || 100 * 1024 * 1024;
-import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedUpdate } from "../lib/etherna/upload.js";
+import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedIndex, fetchEthernaRootChunk } from "../lib/etherna/upload.js";
+import { isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from "../lib/swarm/storage-busy.js";
+import { beginDeploy, DEPLOY_IN_PROGRESS_CODE, DEPLOY_IN_PROGRESS_MESSAGE } from "../lib/site/deploy-guard.js";
 import {
   siteConfigTopic,
   sitePagesTopicFn,
@@ -65,6 +67,14 @@ const sitesRouter = new Hono();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multisite");
+let distMultisitePath = DIST_MULTISITE_PATH;
+
+/** Tests only — deploy from a template directory of the test's own. */
+export const __sitesDeployTestHooks = {
+  setDistMultisitePath(path: string | null): void {
+    distMultisitePath = path ?? DIST_MULTISITE_PATH;
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -79,6 +89,16 @@ const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multis
  */
 async function readSiteConfig(siteId: string): Promise<Site | null> {
   return (await resolveSiteConfigOrNull(siteId))?.site ?? null;
+}
+
+/**
+ * The first save of a new site met bee's one-minute skip list on a feed nobody
+ * has written (`swarm/storage-busy.ts`, #943). Typed, so the builder waits
+ * `retryAfterMs` and sends the same request once more by itself.
+ */
+function storageBusy(c: Context) {
+  c.header("Retry-After", STORAGE_BUSY_RETRY_AFTER_HEADER);
+  return c.json(storageBusyBody(), 503);
 }
 
 /** An edit is refused rather than built on an index we could not read (events-index.ts). */
@@ -101,6 +121,11 @@ async function eventIndexOwnerRefusal(
   if (read.site.ownerAddress.toLowerCase() !== parentAddress) return { status: 403, error: "Not the site owner" };
   return null;
 }
+
+/** Where a deploy's pointer update goes, resolved before its upload (#943). */
+type PointerPlan =
+  | { rail: "etherna"; prepared: { feedManifestHash: string; nextIndex: bigint } }
+  | { rail: "woco"; nextIndex: bigint };
 
 /** The SEO + PWA head tags baked into a deployed site. Every interpolation is escaped. */
 export function deployHeadLines(site: Site, gatewayUrl: string): string {
@@ -404,6 +429,7 @@ sitesRouter.post("/", requireAuth, async (c) => {
     const existing = await resolveSiteConfig(site.siteId);
     if (existing.status === "unavailable") {
       console.warn(`[sites/publish] ownership undecidable for ${site.siteId}: ${existing.reason}`);
+      if (isStorageBusy(existing.cause)) return storageBusy(c);
       return c.json({
         ok: false,
         error: "Could not verify site ownership right now — please try again",
@@ -441,6 +467,10 @@ sitesRouter.post("/", requireAuth, async (c) => {
         updatedAt: now,
       };
 
+      // Every page is encoded before any write starts, so a page that will not
+      // encode refuses the publish with nothing in flight.
+      const eventsPage = encodeJsonFeed(eventsIndex);
+      const configPages: Array<[Topic, Uint8Array]> = [];
       if (siteFeedSigner) {
         const pointer: SitePointer = {
           _woco_site_ptr: 1,
@@ -448,10 +478,7 @@ sitesRouter.post("/", requireAuth, async (c) => {
           siteFeedSigner: siteFeedSigner as Hex0x,
           updatedAt: now,
         };
-        await Promise.all([
-          writeFeedPage(configTopic, encodeJsonFeed(pointer), { dest: feedDest }),
-          writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
-        ]);
+        configPages.push([configTopic, encodeJsonFeed(pointer)]);
       } else {
         // Legacy platform-written path (client without a feed signer). Config
         // (without pages) + pages split across two feeds to stay under 4096 bytes.
@@ -462,17 +489,34 @@ sitesRouter.post("/", requireAuth, async (c) => {
           updatedAt: now,
         };
         const { pages, ...siteShell } = siteToWrite;
-        await Promise.all([
-          writeFeedPage(configTopic, encodeJsonFeed(siteShell), { dest: feedDest }),
-          writeFeedPage(pagesTopic,  encodeJsonFeed({ pages }), { dest: feedDest }),
-          writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
-        ]);
+        configPages.push([configTopic, encodeJsonFeed(siteShell)], [pagesTopic, encodeJsonFeed({ pages })]);
       }
 
-      // Publish rewrote the events index — drop the events-full memo (declared
-      // below; the closure resolves it at request time) so it doesn't serve stale.
-      rememberWrittenEventsIndex(site.siteId, eventsIndex);
-      _siteEventsFull.delete(site.siteId);
+      // All of them run to the end before the publish answers (#943). With
+      // `Promise.all` the first failure answered - and released the events lock -
+      // while another write was still going, and an events index that landed
+      // anyway was never recorded below. One failed write fails the publish, so
+      // the client's retry writes every page again: each is a whole page, never
+      // a delta, so a second copy of one that landed changes nothing.
+      const [eventsWrite, ...configWrites] = await Promise.allSettled([
+        writeFeedPage(eventsTopic, eventsPage, { dest: feedDest }),
+        ...configPages.map(([topic, page]) => writeFeedPage(topic, page, { dest: feedDest })),
+      ]);
+      if (eventsWrite.status === "fulfilled") {
+        // Publish rewrote the events index — drop the events-full memo (declared
+        // below; the closure resolves it at request time) so it doesn't serve stale.
+        rememberWrittenEventsIndex(site.siteId, eventsIndex);
+        _siteEventsFull.delete(site.siteId);
+      }
+      const failed = [eventsWrite, ...configWrites].filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (failed.length > 0) {
+        console.warn(
+          `[sites/publish] ${site.siteId}: ${failed.length} of ${configWrites.length + 1} writes failed ` +
+            `(config ${configWrites.every((r) => r.status === "fulfilled") ? "written" : "not written"}, ` +
+            `events index ${eventsWrite.status === "fulfilled" ? "written" : "not written"}) - refused, a retry writes all`,
+        );
+        throw failed.find((r) => isStorageBusy(r.reason))?.reason ?? failed[0].reason;
+      }
     });
 
     // Upsert into creator's site directory (fire-and-forget — non-fatal).
@@ -490,6 +534,10 @@ sitesRouter.post("/", requireAuth, async (c) => {
     return c.json({ ok: true, data: { siteId: site.siteId } });
   } catch (err) {
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
+    if (isStorageBusy(err)) {
+      console.warn(`[sites/publish] storage busy: ${err.message}`);
+      return storageBusy(c);
+    }
     console.error("[sites/publish]", err);
     return c.json({
       ok: false,
@@ -817,6 +865,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
   let tmpDir: string | null = null;
   let tarPath: string | null = null;
+  let endDeploy: (() => void) | null = null;
 
   try {
     const body = await c.req.json() as { apiUrl: string; gatewayUrl?: string; wocoAppUrl?: string; site?: Site; clientFeed?: boolean };
@@ -834,6 +883,11 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     if (!resolvedUrls.ok) return c.json({ ok: false, error: resolvedUrls.error }, 400);
     const { apiUrl, gatewayUrl, wocoAppUrl } = resolvedUrls.urls;
 
+    // The pointer feed's index is resolved before the upload and held through it
+    // (below): one deploy of a site at a time (deploy-guard.ts).
+    endDeploy = beginDeploy(`site:${siteId}`);
+    if (!endDeploy) return c.json({ ok: false, error: DEPLOY_IN_PROGRESS_MESSAGE, code: DEPLOY_IN_PROGRESS_CODE }, 409);
+
     // Prefer the site config sent by the client — avoids a Swarm re-read immediately
     // after publishSite (deferred writes can have a brief propagation window).
     // Fall back to Swarm read for direct API calls. Always stamp ownerAddress server-side.
@@ -847,6 +901,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const published = await resolveSiteConfig(siteId);
     if (published.status === "unavailable") {
       console.warn(`[sites/deploy] ownership undecidable for ${siteId}: ${published.reason}`);
+      if (isStorageBusy(published.cause)) return storageBusy(c);
       return c.json({
         ok: false,
         error: "Could not verify site ownership right now — please try again",
@@ -856,7 +911,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       return c.json({ ok: false, error: "Not the site owner" }, 403);
     }
 
-    if (!existsSync(DIST_MULTISITE_PATH)) {
+    if (!existsSync(distMultisitePath)) {
       return c.json({
         ok: false,
         error: "Site template not on server. Run `npm run build:web` then rsync apps/web/dist-multisite/ to server.",
@@ -897,7 +952,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const bee = target === "etherna" ? getEthernaBee() : getBee();
 
     // Inject runtime config into the HTML template
-    const htmlPath = join(DIST_MULTISITE_PATH, "multi-site.html");
+    const htmlPath = join(distMultisitePath, "multi-site.html");
     const html = await fs.readFile(htmlPath, "utf-8");
     // Event images are uploaded to WoCo Bee at event-creation time and are not
     // re-uploaded during site deploy. Inject contentGatewayUrl so the runtime
@@ -927,7 +982,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
     const injectedWithPwa = injectBeforeHeadClose(injectedHtml, deployHeadLines(site, gatewayUrl));
 
-    await fs.cp(DIST_MULTISITE_PATH, tmpDir, { recursive: true });
+    await fs.cp(distMultisitePath, tmpDir, { recursive: true });
     await fs.writeFile(join(tmpDir, "multi-site.html"), injectedWithPwa, "utf-8");
     await fs.writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
 
@@ -954,6 +1009,36 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         }, 413);
       }
     }
+
+    // Per-site feed so an ENS name / custom domain can point at it. Its next index
+    // is resolved HERE, before the upload (#943): a first deploy's feed has never
+    // been written, bee skips such a chunk for a minute after a few misses, and
+    // resolving after the upload failed the deploy with the whole collection
+    // already up - and the retry uploaded it again. Resolved once: a second
+    // resolution after the upload would read the same unwritten chunk again, and
+    // the deploy guard above keeps the index ours meanwhile.
+    const topicString = multisiteFeedTopic(siteId);
+    const topic = Topic.fromString(topicString);
+
+    // The pointer feed is CLIENT-OWNED when the site config is (siteFeedSigner
+    // resolved from the server-written pointer — never the request) AND the
+    // frontend declared it will sign the update (`clientFeed`; an old bundle
+    // that can't sign must keep the platform-signed feed, else the new manifest
+    // would point at a feed with no updates). Both targets: Etherna is the
+    // production path, so client ownership must hold there first of all.
+    const feedOwnerSigner =
+      body.clientFeed && published.status === "found" ? published.siteFeedSigner : undefined;
+    const pointer: PointerPlan =
+      target === "etherna"
+        ? {
+            rail: "etherna",
+            prepared: await prepareEthernaFeedIndex({
+              topic,
+              batchId,
+              ownerHex: feedOwnerSigner ? feedOwnerSigner.replace(/^0x/, "") : owner.toHex(),
+            }),
+          }
+        : { rail: "woco", nextIndex: await resolveFeedNextIndex(topic, feedOwnerSigner ?? owner.toHex(), "woco") };
 
     let contentHash: string;
     if (target === "etherna") {
@@ -998,38 +1083,21 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       ...(selection.freeHosted ? { freeHosted: true } : {}),
     });
 
-    // Per-site feed so an ENS name / custom domain can point at it
-    const topicString = multisiteFeedTopic(siteId);
-    const topic = Topic.fromString(topicString);
     let feedManifestHash = "";
     // Client-owned pointer feed (set when the CLIENT will sign the update).
     let multisiteFeed: { nextIndex: number; rootChunkPayloadB64: string } | null = null;
 
-    // The pointer feed is CLIENT-OWNED when the site config is (siteFeedSigner
-    // resolved from the server-written pointer — never the request) AND the
-    // frontend declared it will sign the update (`clientFeed`; an old bundle
-    // that can't sign must keep the platform-signed feed, else the new manifest
-    // would point at a feed with no updates). Both targets: Etherna is the
-    // production path, so client ownership must hold there first of all.
-    const feedOwnerSigner =
-      body.clientFeed && published.status === "found" ? published.siteFeedSigner : undefined;
-
-    if (feedOwnerSigner && target === "etherna") {
+    if (feedOwnerSigner && pointer.rail === "etherna") {
       // Same steps as the platform-signed Etherna write, minus signing — the
       // client signs the update SOC and pushes it via /api/swarm/soc (which
       // routes to the same Etherna user batch).
-      const prep = await prepareEthernaFeedUpdate({
-        topic,
-        contentHash,
-        batchId,
-        ownerHex: feedOwnerSigner.replace(/^0x/, ""),
-      });
-      feedManifestHash = prep.feedManifestHash;
+      const chunkBytes = await fetchEthernaRootChunk(contentHash);
+      feedManifestHash = pointer.prepared.feedManifestHash;
       multisiteFeed = {
-        nextIndex: Number(prep.nextIndex),
-        rootChunkPayloadB64: Buffer.from(prep.chunkBytes.subarray(8)).toString("base64"),
+        nextIndex: Number(pointer.prepared.nextIndex),
+        rootChunkPayloadB64: Buffer.from(chunkBytes.subarray(8)).toString("base64"),
       };
-    } else if (feedOwnerSigner) {
+    } else if (feedOwnerSigner && pointer.rail === "woco") {
       try {
         const mRef = await withTimeout(
           bee.createFeedManifest(batchId, topic, feedOwnerSigner),
@@ -1042,24 +1110,23 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       }
       // Hand the update material back for the client to sign: the collection
       // root chunk's data (span stripped — a chunk's data is ≤4096 B, matching
-      // bee-js uploadPayload's wrapped-chunk form) + the feed's next index.
+      // bee-js uploadPayload's wrapped-chunk form) + the feed's next index,
+      // resolved forward from the lookup before the upload (#186: any failed
+      // lookup used to read as a fresh feed, and an update signed for a taken
+      // index 0 keeps the old pointer, silently).
       const chunkRes = await fetch(`${BEE_URL}/chunks/${contentHash}`, {
         signal: AbortSignal.timeout(BEE_CALL_TIMEOUT_MS),
       });
       if (chunkRes.ok) {
         const chunkBytes = await readCapped(chunkRes, SWARM_CHUNK_MAX_BYTES, "root chunk");
-        // Forward from the lookup to the first free index (#186). Any failed
-        // lookup used to read as a fresh feed, and an update signed for a taken
-        // index 0 keeps the old pointer, silently. Now it fails the deploy.
-        const nextIndex = Number(await resolveFeedNextIndex(topic, feedOwnerSigner, "woco"));
         multisiteFeed = {
-          nextIndex,
+          nextIndex: Number(pointer.nextIndex),
           rootChunkPayloadB64: Buffer.from(chunkBytes.subarray(8)).toString("base64"),
         };
       } else {
         console.warn(`[sites/deploy] root chunk fetch ${chunkRes.status} — client feed update skipped`);
       }
-    } else if (target === "etherna") {
+    } else if (pointer.rail === "etherna") {
       // Etherna's Beehive only resolves feeds written with inline SOC (uploadPayload).
       // writeEthernaFeedUpdate bypasses bee-js auth issues and uses raw HTTP with
       // the correct inline-chunk SOC format (confirmed by etherna-soc-legacy-probe.ts).
@@ -1069,6 +1136,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         batchId,
         signer,
         ownerHex: owner.toHex(),
+        prepared: pointer.prepared,
       });
     } else {
       // WoCo Bee — inline SOC write; fall back to uploadReference if root chunk
@@ -1086,7 +1154,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       // An explicit index on every upload (#186): without one bee-js discovers
       // it, which reads behind (or answers 0 on any bee error), and an update
       // at a taken index keeps the OLD pointer while the deploy reports success.
-      const index = { index: FeedIndex.fromBigInt(await resolveFeedNextIndex(topic, owner.toHex(), "woco")) };
+      const index = { index: FeedIndex.fromBigInt(pointer.nextIndex) };
       const writer = bee.makeFeedWriter(topic, signer);
       try {
         await whitelistHashes([contentHash]).catch(() => {});
@@ -1212,9 +1280,14 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     });
 
   } catch (e) {
+    if (isStorageBusy(e)) {
+      console.warn(`[sites/deploy] storage busy: ${e.message}`);
+      return storageBusy(c);
+    }
     console.error("[sites/deploy]", e);
     return c.json({ ok: false, error: e instanceof Error ? e.message : "Deploy failed" }, 500);
   } finally {
+    endDeploy?.();
     if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     if (tarPath) await fs.unlink(tarPath).catch(() => {});
   }

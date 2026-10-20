@@ -159,32 +159,20 @@ export async function postSocToEtherna(opts: {
 }
 
 /**
- * Write a Swarm feed update to Etherna via raw HTTP.
- *
- * bee-js's onRequest receives a shallow copy — mutations are silently discarded,
- * so auth headers never reach Etherna. This function bypasses bee-js for every
- * HTTP call while reusing PrivateKey.sign() for the secp256k1 SOC signature.
- *
- * SOC signing protocol (from bee-js/dist/cjs/chunk/soc.js:makeSingleOwnerChunk):
- *   signData  = concat(socId_bytes(32), cac_address_bytes(32))
- *   signature = PrivateKey.sign(signData)   // EIP-191 personal_sign internally
- *
- * Returns the feed manifest hash (for ENS content hash) or throws.
+ * Steps 1-2 of an Etherna feed update: create/read the feed manifest for
+ * `ownerHex` and find the next sequence index. Neither needs the content, so a
+ * deploy runs this BEFORE it uploads the collection (#943): an index that cannot
+ * be resolved yet - a feed nobody has written, which bee skips for a minute after
+ * a few misses - is then refused before anything is uploaded, instead of failing
+ * the deploy after the whole collection went up, so that a retry uploads it again.
+ * Used by a CLIENT-OWNED feed too (the client signs the update SOC).
  */
-/**
- * Steps 1–3 of an Etherna feed update, split out so a CLIENT-OWNED feed can use
- * them too (the client signs the update SOC; only the platform-signed path runs
- * steps 4–5 here): create/read the feed manifest for `ownerHex`, find the next
- * sequence index, and download the content root chunk (span+data) that becomes
- * the update SOC's body.
- */
-export async function prepareEthernaFeedUpdate(opts: {
+export async function prepareEthernaFeedIndex(opts: {
   topic: Topic;
-  contentHash: string;   // 64-char hex, no 0x
   batchId: string;
   ownerHex: string;      // 40-char hex, no 0x, lowercase
-}): Promise<{ feedManifestHash: string; nextIndex: bigint; chunkBytes: Uint8Array }> {
-  const { topic, contentHash, batchId, ownerHex } = opts;
+}): Promise<{ feedManifestHash: string; nextIndex: bigint }> {
+  const { topic, batchId, ownerHex } = opts;
 
   await ensureEthernaToken();
   const token = getCachedEthernaToken();
@@ -233,14 +221,30 @@ export async function prepareEthernaFeedUpdate(opts: {
   const { feedSources, firstFreeIndex } = await import("../swarm/feed-index.js");
   const nextIndex = await firstFreeIndex(ownerHex, topic, start, feedSources("etherna"));
 
-  // 3. Download root chunk (span+data of the content CAC) — POSTed as SOC body.
+  return { feedManifestHash, nextIndex };
+}
+
+/** Step 3: the uploaded collection's root chunk (span+data of the content CAC), the update SOC's body. */
+export async function fetchEthernaRootChunk(contentHash: string): Promise<Uint8Array> {
+  await ensureEthernaToken();
+  const token = getCachedEthernaToken();
+  if (!token) throw new Error("Etherna token unavailable");
   const chunkRes = await fetch(`${ETHERNA_GW}/chunks/${contentHash}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!chunkRes.ok) throw new Error(`Chunk download ${chunkRes.status}: ${contentHash.slice(0, 12)}…`);
-  const chunkBytes = await readCapped(chunkRes, SWARM_CHUNK_MAX_BYTES, "etherna root chunk");
+  return readCapped(chunkRes, SWARM_CHUNK_MAX_BYTES, "etherna root chunk");
+}
 
-  return { feedManifestHash, nextIndex, chunkBytes };
+/** Steps 1-3 in one call, for a caller that already has its content. */
+export async function prepareEthernaFeedUpdate(opts: {
+  topic: Topic;
+  contentHash: string;   // 64-char hex, no 0x
+  batchId: string;
+  ownerHex: string;      // 40-char hex, no 0x, lowercase
+}): Promise<{ feedManifestHash: string; nextIndex: bigint; chunkBytes: Uint8Array }> {
+  const prepared = await prepareEthernaFeedIndex(opts);
+  return { ...prepared, chunkBytes: await fetchEthernaRootChunk(opts.contentHash) };
 }
 
 /**
@@ -288,18 +292,31 @@ export async function writeEthernaFeedPage(opts: {
     console.warn("[etherna] feed-page offer failed (non-fatal):", e));
 }
 
+/**
+ * Write a Swarm feed update to Etherna via raw HTTP.
+ *
+ * bee-js's onRequest receives a shallow copy — mutations are silently discarded,
+ * so auth headers never reach Etherna. This function bypasses bee-js for every
+ * HTTP call while reusing PrivateKey.sign() for the secp256k1 SOC signature.
+ *
+ * SOC signing protocol (from bee-js/dist/cjs/chunk/soc.js:makeSingleOwnerChunk):
+ *   signData  = concat(socId_bytes(32), cac_address_bytes(32))
+ *   signature = PrivateKey.sign(signData)   // EIP-191 personal_sign internally
+ *
+ * `prepared` is `prepareEthernaFeedIndex`'s answer, resolved BEFORE the content
+ * was uploaded (#943). Returns the feed manifest hash (for ENS content hash) or throws.
+ */
 export async function writeEthernaFeedUpdate(opts: {
   topic: Topic;
   contentHash: string;   // 64-char hex, no 0x
   batchId: string;
   signer: PrivateKey;
   ownerHex: string;      // 40-char hex, no 0x, lowercase
+  prepared: { feedManifestHash: string; nextIndex: bigint };
 }): Promise<string> {
   const { topic, contentHash, batchId, signer, ownerHex } = opts;
-
-  const { feedManifestHash, nextIndex, chunkBytes } = await prepareEthernaFeedUpdate({
-    topic, contentHash, batchId, ownerHex,
-  });
+  const { feedManifestHash, nextIndex } = opts.prepared;
+  const chunkBytes = await fetchEthernaRootChunk(contentHash);
 
   // 2. SOC identifier = keccak256(topic_bytes(32) || uint64_BE(index)(8))
   const socId = Binary.keccak256(

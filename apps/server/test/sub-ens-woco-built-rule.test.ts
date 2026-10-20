@@ -303,7 +303,7 @@ test("both deploy routes record what they baked, and only when there is a feed m
     /if \(feedManifestHash\) \{\s*nameRecorded = recordNameTarget\(feedManifestHash, \{ kind: "site", id: siteId, owner: parentAddress, latestRef: contentHash \}\);/,
   );
   const page = source("../src/routes/site.ts");
-  const clientFeed = page.indexOf("if (body.clientFeed === true) {");
+  const clientFeed = page.indexOf("if (body.clientFeed === true && pagePrep) {");
   const rec = page.indexOf('nameRecorded = recordNameTarget(feedManifestHash, { kind: "event", id: eventId, owner: parentAddress, latestRef: contentHash });');
   const assigned = page.indexOf("feedManifestHash = prep.feedManifestHash;");
   assert.ok(clientFeed > 0 && assigned > clientFeed && rec > assigned, "inside the feed branch, after the manifest is known");
