@@ -835,7 +835,7 @@
           <h2 class="card-title">Profile domain</h2>
           <p class="card-hint">
             Claim a free, permanent <code>.woco.eth</code> domain for your profile.
-            It's how people find you, and it doubles as your payment address.
+            It's how people find you.
           </p>
           <SubENSPicker
             claimedLabel={profile?.subEnsLabel}

@@ -187,7 +187,7 @@
   }));
 
   const LINK_NOTES: Record<NonNullable<SubEnsLinkNote>, string> = {
-    identity: 'This is your profile domain and payment address. It does not open as a website.',
+    identity: 'This is your profile domain. It does not open as a website.',
     registering: 'Claiming. Your domain goes live after the first deploy.',
     updating: 'Pointing your domain at the new version. This can take a minute.',
     'stale-version': 'Updating to the latest version.',
@@ -420,10 +420,6 @@
           <li>
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Auto-links to your site on every publish
-          </li>
-          <li>
-            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            Works as a payment address for ETH
           </li>
         </ul>
       </div>
@@ -683,10 +679,6 @@
     <!-- What you get note -->
     {#if !claimed}
       <ul class="feature-list" aria-label="Benefits">
-        <li>
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Works as a payment address — receive ETH to <code class="inline-code">{previewLabel || 'yourname'}.woco.eth</code>
-        </li>
         <li>
           <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           Permanent, and it belongs to your account, not to WoCo
