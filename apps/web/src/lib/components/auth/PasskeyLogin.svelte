@@ -115,8 +115,9 @@
   <div class="passkey-login stays" role="status">
     <p class="stays-title">Your passkey is in {stays.name}</p>
     <p class="stays-body">
-      {stays.worksOn}. To use WoCo on a laptop too, add another password manager - like Google Password Manager - from
-      Your passkeys, once you have a ticket or an invite.
+      {stays.worksOn}. To use WoCo on a laptop too, add a backup passkey in another password manager - like Google
+      Password Manager - from Account & security. That unlocks once a ticket is in your account, or once you or someone
+      you invited verifies with Stripe.
     </p>
     <button class="passkey-btn" onclick={() => { stays = null; oncomplete?.(); }}>Got it</button>
   </div>

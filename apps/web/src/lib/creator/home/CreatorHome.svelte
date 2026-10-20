@@ -603,17 +603,18 @@
 
         <!-- Account safety panel — only for kinds that can install guardian recovery -->
         {#if auth.kind === "passkey"}
-          <!-- A passkey account backs up by linking devices (#746 step 5). -->
+          <!-- A passkey account backs up with another passkey or device (#746 step 5). Static on
+               purpose: how many passkeys it has is a chain read plus a signed request. -->
           <div class="panel panel--safety">
             <div class="panel-head">
               <span class="panel-title">
                 <ShieldCheck size={16} strokeWidth={2.25} />
                 Account safety
               </span>
-              <button class="link-quiet" onclick={() => navigate("/passkeys")}>Your passkeys →</button>
+              <button class="link-quiet" onclick={() => navigate("/account")}>Account & security →</button>
             </div>
             <div class="panel-empty">
-              <span>Link another device so losing this one doesn't lock you out.</span>
+              <span>Only one passkey? Add a backup in another password manager, so a lost phone never locks you out.</span>
             </div>
           </div>
         {:else if canProtect}

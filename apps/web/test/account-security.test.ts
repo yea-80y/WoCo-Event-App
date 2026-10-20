@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { UNLOCK_RULE } from "../src/lib/attendee/gate/unlock-copy.js";
 
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
 const markupOf = (src: string) => src.slice(src.indexOf("</script>"));
@@ -62,4 +63,34 @@ test("one passkey: the backup callout; more: a calm count - both behind the serv
   assert.match(devices, /onclick=\{\(\) => \{ linkMode = "link"; linking = true; \}\} disabled=\{busy\}>Add a device<\/button>/);
   // Shown only with no flow open, never on a device linked the old way.
   assert.match(m, /\{#if auth\.isConnected && isPasskey && loaded && !linkedOnly && !linking && adding === "closed"\}\s*<section class="block" aria-labelledby="backup-title">/);
+});
+
+test("the device flows name the real path", () => {
+  const linkThis = flat(read("../src/lib/components/passkeys/LinkThisDevice.svelte"));
+  assert.match(linkThis, /open WoCo and go to Account & security, then tap Add a device\. Scan this code, or type it there:/);
+  assert.match(linkThis, /navigate\("\/account"\)\}>Account & security<\/button>/);
+  assert.doesNotMatch(linkThis, /go to Your passkeys|Add another device/);
+  const linkAnother = flat(read("../src/lib/components/passkeys/LinkAnotherDevice.svelte"));
+  assert.match(linkAnother, /first open woco\.eth\.limo on the laptop, tap Sign in, then Add this device\./);
+  const devices = flat(markupOf(PASSKEYS).slice(markupOf(PASSKEYS).indexOf('id="devices-title"')));
+  assert.match(devices, /Just sign in there - nothing to add\./);
+  assert.match(devices, /tap Sign in, then 'Add this device'\. Then tap Add a device here and scan the code it shows\./);
+  assert.match(read("../src/lib/creator/home/CreatorHome.svelte"), /navigate\("\/account"\)\}>Account & security →<\/button>/);
+});
+
+test("the after-creation note points at Account & security with the real unlock rule", () => {
+  const login = flat(read("../src/lib/components/auth/PasskeyLogin.svelte"));
+  assert.match(login, /from Account & security\./);
+  assert.ok(login.includes(`That unlocks ${UNLOCK_RULE}.`), "the note says the rule the server applies");
+});
+
+test("no em dash in the moved and reworded copy", () => {
+  for (const file of [
+    "../src/lib/components/account/AccountSecurity.svelte",
+    "../src/lib/components/passkeys/YourPasskeys.svelte",
+    "../src/lib/components/passkeys/LinkThisDevice.svelte",
+    "../src/lib/components/passkeys/LinkAnotherDevice.svelte",
+  ]) {
+    assert.doesNotMatch(markupOf(read(file)), /—/, file);
+  }
 });
