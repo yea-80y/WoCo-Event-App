@@ -95,6 +95,9 @@ export type EndDateEditVerdict =
   | { ok: true }
   | { ok: false; error: string };
 
+/** The prefix `routes/events.ts` update-meta maps to a 400. */
+export const END_DATE_PAST_SALES_CLOSE = "The end date can't be later than ticket sales close";
+
 /**
  * EDIT-TIME guard: may the event's `endDate` become `newEndMs`?
  *
@@ -121,7 +124,7 @@ export async function checkEndDateExtension(args: {
   } catch {
     return {
       ok: false,
-      error: "Could not verify the on-chain sales end — please try extending the date again in a moment",
+      error: "Could not verify when ticket sales close - please try extending the date again in a moment",
     };
   }
 
@@ -132,9 +135,9 @@ export async function checkEndDateExtension(args: {
     return {
       ok: false,
       error:
-        "endDate cannot extend past the on-chain sales end " +
-        `(${new Date(minEnd).toISOString()}) — ticket sales are registered on-chain with a fixed close, ` +
-        "so an extended date would sell tickets every mint refuses. Shortening is always allowed.",
+        `${END_DATE_PAST_SALES_CLOSE} (${new Date(minEnd).toISOString()}). Sales close at a fixed ` +
+        "time set when your tickets were created, so a later end date would sell tickets that can't " +
+        "be issued. You can always make it earlier.",
     };
   }
   return { ok: true };
