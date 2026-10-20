@@ -55,11 +55,11 @@ export interface ReleaseRailPlan {
 
 /** Shown to a Coinbase Smart Wallet holder until its own-transaction rail exists. */
 const COINBASE_PENDING =
-  "Discarding a name from a Coinbase Smart Wallet arrives with its own transaction rail — the name stays yours.";
+  "Discarding a domain from a Coinbase Smart Wallet is coming soon. The domain stays yours.";
 
 /** Shown when the holder is a smart account that does not exist on the name's chain. */
 const AA_PENDING =
-  "Discarding a name from this account arrives with the Arbitrum One account move — the name stays yours.";
+  "Discarding a domain from this account is coming soon. The domain stays yours.";
 
 export function releaseRails(
   kind: AuthKind,
@@ -83,11 +83,11 @@ export function releaseRails(
       return { available: false, rails: [], reason: COINBASE_PENDING };
 
     case "none":
-      return { available: false, rails: [], reason: "Sign in to manage your names." };
+      return { available: false, rails: [], reason: "Sign in to manage your domains." };
 
     // Declared in AuthKind, never implemented (no ed25519 adapter). Refuse
     // rather than assume a signing shape that does not exist.
     case "zupass":
-      return { available: false, rails: [], reason: "This sign-in method can't discard a name." };
+      return { available: false, rails: [], reason: "This sign-in method can't discard a domain." };
   }
 }

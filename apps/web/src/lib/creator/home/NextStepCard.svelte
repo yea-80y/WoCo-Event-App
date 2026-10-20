@@ -47,9 +47,9 @@
       about: "Privacy",
     },
     name: {
-      title: "Couldn't check your name",
-      text: "We couldn't confirm whether your name is ready to claim, so you haven't been moved on.",
-      about: "Your name",
+      title: "Couldn't check your domain",
+      text: "We couldn't confirm whether your domain is ready to claim, so you haven't been moved on.",
+      about: "Your domain",
     },
     audience: {
       title: "Couldn't check for an attendee list",
@@ -101,9 +101,9 @@
       case "name":
         return {
           setup: "name",
-          title: "Claim your name",
-          text: "Choose a name like yourclub.woco.eth. It becomes how people see you on WoCo.",
-          action: { label: "Claim your name", run: onname },
+          title: "Claim your free domain",
+          text: "Choose a domain like yourclub.woco.eth. It becomes how people see you on WoCo.",
+          action: { label: "Claim your domain", run: onname },
         };
       case "import":
         return {

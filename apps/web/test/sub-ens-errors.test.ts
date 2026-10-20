@@ -24,8 +24,8 @@ test("the mint cap reports the wait, converting the contract's SECONDS to ms", (
   // WoCoRegistrar reverts with a block timestamp: unix seconds.
   const windowResetsAt = Math.floor(NOW / 1000) + 3600;
   const d = describeSubEnsError({ error: "mint_rate_cap", data: { windowResetsAt } });
-  assert.equal(d.title, "You've registered as many names as you can for now.");
-  assert.equal(d.detail, "You can register another one after the wait ends.");
+  assert.equal(d.title, "You've claimed as many domains as you can for now.");
+  assert.equal(d.detail, "You can claim another one after the wait ends.");
   assert.equal(d.retryAt, windowResetsAt * 1000);
   // The conversion is the whole point: unconverted, the retry lands in 1970.
   assert.ok(d.retryAt! > NOW, "retryAt must be in the future, not a raw seconds value");
@@ -35,13 +35,13 @@ test("the mint cap reports the wait, converting the contract's SECONDS to ms", (
 test("a mint cap with no window still describes itself, without a retry time", () => {
   const d = describeSubEnsError({ error: "mint_rate_cap" });
   assert.equal(d.retryAt, undefined);
-  assert.match(d.title, /as many names as you can/);
+  assert.match(d.title, /as many domains as you can/);
 });
 
 test("the rename cooldown passes its epoch MS through unscaled", () => {
   const nextChangeAllowedAt = NOW + 3 * 86_400_000;
   const d = describeSubEnsError({ error: "name_change_cooldown", nextChangeAllowedAt });
-  assert.equal(d.title, "Your profile name was changed recently.");
+  assert.equal(d.title, "Your profile domain was changed recently.");
   assert.equal(d.detail, "You can change it again once the cooldown ends.");
   assert.equal(d.retryAt, nextChangeAllowedAt);
   assert.equal(formatRetryAt(d.retryAt!, NOW), "in 3 days");
@@ -55,8 +55,8 @@ test("a null nextChangeAllowedAt yields no retry time", () => {
 
 test("the profile name is refused as a site or event address, in words", () => {
   const d = describeSubEnsError({ error: "profile_name" });
-  assert.equal(d.title, "That's your profile name.");
-  assert.equal(d.detail, "It can't be used as a site or event address — pick a different name.");
+  assert.equal(d.title, "That's your profile domain.");
+  assert.equal(d.detail, "It can't be used for a site or event. Pick a different domain.");
   assert.equal(d.retryAt, undefined);
 });
 
@@ -66,7 +66,7 @@ test("rate_limited, release_in_flight and expiration_out_of_range each say what 
     detail: "Wait a few minutes and try again.",
   });
   assert.deepEqual(describeSubEnsError({ error: "release_in_flight" }), {
-    title: "That name is already being released.",
+    title: "That domain is already being released.",
     detail: "Give it a minute, then refresh.",
   });
   assert.deepEqual(describeSubEnsError({ error: "expiration_out_of_range" }), {
@@ -77,20 +77,20 @@ test("rate_limited, release_in_flight and expiration_out_of_range each say what 
 
 test("not_owner explains the loss; the two unverified spellings both mean 'we could not check'", () => {
   const lost = describeSubEnsError({ error: "not_owner" });
-  assert.equal(lost.title, "You don't own that name any more.");
+  assert.equal(lost.title, "You don't own that domain any more.");
   // The deploy response says "unverified"; refuseUnlessOwner says
   // "ownership_unverified". Neither is evidence the name is gone.
   const a = describeSubEnsError({ error: "unverified" });
   const b = describeSubEnsError({ error: "ownership_unverified" });
   assert.deepEqual(a, b);
-  assert.equal(a.title, "Couldn't confirm your name on-chain right now.");
+  assert.equal(a.title, "Couldn't confirm your domain right now.");
   assert.match(a.detail!, /Nothing was changed/);
   assert.notEqual(a.title, lost.title, "an unanswered read must not read as dispossession");
 });
 
 test("ticket_required is left to the gate flow — a title, nothing else", () => {
   const d = describeSubEnsError({ error: "ticket_required" });
-  assert.equal(d.title, unlocksWhen("Your name"));
+  assert.equal(d.title, unlocksWhen("Your domain"));
   assert.equal(d.detail, undefined);
 });
 
@@ -150,12 +150,12 @@ test("a thrown ApiError keeps the envelope, so the catch block can still describ
   assert.equal(err.body.nextChangeAllowedAt, nextChangeAllowedAt);
 
   const d = subEnsErrorFrom(err, "fallback");
-  assert.equal(d.title, "Your profile name was changed recently.");
+  assert.equal(d.title, "Your profile domain was changed recently.");
   assert.equal(d.retryAt, nextChangeAllowedAt);
 });
 
 test("a plain Error and a mint-cap ApiError both survive the narrowing", () => {
-  assert.equal(subEnsErrorFrom(new Error("profile_name"), "fallback").title, "That's your profile name.");
+  assert.equal(subEnsErrorFrom(new Error("profile_name"), "fallback").title, "That's your profile domain.");
   assert.equal(subEnsErrorFrom({}, "fallback").title, "fallback");
   const windowResetsAt = Math.floor(NOW / 1000) + 120;
   const capped = new ApiError("mint_rate_cap", {
@@ -169,7 +169,7 @@ test("a plain Error and a mint-cap ApiError both survive the narrowing", () => {
 
 test("a name with names beneath it, and a lagging chain clock, each say what to do", () => {
   assert.deepEqual(describeSubEnsError({ error: "has_children" }), {
-    title: "This name has names beneath it.",
+    title: "This domain has other domains beneath it.",
     detail: "Release or move those first, then this one.",
   });
   const late = describeSubEnsError({ error: "expiration_too_far" });

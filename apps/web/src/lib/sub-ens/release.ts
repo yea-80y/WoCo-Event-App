@@ -76,7 +76,7 @@ export async function prepareRelease(label: string): Promise<{
   // may run up to a day behind real time or an hour ahead of it, and the relay
   // bounds the window against the same block (audit 950 Low 13).
   const latest = await provider.getBlock("latest");
-  if (!latest) throw new Error("Could not read the registry chain's clock. Nothing was signed.");
+  if (!latest) throw new Error("Couldn't reach the network to check the time. Nothing was signed.");
   const expiration = releaseExpiration(latest.timestamp * 1000);
   const [recordVersion, onChainDigest] = await Promise.all([
     registry.recordVersions(node) as Promise<bigint>,
@@ -151,7 +151,7 @@ export async function releaseName(
 
   console.warn("[sub-ens] release relay refused, falling back to own signer:", relayed.error);
   const fallback = opts.kernelRelease ?? opts.walletRelease;
-  if (!fallback) throw new Error(relayed.error ?? "Could not release the name");
+  if (!fallback) throw new Error(relayed.error ?? "Could not release the domain");
   const { txHash } = await fallback(node);
   rememberOwner(label, null);
   return { txHash, via: opts.kernelRelease ? "kernel" : "wallet" };

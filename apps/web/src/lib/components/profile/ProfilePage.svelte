@@ -290,8 +290,8 @@
     const gate = canOpenRename(status);
     if (gate.open) return true;
     renameBlocked = gate.retryAt
-      ? `You can change your name again ${formatRetryAt(gate.retryAt)}.`
-      : "You can't change your name again yet.";
+      ? `You can change your profile domain again ${formatRetryAt(gate.retryAt)}.`
+      : "You can't change your profile domain again yet.";
     return false;
   }
 
@@ -309,7 +309,7 @@
     const previous = profile?.subEnsLabel;
     try {
       const updated = await updateProfile({ subEnsLabel: label }, (outcome) => {
-        if (outcome.warning) ensBindWarning = 'This name already points at a site, and keeps doing so.';
+        if (outcome.warning) ensBindWarning = 'This domain already points at a site, and keeps doing so.';
         if (outcome.pointer) ensPointer = { label, target: outcome.pointer.target };
       });
       if (updated) {
@@ -324,15 +324,15 @@
       if (isTicketRequired(err)) {
         const unlocked = await gate.request();
         if (unlocked) return handleSubEnsClaim(label);
-        ensBindError = unlocksWhen('Your name');
+        ensBindError = unlocksWhen('Your domain');
         return;
       }
-      const described = subEnsErrorFrom(err, 'Failed to save name to profile');
+      const described = subEnsErrorFrom(err, "Couldn't save the domain to your profile");
       ensBindError = described.title;
       // The old blanket suffix is only true when the mint succeeded and the
       // BIND failed, which is exactly the case a known code does not describe.
       ensBindDetail = subEnsErrorDetail(described)
-        ?? 'The name is registered on-chain — try again to link it to your profile.';
+        ?? 'The domain is yours. Try again to link it to your profile.';
       console.error("Failed to bind sub-ENS to profile:", err);
     }
   }
@@ -584,7 +584,7 @@
         </div>
 
         {#if profile?.subEnsLabel && nameVerified}
-          <span class="ens-chip" title="{profile.subEnsLabel}.woco.eth — on-chain identity">
+          <span class="ens-chip" title="Profile domain">
             <svg width="11" height="11" viewBox="0 0 15 15" fill="none" aria-hidden="true">
               <path d="M7.5 1L9.5 5.5H14.5L10.5 8.5L12 13.5L7.5 10.5L3 13.5L4.5 8.5L0.5 5.5H5.5L7.5 1Z"
                     fill="var(--accent)" opacity="0.14" stroke="var(--accent)" stroke-width="1.1" stroke-linejoin="round"/>
@@ -832,10 +832,10 @@
              and a web address for its sites. Following is keyed to the account
              itself, so a name is not required to be followed. -->
         <section class="settings-card">
-          <h2 class="card-title">Web3 identity</h2>
+          <h2 class="card-title">Profile domain</h2>
           <p class="card-hint">
-            Claim a permanent <code>.woco.eth</code> name for your profile. People
-            can follow it on-chain, and it doubles as your payment address.
+            Claim a free, permanent <code>.woco.eth</code> domain for your profile.
+            It's how people find you, and it doubles as your payment address.
           </p>
           <SubENSPicker
             claimedLabel={profile?.subEnsLabel}

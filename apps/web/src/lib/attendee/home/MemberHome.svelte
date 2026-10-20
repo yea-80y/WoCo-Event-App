@@ -123,19 +123,19 @@
 
     {#if nameState !== "unknown"}
       <section class="block">
-        <h2 class="section-label">Your name</h2>
+        <h2 class="section-label">Your profile domain</h2>
         {#if nameState === "claimed"}
           <p class="name">{profileName}<span class="tld">.woco.eth</span></p>
-          <p class="note">Your name on WoCo, and the one your invite link uses.</p>
+          <p class="note">How people find you on WoCo, and what your invite link uses.</p>
         {:else if nameState === "unlocked"}
           <p class="note">
-            Your account is unlocked. Claim a name and it becomes how people see you, and your
-            invite link uses it.
+            Your account is unlocked. Claim a free domain and it becomes how people see you, and
+            your invite link uses it.
           </p>
           <button
             class="btn btn--ghost"
             onclick={() => navigate(`/profile/${auth.parent?.toLowerCase()}`)}
-          >Claim your name</button>
+          >Claim your domain</button>
         {:else}
           <p class="name name--locked">
             <span class="blank" aria-hidden="true"></span><span class="tld">.woco.eth</span>

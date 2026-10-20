@@ -187,9 +187,9 @@
   }));
 
   const LINK_NOTES: Record<NonNullable<SubEnsLinkNote>, string> = {
-    identity: 'This is your identity and payment name. It does not open as a website.',
-    registering: 'Registering. Your address goes live after the first deploy.',
-    updating: 'Pointing your name at the new version. This can take a minute.',
+    identity: 'This is your profile domain and payment address. It does not open as a website.',
+    registering: 'Claiming. Your domain goes live after the first deploy.',
+    updating: 'Pointing your domain at the new version. This can take a minute.',
     'stale-version': 'Updating to the latest version.',
     'gave-up': 'Still updating. Check back in a few minutes.',
   };
@@ -326,7 +326,7 @@
       if (!res.ok && isTicketRequired(res.error)) {
         const unlocked = await gate.request();
         if (!unlocked) {
-          claimError = unlocksWhen('Your name');
+          claimError = unlocksWhen('Your domain');
           return;
         }
         res = await attempt();
@@ -393,12 +393,12 @@
             </svg>
           </span>
           <div class="lock-text">
-            <p class="lock-title">Claim your free <code class="inline-code">.woco.eth</code> address</p>
+            <p class="lock-title">Claim your free <code class="inline-code">.woco.eth</code> domain</p>
             <p class="lock-sub">
               {#if lock === "signed-out"}
                 Sign in to get started.
               {:else}
-                {unlocksWhen("Your name")} Stripe takes about 2 minutes.
+                {unlocksWhen("Your domain")} Stripe takes about 2 minutes.
               {/if}
             </p>
           </div>
@@ -415,7 +415,7 @@
         <ul class="feature-list feature-list--muted" aria-label="What you get">
           <li>
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            Permanent ENS name on Arbitrum — no domain registrar
+            Free and permanent, no domain registrar needed
           </li>
           <li>
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -446,7 +446,7 @@
           </svg>
         </span>
         <div class="profile-name-text">
-          <span class="profile-name-label">Your name</span>
+          <span class="profile-name-label">Your profile domain</span>
           <span class="claimed-headline">{ensName}</span>
         </div>
         <button
@@ -485,14 +485,14 @@
         {#if onunlink}
           <button
             class="action-btn action-btn--unlink"
-            title="Stop using this name for this site. You keep the name."
+            title="Stop using this domain for this site. You keep the domain."
             onclick={() => { claimedLabel = undefined; onunlink?.(); }}
           >
             Unlink
           </button>
         {/if}
         {#if linkState.showOpen}
-          <a class="action-btn action-btn--open" href={ensUrl} target="_blank" rel="noopener" title="Live on ENS — open this address">
+          <a class="action-btn action-btn--open" href={ensUrl} target="_blank" rel="noopener" title="Open this domain">
             Open ↗
           </a>
         {:else if linkNote}
@@ -514,9 +514,9 @@
         </p>
         {#if onunlink}
           <p class="claimed-note claimed-note--muted">
-            Unlinking stops future publishes updating this address. It keeps
-            pointing at your last published site until you point it somewhere
-            else — the address itself can't be blanked.
+            Unlinking stops future publishes updating this domain. It can't be
+            left blank, so it keeps opening your last published site until you
+            point it somewhere else.
           </p>
         {/if}
       {:else}
@@ -525,7 +525,7 @@
             <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.3"/>
             <path d="M6 4v3.5M6 9v.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
           </svg>
-          Publish your site to link it to this address.
+          Publish your site to link it to this domain.
         </p>
       {/if}
     </div>
@@ -541,21 +541,21 @@
           <path d="M7.5 1L9.5 5.5H14.5L10.5 8.5L12 13.5L7.5 10.5L3 13.5L4.5 8.5L0.5 5.5H5.5L7.5 1Z"
                 fill="var(--accent)" opacity="0.12" stroke="var(--accent)" stroke-width="1.2" stroke-linejoin="round"/>
         </svg>
-        ENS
+        Free
       </span>
       <div class="picker-head-text">
-        <p class="picker-title">Claim your free web3 address</p>
-        <p class="picker-sub">Every WoCo site gets a permanent <code class="inline-code">.woco.eth</code> name — no domain registrar needed.</p>
+        <p class="picker-title">Claim your free WoCo domain</p>
+        <p class="picker-sub">Get a free, permanent <code class="inline-code">.woco.eth</code> domain. No domain registrar needed.</p>
       </div>
     </div>
 
     <!-- Mode toggle: claim a fresh name vs reuse one you already own -->
-    <div class="mode-toggle" role="tablist" aria-label="Address source">
+    <div class="mode-toggle" role="tablist" aria-label="Which domain">
       <button type="button" class="mode-btn" class:mode-btn--active={claimMode === 'new'} role="tab" aria-selected={claimMode === 'new'} onclick={() => selectMode('new')}>
-        Claim a new name
+        Claim a new domain
       </button>
       <button type="button" class="mode-btn" class:mode-btn--active={claimMode === 'existing'} role="tab" aria-selected={claimMode === 'existing'} onclick={() => selectMode('existing')}>
-        Use a name I own
+        Use a domain I own
       </button>
     </div>
 
@@ -565,12 +565,12 @@
         names={offerNames}
         onselect={useExisting}
         onretry={() => { ownedState = 'idle'; loadOwned(); }}
-        emptyText="You haven't claimed any .woco.eth names yet — switch to “Claim a new name”."
+        emptyText="You haven't claimed any .woco.eth domains yet. Switch to “Claim a new domain”."
       />
       {#if profileHidden && (ownedState === 'ready' || ownedState === 'empty')}
-        <p class="reuse-hint">Your profile name can't be a site or event address.</p>
+        <p class="reuse-hint">Your profile domain can't be used for a site or event.</p>
       {/if}
-      <p class="reuse-hint">Linking a name you own points it at this site on your next publish — replacing wherever it points now.</p>
+      <p class="reuse-hint">Linking a domain you own points it at this site on your next publish, replacing wherever it points now.</p>
     {:else}
     <!-- Label input row -->
     <div class="input-row">
@@ -623,14 +623,14 @@
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
           <path d="M2 6.2l2.8 2.8L10 4" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-        You own this name — re-link it to your profile
+        You own this domain. Use it again here.
       </p>
     {:else if checkPhase === 'taken'}
       <p class="avail-msg avail-msg--bad">
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
           <path d="M3 3l6 6M9 3L3 9" stroke="#ef4444" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
-        {checkMsg || 'Already taken — try a different name'}
+        {checkMsg || 'Already taken. Try a different domain.'}
       </p>
     {:else if checkPhase === 'invalid'}
       <p class="avail-msg avail-msg--warn">
@@ -667,17 +667,17 @@
       <button class="claim-btn" onclick={doClaim} disabled={claiming}>
         {#if claiming}
           <span class="btn-spinner" aria-hidden="true"></span>
-          Registering on Arbitrum…
+          Claiming your domain…
         {:else}
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path d="M7 1L9 5.5H13.5L9.5 8.5L11 13L7 10L3 13L4.5 8.5L0.5 5.5H5L7 1Z"
                   fill="currentColor" opacity="0.2" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
           </svg>
-          Claim {previewLabel}.woco.eth — free
+          Claim {previewLabel}.woco.eth for free
         {/if}
       </button>
     {:else if checkPhase === 'idle' && !rawInput}
-      <p class="cta-hint">Enter a name above to get started — it's free and permanent.</p>
+      <p class="cta-hint">Type the domain you want above. It's free and permanent.</p>
     {/if}
 
     <!-- What you get note -->
@@ -689,7 +689,7 @@
         </li>
         <li>
           <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Permanent — registered on Arbitrum, not a WoCo database
+          Permanent, and it belongs to your account, not to WoCo
         </li>
         <li>
           <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M1.5 5.5l3 3 5-5" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>

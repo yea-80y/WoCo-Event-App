@@ -53,7 +53,7 @@
    */
   async function buildRails() {
     const parent = auth.parent;
-    if (!parent) throw new Error("Sign in again to discard a name.");
+    if (!parent) throw new Error("Sign in again to discard a domain.");
     const { JsonRpcSigner } = await import("ethers");
 
     return {
@@ -99,7 +99,7 @@
       phase = "done";
       ondiscarded?.(label);
     } catch (err) {
-      const described = subEnsErrorFrom(err, "Couldn't discard the name");
+      const described = subEnsErrorFrom(err, "Couldn't discard the domain");
       errTitle = described.title;
       errDetail = subEnsErrorDetail(described) ?? "";
       phase = "confirm";
@@ -118,11 +118,11 @@
 <div class="backdrop" role="presentation" onclick={() => phase !== "working" && onclose()}>
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_interactive_supports_focus -->
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Discard name" onclick={(e) => e.stopPropagation()}>
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Discard domain" onclick={(e) => e.stopPropagation()}>
     {#if phase === "done"}
       <h2 class="title">{ensName} is gone</h2>
       <p class="body">
-        The name is released. Anyone can register it now — including you, if you
+        The domain is released. Anyone can claim it now, including you if you
         change your mind quickly enough.
         {#if sponsored}<span class="sponsored">Done — we covered the fee.</span>{/if}
       </p>
@@ -138,10 +138,10 @@
     {:else}
       <h2 class="title">Discard {ensName}?</h2>
       <p class="body">
-        This burns <strong>{ensName}</strong> for good. Anyone can register it
-        afterwards. Anything pointing at it — a site, an event page, your
-        profile — stops resolving, and invite links that use it stop crediting
-        you.
+        This gives up <strong>{ensName}</strong> for good. Anyone can claim it
+        afterwards. Anything it opens now (a site, an event page or your
+        profile) can no longer be reached through it, and invite links that use
+        it stop crediting you.
       </p>
       <label class="field">
         <span class="field-label">Type <code>{label}</code> to confirm</span>
