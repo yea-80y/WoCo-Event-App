@@ -4,6 +4,8 @@ import { siteCreatorDirectoryTopic, siteConfigTopic, sitePagesTopicFn, siteEvent
 import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex, Page, Hex0x, VersionedFeedRead } from "@woco/shared";
 import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed, type FeedReadStrictResult } from "../swarm/feeds.js";
 import { readContentFeedJsonResult } from "../swarm/soc-upload.js";
+import { createDisplayReadMemo, type DisplayRead } from "../swarm/display-read-memo.js";
+import { createFirstWriteRetryQueue } from "../swarm/first-write-retry.js";
 import { freshWrittenEventsIndex } from "./events-index.js";
 
 const DIR_PAGE_LIMIT = 4096;
@@ -214,14 +216,20 @@ export async function resolveSiteConfigOrNull(
   return res.status === "found" ? { site: res.site, siteFeedSigner: res.siteFeedSigner } : null;
 }
 
-// In-memory memo for getCreatorSites — collapses burst reads when the
-// creator portal mounts AND repeat loads across tabs/refreshes. 5 minutes
-// matches CREATOR_EVENTS_MEMO_TTL_MS. Upsert paths bypass with
-// { fresh: true } and invalidate on write so a newly published / deployed
-// site appears immediately for its author.
-const CREATOR_SITES_MEMO_TTL_MS = 5 * 60_000;
-const _creatorSitesMemo = new Map<string, { at: number; data: SiteDirectoryEntry[] }>();
-const _creatorSitesInFlight = new Map<string, Promise<SiteDirectoryEntry[]>>();
+// Memo for getCreatorSites — collapses burst reads when the creator portal
+// mounts AND repeat loads across tabs/refreshes. 5 minutes matches
+// CREATOR_EVENTS_MEMO_TTL_MS. Upserts invalidate on write so a newly published /
+// deployed site appears immediately for its author.
+//
+// A directory that does not exist yet is memoized too, for 90 s: a first-time
+// creator's builder read it on every open, and those misses put its chunk on
+// bee's skip list just before Publish (display-read-memo.ts). An unreadable
+// directory is never memoized.
+const creatorSitesMemo = createDisplayReadMemo<SiteDirectoryEntry[]>({
+  ttlMs: 5 * 60_000,
+  emptyTtlMs: 90_000,
+  isEmpty: (entries) => entries.length === 0,
+});
 
 /**
  * Fetch just the theme palette + brandName for a site. Used by the Stripe
@@ -288,29 +296,34 @@ export async function resolveSiteEventSigner(
 }
 
 export function invalidateCreatorSitesCache(ethAddress: string): void {
-  _creatorSitesMemo.delete(ethAddress.toLowerCase());
+  creatorSitesMemo.invalidate(ethAddress.toLowerCase());
 }
 
+/**
+ * The creator's directory for DISPLAY: [] when it is absent and also when it
+ * cannot be read. Never the base of a directory write: that is
+ * `readCreatorSitesStrict`, which refuses instead.
+ */
 export async function getCreatorSites(
   ethAddress: string,
   opts: { fresh?: boolean } = {},
 ): Promise<SiteDirectoryEntry[]> {
   const key = ethAddress.toLowerCase();
-  if (!opts.fresh) {
-    const memo = _creatorSitesMemo.get(key);
-    if (memo && Date.now() - memo.at < CREATOR_SITES_MEMO_TTL_MS) return memo.data;
-    const inFlight = _creatorSitesInFlight.get(key);
-    if (inFlight) return inFlight;
-  }
+  const res = await creatorSitesMemo.read(key, () => loadCreatorSites(key), opts);
+  return res.status === "ok" ? res.data : [];
+}
 
-  const load = (async () => {
-    const page0 = await readFeedPage(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)));
-    if (!page0) return [];
-    const dir = decodeJsonFeed<SiteDirectory>(page0);
-    if (!dir) return [];
+/** Page 0 strictly, so absent and unreadable stay apart; overflow pages leniently, as before. */
+async function loadCreatorSites(ethAddress: string): Promise<DisplayRead<SiteDirectoryEntry[]>> {
+  try {
+    const page0 = await readFeedPageStrict(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)));
+    if (page0.status === "error") return { status: "error" };
+    if (page0.status === "absent") return { status: "ok", data: [] };
+    const dir = decodeJsonFeed<SiteDirectory>(page0.data);
+    if (!dir || !Array.isArray(dir.entries)) return { status: "error" };
 
     const totalPages = dir.pages ?? 0;
-    if (totalPages === 0) return [...dir.entries];
+    if (totalPages === 0) return { status: "ok", data: [...dir.entries] };
 
     const overflow = await Promise.all(
       Array.from({ length: totalPages }, (_, i) =>
@@ -323,22 +336,9 @@ export async function getCreatorSites(
       const decoded = decodeJsonFeed<SiteDirectory>(pageData);
       if (decoded?.entries) all.push(...decoded.entries);
     }
-    return all;
-  })();
-
-  _creatorSitesInFlight.set(key, load);
-  try {
-    const data = await load;
-    // Only memoize populated results. readFeedPage() swallows transient
-    // errors into null (returning []), which would otherwise pin an empty
-    // response for CREATOR_SITES_MEMO_TTL_MS — exactly the "navigate away,
-    // come back" symptom on first creator-portal load.
-    if (data.length > 0) {
-      _creatorSitesMemo.set(key, { at: Date.now(), data });
-    }
-    return data;
-  } finally {
-    _creatorSitesInFlight.delete(key);
+    return { status: "ok", data: all };
+  } catch {
+    return { status: "error" };
   }
 }
 
@@ -411,23 +411,43 @@ async function readCreatorSitesStrict(ethAddress: string): Promise<SiteDirectory
 }
 
 /**
- * Upsert a site entry into the creator's directory feed.
- * Existing entry for the same siteId is replaced (updates feedHash, deployedUrl, etc).
+ * Upsert a site entry into the creator's directory feed. An existing entry for
+ * the same siteId is merged over, not replaced (see `applyUpsert`).
  *
- * Throws if the prior directory state can't be read confidently — refuses
- * to write rather than risk overwriting the directory with a partial view.
- * Callers (publish / deploy) invoke this fire-and-forget so the throw
- * surfaces as a logged warning; the published site itself is unaffected.
+ * Through the creator's first-write-retry queue: upserts apply in order, one
+ * read-modify-write at a time, so a publish and its deploy cannot both build on
+ * one read and drop each other's fields; one arriving while an earlier one
+ * retries is merged into it. A directory that cannot be read is never written
+ * as empty (that would wipe every other site the creator has): the attempt is
+ * retried past bee's one-minute skip list, the usual cause on a first site, and
+ * a change finally given up on is logged whole for replay. Publish and deploy
+ * do not await this; the site itself is unaffected either way.
  */
-export async function upsertCreatorSite(ethAddress: string, entry: SiteDirectoryEntry): Promise<void> {
-  const existing = await readCreatorSitesStrict(ethAddress);
-  const prior = existing.find((e) => e.siteId === entry.siteId);
-  const filtered = existing.filter((e) => e.siteId !== entry.siteId);
-  // Merge over the prior entry so a caller that doesn't know a field (publish
-  // doesn't know feedHash/deployedUrl; deploy doesn't know siteFeedSigner)
-  // never wipes what the other wrote.
-  const updated = [{ ...prior, ...entry }, ...filtered]; // most-recently-published first
-  await writeDirectoryPages(updated, (p) => siteCreatorDirectoryTopic(ethAddress, p));
-  invalidateCreatorSitesCache(ethAddress);
-  console.log(`[site] Creator directory updated for ${ethAddress}: ${updated.length} site(s)`);
+export function upsertCreatorSite(ethAddress: string, entry: SiteDirectoryEntry): Promise<void> {
+  return creatorDirectoryQueue.enqueue(ethAddress.toLowerCase(), entry);
+}
+
+const creatorDirectoryQueue = createFirstWriteRetryQueue<SiteDirectoryEntry[], SiteDirectoryEntry>({
+  label: "[site] Creator directory",
+  read: readCreatorSitesStrict,
+  write: async (creator, existing, entries) => {
+    const updated = entries.reduce(applyUpsert, existing);
+    await writeDirectoryPages(updated, (p) => siteCreatorDirectoryTopic(creator, p));
+    invalidateCreatorSitesCache(creator);
+    console.log(`[site] Creator directory updated for ${creator}: ${updated.length} site(s)`);
+  },
+  idOf: (entry) => entry.siteId,
+  merge: (earlier, later) => ({ ...earlier, ...later }),
+  replayPayload: (creator, entry) => ({ creator, siteId: entry.siteId, entry }),
+});
+
+/**
+ * One upsert applied to a directory, most recently published first. Merged over
+ * the prior entry so a caller that doesn't know a field (publish doesn't know
+ * feedHash/deployedUrl; deploy doesn't know siteFeedSigner) never wipes what the
+ * other wrote.
+ */
+function applyUpsert(dir: SiteDirectoryEntry[], entry: SiteDirectoryEntry): SiteDirectoryEntry[] {
+  const prior = dir.find((e) => e.siteId === entry.siteId);
+  return [{ ...prior, ...entry }, ...dir.filter((e) => e.siteId !== entry.siteId)];
 }
