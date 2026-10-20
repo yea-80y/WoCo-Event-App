@@ -842,6 +842,16 @@
               <span class="account-link-arrow" aria-hidden="true">→</span>
             </button>
           </div>
+          <!-- Passkey accounts add devices: the phone's way to the scanner. A flag only -
+               Account & security opens it where its own Add a device button is offered. -->
+          {#if auth.kind === "passkey"}
+            <div class="info-row account-row">
+              <button class="account-link" onclick={() => navigate("/account?add-device")}>
+                <span>Add a device</span>
+                <span class="account-link-arrow" aria-hidden="true">→</span>
+              </button>
+            </div>
+          {/if}
 
           <!-- Permanent install entry for organisers and attendees alike (lazy chunk). -->
           {#if !isStandalone()}
