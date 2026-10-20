@@ -35,6 +35,8 @@ import {
   topicCreatorDirectory,
   topicEvent,
 } from "../swarm/topics.js";
+import { createFirstWriteRetryQueue } from "../swarm/first-write-retry.js";
+import { createDisplayReadMemo, type DisplayRead } from "../swarm/display-read-memo.js";
 
 /**
  * Batch routing for a LEGACY (platform-signed) event detail feed restamp —
@@ -728,13 +730,14 @@ export async function updateEventMetadata(opts: {
  * Mirror edited metadata into the per-creator index (organiser view). Non-fatal:
  * the feed is the source of truth for the detail page; the index is discovery. The
  * entry is patched ONLY if its own platform-written `creatorAddress` matches the
- * verified caller.
+ * verified caller. Through the creator's index queue, so it lands after the add it
+ * may be racing and never builds on the same read as a delete (#942).
  *
  * #37: the GLOBAL directory is no longer patched here — its cards are rebuilt from
  * content by the snapshot builder (see the scheduleSnapshotRebuild call in the caller).
  */
-async function updateDirectoryEntriesMeta(updated: EventFeed, parentAddress: string): Promise<void> {
-  const patch: Partial<EventDirectoryEntry> = {
+function updateDirectoryEntriesMeta(updated: EventFeed, parentAddress: string): Promise<void> {
+  const fields: Partial<EventDirectoryEntry> = {
     title: updated.title,
     tagline: updated.tagline ?? "",
     imageHash: updated.imageHash,
@@ -742,32 +745,12 @@ async function updateDirectoryEntriesMeta(updated: EventFeed, parentAddress: str
     endDate: updated.endDate,
     location: updated.location,
   };
-
-  try {
-    const creatorTopic = (p: number) => topicCreatorDirectory(updated.creatorAddress, p);
-    if (await patchDirectoryEntryMeta(creatorTopic, updated.eventId, parentAddress, patch)) {
-      invalidateCreatorEventsCache(updated.creatorAddress);
-    }
-  } catch (err) {
-    console.error("[event] creator directory meta patch failed (non-critical):", err);
-  }
-}
-
-/** Strict-read a directory, patch the matching entry (ownership re-checked at the
- *  write boundary), rewrite pages. Returns true if a write happened. */
-async function patchDirectoryEntryMeta(
-  topicFn: (page: number) => import("@ethersphere/bee-js").Topic,
-  eventId: string,
-  parentAddress: string,
-  patch: Partial<EventDirectoryEntry>,
-): Promise<boolean> {
-  const entries = await readDirectoryStrict(topicFn);
-  const idx = entries.findIndex((e) => e.eventId === eventId);
-  if (idx === -1) return false;
-  if (entries[idx].creatorAddress.toLowerCase() !== parentAddress) return false;
-  entries[idx] = { ...entries[idx], ...patch };
-  await writeDirectoryPages(entries, new Date().toISOString(), topicFn);
-  return true;
+  return creatorIndexQueue.enqueue(updated.creatorAddress.toLowerCase(), {
+    kind: "patch",
+    eventId: updated.eventId,
+    owner: parentAddress.toLowerCase(),
+    fields,
+  }).written;
 }
 
 // ---------------------------------------------------------------------------
@@ -829,20 +812,24 @@ export async function deleteEventIfNoOrders(opts: {
 
 /** Remove an event's entry from its creator's index (delete is the ONE operation
  *  that trims this otherwise append-only directory). Ownership re-checked against
- *  the entry itself at the write boundary. */
+ *  the entry itself at the write boundary.
+ *
+ *  Through the creator's index queue (#942), so it applies after an add still
+ *  retrying and the event ends removed. Answers after ONE attempt: when that
+ *  attempt fails the removal is retried without the request, and the delete goes
+ *  ahead - it is already terminal (`setTombstoned` ran first), so refusing now
+ *  would leave the retry to trim an event the organiser was told is not deleted.
+ *  Throws only when the removal is given up on before it was ever queued for retry. */
 async function removeEventFromCreatorDirectory(
   creatorAddress: string,
   eventId: string,
   parentAddress: string,
 ): Promise<void> {
-  const topicFn = (p: number) => topicCreatorDirectory(creatorAddress, p);
-  const entries = await readDirectoryStrict(topicFn);
-  const entry = entries.find((e) => e.eventId === eventId);
-  if (!entry) return;
-  if (entry.creatorAddress.toLowerCase() !== parentAddress) return;
-  const filtered = entries.filter((e) => e.eventId !== eventId);
-  await writeDirectoryPages(filtered, new Date().toISOString(), topicFn);
-  invalidateCreatorEventsCache(creatorAddress);
+  await creatorIndexQueue.enqueue(creatorAddress.toLowerCase(), {
+    kind: "remove",
+    eventId,
+    owner: parentAddress.toLowerCase(),
+  }).firstAttempt;
 }
 
 // ---------------------------------------------------------------------------
@@ -1439,92 +1426,122 @@ async function readDirectoryStrict(
  * the listing overlay + chain-log snapshot (see listing-state.ts / directory-snapshot.ts).
  * This function now maintains ONLY the per-creator Swarm index, which stays a feed
  * (O(few) per creator, retains unlisted events, trusted carrier for owner reads).
+ *
+ * Through the creator's index queue (#942). A new organiser's index has never been
+ * written, and the display reads before their first event (the gate, the trust
+ * check, the dashboard) can put its index-0 chunk on bee 2.8's one-minute skip
+ * list, so the strict read errors. That used to drop the first event from the
+ * index for good. Now it is retried past the window, and a change given up on is
+ * logged whole for replay. Event creation never waits for it.
  */
 async function addToEventDirectory(
   entry: EventDirectoryEntry,
 ): Promise<void> {
-  // Per-creator index (never removed from — listing status doesn't affect
-  // organiser view). Strict-read protection against clobbering concurrent writes.
-  const creatorEntries = await readDirectoryStrict(
-    (p) => topicCreatorDirectory(entry.creatorAddress, p),
-  );
-  if (!creatorEntries.some((e) => e.eventId === entry.eventId)) {
-    const updated = [entry, ...creatorEntries];
-    const updatedAt = new Date().toISOString();
-    await writeDirectoryPages(
-      updated,
-      updatedAt,
-      (p) => topicCreatorDirectory(entry.creatorAddress, p),
-    );
-    invalidateCreatorEventsCache(entry.creatorAddress);
-    console.log(`[event] Creator index updated for ${entry.creatorAddress}: ${updated.length} events`);
-  }
+  return creatorIndexQueue.enqueue(entry.creatorAddress.toLowerCase(), { kind: "add", entry }).written;
 }
 
-// In-memory memo for getCreatorEvents — collapses repeated reads across
-// page loads, tabs, and the burst when CreatorHome + DashboardIndex +
-// EventsTab all fetch the same address in parallel. 5 minutes matches the
-// SITE_EVENTS_FULL_TTL pattern used on the public bundled endpoint. Write
-// paths (createEvent → invalidateCreatorEventsCache) clear the entry so a
-// freshly published event appears immediately for its author.
-const CREATOR_EVENTS_MEMO_TTL_MS = 5 * 60_000;
-const _creatorEventsMemo = new Map<string, { at: number; data: EventDirectoryEntry[] }>();
-const _creatorEventsInFlight = new Map<string, Promise<EventDirectoryEntry[]>>();
+/**
+ * One change to a creator's index. Every kind is a pure transform of the strictly
+ * read index, applied in arrival order by the creator's queue, so an add, a
+ * metadata patch and a delete of one event never build on one read and undo each
+ * other. Never merged (no `idOf`): an add then a remove must end removed, a remove
+ * then an add present, and a patch must not move its entry - "the later change
+ * wins" composes none of them.
+ */
+type CreatorIndexChange =
+  | { kind: "add"; entry: EventDirectoryEntry }
+  | { kind: "patch"; eventId: string; owner: string; fields: Partial<EventDirectoryEntry> }
+  | { kind: "remove"; eventId: string; owner: string };
+
+/** The same array back when the change does nothing, so a round of no-ops writes nothing. */
+function applyCreatorIndexChange(entries: EventDirectoryEntry[], change: CreatorIndexChange): EventDirectoryEntry[] {
+  const eventId = change.kind === "add" ? change.entry.eventId : change.eventId;
+  const i = entries.findIndex((e) => e.eventId === eventId);
+  if (change.kind === "add") return i === -1 ? [change.entry, ...entries] : entries;
+  // Ownership re-checked against the entry's own platform-written creatorAddress.
+  if (i === -1 || entries[i]!.creatorAddress.toLowerCase() !== change.owner) return entries;
+  if (change.kind === "remove") return entries.filter((_, j) => j !== i);
+  const next = [...entries];
+  next[i] = { ...entries[i]!, ...change.fields };
+  return next;
+}
+
+const creatorIndexQueue = createFirstWriteRetryQueue<EventDirectoryEntry[], CreatorIndexChange>({
+  label: "[event] Creator index",
+  healthKey: "eventIndex",
+  read: (creator) => readDirectoryStrict((p) => topicCreatorDirectory(creator, p)),
+  write: async (creator, existing, changes) => {
+    const updated = changes.reduce(applyCreatorIndexChange, existing);
+    if (updated === existing) return;
+    await writeDirectoryPages(updated, new Date().toISOString(), (p) => topicCreatorDirectory(creator, p));
+    invalidateCreatorEventsCache(creator);
+    console.log(`[event] Creator index updated for ${creator}: ${updated.length} events`);
+  },
+  replayPayload: (creator, change) => ({ creator, ...change }),
+});
+
+/** Tests only — the index's remove and patch paths, which sit behind owner checks that need a chain. */
+export const __creatorIndexTestHooks = {
+  remove: removeEventFromCreatorDirectory,
+  patch: updateDirectoryEntriesMeta,
+};
+
+// Memo for getCreatorEvents — collapses repeated reads across page loads, tabs,
+// and the burst when CreatorHome + DashboardIndex + EventsTab all fetch the same
+// address in parallel. 5 minutes matches the SITE_EVENTS_FULL_TTL pattern used
+// on the public bundled endpoint. Every index write clears it, so a freshly
+// published event appears immediately for its author.
+//
+// A definite "no index yet" is memoized too, for 60 s (#942): a new organiser's
+// gate checks, trust check and dashboard read it before their first event, and
+// those misses put its index-0 chunk on bee's skip list just before the write
+// (display-read-memo.ts). An unreadable index is never memoized.
+const creatorEventsMemo = createDisplayReadMemo<EventDirectoryEntry[]>({
+  ttlMs: 5 * 60_000,
+  emptyTtlMs: 60_000,
+  isEmpty: (entries) => entries.length === 0,
+});
 
 export function invalidateCreatorEventsCache(ethAddress: string): void {
-  _creatorEventsMemo.delete(ethAddress.toLowerCase());
+  creatorEventsMemo.invalidate(ethAddress.toLowerCase());
 }
 
-export async function getCreatorEvents(
-  ethAddress: string,
-  opts: { fresh?: boolean } = {},
-): Promise<EventDirectoryEntry[]> {
+/**
+ * The creator's index for display and for the callers that look an event up in
+ * it: [] when it is absent and also when it cannot be read. Every caller reads
+ * [] as the restrictive answer (gate locked, organiser not trusted, no trusted
+ * carrier), so the memoized absent can only keep a door shut for its 60 s, never
+ * open one - and it is only memoized when bee says the feed was never written and
+ * this server has no newer write of it (`readFeedPageStrict`, `forWrite: false`).
+ * Never the base of an index write: that is `readDirectoryStrict`.
+ */
+export async function getCreatorEvents(ethAddress: string): Promise<EventDirectoryEntry[]> {
   const key = ethAddress.toLowerCase();
-  if (!opts.fresh) {
-    const memo = _creatorEventsMemo.get(key);
-    if (memo && Date.now() - memo.at < CREATOR_EVENTS_MEMO_TTL_MS) {
-      return memo.data;
-    }
-    const inFlight = _creatorEventsInFlight.get(key);
-    if (inFlight) return inFlight;
+  const res = await creatorEventsMemo.read(key, () => loadCreatorEvents(key));
+  return res.status === "ok" ? res.data : [];
+}
+
+/** Page 0 by the display read, so absent and unreadable stay apart; overflow pages leniently, as before. */
+async function loadCreatorEvents(creator: string): Promise<DisplayRead<EventDirectoryEntry[]>> {
+  const page0 = await readFeedPageStrict(topicCreatorDirectory(creator), { forWrite: false });
+  if (page0.status === "error") return { status: "error" };
+  if (page0.status === "absent") return { status: "ok", data: [] };
+  const dir = decodeJsonFeed<EventDirectory>(page0.data);
+  if (!dir || !Array.isArray(dir.entries)) return { status: "error" };
+
+  const totalPages = dir.pages ?? 0;
+  if (totalPages === 0) return { status: "ok", data: [...dir.entries] };
+
+  // Read overflow pages in parallel — Swarm reads are the bottleneck here.
+  const overflow = await Promise.all(
+    Array.from({ length: totalPages }, (_, i) => readFeedPage(topicCreatorDirectory(creator, i + 1))),
+  );
+  const all = [...dir.entries];
+  for (const pageData of overflow) {
+    if (!pageData) break; // matches prior defensive behaviour
+    const decoded = decodeJsonFeed<EventDirectory>(pageData);
+    if (decoded?.entries) all.push(...decoded.entries);
   }
-
-  const load = (async () => {
-    const page0 = await readFeedPage(topicCreatorDirectory(ethAddress));
-    if (!page0) return [];
-    const dir = decodeJsonFeed<EventDirectory>(page0);
-    if (!dir) return [];
-
-    const totalPages = dir.pages ?? 0;
-    if (totalPages === 0) return [...dir.entries];
-
-    // Read overflow pages in parallel — Swarm reads are the bottleneck here.
-    const overflow = await Promise.all(
-      Array.from({ length: totalPages }, (_, i) =>
-        readFeedPage(topicCreatorDirectory(ethAddress, i + 1)),
-      ),
-    );
-    const all = [...dir.entries];
-    for (const pageData of overflow) {
-      if (!pageData) break; // matches prior defensive behaviour
-      const decoded = decodeJsonFeed<EventDirectory>(pageData);
-      if (decoded?.entries) all.push(...decoded.entries);
-    }
-    return all;
-  })();
-
-  _creatorEventsInFlight.set(key, load);
-  try {
-    const data = await load;
-    // Only memoize populated results. readFeedPage() collapses transient
-    // Swarm errors into null (-> []) — caching that would pin an empty
-    // response for CREATOR_EVENTS_MEMO_TTL_MS across every request.
-    if (data.length > 0) {
-      _creatorEventsMemo.set(key, { at: Date.now(), data });
-    }
-    return data;
-  } finally {
-    _creatorEventsInFlight.delete(key);
-  }
+  return { status: "ok", data: all };
 }
 
