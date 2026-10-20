@@ -478,7 +478,7 @@ export async function confirmSeriesOnChain(
       chainId: recorded?.chainId ?? getActiveChainId(),
       createdAt: updated.createdAt,
       updatedAt: new Date().toISOString(),
-    }).catch((err) =>
+    }).written.catch((err) =>
       console.error("[event] object directory upsert failed (non-critical):", err),
     );
   }

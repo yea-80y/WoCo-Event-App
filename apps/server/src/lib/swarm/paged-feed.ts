@@ -66,18 +66,20 @@ export async function writePagedFeed<T>(
 
 /**
  * Strict read for the WRITE path — returns full prior contents or throws on any
- * transient read error. Bootstrap (page 0 absent) returns [].
+ * transient read error. Bootstrap (page 0 absent) returns no items and a null
+ * `head`. `head` is page 0's decoded envelope, for fields kept beside the items
+ * (a directory's categories), so they come from the same strict read.
  */
 export async function readPagedFeedStrict<T>(
   topicFn: (p: number) => string,
   extract: (env: unknown) => T[] | undefined,
   pagesOf: (env: unknown) => number,
-): Promise<T[]> {
+): Promise<{ items: T[]; head: unknown }> {
   const page0 = await readFeedPageStrict(Topic.fromString(topicFn(0)));
   if (page0.status === "error") {
     throw new Error(`Feed read failed (page 0) — refusing to write: ${page0.error.message}`);
   }
-  if (page0.status === "absent") return [];
+  if (page0.status === "absent") return { items: [], head: null };
   const env0 = decodeJsonFeed<unknown>(page0.data);
   if (!env0) throw new Error("Feed page 0 decoded to null — refusing to write");
 
@@ -94,7 +96,7 @@ export async function readPagedFeedStrict<T>(
     const items = extract(env);
     if (items) all.push(...items);
   }
-  return all;
+  return { items: all, head: env0 };
 }
 
 /** Lenient read for GET paths — swallows transient errors into []. */
