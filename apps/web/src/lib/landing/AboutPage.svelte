@@ -173,10 +173,11 @@
           so that check happens on the phone.
         </p>
         <p>
-          Each ticket gets in once. A door run from one phone keeps its own
-          record and works with no signal. With several phones, each scan is
-          confirmed online, so a ticket can't get in twice, and check-in pauses
-          if the signal drops. Door phones also carry a live attendee list,
+          One phone on the door keeps its own check-in record and works with
+          no signal. With several phones, every scan is checked against one
+          shared record as it happens, so each phone knows who is already in;
+          if the signal drops, they pause rather than guess. Door phones also
+          carry a live attendee list,
           updated as tickets sell, so staff can look a guest up by name or
           email.
         </p>
