@@ -304,19 +304,19 @@ export function invalidateCreatorSitesCache(ethAddress: string): void {
  * cannot be read. Never the base of a directory write: that is
  * `readCreatorSitesStrict`, which refuses instead.
  */
-export async function getCreatorSites(
-  ethAddress: string,
-  opts: { fresh?: boolean } = {},
-): Promise<SiteDirectoryEntry[]> {
+export async function getCreatorSites(ethAddress: string): Promise<SiteDirectoryEntry[]> {
   const key = ethAddress.toLowerCase();
-  const res = await creatorSitesMemo.read(key, () => loadCreatorSites(key), opts);
+  const res = await creatorSitesMemo.read(key, () => loadCreatorSites(key));
   return res.status === "ok" ? res.data : [];
 }
 
-/** Page 0 strictly, so absent and unreadable stay apart; overflow pages leniently, as before. */
+/**
+ * Page 0 by the display read (`forWrite: false`), so absent and unreadable stay
+ * apart without the write path's side effects; overflow pages leniently, as before.
+ */
 async function loadCreatorSites(ethAddress: string): Promise<DisplayRead<SiteDirectoryEntry[]>> {
   try {
-    const page0 = await readFeedPageStrict(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)));
+    const page0 = await readFeedPageStrict(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)), { forWrite: false });
     if (page0.status === "error") return { status: "error" };
     if (page0.status === "absent") return { status: "ok", data: [] };
     const dir = decodeJsonFeed<SiteDirectory>(page0.data);
@@ -424,11 +424,12 @@ async function readCreatorSitesStrict(ethAddress: string): Promise<SiteDirectory
  * do not await this; the site itself is unaffected either way.
  */
 export function upsertCreatorSite(ethAddress: string, entry: SiteDirectoryEntry): Promise<void> {
-  return creatorDirectoryQueue.enqueue(ethAddress.toLowerCase(), entry);
+  return creatorDirectoryQueue.enqueue(ethAddress.toLowerCase(), entry).written;
 }
 
 const creatorDirectoryQueue = createFirstWriteRetryQueue<SiteDirectoryEntry[], SiteDirectoryEntry>({
   label: "[site] Creator directory",
+  healthKey: "siteDirectory",
   read: readCreatorSitesStrict,
   write: async (creator, existing, entries) => {
     const updated = entries.reduce(applyUpsert, existing);
