@@ -840,6 +840,31 @@ events.post("/:id/unlist", requireAuth, async (c) => {
 });
 
 /**
+ * Every sentence `register-on-chain` can show an organiser (#937). The publish
+ * screen prints a refusal's `message` when it has one, else its `error`, after
+ * `Couldn't finish setting up "<name>" tickets:`, so none of these may name an
+ * internal (chain, manifest, registry, storage): each says what happened and
+ * what to do. Machine codes stay in `error` for programs.
+ */
+export const REGISTER_REFUSALS = {
+  cancelled: "This event has been cancelled",
+  missingSeries: "We couldn't tell which tickets to set up - please reload the page and try again.",
+  eventNotFound: "We couldn't find this event - please reload the page and try again.",
+  notCreator: "Only the account that created this event can set up its tickets - sign in with that account and try again.",
+  seriesNotFound: "We couldn't find these tickets on this event - please reload the page and try again.",
+  olderFormat: "These tickets were made with an older version of WoCo and can't be set up - please create the event again.",
+  unsupportedFormat: "These tickets were saved in a format we no longer support - please create the event again.",
+  didNotLoad: "This event's tickets didn't load - please try again",
+  inFlight: "Your tickets are still being set up - please try again in a moment.",
+  // An operator must repair the store and restart: a retry cannot succeed, so
+  // neither of these two may invite one.
+  unavailable: "We can't set up tickets right now because of a problem on our side - please contact support.",
+  conflict: "We hit a problem with our records for these tickets, so we can't finish setting them up - please contact support.",
+  /** Leads `failureSentence`, which adds the failure class and "Please try again." */
+  failed: "We couldn't set up your tickets just now",
+} as const;
+
+/**
  * How `register-on-chain` answers a failed registration.
  *
  * A `RegistrationRebindError` is not a transport failure and never succeeds on
@@ -873,7 +898,7 @@ export function registerOnChainErrorResponse(err: unknown): {
       body: {
         ok: false,
         error: "registry_unavailable",
-        message: "Event registration is temporarily unavailable - please contact support.",
+        message: REGISTER_REFUSALS.unavailable,
       },
     };
   }
@@ -883,8 +908,7 @@ export function registerOnChainErrorResponse(err: unknown): {
       body: {
         ok: false,
         error: "registration_conflict",
-        message:
-          "This series' on-chain registration conflicts with an existing binding - please contact support.",
+        message: REGISTER_REFUSALS.conflict,
       },
     };
   }
@@ -892,7 +916,7 @@ export function registerOnChainErrorResponse(err: unknown): {
   // RPC URL, and ethers puts that URL in its error messages (#540).
   return {
     status: 500,
-    body: { ok: false, error: failureSentence("Registration failed", err) },
+    body: { ok: false, error: failureSentence(REGISTER_REFUSALS.failed, err) },
   };
 }
 
@@ -904,14 +928,14 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const eventId = c.req.param("id");
   // #644: nothing new goes on sale for a cancelled event.
   if (cancellationGate(eventId) !== "open") {
-    return c.json({ ok: false, error: "This event has been cancelled" }, 409);
+    return c.json({ ok: false, error: REGISTER_REFUSALS.cancelled }, 409);
   }
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { seriesId: string; signer?: string };
   const { seriesId } = body;
 
   if (!seriesId) {
-    return c.json({ ok: false, error: "Missing seriesId" }, 400);
+    return c.json({ ok: false, error: REGISTER_REFUSALS.missingSeries }, 400);
   }
 
   // SECURITY: same trust rule as /list — the creator gate below trusts
@@ -923,15 +947,17 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   // wedge rather than a silent redirect — still not something to allow). getEventForOwner resolves only trusted bases (cache peek → the
   // caller's own platform-written creator index → the trusted global carrier).
   const feed = await getEventForOwner(eventId, parentAddress);
-  if (!feed) return c.json({ ok: false, error: "Event not found" }, 404);
+  if (!feed) return c.json({ ok: false, error: REGISTER_REFUSALS.eventNotFound }, 404);
   if (feed.creatorAddress.toLowerCase() !== parentAddress) {
-    return c.json({ ok: false, error: "Only the event's creator can set up its tickets" }, 403);
+    return c.json({ ok: false, error: REGISTER_REFUSALS.notCreator }, 403);
   }
 
   const series = feed.series.find((s) => s.seriesId === seriesId);
-  if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+  if (!series) return c.json({ ok: false, error: REGISTER_REFUSALS.seriesNotFound }, 404);
+  // Only an event made before the current ticket format lacks this, and no retry
+  // can add it: a fresh event is the organiser's way out.
   if (!series.swarmManifestRef) {
-    return c.json({ ok: false, error: "Series has no manifest (not a v2 event)" }, 400);
+    return c.json({ ok: false, error: REGISTER_REFUSALS.olderFormat }, 400);
   }
   if (series.onChainEventId) {
     return c.json({ ok: true, onChainEventId: series.onChainEventId, alreadyRegistered: true });
@@ -956,12 +982,12 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
       // Closed validation before the digest: a legacy v1 blob (or garbage) is
       // refused here rather than silently digested — v2 is the only live rail.
       if (!validateSignedManifestV2(blob.signedManifest)) {
-        return c.json({ ok: false, error: "Stored manifest is not a valid woco.manifest.v2" }, 500);
+        return c.json({ ok: false, error: REGISTER_REFUSALS.unsupportedFormat }, 500);
       }
       const digestBytes = manifestV2Digest(blob.signedManifest.body);
       manifestRef = `0x${bytesToHex0x(digestBytes).replace(/^0x/, "")}` as Hex0x;
     } catch {
-      return c.json({ ok: false, error: "This event's tickets didn't load - please try again" }, 500);
+      return c.json({ ok: false, error: REGISTER_REFUSALS.didNotLoad }, 500);
     }
   }
 
@@ -1013,7 +1039,7 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     // The earlier tx may still mine. Re-sending would mint a second on-chain event,
     // so the only safe answer is "come back" — the next call adopts that tx's id.
     return c.json(
-      { ok: false, error: "Registration already in flight — retry in a moment", txHash: result.txHash, retryable: true },
+      { ok: false, error: REGISTER_REFUSALS.inFlight, txHash: result.txHash, retryable: true },
       409,
     );
   }

@@ -10,6 +10,7 @@ import type {
 } from "@woco/shared";
 export type { OrderEntry };
 import { authPost, authGet, get, apiBase, authStream, currentSiteId } from "./client.js";
+import { refusalText } from "./errors.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import type { RequestSigningOptions } from "../auth/request-session.js";
 import { eventContentTopic, orderKeyRef } from "@woco/shared";
@@ -359,9 +360,9 @@ export async function registerSeriesOnChain(
   const resp = (await authPost<unknown>(
     `/api/events/${eventId}/register-on-chain`,
     { seriesId },
-  )) as { ok: boolean; error?: string; onChainEventId?: string; txHash?: string; eventFeed?: EventFeed };
+  )) as { ok: boolean; error?: string; message?: string; onChainEventId?: string; txHash?: string; eventFeed?: EventFeed };
   if (!resp.ok || !resp.onChainEventId) {
-    throw new Error(resp.error || "please try again");
+    throw new Error(refusalText(resp, "please try again"));
   }
   return { onChainEventId: resp.onChainEventId, txHash: resp.txHash, eventFeed: resp.eventFeed };
 }
