@@ -42,7 +42,7 @@ import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js
 const FREE_HOSTING_QUOTA_BYTES = Number(process.env.FREE_HOSTING_QUOTA_BYTES) || 100 * 1024 * 1024;
 import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedIndex, fetchEthernaRootChunk } from "../lib/etherna/upload.js";
 import { isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from "../lib/swarm/storage-busy.js";
-import { beginDeploy, DEPLOY_IN_PROGRESS_CODE, DEPLOY_IN_PROGRESS_MESSAGE } from "../lib/site/deploy-guard.js";
+import { beginDeploy, CLIENT_POINTER_HOLD_MS, DEPLOY_IN_PROGRESS_CODE, DEPLOY_IN_PROGRESS_MESSAGE } from "../lib/site/deploy-guard.js";
 import {
   siteConfigTopic,
   sitePagesTopicFn,
@@ -515,7 +515,8 @@ sitesRouter.post("/", requireAuth, async (c) => {
             `(config ${configWrites.every((r) => r.status === "fulfilled") ? "written" : "not written"}, ` +
             `events index ${eventsWrite.status === "fulfilled" ? "written" : "not written"}) - refused, a retry writes all`,
         );
-        throw failed.find((r) => isStorageBusy(r.reason))?.reason ?? failed[0].reason;
+        // A real fault outranks "busy": busy would send the client into a pointless wait (Fable, #946 F2).
+        throw (failed.find((r) => !isStorageBusy(r.reason)) ?? failed[0]).reason;
       }
     });
 
@@ -865,7 +866,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
   let tmpDir: string | null = null;
   let tarPath: string | null = null;
-  let endDeploy: (() => void) | null = null;
+  let endDeploy: ((holdMs?: number) => void) | null = null;
+  let holdAfterMs = 0;
 
   try {
     const body = await c.req.json() as { apiUrl: string; gatewayUrl?: string; wocoAppUrl?: string; site?: Site; clientFeed?: boolean };
@@ -1094,6 +1096,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       // routes to the same Etherna user batch).
       const chunkBytes = await fetchEthernaRootChunk(contentHash);
       feedManifestHash = pointer.prepared.feedManifestHash;
+      holdAfterMs = CLIENT_POINTER_HOLD_MS;
       multisiteFeed = {
         nextIndex: Number(pointer.prepared.nextIndex),
         rootChunkPayloadB64: Buffer.from(chunkBytes.subarray(8)).toString("base64"),
@@ -1120,7 +1123,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       });
       if (chunkRes.ok) {
         const chunkBytes = await readCapped(chunkRes, SWARM_CHUNK_MAX_BYTES, "root chunk");
-        multisiteFeed = {
+        holdAfterMs = CLIENT_POINTER_HOLD_MS;
+      multisiteFeed = {
           nextIndex: Number(pointer.nextIndex),
           rootChunkPayloadB64: Buffer.from(chunkBytes.subarray(8)).toString("base64"),
         };
@@ -1288,7 +1292,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     console.error("[sites/deploy]", e);
     return c.json({ ok: false, error: e instanceof Error ? e.message : "Deploy failed" }, 500);
   } finally {
-    endDeploy?.();
+    endDeploy?.(holdAfterMs);
     if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     if (tarPath) await fs.unlink(tarPath).catch(() => {});
   }

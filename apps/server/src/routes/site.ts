@@ -15,7 +15,7 @@ import { recordUpload } from "../lib/swarm/storage-ledger.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { uploadCollectionToEtherna, registerEthernaOffer, prepareEthernaFeedIndex, fetchEthernaRootChunk } from "../lib/etherna/upload.js";
 import { isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from "../lib/swarm/storage-busy.js";
-import { beginDeploy, DEPLOY_IN_PROGRESS_CODE, DEPLOY_IN_PROGRESS_MESSAGE } from "../lib/site/deploy-guard.js";
+import { beginDeploy, CLIENT_POINTER_HOLD_MS, DEPLOY_IN_PROGRESS_CODE, DEPLOY_IN_PROGRESS_MESSAGE } from "../lib/site/deploy-guard.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
 import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
 import {
@@ -59,7 +59,8 @@ function spawnPromise(cmd: string, args: string[]): Promise<void> {
 site.post("/deploy", requireAuth, async (c) => {
   let tmpDir: string | null = null;
   let tarPath: string | null = null;
-  let endDeploy: (() => void) | null = null;
+  let endDeploy: ((holdMs?: number) => void) | null = null;
+  let holdAfterMs = 0;
 
   try {
     const parentAddress = (c.get("parentAddress") as string).toLowerCase();
@@ -233,6 +234,7 @@ site.post("/deploy", requireAuth, async (c) => {
       feedManifestHash = prep.feedManifestHash;
       // The owner travels with the update so the browser refuses to sign a feed
       // it does not own; the span is stripped because the signer re-derives it.
+      holdAfterMs = CLIENT_POINTER_HOLD_MS;
       pageFeed = {
         owner: gate.signer,
         nextIndex: Number(prep.nextIndex),
@@ -286,7 +288,7 @@ site.post("/deploy", requireAuth, async (c) => {
     }, 500);
 
   } finally {
-    endDeploy?.();
+    endDeploy?.(holdAfterMs);
     // Best-effort cleanup of temp files
     if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     if (tarPath) await fs.unlink(tarPath).catch(() => {});
