@@ -130,7 +130,7 @@ test("the email button and the sheet's banner (where a redirect's failure lands)
   assert.match(modal, /const posted = takeSignInFailure\(globalThis\.sessionStorage\);/);
   assert.match(modal, /\{#if failure && !authing\}\s*<div class="notice notice--failure" role="alert">\s*\{#key failure\}\s*<SignInFailureDetails \{failure\} \/>/);
   assert.equal(modal.split("failure = null;").length - 1, 3, "cleared on close, on success and when a new attempt starts");
-  const start = modal.slice(modal.indexOf("function start(method: Method) {"), modal.indexOf("function settle()"));
+  const start = modal.slice(modal.indexOf("function start(method: Method, create = false) {"), modal.indexOf("function settle()"));
   assert.ok(start.includes("failure = null;"), "a new attempt never sits under an old failure");
 });
 

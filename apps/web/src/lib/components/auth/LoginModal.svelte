@@ -11,7 +11,7 @@
   // that deliberately-lazy module into the entry chunk.
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
   import { router, navigate } from "../../router/router.svelte.js";
-  import { isOrganiserSignIn } from "../../auth/organiser-account.js";
+  import { isOrganiserSignIn, ORGANISER_NEW_PASSKEY_NOTE } from "../../auth/organiser-account.js";
   import { canonicalUrl } from "../../sub-ens/host-label.js";
   import { mustSignInElsewhere } from "../../auth/sign-in-host.js";
   import type { InAppBrowser } from "../../browser/in-app-browser.js";
@@ -106,6 +106,8 @@
   // The picker stays MOUNTED (hidden) underneath so children keep their state
   // (CoinbaseLogin's two-step progress, per-method error text) across the scene.
   let authing = $state<Method | null>(null);
+  /** The passkey attempt under way is a CREATE: an organiser's scene then says how the account is kept. */
+  let creatingPasskey = $state(false);
 
   // Wallets get their own screen. Shown beside passkey and email they read as
   // a requirement to someone who has never held one, so the first screen only
@@ -121,7 +123,7 @@
   const sceneCopy: Record<Method, { name: string; waiting: string; finalizing: string }> = {
     passkey: {
       name: "Passkey",
-      waiting: "Check your device — approve with Face ID, fingerprint, or PIN.",
+      waiting: "Check your device and approve with Face ID, fingerprint, or PIN.",
       finalizing: "Unlocking your account…",
     },
     email: {
@@ -176,8 +178,9 @@
   const stage = $derived(auth.loginStage ?? "waiting");
   const sceneShown = $derived(authing !== null && stage !== "stalled");
 
-  function start(method: Method) {
+  function start(method: Method, create = false) {
     authing = method;
+    creatingPasskey = create;
     // A new attempt: an earlier attempt's failure no longer describes anything.
     failure = null;
   }
@@ -308,6 +311,10 @@
           </div>
           <p class="scene-eyebrow">{c.name}</p>
           <p class="scene-copy">{stage === "finalizing" ? c.finalizing : c.waiting}</p>
+          {#if authing === "passkey" && creatingPasskey && organiserSignIn}
+            <!-- Said while the account is made, not to every organiser signing in. -->
+            <p class="scene-note">{ORGANISER_NEW_PASSKEY_NOTE}</p>
+          {/if}
         </div>
       {/if}
 
@@ -344,15 +351,20 @@
           <PasskeyLogin
             organiser={organiserSignIn}
             oncomplete={handleComplete}
-            onstart={() => start("passkey")}
+            onstart={(mode) => start("passkey", mode === "create")}
             onsettle={settle}
             onlink={() => { close(); navigate("/link"); }}
-          />
+          >
+            <!-- Placed by PasskeyLogin right under its own button: the two main ways in, together. -->
+            {#snippet alternative()}
+              <!-- Organising needs a passkey account (#746 step 5): an organiser sign-in offers no other way in. -->
+              {#if !organiserSignIn}
+                <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} />
+              {/if}
+            {/snippet}
+          </PasskeyLogin>
 
-          <!-- Organising needs a passkey account (#746 step 5): an organiser sign-in offers no other way in. -->
           {#if !organiserSignIn}
-            <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} />
-
             {#if FEATURES.walletLoginAllowed}
               <div class="wallet-door">
                 <span>Already use a crypto wallet?</span>
@@ -434,6 +446,19 @@
     margin-bottom: 1.5rem;
     padding-bottom: 1rem;
     border-bottom: 1px solid var(--border);
+  }
+
+  /* A phone: less frame, so both main buttons sit high. After
+     .modal and header, so it overrides both. */
+  @media (max-width: 420px) {
+    .modal {
+      padding: 1.25rem 1rem;
+    }
+
+    header {
+      margin-bottom: 1rem;
+      padding-bottom: 0.75rem;
+    }
   }
 
   .modal-heading {
@@ -591,6 +616,15 @@
     line-height: 1.5;
     text-align: center;
     max-width: 30ch;
+  }
+
+  .scene-note {
+    margin: 0.5rem 0 0;
+    max-width: 34ch;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    text-align: center;
+    color: var(--text-secondary);
   }
 
   @media (prefers-reduced-motion: reduce) {
