@@ -229,10 +229,19 @@ test("every feed probe in the read and read-back paths forwards the feed's gatew
 test("the profile save reads its base from Etherna and merges only onto what the base rule accepts", () => {
   const profiles = code(src("../src/lib/api/profiles.ts"));
   const save = profiles.slice(profiles.indexOf("export async function updateProfile("), profiles.indexOf("export async function uploadAvatar("));
-  const baseRead = save.slice(save.indexOf("readContentFeedResult<UserProfile>("), save.indexOf("profileSaveBase("));
+  // Since #943 the base read and the write are one step, `writeProfileData`, in
+  // the route the write lands on.
+  assert.match(save, /writeProfileData\(\{[\s\S]*route:\s*FEED_ROUTES\.profile\b/);
+  const writer = code(src("../src/lib/api/profile-save.ts"));
+  const data = writer.slice(writer.indexOf("export async function writeProfileData("), writer.indexOf("export async function writeProfileAvatar("));
+  assert.match(data, /route: args\.route/);
+  assert.match(data, /const base = profileSaveBase\(read\);\s*if \(!base\.ok\) throw new Error\(base\.error\);\s*return args\.build\(base\.base\);/);
+  // The pre-versioning chunk is a profile too: the merge base must not skip it.
+  assert.doesNotMatch(data, /skipLegacy/);
+  // ...and that read is thorough, with no way to turn it off.
+  const feed = code(src("../src/lib/swarm/content-feed.ts"));
+  const baseRead = feed.slice(feed.indexOf("export async function readContentFeedWriteBase"), feed.indexOf("export async function readContentFeedAtVersion"));
   assert.match(baseRead, /thorough:\s*true/);
-  assert.match(baseRead, /route:\s*FEED_ROUTES\.profile\b/);
-  assert.match(save, /const base = profileSaveBase\(existingRead\);\s*if \(!base\.ok\) throw new Error\(base\.error\);\s*const existing = base\.base;/);
   // The text fields go through the shared rule, the same one the server uses (#652).
   assert.match(save, /\.\.\.mergeProfileText\(updates, existing\)/);
   assert.doesNotMatch(save, /updates\.(?:displayName|bio|website|twitterHandle|farcasterHandle) \?\?/);
@@ -248,7 +257,7 @@ const between = (s: string, from: string, to: string) => {
 
 test("the profile page sends the changed fields, not the whole form", () => {
   const save = between(page(), "async function saveProfile()", "async function guardRename()");
-  assert.match(save, /updateProfile\(changes\)/);
+  assert.match(save, /updateProfile\(changes\b/);
   assert.doesNotMatch(save, /updateProfile\(\{\s*displayName:/);
 });
 
