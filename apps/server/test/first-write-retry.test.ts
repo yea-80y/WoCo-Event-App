@@ -11,6 +11,7 @@
  */
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   createFirstWriteRetryQueue,
   firstWriteRetryHealth,
@@ -360,4 +361,17 @@ test("a health key names one queue", () => {
   assert.throws(() =>
     createFirstWriteRetryQueue({ label: "x", healthKey: `test${queueNo}`, read: async () => 0, write: async () => {} }),
   );
+});
+
+test("/api/health serves every queue's counters as directoryWrites (red on a drop, via /api/health/alarms)", () => {
+  const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf-8");
+  const report = src.slice(src.indexOf("function healthReport()"), src.indexOf('app.get("/api/health"'));
+  assert.match(report, /\n\s*directoryWrites: firstWriteRetryHealth\(\),/);
+  for (const [file, key] of [
+    ["../src/lib/site/service.ts", "siteDirectory"],
+    ["../src/lib/event/service.ts", "eventIndex"],
+    ["../src/lib/object/directory.ts", "objectDirectory"],
+  ] as const) {
+    assert.match(readFileSync(new URL(file, import.meta.url), "utf-8"), new RegExp(`healthKey: "${key}"`), file);
+  }
 });
