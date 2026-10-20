@@ -2,7 +2,6 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { shortRef } from "../../campaign/referral-capture.js";
   import { joinedAccountLabel } from "./joined-label.js";
   import PairingCode from "./PairingCode.svelte";
 
@@ -15,11 +14,8 @@
   let stage = $state<"intro" | "creating" | "waiting" | "linking" | "done">("intro");
   let code = $state<{ typed: string; qr: string } | null>(null);
   // Which account this device joined - the one check a person has that the answer
-  // came from their own main device (Fable sign-off SHOULD-8). The address is the
-  // account the opened answer named and the sign-in went to; a name is whatever that
-  // account set, so it never stands alone (Fable design consult 2026-10-20).
-  let joined = $state<{ address: string; name: string | null } | null>(null);
-  const joinedLabel = $derived(joined ? joinedAccountLabel(joined.address, joined.name) : null);
+  // came from their own main device (Fable sign-off SHOULD-8). Address only (joined-label.ts).
+  let joinedLabel = $state<string | null>(null);
   let error = $state<string | null>(null);
   let controller: AbortController | null = null;
 
@@ -54,16 +50,7 @@
   }
 
   async function name(parent: string | null): Promise<void> {
-    if (!parent) return;
-    const address = shortRef(parent.toLowerCase());
-    joined = { address, name: null };
-    try {
-      const { getProfile } = await import("../../api/profiles.js");
-      const profile = await getProfile(parent);
-      if (profile?.displayName) joined = { address, name: profile.displayName };
-    } catch {
-      /* the short address stays */
-    }
+    if (parent) joinedLabel = joinedAccountLabel(parent);
   }
 
   // Leaving the screen ends the wait; the passkey already made is reused next time.

@@ -1,8 +1,11 @@
+import { shortRef } from "../../campaign/referral-capture.js";
+
 /**
- * What the new device shows as the account it joined. Address first: the name is
- * free text the joined account chose, so it may never stand where the address
- * does, and a name that itself looks like an address is dropped (#936).
+ * What the new device shows as the account it joined: the short address only. The
+ * address is the account the opened answer named and the sign-in went to; a display
+ * name is free text that account chose (lookalike characters, text-direction marks),
+ * so it is not shown on this screen at all (#936, commit security review).
  */
-export function joinedAccountLabel(address: string, name: string | null): string {
-  return name && !/0x[0-9a-f]{2,}|…/i.test(name) ? `${address} (${name})` : address;
+export function joinedAccountLabel(parent: string): string {
+  return shortRef(parent.toLowerCase());
 }
