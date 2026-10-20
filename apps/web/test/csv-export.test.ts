@@ -46,6 +46,11 @@ test("commas, quotes and line breaks are quoted per RFC 4180", () => {
   assert.equal(csvCell("Flat 2\r\nHigh St"), '"Flat 2\r\nHigh St"');
 });
 
+test("semicolons and tabs are quoted, so a semicolon-locale Excel keeps one cell", () => {
+  assert.equal(csvCell("a;=1+1"), '"a;=1+1"');
+  assert.equal(csvCell("a\t=1+1"), '"a\t=1+1"');
+});
+
 test("a cell a spreadsheet would run as a formula gets a leading quote", () => {
   for (const lead of ["=", "+", "-", "@", "\t", "\r"]) {
     const out = csvCell(`${lead}1+1`);

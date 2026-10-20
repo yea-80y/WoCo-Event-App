@@ -15,10 +15,14 @@ const FORMULA_START = /^[=+\-@\t\r]/;
 /** UTF-8 byte order mark: without it Excel reads the file as ANSI and mangles accents. */
 export const CSV_BOM = "﻿";
 
-/** One cell: formula-guarded, then quoted per RFC 4180 when it needs it. */
+/**
+ * One cell: formula-guarded, then quoted per RFC 4180 when it needs it. `;` and
+ * tab also force quotes: Excel in a semicolon-list locale splits an unquoted
+ * `a;=1+1` into two cells, and the second would then run as a formula.
+ */
 export function csvCell(value: string): string {
   const text = FORMULA_START.test(value) ? `'${value}` : value;
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  return /[",;\t\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 /** A whole file: BOM, CRLF line ends (RFC 4180), every cell through {@link csvCell}. */
