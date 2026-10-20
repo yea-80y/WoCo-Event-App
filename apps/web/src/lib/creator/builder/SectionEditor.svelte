@@ -693,7 +693,7 @@
 
   .layout-btn.active {
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     font-weight: 600;
   }
 
@@ -782,7 +782,7 @@
 
   .spacing-btn.active {
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     font-weight: 600;
   }
 

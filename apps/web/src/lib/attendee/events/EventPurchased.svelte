@@ -300,7 +300,7 @@
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
     background: var(--accent);
-    color: var(--accent-ink, #fff);
+    color: var(--accent-ink);
     border: 1px solid var(--accent);
   }
   .btn-primary:hover { background: var(--accent-hover); }

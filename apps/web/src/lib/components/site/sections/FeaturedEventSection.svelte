@@ -263,7 +263,7 @@
     letter-spacing: 0.08em;
     padding: 0.2em 0.6em;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: 3px;
   }
 
@@ -328,7 +328,7 @@
   .featured-cta {
     padding: 0.5625rem 1.25rem;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-sm);
     font-size: 0.9375rem;
     font-weight: 700;
