@@ -379,7 +379,7 @@
   .card-cta {
     padding: 0.375rem 0.875rem;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-sm);
     font-size: 0.8125rem;
     font-weight: 600;

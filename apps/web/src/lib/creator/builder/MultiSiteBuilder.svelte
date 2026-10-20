@@ -1236,7 +1236,7 @@
     font-weight: 700;
     padding: 0.1em 0.45em;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: 9999px;
     line-height: 1.4;
   }
@@ -1345,7 +1345,7 @@
     font-size: 0.8125rem;
     font-weight: 600;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     border-radius: var(--radius-sm);
     transition: background var(--transition), opacity var(--transition);
     white-space: nowrap;

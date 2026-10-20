@@ -113,3 +113,20 @@ test("event creation's accent buttons use the accent ink, never white", () => {
     assert.match(rule![1], /(?<![-\w])color:\s*var\(--accent-ink\);/, `${file} ${selector}`);
   }
 });
+
+test("no rule anywhere in the app puts white or the page text colour on an accent fill", async () => {
+  const { readdirSync } = await import("node:fs");
+  const files = (readdirSync(SRC, { recursive: true }) as string[]).filter((f) => f.endsWith(".svelte"));
+  const ACCENT_FILL = /^var\(--accent(-hover|-press)?(,[^)]*)?\)$/;
+  const LIGHT_TEXT = /^(#fff|#ffffff|white|var\(--text(-primary|-secondary)?(,[^)]*)?\))$/i;
+  const bad: string[] = [];
+  for (const file of files) {
+    if (/var\(--accent-ink,\s*#fff/i.test(style(file))) bad.push(`${file}: var(--accent-ink, #fff)`);
+    for (const [sel, body] of rules(file)) {
+      const bg = [...body.matchAll(/background(?:-color)?:\s*([^;]+);/g)].pop()?.[1].trim();
+      const fg = [...body.matchAll(/(?<![-\w])color:\s*([^;]+);/g)].pop()?.[1].trim();
+      if (bg && fg && ACCENT_FILL.test(bg) && LIGHT_TEXT.test(fg)) bad.push(`${file}: ${sel}`);
+    }
+  }
+  assert.deepEqual(bad, []);
+});
