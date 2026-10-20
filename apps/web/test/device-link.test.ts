@@ -428,7 +428,7 @@ test("both screens show the account's address: the phone what it seals, the new 
   assert.match(LINK_THIS, /stage = "done";\s*void name\(auth\.parent\);/);
   assert.match(body(STORE, "async function _loginAddedPasskey("), /const parent = start\.parent\.toLowerCase\(\);[\s\S]*_parent = parent;/);
   assert.match(LINK_THIS, /const address = shortRef\(parent\.toLowerCase\(\)\);/);
-  assert.match(LINK_THIS, /joinedLabel = \$derived\(joined \? \(joined\.name \? `\$\{joined\.name\} - \$\{joined\.address\}` : joined\.address\) : null\);/);
+  assert.match(LINK_THIS, /joinedLabel = \$derived\(joined \? joinedAccountLabel\(joined\.address, joined\.name\) : null\);/);
   const done = LINK_THIS.slice(LINK_THIS.lastIndexOf("{:else}"));
   assert.match(done.replace(/\s+/g, " "), /This device is on your account\{joinedLabel \? `, \$\{joinedLabel\}` : ""\}\. It signs in/);
   assert.match(done, /\{#if joinedLabel\}<p class="muted">If that isn't the account on your phone, remove this device from your phone now\.<\/p>\{\/if\}/);
@@ -450,4 +450,13 @@ test("linking has its own screens, each loaded only when opened", () => {
 test("sign-in sheet: the link entry closes the sheet and opens its own screen", () => {
   assert.match(read("../src/lib/components/auth/PasskeyLogin.svelte"), /\{#if onlink\}/);
   assert.match(read("../src/lib/components/auth/LoginModal.svelte"), /onlink=\{\(\) => \{ close\(\); navigate\("\/link"\); \}\}/);
+});
+
+test("the joined account reads address first, and a name shaped like an address is dropped (#936)", async () => {
+  const { joinedAccountLabel } = await import("../src/lib/components/passkeys/joined-label.ts");
+  assert.equal(joinedAccountLabel("0xc2b9…1038", "Sam's Bar"), "0xc2b9…1038 (Sam's Bar)");
+  assert.equal(joinedAccountLabel("0xc2b9…1038", null), "0xc2b9…1038");
+  assert.equal(joinedAccountLabel("0xbad0…0001", "0xc2b9…1038"), "0xbad0…0001");
+  assert.equal(joinedAccountLabel("0xbad0…0001", "Sam 0xC2B9"), "0xbad0…0001");
+  assert.equal(joinedAccountLabel("0xbad0…0001", "Sam … Bar"), "0xbad0…0001");
 });

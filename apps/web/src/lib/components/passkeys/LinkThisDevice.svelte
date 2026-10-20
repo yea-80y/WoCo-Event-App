@@ -3,6 +3,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { shortRef } from "../../campaign/referral-capture.js";
+  import { joinedAccountLabel } from "./joined-label.js";
   import PairingCode from "./PairingCode.svelte";
 
   /**
@@ -18,7 +19,7 @@
   // account the opened answer named and the sign-in went to; a name is whatever that
   // account set, so it never stands alone (Fable design consult 2026-10-20).
   let joined = $state<{ address: string; name: string | null } | null>(null);
-  const joinedLabel = $derived(joined ? (joined.name ? `${joined.name} - ${joined.address}` : joined.address) : null);
+  const joinedLabel = $derived(joined ? joinedAccountLabel(joined.address, joined.name) : null);
   let error = $state<string | null>(null);
   let controller: AbortController | null = null;
 
