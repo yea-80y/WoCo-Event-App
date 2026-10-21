@@ -713,6 +713,75 @@ test("sweep: a pending entry goes once our bee serves the chunk, or neither stor
   assert.ok(ledger.getRelayEntry(stillInEtherna.address));
 });
 
+test("push alarm: a send Etherna refused while neither store can be asked stays listed, and red", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const s = signedSoc(40);
+  ledger.noteEthernaSend(s.address, s.owner, s.identifier);
+  const io = fakeIo({}, { [s.address]: DOWN });
+  const base = now;
+  for (const m of [5, 10, 15]) {
+    now = base + m * 60_000;
+    await failover.sweepRelayLedger(io);
+  }
+  assert.ok(ledger.getRelayEntry(s.address), "Etherna could not be asked: nothing decides");
+  assert.equal(pushAlarm().ok, false);
+});
+
+test("push alarm: a stale send arriving puts every backed-off pending entry due at once, keeping its count", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const neverArrives = signedSoc(41);
+  const late = signedSoc(42);
+  const fresh = signedSoc(43);
+  const onTime = signedSoc(44);
+  const bee: Record<string, Read> = {};
+  const io = fakeIo(bee, {
+    [neverArrives.address]: found(neverArrives.raw),
+    [late.address]: found(late.raw),
+    [fresh.address]: found(fresh.raw),
+  });
+  const base = now;
+  const at = (m: number) => (now = base + m * 60_000);
+  ledger.noteEthernaSend(neverArrives.address, neverArrives.owner, neverArrives.identifier);
+  for (const m of [5, 10, 20]) {
+    at(m);
+    await failover.sweepRelayLedger(io);
+  }
+  at(30);
+  ledger.noteEthernaSend(late.address, late.owner, late.identifier);
+  for (const m of [35, 40]) {
+    at(m);
+    await failover.sweepRelayLedger(io);
+  }
+  at(41);
+  ledger.noteEthernaSend(onTime.address, onTime.owner, onTime.identifier);
+  bee[onTime.address] = found(onTime.raw);
+  at(45);
+  ledger.noteEthernaSend(fresh.address, fresh.owner, fresh.identifier);
+  at(46);
+  await failover.sweepRelayLedger(io);
+  assert.equal(ledger.getRelayEntry(onTime.address), undefined);
+  at(47);
+  assert.ok(
+    !ledger.dueEntries("pending", 10).some((e) => e.address === neverArrives.address),
+    "a send arriving on time says nothing about the others",
+  );
+  // neverArrives was last looked at minute 40 and waits until 80. late lands, 20 min after it went.
+  bee[late.address] = found(late.raw);
+  at(50);
+  await failover.sweepRelayLedger(io);
+  assert.equal(ledger.getRelayEntry(late.address), undefined);
+
+  at(51);
+  const due = ledger.dueEntries("pending", 10).map((e) => e.address);
+  assert.deepEqual(due, [neverArrives.address], "due now, not at minute 80; fresh was just looked at");
+  await failover.sweepRelayLedger(io);
+  at(57);
+  assert.ok(
+    !ledger.dueEntries("pending", 10).some((e) => e.address === neverArrives.address),
+    "still missing: it backs off from its count, not from 5 min",
+  );
+});
+
 test("sweep: a failover chunk is re-posted to Etherna as the same signed bytes, then dropped", async () => {
   process.env.ETHERNA_FAILOVER = "auto";
   const s = signedSoc(30);

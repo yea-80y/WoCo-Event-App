@@ -68,6 +68,8 @@ export const SETTLE_MIN_AGE_MS = 5 * 60 * 1000;
  * sweep looks at ~5 min and again at ~10, so two misses come first.
  */
 export const PENDING_ALARM_MS = 15 * 60 * 1000;
+/** On this ledger's clock. `at`, never `updatedAt`: a repeat send and a restart both refresh that. */
+export const pastPushAlarm = (at: string): boolean => now() - Date.parse(at) >= PENDING_ALARM_MS;
 /** Past this the rail is off: ~10 days of the relay's per-account hourly limit, a few MB of files. */
 export const MAX_ENTRIES = 10_000;
 /**
@@ -392,6 +394,20 @@ export function undeferAll(status: RelayStatus): void {
   for (const [a, e] of entries) if (e.status === status) backoff.delete(a);
 }
 
+/**
+ * A send past PENDING_ALARM_MS just reached our bee: Etherna is pushing again, so
+ * every pending entry is due now, not up to a day from now with the push alarm
+ * red meanwhile. Each keeps its count, so one that still never arrives (a dead
+ * batch's) costs one more look per such event and backs off from where it was.
+ */
+export function recheckPending(): void {
+  const t = now();
+  for (const [a, e] of entries) {
+    const b = backoff.get(a);
+    if (e.status === "pending" && b) b.nextAt = t;
+  }
+}
+
 /** Up to `limit` entries of one status a sweep may judge now: old enough, and not deferred. */
 export function dueEntries(status: RelayStatus, limit: number): Array<RelayEntry & { address: string }> {
   ensureLoaded();
@@ -434,7 +450,7 @@ export function relayLedgerState(): {
   unlisted: number;
   readsCleared: number;
   pending: number;
-  /** Pending past PENDING_ALARM_MS since the first send. */
+  /** Pending past PENDING_ALARM_MS since first listed (a failover entry turned pending keeps its `at`). */
   stalePending: number;
   failover: number;
   oldestPendingAt: string | null;
@@ -446,15 +462,13 @@ export function relayLedgerState(): {
   let failover = 0;
   let oldestPendingAt: string | null = null;
   let oldestFailoverAt: string | null = null;
-  const t = now();
   for (const e of entries.values()) {
     if (e.status === "failover") {
       failover++;
       if (!oldestFailoverAt || e.at < oldestFailoverAt) oldestFailoverAt = e.at;
     } else {
       pending++;
-      // `at`, never `updatedAt`: a repeat send and a restart both refresh that.
-      if (t - Date.parse(e.at) >= PENDING_ALARM_MS) stalePending++;
+      if (pastPushAlarm(e.at)) stalePending++;
       if (!oldestPendingAt || e.at < oldestPendingAt) oldestPendingAt = e.at;
     }
   }

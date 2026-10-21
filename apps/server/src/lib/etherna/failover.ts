@@ -22,7 +22,9 @@ import {
   failoverMode,
   loadRelayLedger,
   markPending,
+  pastPushAlarm,
   PENDING_ALARM_MS,
+  recheckPending,
   relayLedgerHasRoom,
   relayLedgerState,
   relayLedgerUsable,
@@ -135,10 +137,12 @@ export async function sweepRelayLedger(
   const done: Array<{ address: string; updatedAt: string }> = [];
   const kept: string[] = [];
 
+  let staleArrived = false;
   for (const e of dueEntries("pending", perPass.settle)) {
     const bee = await io.readBee(e.address);
     if (bee.status === "found" && verifyStoredSoc(bee.raw, e.owner, e.identifier).ok) {
       done.push(e);
+      if (pastPushAlarm(e.at)) staleArrived = true;
       continue;
     }
     // Neither store holds it: nothing can surface later to be written over.
@@ -200,6 +204,8 @@ export async function sweepRelayLedger(
   }
 
   resolveEntries(done);
+  // Before the deferral, so what this pass just looked at keeps its normal wait.
+  if (staleArrived) recheckPending();
   deferEntries(kept);
   stats.settled += settled;
   stats.migrated += migrated;
@@ -237,10 +243,13 @@ export function startRelayLedgerSweep(): void {
  * Etherna's, and `postage.etherna` watches its batch.
  *
  * `push` is RED while a pending send is past PENDING_ALARM_MS: Etherna said yes and
- * our bee still cannot find it (2026-10-20). It clears when the sweep sees the chunk
- * or both stores say absent. One that never will - its batch died before Etherna
- * pushed it - is cleared by moving its file out with the server stopped. Unknown
- * (`null`) while the list cannot be read.
+ * our bee still cannot find it (2026-10-20). Also red while either store cannot be
+ * asked - during an Etherna outage a refused send stays listed and nothing can
+ * settle or drop it - which is worth a page too. Says nothing under `force`, which
+ * lists nothing pending. It clears when the sweep sees the chunk or both stores say
+ * absent; a stale send arriving puts every pending entry due at once. One that never
+ * will - its batch died before Etherna pushed it - is cleared by moving its file out
+ * with the server stopped. Unknown (`null`) while the list cannot be read.
  */
 export function ethernaFailoverHealth(): Record<string, unknown> {
   const { mode, configError } = failoverMode();
