@@ -92,9 +92,14 @@ export function doorPassSecret(secret: Uint8Array, eventId: string, passId: stri
 export function passkeyBoxKeypair(prfSecret: string | Uint8Array): XWingKeypair {
   const seed = passkeyBoxSeed(prfSecret);
   try {
-    const { secretKey, publicKey } = xwing.keygen(seed);
-    return { secretKey, publicKey };
+    return passkeyBoxKeypairFromSeed(seed);
   } finally {
     seed.fill(0);
   }
+}
+
+/** A passkey's box key from its box seed, the form the sign-in window hands over. */
+export function passkeyBoxKeypairFromSeed(boxSeed: Uint8Array): XWingKeypair {
+  const { secretKey, publicKey } = xwing.keygen(boxSeed);
+  return { secretKey, publicKey };
 }

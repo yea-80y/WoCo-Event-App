@@ -65,6 +65,9 @@ import {
   passkeyIdentitySeed,
   portabilitySocOwnerKey,
   portabilityHpkeSeed,
+  passkeyAccountKeys,
+  passkeyGuardianKeys,
+  addressForPrivateKey,
   type EIP712Signer,
 } from "@woco/shared";
 import { createHash } from "node:crypto";
@@ -327,6 +330,9 @@ const PASSKEY_PINNED = {
    *  HKDF, which also reproduces `seed` above. STICKY, not identity-frozen: a change
    *  costs each device one re-fetch of its seed, never an identity. */
   seedKek: "57a33eb83a338b7d6cdaaf49c890258146a4f10ce8eabc948890dc822048b21e",
+  /** This passkey's box key seed (#186): every key-ring entry is sealed to the X-Wing
+   *  key it makes. FROZEN. Cross-checked against the same Python HKDF. */
+  boxSeed: "dc4292316da9162862971025f469d6349c9015c835ad986891d435ca0c3104f7",
 } as const;
 
 test("FROZEN: the PRF salt input and its digest", () => {
@@ -396,6 +402,26 @@ test("backup passkey: PRF → guardian escrow master → escrow key + SOC owner 
   assert.equal((await guardianKeysFromMaster(master)).socSigner.address, gk.socSigner.address);
 });
 
+test("the sign-in window's bundle is exactly the pinned derivations, and nothing that is not", () => {
+  // What crosses from the window to the app (passkey-window-protocol.ts): if any field
+  // drifted from its pin, every account would open as someone else.
+  const k = passkeyAccountKeys(PRF_OUTPUT);
+  const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
+  assert.deepEqual(Object.keys(k).sort(), ["boxSeed", "ownerKey", "portabilityHpkeSeed", "portabilitySocKey", "seed", "seedKek"]);
+  assert.equal("0x" + hex(k.ownerKey), keccak256(PRF_OUTPUT));
+  assert.equal(new Wallet("0x" + hex(k.ownerKey)).address.toLowerCase(), PASSKEY_PINNED.ownerAddress);
+  assert.equal("0x" + hex(k.seed), PASSKEY_PINNED.seed);
+  assert.equal(hex(k.seedKek), PASSKEY_PINNED.seedKek);
+  assert.equal(hex(k.boxSeed), PASSKEY_PINNED.boxSeed);
+  assert.equal(addressForPrivateKey(k.portabilitySocKey), PASSKEY_PINNED.portabilitySocOwner);
+  assert.equal(hex(k.portabilityHpkeSeed), hex(portabilityHpkeSeed(PRF_OUTPUT)));
+  assert.ok(!Object.values(k).some((v) => hex(v) === "cd".repeat(32)), "the PRF output itself must never be in the bundle");
+  const g = passkeyGuardianKeys(PRF_OUTPUT);
+  assert.deepEqual(Object.keys(g).sort(), ["escrowMaster", "ownerKey"]);
+  assert.equal(hex(g.escrowMaster), PASSKEY_PINNED.guardianEscrowMaster);
+  assert.equal("0x" + hex(g.ownerKey), keccak256(PRF_OUTPUT));
+});
+
 test("everything hanging off one PRF output is a different key", () => {
   const values = new Set([
     PASSKEY_PINNED.seed.slice(2),
@@ -408,8 +434,10 @@ test("everything hanging off one PRF output is a different key", () => {
     PASSKEY_PINNED.portabilityHpkePubSha256,
     PASSKEY_PINNED.guardianEscrowMaster,
     PASSKEY_PINNED.guardianSocOwner,
+    PASSKEY_PINNED.boxSeed,
+    PASSKEY_PINNED.seedKek,
   ]);
-  assert.equal(values.size, 10, "two derivations produced the same value");
+  assert.equal(values.size, 12, "two derivations produced the same value");
 });
 
 test("a PRF output that is not exactly 32 bytes derives nothing", () => {

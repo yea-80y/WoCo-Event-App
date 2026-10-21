@@ -26,31 +26,11 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { scalarFromOkm48, scalarToPrivateKey } from "./secp-scalar.js";
 
-/** secp256k1 group order. */
-const SECP256K1_N = secp256k1.Point.Fn.ORDER;
-
-/**
- * Map 48 bytes of HKDF output to a scalar in [1, n-1], deterministically.
- *
- * 48 bytes (384 bits) reduced mod (n-1) gives bias ~2^-128 — negligible — and
- * the +1 shift makes zero impossible by construction. No retry loop, no throw:
- * the ~2^-128 "invalid scalar" case of naive 32-byte derivation simply cannot
- * occur. Exported for the range tests; not part of the public derivation API.
- */
-export function scalarFromOkm48(okm: Uint8Array): bigint {
-  if (okm.length !== 48) {
-    throw new Error(`derived-key OKM must be 48 bytes, got ${okm.length}`);
-  }
-  let x = 0n;
-  for (const b of okm) x = (x << 8n) | BigInt(b);
-  return (x % (SECP256K1_N - 1n)) + 1n;
-}
-
-/** A scalar as a fixed 32-byte big-endian private key. */
-export function scalarToPrivateKey(scalar: bigint): Uint8Array {
-  return hexToBytes(scalar.toString(16).padStart(64, "0"));
-}
+// The scalar map lives in secp-scalar.ts so the passkey window can use it without
+// a curve library; re-exported unchanged for every existing importer.
+export { scalarFromOkm48, scalarToPrivateKey } from "./secp-scalar.js";
 
 /** Ethereum address = last 20 bytes of keccak256 over the 64-byte public key
  *  (uncompressed form minus its 0x04 tag byte). Lowercase, 0x-prefixed. */
