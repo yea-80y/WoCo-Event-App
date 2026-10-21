@@ -15,9 +15,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   PASSKEY_APP,
   PASSKEY_WINDOW,
+  POLL_MS,
   PRIME_MS,
   READY_MS,
   PasskeyWindowErrorReply,
@@ -32,7 +35,7 @@ import {
 } from "../src/lib/auth/passkey-window.ts";
 import { accountResult } from "./fake-passkey-window.ts";
 
-function fakeHost(opts: { blocked?: boolean } = {}) {
+function fakeHost(opts: { blocked?: boolean; standalone?: boolean } = {}) {
   const posted: Array<{ data: any; target: string }> = [];
   const listeners = new Set<(ev: MessageLike) => void>();
   const timers: Array<{ ms: number; fn: () => void; every: boolean; live: boolean }> = [];
@@ -63,6 +66,7 @@ function fakeHost(opts: { blocked?: boolean } = {}) {
       timers.push(t);
       return () => (t.live = false);
     },
+    standalone: () => !!opts.standalone,
   };
   const say = (data: unknown, from: { origin?: string; source?: unknown } = {}) =>
     [...listeners].forEach((f) => f({ origin: from.origin ?? PASSKEY_WINDOW, source: from.source ?? win, data }));
@@ -94,12 +98,11 @@ test("a blocked window is null; an opened one listens from the start, so an earl
   assert.equal(opened.ready, true);
 });
 
-test("the request waits for ready, then goes to the window's literal origin, once", async () => {
+test("the request waits for ready, then goes to the window's literal origin, once per ready", async () => {
   const f = fakeHost();
   const opened = openPasskeyWindow(f.host)!;
   const p = runPasskeyWindow(f.host, opened, request);
   assert.equal(f.posted.length, 0, "nothing before ready");
-  f.say(READY);
   f.say(READY);
   assert.deepEqual(f.posted, [{ data: request, target: PASSKEY_WINDOW }]);
   f.say(result());
@@ -141,7 +144,7 @@ test("the window's refusal arrives as itself; a message this app does not know i
   await assert.rejects(q, (e: unknown) => e instanceof PasskeyWindowNoAnswerError && e.outOfStep);
 });
 
-test("a window closed unanswered is a cancel, read like a cancelled sheet", async () => {
+test("a window closed unanswered is a cancel, read like a cancelled sheet - after one more tick", async () => {
   const f = fakeHost();
   const p = runPasskeyWindow(f.host, openPasskeyWindow(f.host)!, request);
   f.say(READY);
@@ -149,7 +152,48 @@ test("a window closed unanswered is a cancel, read like a cancelled sheet", asyn
   assert.equal(await settled(p), "pending", "open: nothing yet");
   f.win.closed = true;
   f.fire("every");
+  assert.equal(await settled(p), "pending", "a result may still be queued behind the close");
+  f.fire("after", POLL_MS);
   await assert.rejects(p, (e: unknown) => e instanceof DOMException && e.name === "NotAllowedError");
+});
+
+test("a result that lands just after the window closed itself still wins", async () => {
+  const f = fakeHost();
+  const p = runPasskeyWindow(f.host, openPasskeyWindow(f.host)!, request);
+  f.say(READY);
+  f.win.closed = true;
+  f.fire("every");
+  f.say(result());
+  f.fire("after", POLL_MS);
+  assert.equal(await settled(p), "ok");
+});
+
+test("a reloaded window says ready again and gets the request again", () => {
+  const f = fakeHost();
+  void runPasskeyWindow(f.host, openPasskeyWindow(f.host)!, request);
+  f.say(READY);
+  f.say(READY);
+  assert.deepEqual(f.posted.map((x) => x.data.nonce), [NONCE, NONCE]);
+});
+
+test("in a home-screen app, a window that never answers says why; in a browser it is a cancel", async () => {
+  for (const ending of ["closed", "timeout"] as const) {
+    const f = fakeHost({ standalone: true });
+    const p = runPasskeyWindow(f.host, openPasskeyWindow(f.host)!, request);
+    if (ending === "closed") {
+      f.win.closed = true;
+      f.fire("every");
+      f.fire("after", POLL_MS);
+    } else f.fire("after", READY_MS);
+    await assert.rejects(p, (e: unknown) => e instanceof PasskeyWindowNoAnswerError && e.standalone && /home screen/.test(e.message), ending);
+  }
+  const g = fakeHost({ standalone: true });
+  const q = runPasskeyWindow(g.host, openPasskeyWindow(g.host)!, request);
+  g.say(READY);
+  g.win.closed = true;
+  g.fire("every");
+  g.fire("after", POLL_MS);
+  await assert.rejects(q, (e: unknown) => e instanceof DOMException, "it answered, then closed: a plain cancel");
 });
 
 test("a window that never says ready is named, and closed", async () => {
@@ -214,6 +258,14 @@ test("a primed window is used once, never opened twice, and closes itself unused
   f.say({ v: 1, type: "result", nonce: f.posted[0]!.data.nonce, ok: true, result: accountResult() });
   await p;
 
+  const h = fakeHost();
+  primePasskeyWindow(h.host, PASSKEY_APP);
+  h.win.closed = true;
+  primePasskeyWindow(h.host, PASSKEY_APP);
+  assert.equal(h.opens(), 2);
+  assert.equal(h.listeners.size, 1, "the closed primed window's listener is let go");
+  assert.equal(h.timers.filter((t) => t.live && t.ms === PRIME_MS).length, 1, "and its expiry");
+
   const g = fakeHost();
   primePasskeyWindow(g.host, PASSKEY_APP);
   g.fire("after", PRIME_MS);
@@ -222,4 +274,13 @@ test("a primed window is used once, never opened twice, and closes itself unused
   const asks: string[] = [];
   await assert.rejects(passkeyWindow("signin", {}, { host: g.host, origin: PASSKEY_APP, sheet: { request: async (a) => (asks.push(a), null) } }));
   assert.deepEqual(asks, ["signin"], "an expired prime is gone: the sheet asks");
+});
+
+test("a page with no sheet refuses a request instead of waiting for a tap that cannot come", () => {
+  const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+  const store = read("../src/lib/auth/passkey-window-sheet.svelte.ts");
+  const request = store.slice(store.indexOf("  request(action, open) {"));
+  assert.match(request.split("\n")[1]!, /if \(_mounted === 0\) return Promise\.reject\(new Error\(/);
+  assert.match(read("../src/lib/components/auth/PasskeyWindowSheet.svelte"), /\$effect\(\(\) => passkeyWindowSheet\.attach\(\)\);/);
+  assert.match(read("../src/App.svelte"), /<PasskeyWindowSheet \/>/);
 });

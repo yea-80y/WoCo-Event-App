@@ -40,19 +40,24 @@ export const PASSKEY_APP = DEV ? PASSKEY_DEV_APP_ORIGIN : WOCO_APP_ORIGIN;
 export const READY_MS = 30_000;
 /** A primed window unused for this long was opened for nothing, and is closed. */
 export const PRIME_MS = 20_000;
-const POLL_MS = 400;
+export const POLL_MS = 400;
 
 /** The window opened but never answered, or answered in a way this app does not know. */
 export class PasskeyWindowNoAnswerError extends Error {
   readonly outOfStep: boolean;
-  constructor(outOfStep = false) {
+  /** WoCo runs as a home-screen app, where a window it opens may not be able to answer. */
+  readonly standalone: boolean;
+  constructor(opts: { outOfStep?: boolean; standalone?: boolean } = {}) {
     super(
-      outOfStep
+      opts.outOfStep
         ? "The passkey window and this page are out of step. Reload WoCo and try again."
-        : "The passkey window didn't connect. Close it and try again.",
+        : opts.standalone
+          ? "Passkeys can't open from the WoCo app on your home screen. Open woco.eth.limo in your browser to use your passkey."
+          : "The passkey window didn't connect. Close it and try again.",
     );
     this.name = "PasskeyWindowNoAnswerError";
-    this.outOfStep = outOfStep;
+    this.outOfStep = !!opts.outOfStep;
+    this.standalone = !opts.outOfStep && !!opts.standalone;
   }
 }
 
@@ -75,6 +80,8 @@ export interface WindowHost {
   listen(fn: (ev: MessageLike) => void): () => void;
   every(ms: number, fn: () => void): () => void;
   after(ms: number, fn: () => void): () => void;
+  /** WoCo is running as an installed home-screen app. */
+  standalone(): boolean;
 }
 
 /** A window opened in a click, listening from the moment it exists - its `ready` can
@@ -122,8 +129,8 @@ export function runPasskeyWindow(
 ): Promise<PasskeyWindowResult> {
   return new Promise<PasskeyWindowResult>((resolve, reject) => {
     const { win } = opened;
-    let sent = false;
     let settled = false;
+    let closing = false;
     const cleanups: Array<() => void> = [];
     const settle = (fn: () => void) => {
       if (settled) return;
@@ -133,16 +140,19 @@ export function runPasskeyWindow(
       opened.stop();
       fn();
     };
+    // Every `ready` gets the request: each one is a fresh document in the window (a
+    // reload), which takes one request and ignores the rest.
     const send = () => {
-      if (sent || settled) return;
-      sent = true;
-      win.postMessage(request, PASSKEY_WINDOW);
+      if (!settled) win.postMessage(request, PASSKEY_WINDOW);
     };
+    // A window that never said ready, in a home-screen app, is most likely one iOS
+    // opened outside the app, where it cannot reach this page: say that, not "try again".
+    const silent = () => new PasskeyWindowNoAnswerError({ standalone: !opened.ready && host.standalone() });
     opened.onMessage = (ev) => {
       const heard = acceptPasskeyWindowReply(ev, { win, windowOrigin: PASSKEY_WINDOW, nonce: request.nonce, action: request.action });
       if (!heard) return;
       if (heard.kind === "ready") return send();
-      if (heard.kind === "unknown") return settle(() => reject(new PasskeyWindowNoAnswerError(true)));
+      if (heard.kind === "unknown") return settle(() => reject(new PasskeyWindowNoAnswerError({ outOfStep: true })));
       if (heard.kind === "error") return settle(() => reject(new PasskeyWindowErrorReply(heard.error)));
       settle(() => {
         try {
@@ -155,7 +165,15 @@ export function runPasskeyWindow(
     };
     cleanups.push(
       host.every(POLL_MS, () => {
-        if (win.closed) settle(() => reject(windowRefusal({ name: "NotAllowedError", quick: false })));
+        if (!win.closed || closing) return;
+        // The window posts its answer and then closes itself, so a result can still be
+        // queued behind this tick: one more tick before the close counts as a cancel.
+        closing = true;
+        cleanups.push(
+          host.after(POLL_MS, () =>
+            settle(() => reject(!opened.ready && host.standalone() ? silent() : windowRefusal({ name: "NotAllowedError", quick: false }))),
+          ),
+        );
       }),
       host.after(READY_MS, () => {
         if (opened.ready) return;
@@ -165,7 +183,7 @@ export function runPasskeyWindow(
           } catch {
             // Nothing to tidy.
           }
-          reject(new PasskeyWindowNoAnswerError());
+          reject(silent());
         });
       }),
     );
@@ -211,6 +229,14 @@ export const browserHost: WindowHost = {
     const t = setTimeout(fn, ms);
     return () => clearTimeout(t);
   },
+  standalone: () => {
+    if ((navigator as { standalone?: boolean }).standalone === true) return true;
+    try {
+      return window.matchMedia?.("(display-mode: standalone)").matches === true;
+    } catch {
+      return false;
+    }
+  },
 };
 
 /** Passkeys run from the app's own page only: the window answers no other. */
@@ -230,6 +256,12 @@ let primed: { opened: OpenedWindow; expire: () => void } | null = null;
 export function primePasskeyWindow(host: WindowHost = browserHost, origin: string = location.origin): void {
   if (passkeyHostRefusal(origin)) return;
   if (primed && !primed.opened.win.closed) return;
+  if (primed) {
+    // Closed under us: let go of it before opening another.
+    primed.expire();
+    primed.opened.stop();
+    primed = null;
+  }
   const opened = openPasskeyWindow(host);
   if (!opened) return; // blocked: the sheet asks again, with a tap of its own
   const expire = host.after(PRIME_MS, () => {

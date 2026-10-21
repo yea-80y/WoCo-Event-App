@@ -15,44 +15,34 @@
  * and the checks below are the build's own (vite-plugins/auth-window.ts), repeated on
  * the exact bytes being sent.
  *
- * USAGE:
+ * USAGE (from a clean tree; the commit is recorded in .swarm/auth-window.json):
  *   npm run build:auth
- *   node scripts/upload-auth-window.cjs
+ *   node scripts/upload-auth-window.cjs [--allow-dirty]
  */
 
 const { spawn } = require('child_process');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 const UPLOAD_DIR = path.resolve(__dirname, '../apps/web/dist-auth');
 const STATE_FILE = path.resolve(__dirname, '../.swarm/auth-window.json');
 
-/** What a production window must say, byte for byte (packages/shared/src/auth/passkey-rp.ts). */
-const PRODUCTION = {
-  selfOrigin: '"https://auth.woco.eth.limo"',
-  rpId: '"auth.woco.eth.limo"',
-  openers: '["https://woco.eth.limo"]',
-};
-
-const sha256Base64 = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('base64');
-
-/** Why `index` is not a production sign-in window, or [] when it is. Pure. */
-function windowProblems(index, notFound) {
-  const problems = [];
-  const script = /<script>([\s\S]*)<\/script>\s*<\/body>/.exec(index)?.[1];
-  const style = /<style>([\s\S]*?)<\/style>/.exec(index)?.[1];
-  const csp = /http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(index)?.[1];
-  if (!script || !style || !csp) return ['index.html has no inline script, style or CSP'];
-  if (!csp.includes(`script-src 'sha256-${sha256Base64(script)}'`)) problems.push('the CSP does not pin the inline script');
-  if (!csp.includes(`style-src 'sha256-${sha256Base64(style)}'`)) problems.push('the CSP does not pin the inline style');
-  if (!csp.includes("connect-src 'none'") || !csp.includes("default-src 'none'")) problems.push('the CSP allows connections');
-  for (const [what, literal] of Object.entries(PRODUCTION)) {
-    if (!script.includes(literal)) problems.push(`the script does not name the production ${what} ${literal}`);
-  }
-  if (/localhost|127\.0\.0\.1/.test(index)) problems.push('it names localhost - a dev window');
+/**
+ * Why `index` is not a production sign-in window, or [] when it is: the BUILD's own
+ * checker (apps/web/vite-plugins/auth-window.ts), run on the exact bytes being sent,
+ * so the two can never drift; plus the error document carrying no script.
+ */
+async function windowProblems(index, notFound) {
+  const { tsImport } = require('tsx/esm/api');
+  const plugin = await tsImport('../apps/web/vite-plugins/auth-window.ts', __filename);
+  const problems = plugin.authWindowProblems(index, plugin.AUTH_WINDOW_PRODUCTION);
   if (/<script/i.test(notFound)) problems.push('404.html carries a script');
   return problems;
+}
+
+/** The commit the build came from, and whether the tree had changes it does not record. */
+function buildSource(repo, run = (args) => require('child_process').execFileSync('git', args, { cwd: repo, encoding: 'utf8' })) {
+  return { commit: run(['rev-parse', 'HEAD']).trim(), dirty: run(['status', '--porcelain']).trim() !== '' };
 }
 
 /** The ENS contenthash for a Swarm reference (ENSIP-7: swarm-ns, CIDv1, swarm-manifest, keccak-256). */
@@ -61,7 +51,7 @@ function contenthashFor(ref) {
   return `0xe40101fa011b20${ref}`;
 }
 
-module.exports = { windowProblems, contenthashFor };
+module.exports = { windowProblems, contenthashFor, buildSource };
 
 if (require.main === module) {
   require('dotenv').config({ path: path.resolve(__dirname, '.env') });
@@ -75,9 +65,15 @@ if (require.main === module) {
   (async () => {
     const index = fs.readFileSync(path.join(UPLOAD_DIR, 'index.html'), 'utf8');
     const notFound = fs.readFileSync(path.join(UPLOAD_DIR, '404.html'), 'utf8');
-    const problems = windowProblems(index, notFound);
+    const problems = await windowProblems(index, notFound);
     if (problems.length) {
       console.error(`REFUSED - not a production sign-in window:\n  - ${problems.join('\n  - ')}`);
+      process.exit(1);
+    }
+    // The Safe pins these bytes for good: they must be traceable to one commit.
+    const source = buildSource(path.resolve(__dirname, '..'));
+    if (source.dirty && !process.argv.includes('--allow-dirty')) {
+      console.error('REFUSED - the tree has uncommitted changes, so these bytes match no commit. Commit, rebuild, or pass --allow-dirty.');
       process.exit(1);
     }
     if (!/^[0-9a-fA-F]{64}$/.test(POSTAGE_BATCH_ID)) {
@@ -133,11 +129,12 @@ if (require.main === module) {
 
       const previous = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : null;
       fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-      const state = { ref, contenthash: contenthashFor(ref), uploadedAt: new Date().toISOString(), batch: POSTAGE_BATCH_ID };
+      const state = { ref, contenthash: contenthashFor(ref), commit: source.commit, dirty: source.dirty, uploadedAt: new Date().toISOString(), batch: POSTAGE_BATCH_ID };
       fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 
       console.log(`\nSign-in window reference: ${ref}`);
       console.log(`ENS contenthash:          ${state.contenthash}`);
+      console.log(`Built from:               ${source.commit}${source.dirty ? ' (DIRTY tree)' : ''}`);
       if (previous && previous.ref !== ref) {
         console.log(`\nCHANGED from ${previous.ref}: auth.woco.eth needs a Safe transaction setting the contenthash above.`);
       } else if (previous) {

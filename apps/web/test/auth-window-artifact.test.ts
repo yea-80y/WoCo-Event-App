@@ -51,6 +51,7 @@ test("production names exactly its three settings and passes every rule; the 404
   const { index, notFound } = await prod;
   assert.deepEqual(AUTH_WINDOW_PRODUCTION, { selfOrigin: SELF, rpId: "auth.woco.eth.limo", openers: [APP], outDir: "dist-auth" });
   assert.deepEqual(authWindowProblems(index, AUTH_WINDOW_PRODUCTION), []);
+  assert.match(index, /webrtc 'block'/, "WebRTC is outside connect-src");
   assert.doesNotMatch(notFound, /<script/i);
   assert.match(notFound, /default-src 'none'/);
 });
@@ -76,6 +77,13 @@ test("the rules refuse another channel, a second script, or a CSP that does not 
     ["window.name", "window.name='x'"],
     ["dynamic import()", "import('x')"],
     ["the URL fragment", "location.hash"],
+    ["WebRTC", "new RTCPeerConnection()"],
+    ["window.open()", 'window.open("https://x.example")'],
+    ["a navigation", 'location.href="https://x.example"'],
+    ["a navigation", 'location="https://x.example"'],
+    ["the history API", "history.replaceState(null,'','#x')"],
+    ["the opener's location", "opener.location.href"],
+    ["a form or link it builds", 'document.createElement("form")'],
   ]) {
     const page = authWindowHtml(`"https://auth.woco.eth.limo";"auth.woco.eth.limo";["https://woco.eth.limo"];${code}`);
     assert.ok(authWindowProblems(page, AUTH_WINDOW_PRODUCTION).some((p) => p.includes(channel)), channel);
@@ -86,15 +94,20 @@ test("the rules refuse another channel, a second script, or a CSP that does not 
 
 test("the upload script refuses a dev window, and names the contenthash the Safe sets", async () => {
   const upload = createRequire(import.meta.url)("../../../scripts/upload-auth-window.cjs") as {
-    windowProblems(index: string, notFound: string): string[];
+    windowProblems(index: string, notFound: string): Promise<string[]>;
     contenthashFor(ref: string): string;
+    buildSource(repo: string, run: (args: string[]) => string): { commit: string; dirty: boolean };
   };
   const p = await prod;
-  assert.deepEqual(upload.windowProblems(p.index, p.notFound), []);
-  const d = upload.windowProblems((await dev).index, p.notFound);
-  assert.ok(d.some((x) => /localhost/.test(x)) && d.some((x) => /production/.test(x)), d.join("; "));
-  assert.ok(upload.windowProblems(p.index.replace(/script-src 'sha256-[^']+'/, "script-src 'sha256-AAAA'"), p.notFound).length > 0);
-  assert.ok(upload.windowProblems(p.index, "<script>1</script>").length > 0, "a scripted 404 is refused");
+  assert.deepEqual(await upload.windowProblems(p.index, p.notFound), []);
+  const d = await upload.windowProblems((await dev).index, p.notFound);
+  assert.ok(d.some((x) => /localhost/.test(x)) && d.some((x) => /openers/.test(x)), d.join("; "));
+  assert.ok((await upload.windowProblems(p.index.replace(/script-src 'sha256-[^']+'/, "script-src 'sha256-AAAA'"), p.notFound)).length > 0);
+  assert.ok((await upload.windowProblems(p.index.replace("script-src 'sha256-", "script-src https://x.example 'sha256-"), p.notFound)).some((x) => /CSP/.test(x)), "an extra script source is refused");
+  assert.ok((await upload.windowProblems(p.index, "<script>1</script>")).length > 0, "a scripted 404 is refused");
+  const git = (out: Record<string, string>) => (args: string[]) => out[args[0]!]!;
+  assert.deepEqual(upload.buildSource("/r", git({ "rev-parse": "abc\n", status: "" })), { commit: "abc", dirty: false });
+  assert.deepEqual(upload.buildSource("/r", git({ "rev-parse": "abc\n", status: " M x.ts\n" })), { commit: "abc", dirty: true });
   const ref = "ab".repeat(32);
   assert.equal(upload.contenthashFor(ref), `0xe40101fa011b20${ref}`);
   assert.throws(() => upload.contenthashFor("xyz"));
@@ -163,8 +176,11 @@ const assertion = () => ({
 const creds = (get: any[] = [], create: any[] = []) => ({ get: async () => get.shift(), create: async () => create.shift() });
 const nonce = "N".repeat(22);
 const request = (extra: object = {}) => ({ v: 1, type: "request", nonce, action: "signin", ...extra });
-const settle = async (until: () => boolean) => {
-  for (let i = 0; i < 200 && !until(); i++) await new Promise((r) => setImmediate(r));
+/** Until `until` holds, or 10 s: the window's WebCrypto digest runs off the event loop,
+ *  so a count of turns is not enough when the whole suite runs at once. */
+const settle = async (until: () => boolean, ms = 10_000) => {
+  const end = Date.now() + ms;
+  while (!until() && Date.now() < end) await new Promise((r) => setTimeout(r, 5));
 };
 
 test("the window says ready to the allowed opener only, then answers one request with the vectors' keys", async () => {
@@ -196,7 +212,7 @@ test("only the first request is answered, and only from the opener at the allowe
   s.send(request({ nonce: "M".repeat(22) }));
   s.el("go").click();
   await settle(() => s.posted.length > 1);
-  await settle(() => false);
+  await settle(() => s.posted.length > 2, 300);
   assert.equal(s.posted.length, 2);
   assert.equal(s.posted[1]!.clone.nonce, nonce);
 });

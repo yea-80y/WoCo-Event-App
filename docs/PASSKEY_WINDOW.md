@@ -26,7 +26,7 @@ Decided 2026-10-21 (Fable design consult, owner go). Code: `apps/web/src/auth-wi
 Account keys leave the window only (i) to the window that opened it, captured once at load, (ii) whose
 origin is exactly `https://woco.eth.limo`, (iii) by `postMessage` to that literal origin, (iv) once, (v)
 after a tap in the window, (vi) from a page running only on `https://auth.woco.eth.limo`, unframed, under a
-hash CSP (`default-src 'none'`, `connect-src 'none'`), with no storage, network, URL data or other channel;
+hash CSP (`default-src 'none'`, `connect-src 'none'`, `webrtc 'block'`), with no storage, network, URL data or other channel;
 (vii) the raw PRF output never leaves at all. `test/auth-window-artifact.test.ts` builds the real file and
 runs it in a sandbox against these.
 
@@ -66,6 +66,13 @@ Browsers open a window only inside the click that asked (Safari is strictest). A
 need a ceremony calls `primePasskeyWindow()` as its first statement (the sign-in and create buttons do);
 anything else reached a ceremony from deep async code, and gets the "Continue with your passkey" sheet,
 whose button opens the window. The window waits for its own Continue tap before any prompt.
+
+## The home-screen app
+
+From WoCo installed to a home screen, a window it opens may live outside the app with no way back to it
+(iOS opens other origins in its own sheet; Fable sign-off 2026-10-21, unmeasured). The app does not guess
+up front: when the window never says ready there, it says passkeys open in the browser instead. Measure on
+an installed iPhone app before relying on either outcome.
 
 ## Not done yet (after launch)
 

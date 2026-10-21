@@ -9,6 +9,9 @@ import type { OpenedWindow, PasskeySheet } from "./passkey-window.js";
 let _pending = $state<{ action: PasskeyWindowAction; blocked: boolean } | null>(null);
 let _open: (() => OpenedWindow | null) | null = null;
 let _resolve: ((opened: OpenedWindow | null) => void) | null = null;
+// How many sheets are on the page (PasskeyWindowSheet.svelte). With none, a request
+// would wait for a tap that can never come: it refuses instead.
+let _mounted = 0;
 
 function settle(opened: OpenedWindow | null): void {
   const resolve = _resolve;
@@ -20,6 +23,7 @@ function settle(opened: OpenedWindow | null): void {
 
 export const passkeyWindowSheet: PasskeySheet & {
   readonly pending: { action: PasskeyWindowAction; blocked: boolean } | null;
+  attach(): () => void;
   proceed(): void;
   dismiss(): void;
 } = {
@@ -27,7 +31,17 @@ export const passkeyWindowSheet: PasskeySheet & {
     return _pending;
   },
 
+  /** Called by the sheet component while it is on the page; returns its detach. */
+  attach() {
+    _mounted++;
+    return () => {
+      _mounted--;
+      if (_mounted === 0) settle(null);
+    };
+  },
+
   request(action, open) {
+    if (_mounted === 0) return Promise.reject(new Error("Passkeys can't be used on this page - open WoCo to continue."));
     settle(null);
     _pending = { action, blocked: false };
     _open = open;

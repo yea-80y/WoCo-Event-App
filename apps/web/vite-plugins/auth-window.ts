@@ -71,6 +71,8 @@ export function authWindowCsp(scriptHash: string, styleHash: string): string {
     "base-uri 'none'",
     "form-action 'none'",
     "connect-src 'none'",
+    // WebRTC is not governed by connect-src; ignored where the directive is not known.
+    "webrtc 'block'",
   ].join("; ");
 }
 
@@ -144,6 +146,12 @@ const DENIED: Array<[string, RegExp]> = [
   ["the URL fragment", /location\.hash/],
   ["window.name", /window\.name/],
   ["BroadcastChannel", /BroadcastChannel/],
+  ["WebRTC", /RTCPeerConnection|RTCDataChannel/],
+  ["window.open()", /\bopen\s*\(\s*["'`]|window\.open\b/],
+  ["a navigation", /location\.(href|assign|replace|search|pathname)\b|location\s*=[^=]/],
+  ["the history API", /history\.(pushState|replaceState)/],
+  ["the opener's location", /opener\.location/],
+  ["a form or link it builds", /createElement\(\s*["'`](a|form|iframe|img|script|link)["'`]/],
   ["dynamic import()", /\bimport\s*\(/],
   ["eval / Function", /\beval\s*\(|new Function\s*\(/],
   ["a wildcard postMessage target", /["'`]\*["'`]/],

@@ -16,6 +16,9 @@
     "backup-get": "Use your backup passkey",
   };
 
+  // On the page = able to answer a request; without this the request refuses at once.
+  $effect(() => passkeyWindowSheet.attach());
+
   const pending = $derived(passkeyWindowSheet.pending);
   let goEl = $state<HTMLButtonElement | null>(null);
 
