@@ -294,7 +294,7 @@ export async function portabilityEnvelopeExists(args: {
     await Promise.all([
       derivePortabilityKeys(args.portability),
       import("../swarm/probe-soc.js"),
-      import("@woco/shared"),
+      import("@woco/shared/swarm/soc"),
     ]);
 
   const base = contentFeedSocIdentifier(PORTABILITY_SOC_IDENTIFIER_INPUT);

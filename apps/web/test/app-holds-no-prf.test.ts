@@ -66,6 +66,14 @@ test("no app file derives anything from a PRF output, or knows the PRF salt", ()
   assert.deepEqual(offenders.map((f) => `${f.rel}: ${re.exec(f.code)![0]}`), []);
 });
 
+test("no app file loads the whole shared index at run time", () => {
+  // A dynamic import("@woco/shared") is a namespace the bundler cannot trim, so every
+  // shared export ships - the PRF derivations included (measured 2026-10-21: four of
+  // them put passkey-prf.ts in the app and both site bundles). Types are fine.
+  const offenders = APP.filter((f) => /import\(\s*["']@woco\/shared["']\s*\)(?!\s*\.)/.test(f.code));
+  assert.deepEqual(offenders.map((f) => f.rel), []);
+});
+
 test("the sign-in button opens the window before anything else it does", () => {
   const button = APP.find((f) => f.rel === "lib/components/auth/PasskeyLogin.svelte")!.code;
   const run = button.slice(button.indexOf('async function run(mode: "signin" | "create") {'));

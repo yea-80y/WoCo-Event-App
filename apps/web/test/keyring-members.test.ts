@@ -10,7 +10,8 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { passkeyAccountKeys } from "@woco/shared";
 import { openKeyRing, type KeyRing } from "@woco/shared/keyring/ring";
 import { verifyBoxKeyStatement } from "@woco/shared/keyring/box-key";
-import { newAccountSecret, passkeyBoxKeypair } from "@woco/shared/keyring/account-secret";
+import { newAccountSecret } from "@woco/shared/keyring/account-secret";
+import { passkeyBoxKeypair } from "@woco/shared/keyring/passkey-box";
 import { memberOf, ringWithMembers } from "../src/lib/keyring/members.ts";
 
 const PARENT = "0x" + "ab".repeat(20);
