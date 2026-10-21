@@ -18,6 +18,11 @@ export const WOCO_APP_ORIGIN = "https://woco.eth.limo";
  *  own resolver, opened from the app. */
 export const PASSKEY_WINDOW_ORIGIN = "https://auth.woco.eth.limo";
 
+/** Local development's pair: the app's dev server and the dev build of the window
+ *  (`npm run dev:auth`). Never in a production artifact (vite-plugins/auth-window.ts). */
+export const PASSKEY_DEV_APP_ORIGIN = "http://localhost:5173";
+export const PASSKEY_DEV_WINDOW_ORIGIN = "http://localhost:5174";
+
 /**
  * Resolve the RP ID for the document hostname.
  *
