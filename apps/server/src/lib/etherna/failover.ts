@@ -22,7 +22,6 @@ import {
   failoverMode,
   loadRelayLedger,
   markPending,
-  pastPushAlarm,
   PENDING_ALARM_MS,
   recheckPending,
   relayLedgerHasRoom,
@@ -137,12 +136,15 @@ export async function sweepRelayLedger(
   const done: Array<{ address: string; updatedAt: string }> = [];
   const kept: string[] = [];
 
-  let staleArrived = false;
+  // Any chunk reaching our bee while the push alarm is red: Etherna is pushing
+  // again, so the stale ones are due now, not at their next backed-off look.
+  const alarmRed = relayLedgerState().stalePending > 0;
+  let arrived = false;
   for (const e of dueEntries("pending", perPass.settle)) {
     const bee = await io.readBee(e.address);
     if (bee.status === "found" && verifyStoredSoc(bee.raw, e.owner, e.identifier).ok) {
       done.push(e);
-      if (pastPushAlarm(e.at)) staleArrived = true;
+      arrived = true;
       continue;
     }
     // Neither store holds it: nothing can surface later to be written over.
@@ -205,7 +207,7 @@ export async function sweepRelayLedger(
 
   resolveEntries(done);
   // Before the deferral, so what this pass just looked at keeps its normal wait.
-  if (staleArrived) recheckPending();
+  if (arrived && alarmRed) recheckPending();
   deferEntries(kept);
   stats.settled += settled;
   stats.migrated += migrated;
@@ -247,9 +249,10 @@ export function startRelayLedgerSweep(): void {
  * asked - during an Etherna outage a refused send stays listed and nothing can
  * settle or drop it - which is worth a page too. Says nothing under `force`, which
  * lists nothing pending. It clears when the sweep sees the chunk or both stores say
- * absent; a stale send arriving puts every pending entry due at once. One that never
- * will - its batch died before Etherna pushed it - is cleared by moving its file out
- * with the server stopped. Unknown (`null`) while the list cannot be read.
+ * absent; any chunk arriving while it is red puts every pending entry due at once.
+ * One that never will - its batch died before Etherna pushed it - is cleared by
+ * moving its file out with the server stopped. Unknown (`null`) while the list
+ * cannot be read.
  */
 export function ethernaFailoverHealth(): Record<string, unknown> {
   const { mode, configError } = failoverMode();

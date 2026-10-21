@@ -69,7 +69,7 @@ export const SETTLE_MIN_AGE_MS = 5 * 60 * 1000;
  */
 export const PENDING_ALARM_MS = 15 * 60 * 1000;
 /** On this ledger's clock. `at`, never `updatedAt`: a repeat send and a restart both refresh that. */
-export const pastPushAlarm = (at: string): boolean => now() - Date.parse(at) >= PENDING_ALARM_MS;
+const pastPushAlarm = (at: string): boolean => now() - Date.parse(at) >= PENDING_ALARM_MS;
 /** Past this the rail is off: ~10 days of the relay's per-account hourly limit, a few MB of files. */
 export const MAX_ENTRIES = 10_000;
 /**
@@ -395,9 +395,9 @@ export function undeferAll(status: RelayStatus): void {
 }
 
 /**
- * A send past PENDING_ALARM_MS just reached our bee: Etherna is pushing again, so
- * every pending entry is due now, not up to a day from now with the push alarm
- * red meanwhile. Each keeps its count, so one that still never arrives (a dead
+ * A chunk reached our bee while the push alarm is red: Etherna is pushing again,
+ * so every pending entry is due now, not up to a day from now with the alarm
+ * still red. Each keeps its count, so one that still never arrives (a dead
  * batch's) costs one more look per such event and backs off from where it was.
  */
 export function recheckPending(): void {
