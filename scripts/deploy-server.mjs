@@ -193,9 +193,13 @@ if (!ALLOW_DIRTY && git("status", "--porcelain") !== dirty) {
 }
 
 execFileSync("rsync", [...RSYNC, "./", `${HOST}:${DEST}/repo/`], { stdio: "inherit" });
-// `up -d --build`, never `docker compose restart` — restart reuses the env the
+// `build --pull` re-resolves the `node:24-alpine` tag on every deploy. Without it a
+// base image already cached on the VM is reused, and a Node security release never
+// reaches production however often we deploy (2026-10-21: 24.22.1 fixed a Brotli
+// RCE that `fetch` of an organiser-chosen URL reaches).
+// `up -d`, never `docker compose restart` — restart reuses the env the
 // container was CREATED with and silently ignores env_file changes.
-execFileSync("ssh", [HOST, `cd ${DEST} && docker compose up -d --build server`], { stdio: "inherit" });
+execFileSync("ssh", [HOST, `cd ${DEST} && docker compose build --pull server && docker compose up -d server`], { stdio: "inherit" });
 
 console.log("\nDeployed. Verify the stamp reached production:");
 console.log("  curl -s $PUBLIC_API_BASE/api/health | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"build\"])'");
