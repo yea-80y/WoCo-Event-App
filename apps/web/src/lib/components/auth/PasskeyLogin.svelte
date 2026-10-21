@@ -5,6 +5,7 @@
     PasskeyBrowserRefusedError,
     PasskeyPrfUnsupportedError,
   } from "../../auth/passkey-account.js";
+  import { primePasskeyWindow } from "../../auth/passkey-window.js";
   import {
     appleTouchDevice,
     passkeyCreateRefusedAdvice,
@@ -60,6 +61,8 @@
   const appleDevice = () => appleTouchDevice(navigator.userAgent, navigator.maxTouchPoints ?? 0);
 
   async function run(mode: "signin" | "create") {
+    // FIRST, before any await: a browser opens the passkey window only inside the tap.
+    primePasskeyWindow();
     let apple: ReturnType<typeof appleDevice> = null;
     error = null;
     otherDevice = false;

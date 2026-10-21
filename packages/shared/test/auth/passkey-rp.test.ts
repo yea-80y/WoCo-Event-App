@@ -1,35 +1,31 @@
 /**
- * RP-ID resolution (#175). The property that matters: which hostnames share
- * the production credential scope, and — just as load-bearing — which do NOT.
- * A host outside the canonical suffix resolving to itself is what makes an
- * embed-minted passkey a separate identity; these tests pin that boundary so
- * a future "helpful" broadening (e.g. matching woco-net.com) is a deliberate
- * decision, not a drive-by.
+ * Where passkeys live (auth/passkey-rp.ts). FROZEN from launch: a different RP ID is a
+ * different account for every passkey user.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolvePasskeyRpId, PASSKEY_PRODUCTION_RP_ID } from "../../src/auth/passkey-rp.js";
+import * as rp from "../../src/auth/passkey-rp.js";
 
-test("the canonical origin and its subdomains share the production RP ID", () => {
-  assert.equal(resolvePasskeyRpId("woco.eth.limo"), PASSKEY_PRODUCTION_RP_ID);
-  assert.equal(resolvePasskeyRpId("app.woco.eth.limo"), PASSKEY_PRODUCTION_RP_ID);
-  assert.equal(resolvePasskeyRpId("a.b.woco.eth.limo"), PASSKEY_PRODUCTION_RP_ID);
+test("FROZEN: passkeys live on auth.woco.eth.limo, a sibling of every sub-name", () => {
+  assert.equal(rp.PASSKEY_PRODUCTION_RP_ID, "auth.woco.eth.limo");
+  assert.equal(rp.PASSKEY_WINDOW_ORIGIN, "https://auth.woco.eth.limo");
+  assert.equal(rp.WOCO_APP_ORIGIN, "https://woco.eth.limo");
 });
 
-test("localhost dev resolves to itself", () => {
-  assert.equal(resolvePasskeyRpId("localhost"), "localhost");
-  assert.equal(resolvePasskeyRpId("127.0.0.1"), "127.0.0.1");
+test("the RP ID is the window's own host, and the app is not on it", () => {
+  assert.equal(new URL(rp.PASSKEY_WINDOW_ORIGIN).hostname, rp.PASSKEY_PRODUCTION_RP_ID);
+  assert.notEqual(new URL(rp.WOCO_APP_ORIGIN).hostname, rp.PASSKEY_PRODUCTION_RP_ID);
 });
 
-test("every non-canonical host resolves to itself — a separate credential scope", () => {
-  assert.equal(resolvePasskeyRpId("gateway.woco-net.com"), "gateway.woco-net.com");
-  assert.equal(resolvePasskeyRpId("organiser-site.com"), "organiser-site.com");
-  assert.equal(resolvePasskeyRpId("woco-net.com"), "woco-net.com");
+test("dev is two localhost origins: the same RP ID, two origins, as production has two", () => {
+  assert.equal(new URL(rp.PASSKEY_DEV_APP_ORIGIN).hostname, "localhost");
+  assert.equal(new URL(rp.PASSKEY_DEV_WINDOW_ORIGIN).hostname, "localhost");
+  assert.notEqual(rp.PASSKEY_DEV_APP_ORIGIN, rp.PASSKEY_DEV_WINDOW_ORIGIN);
 });
 
-test("a lookalike suffix does not capture the production scope", () => {
-  // ".woco.eth.limo" must match as a label boundary, not a substring.
-  assert.equal(resolvePasskeyRpId("evilwoco.eth.limo"), "evilwoco.eth.limo");
-  assert.equal(resolvePasskeyRpId("woco.eth.limo.attacker.com"), "woco.eth.limo.attacker.com");
+test("no RP-ID resolver is left to widen: the app never asks for one", () => {
+  assert.deepEqual(Object.keys(rp).sort(), [
+    "PASSKEY_DEV_APP_ORIGIN", "PASSKEY_DEV_WINDOW_ORIGIN", "PASSKEY_PRODUCTION_RP_ID", "PASSKEY_WINDOW_ORIGIN", "WOCO_APP_ORIGIN",
+  ]);
 });

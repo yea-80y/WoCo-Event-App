@@ -10,17 +10,17 @@ import { importSeedKek } from "../auth/identity-seed.js";
 
 const pendingKey = (seedAddress: string) => `${StorageKeys.PENDING_ROTATION}:${seedAddress.toLowerCase()}`;
 
-export async function storePendingRotation(seedAddress: string, parent: string, pending: unknown, prfSecret: string): Promise<void> {
-  const kek = await importSeedKek(prfSecret);
+export async function storePendingRotation(seedAddress: string, parent: string, pending: unknown, seedKek: Uint8Array): Promise<void> {
+  const kek = await importSeedKek(seedKek);
   await putKV(pendingKey(seedAddress), await encrypt(kek, AAD.PENDING_ROTATION(seedAddress, parent), pending));
 }
 
 /** The pending removal for this account, opened with the passkey; null when none (or another account's). */
-export async function openPendingRotation(seedAddress: string, parent: string, prfSecret: string): Promise<unknown | null> {
+export async function openPendingRotation(seedAddress: string, parent: string, seedKek: Uint8Array): Promise<unknown | null> {
   const blob = await getKV<EncryptedBlob>(pendingKey(seedAddress));
   if (!blob) return null;
   try {
-    return await decrypt(await importSeedKek(prfSecret), AAD.PENDING_ROTATION(seedAddress, parent), blob);
+    return await decrypt(await importSeedKek(seedKek), AAD.PENDING_ROTATION(seedAddress, parent), blob);
   } catch {
     return null;
   }

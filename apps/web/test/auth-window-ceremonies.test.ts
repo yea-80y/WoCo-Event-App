@@ -130,6 +130,16 @@ test("a backup passkey is refused before anything is derived", async () => {
   assert.ok(c._prf!.some((b) => b !== 0), "nothing touched the PRF output");
 });
 
+test("a backup passkey from another device is refused as a backup first", async () => {
+  const c = cred({ prf: null, attachment: "cross-platform", handle: new TextEncoder().encode("woco-backup-v1:0123456789abcdef") });
+  assert.deepEqual(await refusal(runCeremony(req("signin"), deps({ get: [c] }).d)), { name: "IsBackup" });
+});
+
+test("the unlock keeps its own refusal: the other-device check is the sign-in's only", async () => {
+  const c = cred({ prf: null, attachment: "cross-platform" });
+  assert.deepEqual(await refusal(runCeremony(req("restore", { credentialId: RAW_ID_B64, fallback: false }), deps({ get: [c] }).d)), { name: "PrfUnsupported" });
+});
+
 test("an added passkey signs in as one", async () => {
   const { d } = deps({ get: [cred({ handle: new TextEncoder().encode("woco-added-v1:0123456789abcdef") })] });
   assert.equal(((await runCeremony(req("signin"), d)) as PasskeyWindowAccountResult).handleKind, "added");

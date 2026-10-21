@@ -4,6 +4,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { passkeyAccountKeys } from "@woco/shared";
 
 // --- minimal in-memory IndexedDB, as test/identity-seed.test.ts installs it ---
 function installFakeIndexedDB() {
@@ -46,7 +47,7 @@ const { storeLockedChain, openLockedChain, writeChainWindow, restoreChainWindow,
 
 const SEED_ADDR = "0x" + "5a".repeat(20);
 const PARENT = "0x" + "aa".repeat(20);
-const PRF = "0x" + "11".repeat(32);
+const PRF = passkeyAccountKeys("0x" + "11".repeat(32)).seedKek;
 const S0 = "0x" + "00".repeat(31) + "01";
 const S1 = "0x" + "01".repeat(32);
 const S2 = "0x" + "02".repeat(32);
@@ -56,7 +57,7 @@ const POLICY = { mode: "device-window" as const, ms: 2 * 60 * 60_000 };
 test("locked: opens with the same passkey for the same account, nothing else", async () => {
   await storeLockedChain(SEED_ADDR, PARENT, CHAIN, PRF);
   assert.deepEqual(await openLockedChain(SEED_ADDR, PARENT, PRF), CHAIN);
-  assert.equal(await openLockedChain(SEED_ADDR, PARENT, "0x" + "22".repeat(32)), null, "another passkey");
+  assert.equal(await openLockedChain(SEED_ADDR, PARENT, passkeyAccountKeys("0x" + "22".repeat(32)).seedKek), null, "another passkey");
   assert.equal(await openLockedChain(SEED_ADDR, "0x" + "bb".repeat(20), PRF), null, "another account");
   assert.deepEqual(await openLockedChain(SEED_ADDR, PARENT, PRF), CHAIN, "a foreign try leaves it in place");
 });

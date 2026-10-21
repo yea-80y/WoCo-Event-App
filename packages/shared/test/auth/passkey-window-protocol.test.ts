@@ -91,7 +91,10 @@ test("add takes at most 32 excluded credentials and a plain date", () => {
     v: 1, type: "request", nonce, action: "add", exclude: [id], createdOn: "21 Oct 2026",
   });
   assert.deepEqual(parsePasskeyWindowRequest(req({ action: "add", exclude: Array(33).fill(id), createdOn: "x" }).data), { refused: "exclude" });
-  for (const createdOn of ["", "<b>x</b>", "a\u0000b", "x".repeat(41), "a\nb"]) {
+  for (const createdOn of ["21\u202fOct 2026", "21 अक्टू॰ 2026", "21 באוק׳ 2026", "21 اکتوبر، 2026", "2026年10月21日", "21. Okt. 2026", "21 d’oct. del 2026", "2026 urr. 21(a)"]) {
+    assert.equal("refused" in parsePasskeyWindowRequest(req({ action: "add", exclude: [], createdOn }).data), false, createdOn);
+  }
+  for (const createdOn of ["", "<b>x</b>", "a\u0000b", "x".repeat(41), "a\nb", "\u202e21 Oct", "21\u200fOct"]) {
     assert.deepEqual(parsePasskeyWindowRequest(req({ action: "add", exclude: [], createdOn }).data), { refused: "createdOn" }, JSON.stringify(createdOn));
   }
 });

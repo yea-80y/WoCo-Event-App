@@ -3,6 +3,7 @@
   import { router } from "./lib/router/router.svelte.js";
   import LoginModal from "./lib/components/auth/LoginModal.svelte";
   import SigningConfirmDialog from "./lib/components/auth/SigningConfirmDialog.svelte";
+  import PasskeyWindowSheet from "./lib/components/auth/PasskeyWindowSheet.svelte";
   import AccountSetupSheet from "./lib/components/auth/AccountSetupSheet.svelte";
   import TicketGateModal from "./lib/attendee/gate/TicketGateModal.svelte";
   import Splitter from "./lib/landing/Splitter.svelte";
@@ -242,6 +243,7 @@
 <TicketGateModal />
 <LoginModal />
 <SigningConfirmDialog />
+<PasskeyWindowSheet />
 <AccountSetupSheet />
 
 <style>

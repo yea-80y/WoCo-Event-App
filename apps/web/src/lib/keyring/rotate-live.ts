@@ -161,11 +161,11 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     },
     loadPending: async () => {
       const { openPendingRotation } = await import("./pending-rotation.js");
-      return (await openPendingRotation(self, parent, h.self.prfSecret)) as PendingRotation | null;
+      return (await openPendingRotation(self, parent, h.self.seedKek)) as PendingRotation | null;
     },
     savePending: async (p) => {
       const { storePendingRotation } = await import("./pending-rotation.js");
-      await storePendingRotation(self, parent, p, h.self.prfSecret);
+      await storePendingRotation(self, parent, p, h.self.seedKek);
     },
     clearPending: async () => {
       const { clearPendingRotation } = await import("./pending-rotation.js");

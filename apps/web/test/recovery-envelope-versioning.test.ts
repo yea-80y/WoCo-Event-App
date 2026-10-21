@@ -19,6 +19,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { passkeyAccountKeys } from "@woco/shared";
 import { CipherSuite, DhkemX25519HkdfSha256, HkdfSha256, Aes256Gcm } from "@hpke/core";
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { bytesToHex, hexToBytes, randomBytes } from "@noble/ciphers/utils.js";
@@ -161,6 +162,7 @@ test("the DEK wrap is X-Wing, and a current envelope still fits one 4096-byte ch
 // ── Portability read classification ─────────────────────────────────────────
 
 const PRF_KEY = "0x" + "11".repeat(32);
+const KEYS = passkeyAccountKeys(PRF_KEY);
 
 function feedOf(result: ContentFeedResult<PortabilityEnvelope>) {
   return (async () => result) as unknown as typeof import("../src/lib/swarm/content-feed.js").readContentFeedResult;
@@ -168,7 +170,7 @@ function feedOf(result: ContentFeedResult<PortabilityEnvelope>) {
 
 /** A genuine portability envelope for PRF_KEY, as writePortabilityEnvelope seals it. */
 async function realPortabilityEnvelope(): Promise<PortabilityEnvelope> {
-  const keys = await derivePortabilityKeys(PRF_KEY);
+  const keys = await derivePortabilityKeys(KEYS);
   const envelope = await sealRecoveryBundle({
     bundle: {
       version: PORTABILITY_ENVELOPE_VERSION,
@@ -184,7 +186,7 @@ async function realPortabilityEnvelope(): Promise<PortabilityEnvelope> {
 test("portability read: a valid current envelope is found and opens", async () => {
   const payload = await realPortabilityEnvelope();
   const read = await readPortabilityEnvelope({
-    prfSecret: PRF_KEY,
+    portability: KEYS,
     readFeed: feedOf({ status: "found", value: payload, version: 0 }),
   });
   assert.equal(read.status, "found");
@@ -194,7 +196,7 @@ test("portability read: a valid current envelope is found and opens", async () =
 test("portability read: a NEWER wrapper version is unreadable — never the rewritable 'unusable'", async () => {
   const payload = await realPortabilityEnvelope();
   const read = await readPortabilityEnvelope({
-    prfSecret: PRF_KEY,
+    portability: KEYS,
     readFeed: feedOf({ status: "found", value: { ...payload, v: (PORTABILITY_ENVELOPE_VERSION + 1) as never }, version: 0 }),
   });
   assert.equal(read.status, "unreadable");
@@ -203,7 +205,7 @@ test("portability read: a NEWER wrapper version is unreadable — never the rewr
 test("portability read: a NEWER inner envelope version is unreadable — never the rewritable 'unusable'", async () => {
   const payload = await realPortabilityEnvelope();
   const read = await readPortabilityEnvelope({
-    prfSecret: PRF_KEY,
+    portability: KEYS,
     readFeed: feedOf({
       status: "found",
       value: { ...payload, envelope: { ...payload.envelope, v: RECOVERY_ENVELOPE_VERSION + 1 } },
@@ -216,7 +218,7 @@ test("portability read: a NEWER inner envelope version is unreadable — never t
 test("portability read: a RETIRED inner envelope version is unusable — the self-heal may rewrite it", async () => {
   const payload = await realPortabilityEnvelope();
   const read = await readPortabilityEnvelope({
-    prfSecret: PRF_KEY,
+    portability: KEYS,
     readFeed: feedOf({
       status: "found",
       value: { ...payload, envelope: { ...payload.envelope, v: 2 } },
@@ -229,7 +231,7 @@ test("portability read: a RETIRED inner envelope version is unusable — the sel
 test("portability read: an OLDER wrapper version stays unusable (the documented self-heal rewrite)", async () => {
   const payload = await realPortabilityEnvelope();
   const read = await readPortabilityEnvelope({
-    prfSecret: PRF_KEY,
+    portability: KEYS,
     readFeed: feedOf({ status: "found", value: { ...payload, v: 1 as never }, version: 0 }),
   });
   assert.equal(read.status, "unusable");
@@ -239,7 +241,7 @@ test("portability read: a tampered inner envelope is unusable — an integrity f
   const payload = await realPortabilityEnvelope();
   const flipped = payload.envelope.ciphertext.replace(/^../, (h) => (h === "00" ? "01" : "00"));
   const read = await readPortabilityEnvelope({
-    prfSecret: PRF_KEY,
+    portability: KEYS,
     readFeed: feedOf({
       status: "found",
       value: { ...payload, envelope: { ...payload.envelope, ciphertext: flipped } },
@@ -250,10 +252,10 @@ test("portability read: a tampered inner envelope is unusable — an integrity f
 });
 
 test("portability read: absent and unavailable map to absent and unreadable", async () => {
-  const absent = await readPortabilityEnvelope({ prfSecret: PRF_KEY, readFeed: feedOf({ status: "absent" }) });
+  const absent = await readPortabilityEnvelope({ portability: KEYS, readFeed: feedOf({ status: "absent" }) });
   assert.equal(absent.status, "absent");
   const down = await readPortabilityEnvelope({
-    prfSecret: PRF_KEY,
+    portability: KEYS,
     readFeed: feedOf({ status: "unavailable", reason: "gateway 502" }),
   });
   assert.equal(down.status, "unreadable");

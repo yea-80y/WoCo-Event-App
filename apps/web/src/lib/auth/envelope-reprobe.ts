@@ -51,7 +51,7 @@
  * already pays three on the slow path, unavoidably.
  */
 
-import type { PortabilityRead, portabilityEnvelopeExists } from "./recovery-portability.js";
+import type { PortabilityRead, PortabilitySecrets, portabilityEnvelopeExists } from "./recovery-portability.js";
 import { orphanedCredentialMessage } from "./orphaned-credential.js";
 
 /** The existence probe's three states, taken from its implementation so the two cannot drift. */
@@ -68,9 +68,9 @@ export interface EnvelopeReprobeDeps {
    * the common case, and the common answer is no — so it must cost one miss, not
    * the full read's three. See `portabilityEnvelopeExists`.
    */
-  envelopeExists: (prfSecret: string) => Promise<EnvelopePresence>;
+  envelopeExists: (portability: PortabilitySecrets) => Promise<EnvelopePresence>;
   /** Read + open the PRF-sealed envelope. Reached ONLY after a hit, so its lookups succeed. */
-  readEnvelope: (prfSecret: string) => Promise<PortabilityRead>;
+  readEnvelope: (portability: PortabilitySecrets) => Promise<PortabilityRead>;
   /** Durable device-local fact: this PRF-EOA opens the preserved Kernel. THE heal. */
   putRecoveryBinding: (seedAddress: string, kernel: string) => Promise<void>;
   /** Durable device-local fact, the opposite direction (#283): this PRF-EOA's
@@ -136,14 +136,14 @@ export const MAIN_MOVED_NOTICE =
  *  fast-path sign-in, at the price of one lookup). */
 async function envelopeNames(
   deps: EnvelopeReprobeDeps,
-  prfSecret: string,
+  portability: PortabilitySecrets,
   parent: string,
 ): Promise<boolean | "unknown"> {
   try {
-    const presence = await deps.envelopeExists(prfSecret);
+    const presence = await deps.envelopeExists(portability);
     if (presence.status === "absent") return false;
     if (presence.status !== "present") return "unknown";
-    const read = await deps.readEnvelope(prfSecret);
+    const read = await deps.readEnvelope(portability);
     if (read.status !== "found") return "unknown";
     return read.value.preservedKernelAddress.toLowerCase() === parent.toLowerCase() ? true : "unknown";
   } catch {
@@ -255,11 +255,11 @@ export async function reprobeEnvelope(
     /** The cached parent the fast path just trusted: the address under suspicion. */
     cachedParent: string;
     /** Captured at login, not read from the store, so a concurrent logout cannot swap it. */
-    prfSecret: string;
+    portability: PortabilitySecrets;
   },
   deps: EnvelopeReprobeDeps,
 ): Promise<ReprobeOutcome> {
-  const { kind, eoa, cachedParent, prfSecret } = args;
+  const { kind, eoa, cachedParent, portability } = args;
   const store = deps.storage ?? (globalThis.localStorage as unknown as ReprobeStorage | undefined);
   const now = deps.now ?? (() => Date.now());
   const online = deps.online ?? (() => globalThis.navigator?.onLine !== false);
@@ -319,7 +319,7 @@ export async function reprobeEnvelope(
       // naming this account. Only the first is permanent, so the envelope decides
       // (one lookup, on this branch only); the server's verdict comes at the next
       // sign-in, which the envelope routes it to.
-      const named = await envelopeNames(deps, prfSecret, cachedParent);
+      const named = await envelopeNames(deps, portability, cachedParent);
       if (named === "unknown") return { status: "inconclusive", reason: "envelope check unanswered" };
       if (named) {
         deps.clearCachedKernelAddress(kind, eoa);
@@ -357,7 +357,7 @@ export async function reprobeEnvelope(
     writeState(store, kind, eoa, spent);
     let presence: EnvelopePresence;
     try {
-      presence = await deps.envelopeExists(prfSecret);
+      presence = await deps.envelopeExists(portability);
     } catch (e) {
       return { status: "inconclusive", reason: `envelope probe threw: ${(e as Error).message}` };
     }
@@ -369,7 +369,7 @@ export async function reprobeEnvelope(
 
     let read: PortabilityRead;
     try {
-      read = await deps.readEnvelope(prfSecret);
+      read = await deps.readEnvelope(portability);
     } catch (e) {
       return { status: "inconclusive", reason: `envelope read threw: ${(e as Error).message}` };
     }

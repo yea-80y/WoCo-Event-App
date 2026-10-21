@@ -373,9 +373,11 @@ test("PRF → seed pin, through the REAL establish + unlock", async () => {
   await clearIdentitySeed(PASSKEY_PINNED.ownerAddress);
   await clearLockedSeed(PASSKEY_PINNED.ownerAddress);
   assert.equal(passkeyIdentitySeed(PRF_OUTPUT), PASSKEY_PINNED.seed);
-  const { seed } = await establishPasskeyIdentitySeed(PASSKEY_PINNED.ownerAddress, parent, PRF_OUTPUT);
+  // The app holds what the sign-in window derived (passkeyAccountKeys), never the PRF.
+  const keys = passkeyAccountKeys(PRF_OUTPUT);
+  const { seed } = await establishPasskeyIdentitySeed(PASSKEY_PINNED.ownerAddress, parent, keys);
   assert.equal(seed, PASSKEY_PINNED.seed, "passkey seed moved — every passkey account's identity changed");
-  assert.equal(await openLockedSeed(PASSKEY_PINNED.ownerAddress, parent, PRF_OUTPUT), PASSKEY_PINNED.seed);
+  assert.equal(await openLockedSeed(PASSKEY_PINNED.ownerAddress, parent, keys.seedKek), PASSKEY_PINNED.seed);
   // Locked only (#746 fix 1): nothing opens it without the passkey.
   assert.equal(await restoreIdentitySeed(PASSKEY_PINNED.ownerAddress), null);
 });
@@ -452,17 +454,19 @@ test("a PRF output that is not exactly 32 bytes derives nothing", () => {
 test("the passkey code paths route through the frozen module, and no passkey path signs for the seed", () => {
   const read = (rel: string) =>
     readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
-  const account = read("../src/lib/auth/passkey-account.ts");
-  // The length check sits BEFORE the owner key, and the owner key is still keccak256(prf).
-  const check = account.indexOf("prfBytes.length !== PASSKEY_PRF_OUTPUT_BYTES");
-  const owner = account.indexOf("keccak256(prfBytes)");
-  assert.ok(check > 0 && owner > check, "the 32-byte check must guard the owner key too");
+  // The window checks the length before deriving, and the owner key is still
+  // keccak256(prf) (shared passkeyOwnerKey, which refuses anything but 32 bytes).
+  const ceremonies = read("../src/auth-window/ceremonies.ts");
+  const check = ceremonies.indexOf("copy.length !== PASSKEY_PRF_OUTPUT_BYTES");
+  const derive = ceremonies.indexOf("keys: passkeyAccountKeys(prf)");
+  assert.ok(check > 0 && derive > check, "the 32-byte check must guard the derivation");
+  assert.match(read("../../../packages/shared/src/crypto/passkey-prf.ts"), /return keccak_256\(passkeyPrfBytes\(prfSecret\)\);/);
 
   const seedSrc = read("../src/lib/auth/identity-seed.ts");
-  assert.match(seedSrc, /const seed = passkeyIdentitySeed\(prfSecret\)/);
+  assert.match(seedSrc, /for \(const b of keys\.seed\) seed \+=/);
 
   const store = stripComments(read("../src/lib/auth/auth-store.svelte.ts"));
-  assert.match(store, /establishPasskeyIdentitySeed\(seedAddr, parent, prf\)/);
+  assert.match(store, /establishPasskeyIdentitySeed\(seedAddr, parent, keys\)/);
   // The confirm-dialog seed signer is gone from every source root.
   assert.deepEqual(
     SCANNED.filter((f) => /createPasskeySigner|passkey-signer/.test(f.code)).map((f) => f.rel),

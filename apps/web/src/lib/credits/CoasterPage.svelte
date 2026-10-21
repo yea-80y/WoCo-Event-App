@@ -109,9 +109,8 @@
            the bundle's assets resolve, and a fragment-only href resolves
            against the BASE — so the anchor navigated the rider off
            woco.eth.limo and onto the gateway origin. That is not cosmetic: the
-           WebAuthn RP ID is taken from `window.location.hostname`
-           (`resolvePasskeyRpId`), so a passkey on the gateway host is a
-           DIFFERENT ACCOUNT, and the rider's credits are not there. `navigate`
+           passkey window answers the app's own origin only, so on the gateway
+           host the rider cannot sign in, and their credits are not there. `navigate`
            sets `window.location.hash` and cannot leave the origin. -->
       <p class="footnote">
         <button class="linkish" onclick={() => navigate("/tickets")}>

@@ -222,7 +222,7 @@ async function settleLinkedPasskey(account: LinkingPasskey, secret: LinkSecret, 
   // consult 7); if it fails, the back-fill retries it with the next session.
   try {
     const { writePortabilityEnvelope } = await import("./recovery-portability.js");
-    await writePortabilityEnvelope({ prfSecret: account.prfSecret, preservedKernelAddress: secret.parent, identitySeed: secret.seed });
+    await writePortabilityEnvelope({ portability: account.keys, preservedKernelAddress: secret.parent, identitySeed: secret.seed });
   } catch (e) {
     // Retried at the next sign-in (`_retryLinkedEnvelope`); until then this passkey
     // signs in on this device only.

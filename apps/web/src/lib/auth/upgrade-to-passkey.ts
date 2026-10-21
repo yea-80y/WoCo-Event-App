@@ -32,8 +32,9 @@
  * same); loaded on the tap.
  */
 
-import { deriveFeedSignerKey, passkeyIdentitySeed, type Hex0x } from "@woco/shared";
+import { bytesToHex0x, deriveFeedSignerKey, type Hex0x, type PasskeyAccountKeys } from "@woco/shared";
 import type { PasskeyCredentialHandle } from "./passkey-account.js";
+import type { PortabilitySecrets } from "./recovery-portability.js";
 import type { MarkerStore, UpgradeMarker } from "./upgrade-marker.js";
 
 export { localMarkerStore, parseUpgradeMarker, upgradeMarkerKey } from "./upgrade-marker.js";
@@ -100,11 +101,11 @@ export function planUpgrade(i: PlanInput): UpgradeOffer {
 // Prepare
 // ---------------------------------------------------------------------------
 
-/** The just-made passkey: its key, its PRF output and its credential. */
+/** The just-made passkey: its key, the keys its PRF output gives, and its credential. */
 export interface MintedPasskey {
   address: string;
   privateKey: string;
-  prfSecret: string;
+  keys: PasskeyAccountKeys;
   credential: PasskeyCredentialHandle;
 }
 
@@ -112,7 +113,7 @@ export interface MintedPasskey {
 export interface LivePasskey {
   passkey: string;
   privateKey: string;
-  prfSecret: string;
+  keys: PasskeyAccountKeys;
   seed: string;
 }
 
@@ -145,13 +146,13 @@ export interface PrepareDeps {
   /** Every backup off the account, proven onchain; throws, in words, when not. */
   removeBackups(): Promise<void>;
   putBinding(passkey: string, parent: string): Promise<void>;
-  storeLockedSeed(passkey: string, parent: string, seed: string, prfSecret: string): Promise<void>;
+  storeLockedSeed(passkey: string, parent: string, seed: string, seedKek: Uint8Array): Promise<void>;
   /** Undo the two above, for a prepare that stops before its marker. */
   clearPasskeyState(passkey: string): Promise<void>;
-  /** Write the passkey's envelope ({parent, seed}, sealed to its PRF) unless it already says exactly that. */
-  writeEnvelope(args: { prfSecret: string; parent: string; seed: string }): Promise<void>;
+  /** Write the passkey's envelope ({parent, seed}, sealed to its portability key) unless it already says exactly that. */
+  writeEnvelope(args: { portability: PortabilitySecrets; parent: string; seed: string }): Promise<void>;
   /** The envelope as a fresh read opens it, or null. */
-  readEnvelope(prfSecret: string): Promise<{ parent: string; seed: string } | null>;
+  readEnvelope(portability: PortabilitySecrets): Promise<{ parent: string; seed: string } | null>;
   writeProfile(signer: FeedKey, copy: ProfileCopy): Promise<void>;
   writeReferral(signer: FeedKey, referrer: Hex0x): Promise<void>;
 }
@@ -194,7 +195,7 @@ export async function prepareUpgrade(
   progress("Create your passkey…");
   const minted = await d.mintPasskey();
   const passkey = minted.address.toLowerCase();
-  const seed = passkeyIdentitySeed(minted.prfSecret);
+  const seed = bytesToHex0x(minted.keys.seed);
   const newFeed = deriveFeedSignerKey(seed);
   if (passkey === emailKey || seed === oldSeed) throw new Error(READ_FAILED_MESSAGE);
 
@@ -219,9 +220,11 @@ export async function prepareUpgrade(
   };
   try {
     await d.putBinding(passkey, parent);
-    await d.storeLockedSeed(passkey, parent, seed, minted.prfSecret);
-    await d.writeEnvelope({ prfSecret: minted.prfSecret, parent, seed });
-    const back = await d.readEnvelope(minted.prfSecret);
+    await d.storeLockedSeed(passkey, parent, seed, minted.keys.seedKek);
+    // Only the two keys the envelope is sealed with: never the bundle, which holds the seed.
+    const portability = { portabilitySocKey: minted.keys.portabilitySocKey, portabilityHpkeSeed: minted.keys.portabilityHpkeSeed };
+    await d.writeEnvelope({ portability, parent, seed });
+    const back = await d.readEnvelope(portability);
     if (!back || back.parent.toLowerCase() !== parent || back.seed !== seed) throw new Error("envelope read-back differs");
   } catch (e) {
     await undo(ENVELOPE_FAILED_MESSAGE, e);
@@ -250,7 +253,7 @@ export async function prepareUpgrade(
     retracted: likes.length === 0 && follows.length === 0,
   };
   d.marker.write(marker);
-  return { marker, live: { passkey, privateKey: minted.privateKey, prfSecret: minted.prfSecret, seed } };
+  return { marker, live: { passkey, privateKey: minted.privateKey, keys: minted.keys, seed } };
 }
 
 /**

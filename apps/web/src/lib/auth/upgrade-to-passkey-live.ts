@@ -112,12 +112,12 @@ export async function liveUpgradeDeps(
     mintPasskey: async () => {
       const { createPasskeyAccountUnpinned } = await import("./passkey-account.js");
       const fresh = await createPasskeyAccountUnpinned();
-      return { address: fresh.address, privateKey: fresh.privateKey, prfSecret: fresh.prfSecret, credential: fresh.credential };
+      return { address: fresh.address, privateKey: fresh.privateKey, keys: fresh.keys, credential: fresh.credential };
     },
 
-    storeLockedSeed: async (passkey, at, seed, prfSecret) => {
+    storeLockedSeed: async (passkey, at, seed, seedKek) => {
       const { storeLockedSeed } = await import("./identity-seed.js");
-      await storeLockedSeed(passkey, at, seed, prfSecret);
+      await storeLockedSeed(passkey, at, seed, seedKek);
     },
 
     clearPasskeyState: async (passkey) => {
@@ -126,17 +126,17 @@ export async function liveUpgradeDeps(
       await clearLockedSeed(passkey);
     },
 
-    writeEnvelope: async ({ prfSecret, parent: at, seed }) => {
+    writeEnvelope: async ({ portability, parent: at, seed }) => {
       const { backfillPortabilityEnvelope } = await import("./recovery-portability.js");
-      const outcome = await backfillPortabilityEnvelope({ prfSecret, preservedKernelAddress: at, identitySeed: seed });
+      const outcome = await backfillPortabilityEnvelope({ portability, preservedKernelAddress: at, identitySeed: seed });
       if (outcome.action !== "wrote" && outcome.action !== "skipped") throw new Error(`envelope ${outcome.action}: ${outcome.reason}`);
     },
 
-    readEnvelope: async (prfSecret) => {
+    readEnvelope: async (portability) => {
       const { readPortabilityEnvelope } = await import("./recovery-portability.js");
       for (let attempt = 0; attempt < ENVELOPE_READ_ATTEMPTS; attempt++) {
         if (attempt > 0) await new Promise((r) => setTimeout(r, ENVELOPE_READ_DELAY_MS));
-        const read = await readPortabilityEnvelope({ prfSecret });
+        const read = await readPortabilityEnvelope({ portability });
         if (read.status === "found") return { parent: read.value.preservedKernelAddress, seed: read.value.identitySeed };
       }
       return null;

@@ -12,6 +12,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { passkeyAccountKeys } from "@woco/shared";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -67,6 +68,8 @@ const PARENT = "0x00000000000000000000000000000000000000aa";
 const OTHER_PARENT = "0x00000000000000000000000000000000000000bb";
 const PRF = "0x" + "cd".repeat(32);
 const OTHER_PRF = "0x" + "ce".repeat(32);
+const KEK = passkeyAccountKeys(PRF).seedKek;
+const OTHER_KEK = passkeyAccountKeys(OTHER_PRF).seedKek;
 const SEED = "0x" + "5e".repeat(32);
 const LOCKED_SLOT = `${StorageKeys.IDENTITY_SEED_LOCKED}:${ADDR}`;
 const DEVICE_SLOT = `${StorageKeys.IDENTITY_SEED}:${ADDR}`;
@@ -85,31 +88,31 @@ async function fresh(): Promise<void> {
 
 test("a locked seed opens with its passkey for its account, and only then", async () => {
   await fresh();
-  await seedMod.storeLockedSeed(ADDR, PARENT, SEED, PRF);
+  await seedMod.storeLockedSeed(ADDR, PARENT, SEED, KEK);
   assert.equal(await seedMod.restoreIdentitySeed(ADDR), null, "nothing opens it without the passkey");
-  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, PRF), SEED);
+  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, KEK), SEED);
 });
 
 test("a copy locked for another account fails its tag and is deleted (#233 belt)", async () => {
   await fresh();
-  await seedMod.storeLockedSeed(ADDR, OTHER_PARENT, SEED, PRF);
-  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, PRF), null);
+  await seedMod.storeLockedSeed(ADDR, OTHER_PARENT, SEED, KEK);
+  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, KEK), null);
   assert.equal(data.has(LOCKED_SLOT), false);
 });
 
 test("a copy locked under another passkey does not open and is deleted", async () => {
   await fresh();
-  await seedMod.storeLockedSeed(ADDR, PARENT, SEED, OTHER_PRF);
-  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, PRF), null);
+  await seedMod.storeLockedSeed(ADDR, PARENT, SEED, OTHER_KEK);
+  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, KEK), null);
   assert.equal(data.has(LOCKED_SLOT), false);
 });
 
 test("a legacy device-key copy is locked, proved to open, then deleted", async () => {
   await fresh();
   await seedMod.storeIdentitySeed(ADDR, SEED);
-  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, PRF), SEED);
+  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, KEK), SEED);
   assert.equal(data.has(DEVICE_SLOT), false, "the silently readable copy must go");
-  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, PRF), SEED, "and the locked one must open");
+  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, KEK), SEED, "and the locked one must open");
 });
 
 test("a locked copy that does not open back keeps the legacy copy", async () => {
@@ -119,23 +122,23 @@ test("a locked copy that does not open back keeps the legacy copy", async () => 
   await fresh();
   await seedMod.storeIdentitySeed(ADDR, SEED);
   corruptPrefix = StorageKeys.IDENTITY_SEED_LOCKED;
-  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, PRF), SEED);
+  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, KEK), SEED);
   assert.equal(data.has(DEVICE_SLOT), true);
   corruptPrefix = null;
-  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, PRF), SEED, "the next unlock finishes the move");
+  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, KEK), SEED, "the next unlock finishes the move");
   assert.equal(data.has(DEVICE_SLOT), false);
 });
 
 test("establishing a passkey seed writes the locked copy only", async () => {
   await fresh();
-  const { seed } = await seedMod.establishPasskeyIdentitySeed(ADDR, PARENT, PRF);
+  const { seed } = await seedMod.establishPasskeyIdentitySeed(ADDR, PARENT, passkeyAccountKeys(PRF));
   assert.equal(data.has(DEVICE_SLOT), false);
-  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, PRF), seed);
+  assert.equal(await seedMod.openLockedSeed(ADDR, PARENT, KEK), seed);
 });
 
 test("sign-out keeps the locked copy; only a heal deletes it", async () => {
   await fresh();
-  await seedMod.storeLockedSeed(ADDR, PARENT, SEED, PRF);
+  await seedMod.storeLockedSeed(ADDR, PARENT, SEED, KEK);
   await seedMod.writePublicKeys(ADDR, { parent: PARENT, feedSignerAddress: ADDR });
   await seedMod.clearIdentitySeed(ADDR);
   assert.equal(await seedMod.hasLockedSeed(ADDR), true);
@@ -199,7 +202,7 @@ test("a legacy device-key copy never opens silently, and goes only once the lock
   assert.equal(await seedMod.restoreSilentSeed(ADDR, PARENT, WINDOW, 1_000), null);
   await seedMod.writeUnlockWindow(ADDR, PARENT, SEED, 61_000);
   assert.equal(data.has(DEVICE_SLOT), true, "no locked copy yet: the device copy is the only one");
-  await seedMod.storeLockedSeed(ADDR, PARENT, SEED, PRF);
+  await seedMod.storeLockedSeed(ADDR, PARENT, SEED, KEK);
   await seedMod.writeUnlockWindow(ADDR, PARENT, SEED, 61_000);
   assert.equal(data.has(DEVICE_SLOT), false);
 });
@@ -225,7 +228,7 @@ test("the cached feed signer opens only for its account, and is left for that ac
 
 test("sign-out drops the window copy and the cached feed signer, keeps the locked copy", async () => {
   await fresh();
-  await seedMod.storeLockedSeed(ADDR, PARENT, SEED, PRF);
+  await seedMod.storeLockedSeed(ADDR, PARENT, SEED, KEK);
   await seedMod.writeUnlockWindow(ADDR, PARENT, SEED, 61_000);
   await seedMod.storeFeedSignerCache(ADDR, PARENT, SIGNER);
   await seedMod.clearIdentitySeed(ADDR);
@@ -301,10 +304,10 @@ test("store: the window closes on time and takes everything a ceremony gave", ()
   assert.match(body(STORE, "function _onVisibilityChange"), /_expireUnlockIfDue\(\)/);
   assert.match(body(STORE, "function _scheduleUnlockExpiry"), /setTimeout\([\s\S]*?_expireUnlockIfDue\(\);/);
   assert.match(body(STORE, "function _setUnlockedSeed"), /_scheduleUnlockExpiry\(expiresAt\);/);
-  // The PRF output in memory would reopen the locked copy with no new confirm, so
+  // The passkey's keys in memory would reopen the locked copy with no new confirm, so
   // each of these closes an expired window BEFORE it looks at what is in memory.
   for (const [fn, after] of [
-    ["async function _ensurePasskeyKey", "if (_passkeyPrivateKey && _passkeyPrfSecret && _seedAddress) return;"],
+    ["async function _ensurePasskeyKey", "if (_passkeyPrivateKey && _passkeyKeys && _seedAddress) return;"],
     ["async function _ensureIdentitySeed", "if (_identitySeedPresent) return true;"],
     ["async function ensureAccountSetup", "const plan = planAccountSetup("],
     ["async function ensureOrganiserUnlock", "if (_unlockedSeed()) return;"],
@@ -314,7 +317,7 @@ test("store: the window closes on time and takes everything a ceremony gave", ()
     assert.ok(expire > 0 && expire < b.indexOf(after), `${fn} closes an expired window first`);
   }
   const relock = body(STORE, "function _relockPasskey");
-  for (const field of ["_unlocked", "_passkeyPrivateKey", "_passkeyPrfSecret", "_kernel"]) {
+  for (const field of ["_unlocked", "_passkeyPrivateKey", "_passkeyKeys", "_kernel"]) {
     assert.match(relock, new RegExp(`${field} = null;`), `relock must drop ${field}`);
   }
   assert.doesNotMatch(relock, /_feedSignerCache/, "the cached feed signer outlives a relock - everyday posts use it");
@@ -462,7 +465,7 @@ test("store: a recovered account with no copy here is told so, not that it decli
 test("store: sign-out keeps a recovered account's only copy until a sign-in has locked it", () => {
   const b = body(STORE, "async function clearAllAuth");
   const keep = b.slice(b.indexOf("const keepUnlockedLegacy ="), b.indexOf("if (keepUnlockedLegacy)"));
-  for (const term of ['_kind === "passkey"', "!_passkeyPrfSecret", "_recoveryKernelFor(seedAddr)", "!(await hasLockedSeed(seedAddr)"]) {
+  for (const term of ['_kind === "passkey"', "!_passkeyKeys", "_recoveryKernelFor(seedAddr)", "!(await hasLockedSeed(seedAddr)"]) {
     assert.ok(keep.includes(term), `the exception must require ${term}`);
   }
   assert.match(b, /if \(keepUnlockedLegacy\) \{[\s\S]*?clearPublicKeys[\s\S]*?clearDeviceUnlock\(seedAddr!\)[\s\S]*?\} else \{\s*await step\("identity-seed", \(\) => clearIdentitySeed\(seedAddr\)\);/);

@@ -1,5 +1,5 @@
 /**
- * The passkey sign-in window: the page on the passkey host (auth.woco.eth.limo) that
+ * The passkey sign-in window: the page on the passkey host (`PASSKEY_WINDOW_ORIGIN`) that
  * runs every WoCo passkey ceremony. Built into ONE self-contained file under a hash CSP
  * with `connect-src 'none'` (vite.auth.config.ts), pinned on L1 by the owner's Safe.
  *
