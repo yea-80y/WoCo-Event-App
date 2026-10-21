@@ -22,6 +22,8 @@ import {
   failoverMode,
   loadRelayLedger,
   markPending,
+  PENDING_ALARM_MS,
+  recheckPending,
   relayLedgerHasRoom,
   relayLedgerState,
   relayLedgerUsable,
@@ -134,10 +136,15 @@ export async function sweepRelayLedger(
   const done: Array<{ address: string; updatedAt: string }> = [];
   const kept: string[] = [];
 
+  // Any chunk reaching our bee while the push alarm is red: Etherna is pushing
+  // again, so the stale ones are due now, not at their next backed-off look.
+  const alarmRed = relayLedgerState().stalePending > 0;
+  let arrived = false;
   for (const e of dueEntries("pending", perPass.settle)) {
     const bee = await io.readBee(e.address);
     if (bee.status === "found" && verifyStoredSoc(bee.raw, e.owner, e.identifier).ok) {
       done.push(e);
+      arrived = true;
       continue;
     }
     // Neither store holds it: nothing can surface later to be written over.
@@ -199,6 +206,8 @@ export async function sweepRelayLedger(
   }
 
   resolveEntries(done);
+  // Before the deferral, so what this pass just looked at keeps its normal wait.
+  if (arrived && alarmRed) recheckPending();
   deferEntries(kept);
   stats.settled += settled;
   stats.migrated += migrated;
@@ -231,9 +240,19 @@ export function startRelayLedgerSweep(): void {
  * `/api/health` `ethernaFailover`. RED when the ledger cannot be trusted (a file
  * unreadable, a write still not on disk - `dirty`), is full (the rail is then
  * off), or the mode is not understood. During an Etherna outage the breaker reads
- * open much of the time: each pass's first move-back attempt trips it. Expected. Waiting
+ * open much of the time: each pass's first move-back attempt trips it. Expected. Failover
  * entries are reported, not alarmed on: they wait on an Etherna outage, which is
  * Etherna's, and `postage.etherna` watches its batch.
+ *
+ * `push` is RED while a pending send is past PENDING_ALARM_MS: Etherna said yes and
+ * our bee still cannot find it (2026-10-20). Also red while either store cannot be
+ * asked - during an Etherna outage a refused send stays listed and nothing can
+ * settle or drop it - which is worth a page too. Says nothing under `force`, which
+ * lists nothing pending. It clears when the sweep sees the chunk or both stores say
+ * absent; any chunk arriving while it is red puts every pending entry due at once.
+ * One that never will - its batch died before Etherna pushed it - is cleared by
+ * moving its file out with the server stopped. Unknown (`null`) while the list
+ * cannot be read.
  */
 export function ethernaFailoverHealth(): Record<string, unknown> {
   const { mode, configError } = failoverMode();
@@ -242,6 +261,7 @@ export function ethernaFailoverHealth(): Record<string, unknown> {
     ok: ledger.readable && !ledger.full && !ledger.dirty && !configError,
     mode,
     ...(configError ? { configError } : {}),
+    push: { ok: ledger.readable ? ledger.stalePending === 0 : null, alarmAfterMinutes: PENDING_ALARM_MS / 60_000 },
     ledger,
     sinceBoot: { ...stats },
     lastSweepAt,

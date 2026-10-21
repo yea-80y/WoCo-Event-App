@@ -379,6 +379,7 @@ function healthReport() {
     // cannot be trusted (unreadable file, a write that did not land) or the mode is
     // not understood. `ledger.failover` counts saves stamped on WoCo still to move
     // back to Etherna; `ledger.pending` counts sends not yet seen on our bee.
+    // `push` RED: a send still not on our bee 15 min on - Etherna is not pushing.
     ethernaFailover: ethernaFailoverHealth(),
     // The client-SOC relay's limiter (#301). `globalTrippedAt` non-null is the
     // alarm: the per-process ceiling that legitimate traffic never reaches has

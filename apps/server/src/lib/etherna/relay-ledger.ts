@@ -62,6 +62,14 @@ export const WARMUP_MS = 60 * 60 * 1000;
  * may still land in Etherna's store.
  */
 export const SETTLE_MIN_AGE_MS = 5 * 60 * 1000;
+/**
+ * A send not on our bee this long after it first went is the push alarm: Etherna
+ * took it and the network never got it (2026-10-20, every save for a day). The
+ * sweep looks at ~5 min and again at ~10, so two misses come first.
+ */
+export const PENDING_ALARM_MS = 15 * 60 * 1000;
+/** On this ledger's clock. `at`, never `updatedAt`: a repeat send and a restart both refresh that. */
+const pastPushAlarm = (at: string): boolean => now() - Date.parse(at) >= PENDING_ALARM_MS;
 /** Past this the rail is off: ~10 days of the relay's per-account hourly limit, a few MB of files. */
 export const MAX_ENTRIES = 10_000;
 /**
@@ -386,6 +394,20 @@ export function undeferAll(status: RelayStatus): void {
   for (const [a, e] of entries) if (e.status === status) backoff.delete(a);
 }
 
+/**
+ * A chunk reached our bee while the push alarm is red: Etherna is pushing again,
+ * so every pending entry is due now, not up to a day from now with the alarm
+ * still red. Each keeps its count, so one that still never arrives (a dead
+ * batch's) costs one more look per such event and backs off from where it was.
+ */
+export function recheckPending(): void {
+  const t = now();
+  for (const [a, e] of entries) {
+    const b = backoff.get(a);
+    if (e.status === "pending" && b) b.nextAt = t;
+  }
+}
+
 /** Up to `limit` entries of one status a sweep may judge now: old enough, and not deferred. */
 export function dueEntries(status: RelayStatus, limit: number): Array<RelayEntry & { address: string }> {
   ensureLoaded();
@@ -428,12 +450,15 @@ export function relayLedgerState(): {
   unlisted: number;
   readsCleared: number;
   pending: number;
+  /** Pending past PENDING_ALARM_MS since first listed (a failover entry turned pending keeps its `at`). */
+  stalePending: number;
   failover: number;
   oldestPendingAt: string | null;
   oldestFailoverAt: string | null;
 } {
   ensureLoaded();
   let pending = 0;
+  let stalePending = 0;
   let failover = 0;
   let oldestPendingAt: string | null = null;
   let oldestFailoverAt: string | null = null;
@@ -443,6 +468,7 @@ export function relayLedgerState(): {
       if (!oldestFailoverAt || e.at < oldestFailoverAt) oldestFailoverAt = e.at;
     } else {
       pending++;
+      if (pastPushAlarm(e.at)) stalePending++;
       if (!oldestPendingAt || e.at < oldestPendingAt) oldestPendingAt = e.at;
     }
   }
@@ -458,6 +484,7 @@ export function relayLedgerState(): {
     unlisted,
     readsCleared,
     pending,
+    stalePending,
     failover,
     oldestPendingAt,
     oldestFailoverAt,
