@@ -81,6 +81,7 @@ import { alarmGate } from "./lib/health/alarm-gate.js";
 import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
 import { nameTargetsHealth } from "./lib/sub-ens/name-targets.js";
 import { scannerHealth, startScannerProbe } from "./lib/scanner/health.js";
+import { signInWindowHealth, startSignInWindowProbe } from "./lib/health/sign-in-window.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
@@ -452,6 +453,10 @@ function healthReport() {
     // the workbox runtime, the QR worker or the entry script from our bee - the
     // batch-death failure that once left every door phone unable to update.
     scanner: scannerHealth(),
+    // The passkey sign-in window (auth.woco.eth.limo, opened from woco.eth.limo): red when
+    // either host sends a Cross-Origin-Opener-Policy that severs the window's opener, its
+    // X-Frame-Options moves off SAMEORIGIN, or it does not answer 2xx - no passkey sign-in.
+    signInWindow: signInWindowHealth(),
     // Added passkeys (#746). `unreadable` is an alarm: every added device is
     // signed out and no device can be added or removed until the file is restored.
     deviceGrants: deviceGrantHealth(),
@@ -977,6 +982,7 @@ startCancellationRefundJob(liveCancellationRefundDeps);
 startHealthProbes();
 // Every 10 min, and once now so `scan.<parent>` has a build before eth.limo asks.
 startScannerProbe();
+startSignInWindowProbe();
 // Broadcast recipients are encrypted at rest under a key held only in the
 // process that wrote them, so a restart leaves ciphertext nobody can open. Wipe
 // it, mark the jobs that were in flight `died`, and hand back their daily-cap

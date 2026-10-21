@@ -11,6 +11,13 @@
 
 export const PASSKEY_PRODUCTION_RP_ID = "woco.eth.limo";
 
+/** The app's one origin: the only page the passkey sign-in window answers. */
+export const WOCO_APP_ORIGIN = "https://woco.eth.limo";
+
+/** Where every passkey ceremony runs: a window on `auth.woco.eth`, an L1 name with its
+ *  own resolver, opened from the app. */
+export const PASSKEY_WINDOW_ORIGIN = "https://auth.woco.eth.limo";
+
 /**
  * Resolve the RP ID for the document hostname.
  *
