@@ -62,6 +62,13 @@ export interface Net {
   ethernaDown?: boolean | ((nth: number, address: string) => boolean);
   /** Override what our gateway answers for an address. */
   gateway?: (address: string) => Response | "throw" | undefined;
+  /**
+   * Addresses on our bee's one-minute skip list (#943): bee 2.8 stops retrieving
+   * a chunk it has missed a few times, so our gateway answers 500 for it and the
+   * server counts our bee as unanswered (503 unless another source finds it).
+   * A chunk our bee holds is still served.
+   */
+  beeSkipList?: Set<string>;
   /** Called after the server answered a request for `address` - a test uses it
    *  to land another writer's chunk between two of ours. */
   afterServerAnswer?: (address: string) => void;
@@ -86,6 +93,7 @@ export function install(net: Net) {
       if (override === "throw") throw new TypeError("network error");
       if (override) return override;
       const hit = net.ourBee.get(g[1]);
+      if (!hit && net.beeSkipList?.has(g[1])) return new Response("read chunk failed", { status: 500 });
       return hit ? new Response(hit.raw) : new Response("Not Found", { status: 404 });
     }
 
@@ -113,7 +121,7 @@ export function install(net: Net) {
           },
         });
       }
-      if (down) return Response.json({ ok: false, code: "unavailable" }, { status: 503 });
+      if (down || (!bee && net.beeSkipList?.has(address))) return Response.json({ ok: false, code: "unavailable" }, { status: 503 });
       return Response.json({ ok: false, code: "absent" }, { status: 404 });
     }
     throw new Error(`unexpected request: ${url}`);

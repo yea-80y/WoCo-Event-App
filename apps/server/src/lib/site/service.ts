@@ -54,7 +54,13 @@ export interface ResolvedSite {
 export type SiteConfigRead =
   | { status: "found"; site: Site; siteFeedSigner?: Hex0x }
   | { status: "absent" }
-  | { status: "unavailable"; reason: string };
+  | {
+      status: "unavailable";
+      reason: string;
+      /** The config read's own error, so a route can tell a busy store from a
+       *  fault (`swarm/storage-busy.ts`, #943). Never a reason to decide anything. */
+      cause?: Error;
+    };
 
 /**
  * Injectable readers, defaulting to the real ones — the same shape
@@ -113,7 +119,7 @@ export async function resolveSiteConfig(
     .readConfigPage(configTopic)
     .catch((e: unknown) => ({ status: "error" as const, error: e instanceof Error ? e : new Error(String(e)) }));
   if (configPage.status === "error") {
-    return { status: "unavailable", reason: `config feed read failed: ${configPage.error.message}` };
+    return { status: "unavailable", reason: `config feed read failed: ${configPage.error.message}`, cause: configPage.error };
   }
   if (configPage.status === "absent") return { status: "absent" };
 

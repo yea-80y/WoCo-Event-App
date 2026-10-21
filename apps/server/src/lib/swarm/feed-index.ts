@@ -18,7 +18,8 @@
  */
 import { FeedIndex, type Topic } from "@ethersphere/bee-js";
 import { Binary } from "cafe-utility";
-import { ethernaSource, readVerifiedSoc, wocoBeeSource, type SocSource, type VerifiedSocRead } from "./soc-read.js";
+import { ethernaSource, isOnlyBeeChunk500, readVerifiedSoc, wocoBeeSource, type SocSource, type VerifiedSocRead } from "./soc-read.js";
+import { FeedLookupCooldownError } from "./storage-busy.js";
 
 /** How far past the lookup a resolution walks before refusing. Lag is usually a
  *  few updates, but one slow probe can cut bee's walk far short; a found chunk is
@@ -54,7 +55,10 @@ export function readFeedUpdate(
  * cannot say whether an index is taken (writing there might be lost), or when the
  * head is more than MAX_FORWARD_WALK past `start` (the lookup is not a usable start).
  * For an Etherna feed that includes the 30 s pause after a slow Etherna read
- * (`soc-read.ts` breaker): a write needing a walk refuses until it lifts.
+ * (`soc-read.ts` breaker): a write needing a walk refuses until it lifts. When
+ * only our bee's 500 stood in the way - the free index is a chunk nobody has
+ * written, and bee 2.8 skips it for a minute after a few misses - the refusal is
+ * a `FeedLookupCooldownError`, so the caller can say "try again in a minute".
  */
 export async function firstFreeIndex(
   ownerHex: string,
@@ -67,7 +71,8 @@ export async function firstFreeIndex(
     const r = await readFeedUpdate(ownerHex, topic, i, sources);
     if (r.status === "absent") return i;
     if (r.status === "unavailable") {
-      throw new Error(`feed ${name}: cannot tell whether index ${i} is taken (${r.reason})`);
+      const message = `feed ${name}: cannot tell whether index ${i} is taken (${r.reason})`;
+      throw isOnlyBeeChunk500(r) ? new FeedLookupCooldownError(message) : new Error(message);
     }
   }
   throw new Error(`feed ${name}: more than ${MAX_FORWARD_WALK} updates past its lookup, refusing to guess`);

@@ -5,6 +5,7 @@
   import { socialProfileSubject, FEATURES } from "@woco/shared";
   import { getProfile, updateProfile, uploadAvatar, getProfileNameStatus } from "../../api/profiles.js";
   import { changedProfileFields, type ProfileFormFields } from "../../api/profile-save.js";
+  import { LateRetryCancelled, type LateRetry } from "../../swarm/late-retry.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
@@ -66,6 +67,14 @@
   let profile = $state<UserProfile | null>(null);
   let loading = $state(true);
   let saving = $state(false);
+  /** A save is waiting out bee's one-minute skip list before its one retry (#943). */
+  let saveWaiting = $state(false);
+  /**
+   * Cancels that wait when the account changes or the page closes: a save must not
+   * land a minute later where nobody sees it, and leaving leaves it unsaved. A
+   * write already in flight completes.
+   */
+  let saveLifetime: AbortController | null = null;
 
   // Cohort badge — read STRAIGHT FROM the issuer's feed (#476), not from the
   // platform. The badge's whole value is that WoCo vouched, and a signed chunk
@@ -199,6 +208,13 @@
     if (Object.keys(changes).length === 0 && !pendingAvatarDataUrl) { formDirty = false; return; }
     saving = true;
     saveError = '';
+    saveWaiting = false;
+    saveLifetime?.abort();
+    const life = new AbortController();
+    saveLifetime = life;
+    // Once more after a minute when the save's read could not say (#943), rather
+    // than an error that trying again inside that minute cannot fix.
+    const lateRetry: LateRetry = { signal: life.signal, onWait: () => { saveWaiting = true; } };
     try {
       // Saving writes the profile to the user's OWN content feed, signed by the
       // content-feed signer - so this needs that key, not just a session. Silent
@@ -214,7 +230,8 @@
       let merged: UserProfile | null = profile;
 
       if (Object.keys(changes).length > 0) {
-        const updated = await updateProfile(changes);
+        const updated = await updateProfile(changes, undefined, { lateRetry });
+        saveWaiting = false;
         // updateProfile already cached the fresh profile — don't invalidate, or the
         // next read races feed propagation and blanks it. Carry the avatar forward
         // (the data feed doesn't store avatarRef — it lives in a separate feed).
@@ -229,7 +246,7 @@
       // Avatar — upload the STAGED image now (on Save), not on file-select.
       if (pendingAvatarDataUrl) {
         uploadingAvatar = true;
-        const avatarRef = await uploadAvatar(pendingAvatarDataUrl);
+        const avatarRef = await uploadAvatar(pendingAvatarDataUrl, { lateRetry });
         merged = merged
           ? { ...merged, avatarRef }
           : { v: 1, address: viewAddress as `0x${string}`, avatarRef, updatedAt: new Date().toISOString() };
@@ -240,6 +257,8 @@
       avatarPreviewUrl = null;
       formDirty = false;
     } catch (err) {
+      // Cancelled with the page or the account: nothing more to say here.
+      if (err instanceof LateRetryCancelled) return;
       // Surface the failure — a swallowed error here looks like a save that
       // silently didn't stick (the feed-signer setup path can throw or be
       // declined, and the write itself can fail after signing).
@@ -250,6 +269,7 @@
     } finally {
       uploadingAvatar = false;
       saving = false;
+      saveWaiting = false;
     }
   }
 
@@ -435,6 +455,7 @@
     const key = `${v}:${auth.isConnected}`;
     if (key === _prevView) return;
     _prevView = key;
+    saveLifetime?.abort();
     profile = null; events = []; eventsLoaded = false; eventsLoading = false; eventsFailed = false;
     eventsSubTab = "upcoming";
     avatarPreviewUrl = null; pendingAvatarDataUrl = null;
@@ -462,7 +483,10 @@
   onMount(() => {
     eventsClockTimer = setInterval(() => { eventsNow = Date.now(); }, 60_000);
   });
-  onDestroy(() => clearInterval(eventsClockTimer));
+  onDestroy(() => {
+    clearInterval(eventsClockTimer);
+    saveLifetime?.abort();
+  });
 </script>
 
 <div class="profile-page">
@@ -490,7 +514,7 @@
           <button
             class="avatar-cam"
             onclick={triggerAvatarUpload}
-            disabled={uploadingAvatar}
+            disabled={uploadingAvatar || saveWaiting}
             title="Change photo"
             aria-label="Change photo"
           >
@@ -718,6 +742,7 @@
               type="text"
               bind:value={editName}
               oninput={() => formDirty = true}
+              disabled={saveWaiting}
               placeholder="Your name"
               maxlength="50"
             />
@@ -730,6 +755,7 @@
               class="field-input field-textarea"
               bind:value={editBio}
               oninput={() => formDirty = true}
+              disabled={saveWaiting}
               placeholder="Tell people about yourself"
               maxlength="280"
               rows="3"
@@ -745,6 +771,7 @@
               type="url"
               bind:value={editWebsite}
               oninput={() => formDirty = true}
+              disabled={saveWaiting}
               placeholder="https://yoursite.com"
             />
           </div>
@@ -758,6 +785,7 @@
                 type="text"
                 bind:value={editTwitter}
                 oninput={() => formDirty = true}
+                disabled={saveWaiting}
                 placeholder="@handle"
               />
             </div>
@@ -769,6 +797,7 @@
                 type="text"
                 bind:value={editFarcaster}
                 oninput={() => formDirty = true}
+                disabled={saveWaiting}
                 placeholder="@handle"
               />
             </div>
@@ -785,6 +814,9 @@
               Save changes
             {/if}
           </button>
+          {#if saveWaiting}
+            <p class="save-note" role="status">Still saving - the storage network needs a minute, so we'll try again automatically. Keep this page open until it's done.</p>
+          {/if}
           {#if saveError}
             <p class="save-error">{saveError}</p>
           {/if}
@@ -1342,6 +1374,13 @@
     margin: 0.5rem 0 0;
     font-size: 0.8125rem;
     color: #ef4444;
+    line-height: 1.45;
+  }
+
+  .save-note {
+    margin: 0.5rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
     line-height: 1.45;
   }
 
