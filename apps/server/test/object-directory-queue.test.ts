@@ -12,8 +12,9 @@
  *    ONE attempt - "retrying" when bee cannot read the directory yet - and the
  *    retry completes without it;
  *  - an unreadable directory is never written as empty;
- *  - page 0 is written last (the commit point), and a page 0 claiming a missing
- *    overflow page is never rewritten from what was read (`paged-feed.ts`).
+ *  - page 0 is written last (it commits the page count, not the contents): a
+ *    page 0 claiming a missing overflow page, or overflow pages stamped by
+ *    another write (a torn write), is never rewritten from (`paged-feed.ts`).
  */
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -234,5 +235,16 @@ test("a page 0 claiming a MISSING overflow page is never rewritten from what was
     feeds.encodeJsonFeed({ v: 1, owner: creator, objects: [object()], categories: [], updatedAt: new Date().toISOString(), pages: 1 }),
   );
   await assert.rejects(directory.upsertCreatorObject(creator, object()).written, /overflow page 1 of 1 missing/);
+  assert.equal(writes(creator).length, 1);
+});
+
+test("overflow pages stamped by another write than page 0 (a torn write) are never rewritten from", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+  const creator = newCreator();
+  const env = (updatedAt: string, pages?: number) => ({ v: 1, owner: creator, objects: [object()], categories: [], updatedAt, ...(pages ? { pages } : {}) });
+  await feeds.writeFeedPage(Topic.fromString(objectCreatorDirectoryTopic(creator, 1)), feeds.encodeJsonFeed(env("2026-10-21T00:00:02.000Z")));
+  await feeds.writeFeedPage(Topic.fromString(objectCreatorDirectoryTopic(creator)), feeds.encodeJsonFeed(env("2026-10-21T00:00:01.000Z", 1)));
+  await assert.rejects(directory.upsertCreatorObject(creator, object()).written, /torn/);
   assert.equal(writes(creator).length, 1);
 });

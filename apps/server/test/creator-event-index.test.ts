@@ -21,8 +21,10 @@
  *    restrictive answer, and the memo can only hold it for a creator with no
  *    index bee or this server knows of;
  *  - a dropped change turns `/api/health` `directoryWrites.eventIndex` red;
- *  - page 0 is written last (the commit point), and a page 0 claiming an
- *    overflow page that is missing is never rewritten from what was read.
+ *  - page 0 is written last (it commits the page count, not the contents): a
+ *    page 0 claiming a missing overflow page, or overflow pages stamped by
+ *    another write than page 0 (a torn write), is never rewritten from what was
+ *    read.
  */
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -419,7 +421,7 @@ test("an overflow page that cannot be read is never dropped: the add waits for i
 });
 
 // ---------------------------------------------------------------------------
-// More than one page: page 0 commits
+// More than one page: page 0 commits the page count; one stamp on every page
 // ---------------------------------------------------------------------------
 
 test("growing onto page 1: a failed page-1 write leaves page 0 as it was, and the retry writes page 1 BEFORE page 0", async (t) => {
@@ -464,4 +466,55 @@ test("a page 0 claiming an overflow page that is MISSING (an older writer's torn
   assert.equal(indexWrites(creator).length, 1, "page 0 never rewritten without page 1's entries");
   assert.equal(bee.payloads(OWNER, indexTopicHex(creator, 1)).length, 0);
   assert.ok(errors.mock.calls.some((c) => String(c.arguments[0]).includes("DROPPED")));
+});
+
+test("page 0's write fails after the overflow pages were rewritten in place (Fable's probe): the retry refuses the torn base, nothing is lost", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "log", () => {});
+  const errors = t.mock.method(console, "error", () => {});
+  const creator = newCreator();
+  const decodePage = (p: number) => {
+    const latest = bee.payloads(OWNER, indexTopicHex(creator, p)).at(-1);
+    return latest ? feeds.decodeJsonFeed<{ entries: EventDirectoryEntry[]; pages?: number }>(latest)! : null;
+  };
+  const eight = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => big(creator, `torn-e${i}`));
+  await Promise.all(eight.map((e) => events.addEventToDirectory(e))); // one write: p0 = [e8..e5] claiming 1, p1 = [e4..e1]
+  assert.equal(decodePage(0)!.pages, 1);
+  assert.deepEqual(decodePage(1)!.entries.map((e) => e.eventId), ["torn-e4", "torn-e3", "torn-e2", "torn-e1"]);
+
+  // e9 shifts every page: p2 = [e1] and p1 = [e5..e2] are written, then page 0's upload fails.
+  bee.uploadFails(OWNER, indexTopicHex(creator, 0), true);
+  onSleep = () => bee.uploadFails(OWNER, indexTopicHex(creator, 0), false);
+  const before = retry.firstWriteRetryHealth().eventIndex!;
+  const e9 = big(creator, "torn-e9");
+  // Old page 0 + new page 1 reads as [e8, e7, e6, e5, e5, e4, e3, e2]: e1 gone, e5 twice. Built on,
+  // that writes [e9..e6], [e5, e5, e4, e3], [e2] and loses e1 for good with nothing logged.
+  await assert.rejects(events.addEventToDirectory(e9), /torn/);
+  assert.equal(bee.payloads(OWNER, indexTopicHex(creator, 0)).length, 1, "page 0 never rewritten over the torn base");
+  const stored = [0, 1, 2].flatMap((p) => decodePage(p)?.entries.map((e) => e.eventId) ?? []);
+  for (const e of eight) assert.ok(stored.includes(e.eventId), `${e.eventId} is still stored`);
+  assert.ok(
+    errors.mock.calls.some((c) => String(c.arguments[0]).includes("DROPPED") && String(c.arguments[0]).includes('"torn-e9"')),
+    "the refused change is logged for replay",
+  );
+  const after_ = retry.firstWriteRetryHealth().eventIndex!;
+  assert.equal(after_.dropped, before.dropped + 1);
+  assert.equal(after_.ok, false);
+});
+
+test("an overflow page that does not decode is never skipped: the add refuses", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+  const creator = newCreator();
+  const updatedAt = new Date().toISOString();
+  await feeds.writeFeedPage(
+    topics.topicCreatorDirectory(creator, 1),
+    new TextEncoder().encode("not json at all"),
+  );
+  await feeds.writeFeedPage(
+    topics.topicCreatorDirectory(creator),
+    feeds.encodeJsonFeed({ v: 1, entries: [entry(creator, "evt-undecodable-1")], updatedAt, pages: 1 }),
+  );
+  await assert.rejects(events.addEventToDirectory(entry(creator, "evt-undecodable-2")), /did not decode/);
+  assert.equal(indexWrites(creator).length, 1);
 });

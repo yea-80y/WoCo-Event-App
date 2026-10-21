@@ -277,14 +277,15 @@ test("a display read that started before an upsert's write is not memoized", asy
   const creator = newCreator();
   const a = entry("site-page0-001");
   const b = entry("site-page1-001");
-  // A two-page directory, written directly.
+  // A two-page directory, written directly - one stamp on both pages, as the writer does.
+  const updatedAt = new Date().toISOString();
   await feeds.writeFeedPage(
     Topic.fromString(shared.siteCreatorDirectoryTopic(creator)),
-    feeds.encodeJsonFeed({ v: 1, entries: [a], updatedAt: new Date().toISOString(), pages: 1 }),
+    feeds.encodeJsonFeed({ v: 1, entries: [a], updatedAt, pages: 1 }),
   );
   await feeds.writeFeedPage(
     Topic.fromString(shared.siteCreatorDirectoryTopic(creator, 1)),
-    feeds.encodeJsonFeed({ v: 1, entries: [b], updatedAt: new Date().toISOString() }),
+    feeds.encodeJsonFeed({ v: 1, entries: [b], updatedAt }),
   );
   // The display read gets page 0, then waits on page 1 while the upsert lands.
   let arrived!: () => void;
@@ -323,7 +324,7 @@ test("a display read changes nothing the write relies on: past read-your-writes,
 });
 
 // ---------------------------------------------------------------------------
-// More than one page: page 0 commits
+// More than one page: page 0 commits the page count; one stamp on every page
 // ---------------------------------------------------------------------------
 
 test("growing onto page 1: a failed page-1 write leaves page 0 as it was; the retry writes page 1 BEFORE page 0", async (t) => {
@@ -357,5 +358,21 @@ test("a page 0 claiming a MISSING overflow page is never rewritten from what was
     feeds.encodeJsonFeed({ v: 1, entries: [entry("site-torn-0001")], updatedAt: new Date().toISOString(), pages: 1 }),
   );
   await assert.rejects(service.upsertCreatorSite(creator, entry("site-torn-0002")), /overflow page 1 of 1 missing/);
+  assert.equal(directoryWrites(creator).length, 1);
+});
+
+test("overflow pages stamped by another write than page 0 (a torn write) are never rewritten from", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+  const creator = newCreator();
+  await feeds.writeFeedPage(
+    Topic.fromString(shared.siteCreatorDirectoryTopic(creator, 1)),
+    feeds.encodeJsonFeed({ v: 1, entries: [entry("site-torn-p1")], updatedAt: "2026-10-21T00:00:02.000Z" }),
+  );
+  await feeds.writeFeedPage(
+    Topic.fromString(shared.siteCreatorDirectoryTopic(creator)),
+    feeds.encodeJsonFeed({ v: 1, entries: [entry("site-torn-p0")], updatedAt: "2026-10-21T00:00:01.000Z", pages: 1 }),
+  );
+  await assert.rejects(service.upsertCreatorSite(creator, entry("site-torn-new")), /torn/);
   assert.equal(directoryWrites(creator).length, 1);
 });

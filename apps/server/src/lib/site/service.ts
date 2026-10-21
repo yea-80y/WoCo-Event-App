@@ -344,7 +344,11 @@ async function loadCreatorSites(ethAddress: string): Promise<DisplayRead<SiteDir
 
 // ── Write ────────────────────────────────────────────────────────────────────
 
-/** Overflow pages first (highest first), page 0 - the commit point - last; see the event index's writer. */
+/**
+ * Overflow pages first (highest first), page 0 last: it commits the page count,
+ * not the contents - see the event index's writer. One `updatedAt` on every page,
+ * which `readCreatorSitesStrict` checks.
+ */
 async function writeDirectoryPages(entries: SiteDirectoryEntry[], topicFn: (p: number) => string): Promise<void> {
   const updatedAt = new Date().toISOString();
   const pages: SiteDirectoryEntry[][] = [];
@@ -407,7 +411,12 @@ async function readCreatorSitesStrict(ethAddress: string): Promise<SiteDirectory
     // Claimed by page 0, which is written last: missing is an error, never the end.
     if (overflow.status === "absent") throw new Error(`Site directory overflow page ${p} of ${totalPages} missing — refusing to write`);
     const decoded = decodeJsonFeed<SiteDirectory>(overflow.data);
-    if (decoded?.entries) all.push(...decoded.entries);
+    if (!decoded) throw new Error(`Site directory overflow page ${p} did not decode — refusing to write`);
+    // A page stamped by another write than page 0: a write torn between them.
+    if (decoded.updatedAt !== dir.updatedAt) {
+      throw new Error(`Site directory overflow page ${p} is torn (stamped ${decoded.updatedAt}, page 0 ${dir.updatedAt}) — refusing to write`);
+    }
+    if (decoded.entries) all.push(...decoded.entries);
   }
   return all;
 }

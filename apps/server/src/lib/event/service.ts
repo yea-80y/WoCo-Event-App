@@ -1336,13 +1336,16 @@ export async function isOrganiserTrusted(creatorAddress: string): Promise<boolea
  * Write a directory (page 0 + overflow pages) to paginated feeds.
  * Each page stays within DIR_PAGE_LIMIT so bee-js uses the direct SOC path.
  *
- * Page 0 LAST: it is the commit point, the only page that says how many overflow
- * pages there are. Written first, a failed overflow write (a page's first write
- * probes its never-written index 0, which bee's skip list can refuse, #942) left
- * page 0 claiming a page that was never written. Overflow pages go highest first,
- * so the likeliest failure - the new last page - touches nothing that is read.
- * Not atomic: pages rewritten in place before a failure are read under the old
- * page 0 until the retry rewrites them.
+ * Page 0 LAST. It alone says how many overflow pages there are, so writing it last
+ * commits the page COUNT: a failed overflow write (a page's first write probes its
+ * never-written index 0, which bee's skip list can refuse, #942) can no longer
+ * leave page 0 claiming a page never written. The CONTENTS are not atomic: when
+ * page 0's write fails, the overflow pages already rewritten in place sit under
+ * the old page 0, and entries that moved between pages read as one lost and one
+ * twice. Every page of one write carries the same `updatedAt`, and
+ * `readDirectoryStrict` refuses pages that disagree rather than build on them.
+ * Overflow pages go highest first, so the likeliest failure - the new last page -
+ * touches nothing that is read.
  */
 async function writeDirectoryPages(
   allEntries: EventDirectoryEntry[],
@@ -1375,7 +1378,7 @@ async function writeDirectoryPages(
     await writeFeedPage(topicFn(p), encodeJsonFeed(overflow));
   }
 
-  // Page 0, with the page count, commits the write.
+  // Page 0 last: it commits the page count, not the contents (see above).
   const page0: EventDirectory = {
     v: 1,
     entries: pages[0] ?? [],
@@ -1419,12 +1422,20 @@ async function readDirectoryStrict(
     if (overflow.status === "error") {
       throw new Error(`Directory read failed (overflow page ${p}) — refusing to write: ${overflow.error.message}`);
     }
-    // Page 0 is written last and claims only pages already written, so a claimed
-    // page that is missing is not the end of the list: rebuilding from what was
+    // Page 0 is written last, so it claims only pages that were written: a claimed
+    // page that is missing is not the end of the list, and rebuilding from what was
     // read would drop it and every page after it.
     if (overflow.status === "absent") throw new Error(`Directory overflow page ${p} of ${totalPages} missing — refusing to write`);
     const decoded = decodeJsonFeed<EventDirectory>(overflow.data);
-    if (decoded?.entries) all.push(...decoded.entries);
+    if (!decoded) throw new Error(`Directory overflow page ${p} did not decode — refusing to write`);
+    // One write stamps one `updatedAt` on every page. Another one here is a write
+    // that failed between its overflow pages and page 0 (see writeDirectoryPages):
+    // the pages no longer hold each entry once, and a rewrite from them would lose
+    // one for good while reporting success.
+    if (decoded.updatedAt !== dir.updatedAt) {
+      throw new Error(`Directory overflow page ${p} is torn (stamped ${decoded.updatedAt}, page 0 ${dir.updatedAt}) — refusing to write`);
+    }
+    if (decoded.entries) all.push(...decoded.entries);
   }
   return all;
 }
