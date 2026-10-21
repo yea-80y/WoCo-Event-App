@@ -43,7 +43,7 @@ let queueNo = 0;
 /** A store of change lists per key, with switches to fail the read or the write. */
 function harness(over: Partial<FirstWriteRetryOptions<Change[], Change>> = {}) {
   const store = new Map<string, Change[]>();
-  const io = { failReads: 0, failWrites: 0, reads: 0, writes: [] as Array<{ key: string; base: Change[]; changes: Change[] }>, active: new Map<string, number>(), maxActive: new Map<string, number>(), gate: null as null | Promise<void> };
+  const io = { readGate: null as null | Promise<void>, failReads: 0, failWrites: 0, reads: 0, writes: [] as Array<{ key: string; base: Change[]; changes: Change[] }>, active: new Map<string, number>(), maxActive: new Map<string, number>(), gate: null as null | Promise<void> };
   const enter = (key: string) => {
     const n = (io.active.get(key) ?? 0) + 1;
     io.active.set(key, n);
@@ -58,6 +58,7 @@ function harness(over: Partial<FirstWriteRetryOptions<Change[], Change>> = {}) {
       enter(key);
       io.reads++;
       await Promise.resolve();
+      if (io.readGate) await io.readGate;
       if (io.failReads > 0) {
         io.failReads--;
         leave(key);
@@ -269,6 +270,40 @@ test("firstAttempt rejects only for a change dropped before it was told 'retryin
   const q = queue.enqueue("k", { id: "a" });
   await assert.rejects(q.firstAttempt, /read failed/);
   await assert.rejects(q.written, /read failed/);
+});
+
+test("a change enqueued DURING the last attempt, which then fails, is dropped with it: both its promises reject", { timeout: 20_000 }, async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.method(console, "warn", () => {});
+  const { queue, io } = harness({ retryDelaysMs: [5, 10] });
+  io.failReads = 3;
+  let open!: () => void;
+  onSleep = () => {
+    if (sleeps.length === 2) io.readGate = new Promise<void>((r) => (open = r)); // the third read waits
+  };
+  const first = queue.enqueue("k", { id: "a" });
+  assert.equal(await first.firstAttempt, "retrying");
+  while (io.reads < 3) await tick();
+  const late = queue.enqueue("k", { id: "b" }); // never told "retrying": no retry is left to carry it
+  io.readGate = null;
+  open();
+  await assert.rejects(late.firstAttempt, /read failed/);
+  await assert.rejects(late.written, /read failed/);
+  await assert.rejects(first.written, /read failed/);
+});
+
+test("a replay payload that will not serialise still lets every retry and the give-up through", { timeout: 20_000 }, async (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const warns = t.mock.method(console, "warn", () => {});
+  const { queue, io, health } = harness({ retryDelaysMs: [5], replayPayload: () => ({ big: 1n }) });
+  io.failReads = 2;
+  const q = queue.enqueue("k", { id: "a" });
+  assert.equal(await q.firstAttempt, "retrying");
+  await assert.rejects(q.written, /read failed/);
+  assert.equal(warns.mock.calls.length, 1);
+  assert.equal(errors.mock.calls.length, 1);
+  assert.ok(String(errors.mock.calls[0]!.arguments[0]).includes("[object Object]"), "falls back to String(change)");
+  assert.equal(health().dropped, 1);
 });
 
 test("a caller that ignores both promises never causes an unhandled rejection on give-up", async (t) => {

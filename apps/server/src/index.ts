@@ -387,9 +387,11 @@ function healthReport() {
     // Creator directory writes held back by bee's skip list (#942): the site
     // directory, the event index and the object directory, each retried past
     // the one-minute window. `pending`/`retrying` are statistics - a first write
-    // usually needs one retry. `dropped` above 0 is the alarm and stays red until
-    // restart: each dropped change is an entry missing from a creator's index
-    // until replayed by hand from its "DROPPED ... replay by hand" log line.
+    // usually needs one retry. `dropped` above 0 is the alarm, and it stays red
+    // until the server restarts: each dropped change is an entry missing from a
+    // creator's index until replayed by hand from its "DROPPED ... replay by
+    // hand" log line. A restart also kills in-flight broadcasts, so check
+    // `email.broadcasts.pendingRecipients` is 0 before restarting to clear it.
     directoryWrites: firstWriteRetryHealth(),
     // Postage (#421). Three batches died or nearly died in five weeks and every
     // one was found by hand: a dead batch does not fail an upload, it accepts it

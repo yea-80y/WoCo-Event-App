@@ -194,8 +194,21 @@ export function createFirstWriteRetryQueue<Base, Change>(
     return { ok: dropped === 0, pending, retrying, dropped };
   });
 
-  const payloads = (key: string, queue: KeyQueue<Change>) =>
-    [...queue.pending.values()].map((s) => JSON.stringify(replay(key, s.change)));
+  // Never throws: a payload that will not serialise (a BigInt, a cycle) used to
+  // throw inside a retry warning or the give-up, and `drain` - started with
+  // `void` - then rejected with that key's callers never settled.
+  const payload = (key: string, change: Change): string => {
+    try {
+      return JSON.stringify(replay(key, change));
+    } catch {
+      try {
+        return String(change);
+      } catch {
+        return "[unprintable change]";
+      }
+    }
+  };
+  const payloads = (key: string, queue: KeyQueue<Change>) => [...queue.pending.values()].map((s) => payload(key, s.change));
 
   function giveUp(key: string, queue: KeyQueue<Change>, attempts: number, error: unknown): void {
     const reason = error instanceof Error ? error.message : String(error);
