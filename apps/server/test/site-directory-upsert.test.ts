@@ -321,3 +321,41 @@ test("a display read changes nothing the write relies on: past read-your-writes,
   await service.upsertCreatorSite(creator, b);
   assert.deepEqual(latestDirectory(creator)!.map((x) => x.siteId), [b.siteId, a.siteId], "the write path still knew ours");
 });
+
+// ---------------------------------------------------------------------------
+// More than one page: page 0 commits
+// ---------------------------------------------------------------------------
+
+test("growing onto page 1: a failed page-1 write leaves page 0 as it was; the retry writes page 1 BEFORE page 0", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "log", () => {});
+  const creator = newCreator();
+  const big = (id: string) => entry(id, { brandName: "B".repeat(850) }); // ~930 bytes: four fill page 0
+  await Promise.all(["site-big-0001", "site-big-0002", "site-big-0003", "site-big-0004"].map((id) => service.upsertCreatorSite(creator, big(id))));
+  assert.equal(directoryWrites(creator).length, 1);
+  assert.equal(feeds.decodeJsonFeed<{ pages: number }>(bee.payloads(OWNER, dirTopicHex(creator))[0]!)!.pages, 0, "one page before the fifth");
+  const page1 = dirTopicHex(creator, 1);
+  bee.uploadFails(OWNER, page1, true);
+  onSleep = () => {
+    assert.equal(directoryWrites(creator).length, 1, "page 0 untouched");
+    bee.uploadFails(OWNER, page1, false);
+    posted.length = 0;
+  };
+  await service.upsertCreatorSite(creator, big("site-big-0005"));
+  assert.deepEqual(sleeps, [70_000]);
+  assert.deepEqual(posted, [addressFor(OWNER, page1, 0n), addressFor(OWNER, dirTopicHex(creator), 1n)], "page 1, then page 0");
+  assert.equal(feeds.decodeJsonFeed<{ pages: number }>(bee.payloads(OWNER, dirTopicHex(creator)).at(-1)!)!.pages, 1);
+  assert.equal((await service.getCreatorSites(creator)).length, 5);
+});
+
+test("a page 0 claiming a MISSING overflow page is never rewritten from what was read", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+  const creator = newCreator();
+  await feeds.writeFeedPage(
+    Topic.fromString(shared.siteCreatorDirectoryTopic(creator)),
+    feeds.encodeJsonFeed({ v: 1, entries: [entry("site-torn-0001")], updatedAt: new Date().toISOString(), pages: 1 }),
+  );
+  await assert.rejects(service.upsertCreatorSite(creator, entry("site-torn-0002")), /overflow page 1 of 1 missing/);
+  assert.equal(directoryWrites(creator).length, 1);
+});

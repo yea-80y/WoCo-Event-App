@@ -11,7 +11,9 @@
  *  - an awaited caller (the manager's PUT routes, a badge mint) is answered after
  *    ONE attempt - "retrying" when bee cannot read the directory yet - and the
  *    retry completes without it;
- *  - an unreadable directory is never written as empty.
+ *  - an unreadable directory is never written as empty;
+ *  - page 0 is written last (the commit point), and a page 0 claiming a missing
+ *    overflow page is never rewritten from what was read (`paged-feed.ts`).
  */
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -21,7 +23,7 @@ import { join } from "node:path";
 import { Wallet } from "ethers";
 import { Topic } from "@ethersphere/bee-js";
 import { objectCreatorDirectoryTopic, type ObjectCategory, type ObjectDirectory, type ObjectDirectoryEntry } from "@woco/shared";
-import { startFakeBee, type FakeBee } from "./helpers/fake-bee.js";
+import { startFakeBee, socAddress, type FakeBee } from "./helpers/fake-bee.js";
 
 const DEAD = "http://127.0.0.1:9";
 const KEY = Wallet.createRandom().privateKey;
@@ -198,4 +200,39 @@ test("the request callers wait for ONE attempt, never for the retry; event creat
   assert.match(routes, /await upsertCreatorObject\(parentAddress, updated\)\.firstAttempt;/);
   assert.match(src("../src/lib/object/issuance.ts"), /await upsertCreatorObject\(creatorAddress, entry\)\.firstAttempt;/);
   assert.match(src("../src/lib/event/service.ts"), /void upsertCreatorObject\(updated\.creatorAddress, \{[\s\S]*?\}\)\.written\.catch\(/);
+});
+
+test("growing onto page 1: a failed page-1 write leaves page 0 as it was; the retry writes page 1 BEFORE page 0", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "log", () => {});
+  const creator = newCreator();
+  const big = () => object({ name: "N".repeat(700) }); // ~900 bytes: four fill page 0
+  const four = [big(), big(), big(), big()];
+  await Promise.all(four.map((o) => directory.upsertCreatorObject(creator, o).written));
+  assert.equal(writes(creator).length, 1);
+  assert.equal(writes(creator)[0]!.pages, 0, "one page before the fifth");
+  const page1 = dirTopicHex(creator, 1);
+  bee.uploadFails(OWNER, page1, true);
+  onSleep = () => {
+    assert.equal(writes(creator).length, 1, "page 0 untouched");
+    bee.uploadFails(OWNER, page1, false);
+    bee.posted.length = 0;
+  };
+  await directory.upsertCreatorObject(creator, big()).written;
+  assert.deepEqual(sleeps, [70_000]);
+  assert.deepEqual(bee.posted, [socAddress(OWNER, page1, 0n), socAddress(OWNER, dirTopicHex(creator), 1n)], "page 1, then page 0");
+  assert.equal(writes(creator).at(-1)!.pages, 1);
+  assert.equal((await directory.getCreatorObjects(creator)).length, 5);
+});
+
+test("a page 0 claiming a MISSING overflow page is never rewritten from what was read", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+  const creator = newCreator();
+  await feeds.writeFeedPage(
+    Topic.fromString(objectCreatorDirectoryTopic(creator)),
+    feeds.encodeJsonFeed({ v: 1, owner: creator, objects: [object()], categories: [], updatedAt: new Date().toISOString(), pages: 1 }),
+  );
+  await assert.rejects(directory.upsertCreatorObject(creator, object()).written, /overflow page 1 of 1 missing/);
+  assert.equal(writes(creator).length, 1);
 });

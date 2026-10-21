@@ -31,7 +31,15 @@ export interface PagedEnvelope<T> {
   updatedAt: string;
 }
 
-/** Split `items` into <4096-byte pages and write page 0 (+ overflow). */
+/**
+ * Split `items` into <4096-byte pages and write them: overflow pages first
+ * (highest first), page 0 LAST. Page 0 alone says how many overflow pages there
+ * are, so it is the commit point - a failed overflow write (a new page's first
+ * write can meet bee's skip list, #942) leaves the previous directory whole
+ * rather than a page 0 claiming a page never written. Not atomic: pages
+ * rewritten in place before a failure are read under the old page 0 until the
+ * write is retried.
+ */
 export async function writePagedFeed<T>(
   items: T[],
   topicFn: (p: number) => string,
@@ -52,16 +60,16 @@ export async function writePagedFeed<T>(
   if (current.length > 0) pages.push(current);
   if (pages.length === 0) pages.push([]); // always (re)write page 0, even when emptied
 
-  await writeFeedPage(
-    Topic.fromString(topicFn(0)),
-    encodeJsonFeed(makeEnvelope({ items: pages[0], pages: pages.length - 1, updatedAt })),
-  );
-  for (let p = 1; p < pages.length; p++) {
+  for (let p = pages.length - 1; p >= 1; p--) {
     await writeFeedPage(
       Topic.fromString(topicFn(p)),
       encodeJsonFeed(makeEnvelope({ items: pages[p], pages: 0, updatedAt })),
     );
   }
+  await writeFeedPage(
+    Topic.fromString(topicFn(0)),
+    encodeJsonFeed(makeEnvelope({ items: pages[0], pages: pages.length - 1, updatedAt })),
+  );
 }
 
 /**
@@ -90,7 +98,8 @@ export async function readPagedFeedStrict<T>(
     if (pg.status === "error") {
       throw new Error(`Feed read failed (overflow page ${p}) — refusing to write: ${pg.error.message}`);
     }
-    if (pg.status === "absent") break;
+    // Claimed by page 0, which is written last: missing is an error, never the end.
+    if (pg.status === "absent") throw new Error(`Feed overflow page ${p} of ${totalPages} missing — refusing to write`);
     const env = decodeJsonFeed<unknown>(pg.data);
     if (!env) continue;
     const items = extract(env);

@@ -344,6 +344,7 @@ async function loadCreatorSites(ethAddress: string): Promise<DisplayRead<SiteDir
 
 // ── Write ────────────────────────────────────────────────────────────────────
 
+/** Overflow pages first (highest first), page 0 - the commit point - last; see the event index's writer. */
 async function writeDirectoryPages(entries: SiteDirectoryEntry[], topicFn: (p: number) => string): Promise<void> {
   const updatedAt = new Date().toISOString();
   const pages: SiteDirectoryEntry[][] = [];
@@ -360,6 +361,11 @@ async function writeDirectoryPages(entries: SiteDirectoryEntry[], topicFn: (p: n
   }
   if (current.length > 0) pages.push(current);
 
+  for (let p = pages.length - 1; p >= 1; p--) {
+    const overflow: SiteDirectory = { v: 1, entries: pages[p], updatedAt };
+    await writeFeedPage(Topic.fromString(topicFn(p)), encodeJsonFeed(overflow));
+  }
+
   const page0: SiteDirectory = {
     v: 1,
     entries: pages[0] ?? [],
@@ -367,11 +373,6 @@ async function writeDirectoryPages(entries: SiteDirectoryEntry[], topicFn: (p: n
     pages: pages.length - 1,
   };
   await writeFeedPage(Topic.fromString(topicFn(0)), encodeJsonFeed(page0));
-
-  for (let p = 1; p < pages.length; p++) {
-    const overflow: SiteDirectory = { v: 1, entries: pages[p], updatedAt };
-    await writeFeedPage(Topic.fromString(topicFn(p)), encodeJsonFeed(overflow));
-  }
 }
 
 /**
@@ -403,7 +404,8 @@ async function readCreatorSitesStrict(ethAddress: string): Promise<SiteDirectory
     if (overflow.status === "error") {
       throw new Error(`Site directory read failed (overflow page ${p}) — refusing to write: ${overflow.error.message}`);
     }
-    if (overflow.status === "absent") break;
+    // Claimed by page 0, which is written last: missing is an error, never the end.
+    if (overflow.status === "absent") throw new Error(`Site directory overflow page ${p} of ${totalPages} missing — refusing to write`);
     const decoded = decodeJsonFeed<SiteDirectory>(overflow.data);
     if (decoded?.entries) all.push(...decoded.entries);
   }
