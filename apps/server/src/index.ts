@@ -60,6 +60,7 @@ import { campaignRoutes } from "./routes/campaign.js";
 import { agentRouter } from "./routes/agent.js";
 import { swarmRoutes } from "./routes/swarm.js";
 import { socRelayHealth } from "./lib/swarm/soc-relay-limits.js";
+import { firstWriteRetryHealth } from "./lib/swarm/first-write-retry.js";
 import { apiBodyLimit } from "./lib/http/body-limit.js";
 import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
@@ -383,6 +384,15 @@ function healthReport() {
     // refused writes with 503 — either an attack on the postage batch or a
     // client stuck in a write loop. Per-bucket refusal counts are statistics.
     swarmRelay: socRelayHealth(),
+    // Creator directory writes held back by bee's skip list (#942): the site
+    // directory, the event index and the object directory, each retried past
+    // the one-minute window. `pending`/`retrying` are statistics - a first write
+    // usually needs one retry. `dropped` above 0 is the alarm, and it stays red
+    // until the server restarts: each dropped change is an entry missing from a
+    // creator's index until replayed by hand from its "DROPPED ... replay by
+    // hand" log line. A restart also kills in-flight broadcasts, so check
+    // `email.broadcasts.pendingRecipients` is 0 before restarting to clear it.
+    directoryWrites: firstWriteRetryHealth(),
     // Postage (#421). Three batches died or nearly died in five weeks and every
     // one was found by hand: a dead batch does not fail an upload, it accepts it
     // and never pays for the chunks. `bee.checks.ttl` false is "top up now";
