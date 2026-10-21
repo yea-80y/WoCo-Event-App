@@ -132,7 +132,7 @@ const objectDirectoryQueue = createFirstWriteRetryQueue<DirectoryState, ObjectDi
     await writeDirectory(creator, objects, categories);
     console.log(`[objectEntry] Creator directory updated for ${creator}: ${objects.length} object type(s)`);
   },
-  idOf: (change) => (change.kind === "categories" ? "categories" : `object:${change.entry.manifestRef.toLowerCase()}`),
+  idOf: (change) => (change.kind === "categories" ? "categories" : `entry:${change.entry.manifestRef.toLowerCase()}`),
   merge: (_earlier, later) => later,
   replayPayload: (creator, change) => ({ creator, ...change }),
 });

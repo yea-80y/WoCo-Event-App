@@ -88,7 +88,7 @@ function writes(creator: string): ObjectDirectory[] {
 }
 
 let refNo = 0;
-function object(extra: Partial<ObjectDirectoryEntry> = {}): ObjectDirectoryEntry {
+function objectEntry(extra: Partial<ObjectDirectoryEntry> = {}): ObjectDirectoryEntry {
   const ref = (++refNo).toString(16).padStart(64, "0");
   return {
     manifestRef: `0x${ref}` as ObjectDirectoryEntry["manifestRef"],
@@ -104,7 +104,7 @@ const category = (id: string): ObjectCategory => ({ id, label: `Label ${id}`, so
 
 test("THE BUG: a creator's first series, directory skip-listed -> retried past the window and written", async () => {
   const creator = newCreator();
-  const a = object();
+  const a = objectEntry();
   skip(creator, true);
   onSleep = () => skip(creator, false);
   await directory.upsertCreatorObject(creator, a).written;
@@ -116,7 +116,7 @@ test("THE BUG: a creator's first series, directory skip-listed -> retried past t
 test("an awaited caller is answered after ONE attempt - 'retrying' mid-wait, nothing written yet - and the retry completes", { timeout: 20_000 }, async (t) => {
   t.mock.method(console, "warn", () => {});
   const creator = newCreator();
-  const a = object({ name: "Edited" });
+  const a = objectEntry({ name: "Edited" });
   skip(creator, true);
   let release!: () => void;
   const minute = new Promise<void>((r) => (release = r));
@@ -139,8 +139,8 @@ test("an awaited caller on a readable directory hears 'written'", { timeout: 20_
 test("categories and upserts interleaved during a retry: one write, objects in upsert order, the later category list wins", async (t) => {
   t.mock.method(console, "warn", () => {});
   const creator = newCreator();
-  const a = object();
-  const b = object();
+  const a = objectEntry();
+  const b = objectEntry();
   const a2 = { ...a, name: "A renamed" };
   skip(creator, true);
   onSleep = () => {
@@ -160,11 +160,11 @@ test("categories and upserts interleaved during a retry: one write, objects in u
 
 test("an upsert reads page 0 ONCE per attempt and keeps the categories from that strict read", async () => {
   const creator = newCreator();
-  const a = object();
+  const a = objectEntry();
   await directory.setCreatorObjectCategories(creator, [category("keep")]).written;
   await directory.upsertCreatorObject(creator, a).written;
   const before = bee.lookupsOf(dirTopicHex(creator));
-  const b = object();
+  const b = objectEntry();
   await directory.upsertCreatorObject(creator, b).written;
   assert.equal(bee.lookupsOf(dirTopicHex(creator)) - before, 1, "one page-0 lookup: no second, lenient read for categories");
   const w = writes(creator).at(-1)!;
@@ -176,7 +176,7 @@ test("an existing directory that cannot be read is never written as empty - obje
   const creator = newCreator();
   let clock = 1_000_000;
   feeds.__feedWriteTestHooks.setClock(() => clock);
-  const a = object();
+  const a = objectEntry();
   await directory.setCreatorObjectCategories(creator, [category("c")]).written;
   await directory.upsertCreatorObject(creator, a).written;
   clock += feeds.READ_YOUR_WRITES_MS + 1;
@@ -186,7 +186,7 @@ test("an existing directory that cannot be read is never written as empty - obje
     assert.equal(writes(creator).length, n, "nothing written while unreadable");
     skip(creator, false);
   };
-  const b = object();
+  const b = objectEntry();
   await directory.upsertCreatorObject(creator, b).written;
   assert.deepEqual(sleeps, [70_000]);
   const w = writes(creator).at(-1)!;
@@ -207,7 +207,7 @@ test("growing onto page 1: a failed page-1 write leaves page 0 as it was; the re
   t.mock.method(console, "warn", () => {});
   t.mock.method(console, "log", () => {});
   const creator = newCreator();
-  const big = () => object({ name: "N".repeat(700) }); // ~900 bytes: four fill page 0
+  const big = () => objectEntry({ name: "N".repeat(700) }); // ~900 bytes: four fill page 0
   const four = [big(), big(), big(), big()];
   await Promise.all(four.map((o) => directory.upsertCreatorObject(creator, o).written));
   assert.equal(writes(creator).length, 1);
@@ -232,9 +232,9 @@ test("a page 0 claiming a MISSING overflow page is never rewritten from what was
   const creator = newCreator();
   await feeds.writeFeedPage(
     Topic.fromString(objectCreatorDirectoryTopic(creator)),
-    feeds.encodeJsonFeed({ v: 1, owner: creator, objects: [object()], categories: [], updatedAt: new Date().toISOString(), pages: 1 }),
+    feeds.encodeJsonFeed({ v: 1, owner: creator, objects: [objectEntry()], categories: [], updatedAt: new Date().toISOString(), pages: 1 }),
   );
-  await assert.rejects(directory.upsertCreatorObject(creator, object()).written, /overflow page 1 of 1 missing/);
+  await assert.rejects(directory.upsertCreatorObject(creator, objectEntry()).written, /overflow page 1 of 1 missing/);
   assert.equal(writes(creator).length, 1);
 });
 
@@ -242,9 +242,9 @@ test("overflow pages stamped by another write than page 0 (a torn write) are nev
   t.mock.method(console, "warn", () => {});
   t.mock.method(console, "error", () => {});
   const creator = newCreator();
-  const env = (updatedAt: string, pages?: number) => ({ v: 1, owner: creator, objects: [object()], categories: [], updatedAt, ...(pages ? { pages } : {}) });
+  const env = (updatedAt: string, pages?: number) => ({ v: 1, owner: creator, objects: [objectEntry()], categories: [], updatedAt, ...(pages ? { pages } : {}) });
   await feeds.writeFeedPage(Topic.fromString(objectCreatorDirectoryTopic(creator, 1)), feeds.encodeJsonFeed(env("2026-10-21T00:00:02.000Z")));
   await feeds.writeFeedPage(Topic.fromString(objectCreatorDirectoryTopic(creator)), feeds.encodeJsonFeed(env("2026-10-21T00:00:01.000Z", 1)));
-  await assert.rejects(directory.upsertCreatorObject(creator, object()).written, /torn/);
+  await assert.rejects(directory.upsertCreatorObject(creator, objectEntry()).written, /torn/);
   assert.equal(writes(creator).length, 1);
 });
