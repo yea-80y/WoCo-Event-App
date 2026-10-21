@@ -15,6 +15,7 @@ WHERE THE DEPTH LIVES
   docs/README.md                  # INDEX of all docs, sorted by how far to trust each
   docs/ARCHITECTURE.md            # the map: layers, trust boundaries, one ticket traced
   docs/IDENTITY_AND_KEYS.md       # all four keys, the one seed, sealed envelopes, API auth
+  docs/PASSKEY_WINDOW.md          # passkeys run in a window on auth.woco.eth.limo (RP ID); app never sees the PRF
   docs/SWARM_DATA_MODEL.md        # SOC/CAC addressing, versioned feeds, topics, bands
   docs/TICKETING.md               # issuance -> sale -> mint -> door
   docs/SITE_BUILDER.md            # sites: publish/deploy, feeds, quota
@@ -79,6 +80,8 @@ DEV COMMANDS:
   npm run build:embed    # BOTH bundles → dist/woco-embed.js, dist/woco-count.js + dist/overlay.html
   npm run build:site     # generated-site build → apps/web/dist-site/
   npm run build:multisite # deployed-site runtime → apps/web/dist-multisite/
+  npm run build:auth     # passkey sign-in window → apps/web/dist-auth/ (immutable, Safe-pinned)
+  npm run dev:auth       # dev window on :5174 for the dev app on :5173 (run beside dev:web)
 
 - Server deploy goes through `scripts/deploy-server.mjs` — it refuses an unclean tree, a
   HEAD that is not `origin/main`, a linked worktree (which lacks the untracked files
@@ -135,7 +138,8 @@ Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
    key. Wallet/email: keccak256 of ONE deterministic EIP-712 signature under "WoCo Account
    Keys" / `DeriveAccountKeys`, so a fresh device needs TWO signatures total (session
    delegation + this). PASSKEY (#642): HKDF of the PRF output, no signature, never through a
-   secp256k1 key — labels FROZEN in `packages/shared/src/crypto/passkey-prf.ts`. A passkey seed at rest is LOCKED
+   secp256k1 key — labels FROZEN in `packages/shared/src/crypto/passkey-prf.ts`, derived ONLY in the passkey window
+   (RP ID `auth.woco.eth.limo`; the app never holds the PRF, `docs/PASSKEY_WINDOW.md`). A passkey seed at rest is LOCKED
    under a PRF-derived key (#746): an unlock (sign-in, or the confirm `auth.ensureOrganiserUnlock()` asks before every
    organiser action) opens it for 2 h across reloads, one constant `SEED_UNLOCK_POLICY`; everyday posts sign with a cached
    feed signer (`ensureContentSigner()`) and never ask. `ensureIdentitySeed()` returns a
@@ -384,6 +388,8 @@ AUTH (frontend):
   apps/web/src/lib/auth/signing-request.svelte.ts    # EIP-712 confirm dialog trigger
   apps/web/src/lib/auth/session-delegation.ts        # session key + delegation
   apps/web/src/lib/auth/identity-seed.ts             # identity-seed derivation + AAD-bound storage
+  apps/web/src/lib/auth/passkey-window.ts            # opens the passkey window, one request, one answer
+  apps/web/src/auth-window/                          # the window itself: every WebAuthn ceremony + PRF derivation
   apps/web/src/lib/credits/holder-key.ts             # ed25519 holder key — credits/cert rails ONLY, dynamic import
   apps/web/src/lib/auth/issuing-key.ts               # ensureIssuingKey() — fail-loud wrapper
   apps/web/src/lib/auth/ensure-action.ts             # requireAccountForAction() gate
