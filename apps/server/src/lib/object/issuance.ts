@@ -229,7 +229,10 @@ export async function issueObjectType(opts: IssueObjectOpts): Promise<ObjectDire
     console.log(`[objects] minted ${kind} "${name}" supply=${supply} eventId=${onChainEventId} tx=${registered.txHash}`);
   }
 
-  // ── Directory upsert (awaited — this is the primary durable write). ───────
+  // ── Directory upsert (awaited for ONE attempt — the primary durable write). ─
+  // The type is already registered, so a directory bee cannot read yet must not
+  // fail the mint and invite a second one: the entry is retried without this
+  // request (#942) and only a change given up on throws here.
   const now = new Date().toISOString();
   const entry: ObjectDirectoryEntry = {
     manifestRef,
@@ -252,7 +255,7 @@ export async function issueObjectType(opts: IssueObjectOpts): Promise<ObjectDire
     createdAt: now,
     updatedAt: now,
   };
-  await upsertCreatorObject(creatorAddress, entry);
+  await upsertCreatorObject(creatorAddress, entry).firstAttempt;
   return entry;
 }
 

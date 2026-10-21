@@ -253,7 +253,13 @@ async function lookupFeed(topic: Topic, ownerHex: string): Promise<FeedLookup> {
  * A read of our bee: note the index it saw, and prefer what we wrote when bee is
  * behind it (see `writtenPages`). `forWrite`: past the window, ask the destination
  * - our update there: ours; gone: bee's answer is the truth; cannot tell: error.
- * A display read past the window takes bee's answer, as it always did.
+ * A display read past the window takes bee's answer, as it always did, with one
+ * exception: bee's "absent" for a feed this server wrote is not absent but
+ * unknown (error), so a display memo can never pin "nothing there" over it. A
+ * display read never asks the destination and never forgets what this server
+ * wrote. Like every read it still notes the index bee reported (`noteReadIndex`
+ * below), which can mark the cached index disputed and cost the next write one
+ * read-back.
  */
 async function readFeedForCaller(topic: Topic, forWrite: boolean): Promise<FeedLookup> {
   const key = topicKey(topic);
@@ -266,7 +272,11 @@ async function readFeedForCaller(topic: Topic, forWrite: boolean): Promise<FeedL
   if (res.status === "ok" && (res.index === undefined || res.index >= mine.index)) return res;
   const ours: FeedLookup = { status: "ok", data: mine.page.slice(), index: mine.index, next: mine.index + 1n };
   if (now() - mine.at < READ_YOUR_WRITES_MS) return ours;
-  if (!forWrite) return res;
+  if (!forWrite) {
+    return res.status === "absent"
+      ? { status: "error", error: new Error(`feed ${key.slice(0, 16)}: our bee has no update, this server wrote update ${mine.index}`) }
+      : res;
+  }
   const there = await readFeedUpdate(owner, topic, mine.index, feedSources(mine.dest));
   if (there.status === "found" && sameBytes(there.soc.payload, mine.page)) return ours;
   if (there.status === "absent") {
@@ -300,15 +310,25 @@ export async function readFeedPage(topic: Topic): Promise<Uint8Array | null> {
  * `readFeedPage` (above) collapses all three into `null`, which is fine for
  * read endpoints that fall through to "show nothing" UX. Write paths that
  * read-modify-write a directory MUST use the strict variant.
+ *
+ * `forWrite: false` keeps the three answers for a DISPLAY read that must tell
+ * absent from unreadable (a memo of "nothing there", display-read-memo.ts)
+ * without the write path's destination check: past read-your-writes it never
+ * asks the destination or forgets what this server wrote, and an absent bee
+ * answer for a feed this server wrote is an error. It still notes bee's index
+ * like any read (see `readFeedForCaller`). Never the base of a write.
  */
 export type FeedReadStrictResult =
   | { status: "ok"; data: Uint8Array }
   | { status: "absent" }
   | { status: "error"; error: Error };
 
-export async function readFeedPageStrict(topic: Topic): Promise<FeedReadStrictResult> {
+export async function readFeedPageStrict(
+  topic: Topic,
+  { forWrite = true }: { forWrite?: boolean } = {},
+): Promise<FeedReadStrictResult> {
   try {
-    const res = await readFeedForCaller(topic, true);
+    const res = await readFeedForCaller(topic, forWrite);
     return res.status === "ok" ? { status: "ok", data: res.data } : res;
   } catch (err) {
     return { status: "error", error: err instanceof Error ? err : new Error(String(err)) };

@@ -256,7 +256,9 @@ objectsRouter.put("/categories", requireAuth, async (c) => {
   }
 
   try {
-    await setCreatorObjectCategories(parentAddress, categories);
+    // One attempt: when bee cannot read the directory yet the change is retried
+    // without this request (#942), and the manager shows it once written.
+    await setCreatorObjectCategories(parentAddress, categories).firstAttempt;
     return c.json({ ok: true, data: { categories } });
   } catch (err) {
     console.error("[objectEntry] PUT /categories failed:", err);
@@ -327,7 +329,7 @@ objectsRouter.put("/:manifestRef", requireAuth, async (c) => {
   };
 
   try {
-    await upsertCreatorObject(parentAddress, updated);
+    await upsertCreatorObject(parentAddress, updated).firstAttempt;
     return c.json({ ok: true, data: updated });
   } catch (err) {
     console.error("[objectEntry] PUT /:manifestRef — upsert failed:", err);

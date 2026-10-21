@@ -21,111 +21,26 @@
  */
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Wallet } from "ethers";
-import { FeedIndex, Topic } from "@ethersphere/bee-js";
-import { Binary } from "cafe-utility";
+import { Topic } from "@ethersphere/bee-js";
 import type { SiteDirectoryEntry, Hex0x } from "@woco/shared";
+import { startFakeBee, socAddress, type FakeBee } from "./helpers/fake-bee.js";
 
 const DEAD = "http://127.0.0.1:9";
 const KEY = Wallet.createRandom().privateKey;
 const OWNER = new Wallet(KEY).address.slice(2).toLowerCase();
 
-// ---------------------------------------------------------------------------
-// The fake bee: one SOC store, first write wins (bee 2.7+), plus bee's
-// skip-list answers on demand.
-// ---------------------------------------------------------------------------
-
-/** SOC address -> identifier ‖ signature ‖ span ‖ payload. */
-const chunks = new Map<string, Uint8Array>();
-const posted: string[] = [];
-const net = {
-  /** GET /feeds answers 404 "lookup at failed" (bee's walk failed). */
-  lookupFailed: false,
-  /** GET /chunks answers 500 "read chunk failed". */
-  chunks500: false,
-  feedLookups: 0,
-  /** Hold the next lookup of this topic: answer computed on arrival, sent on release. */
-  holdOnce: null as null | { topicHex: string; arrived: () => void; release: Promise<void> },
-};
-function skipListed(on: boolean): void {
-  net.lookupFailed = on;
-  net.chunks500 = on;
-}
-
-const hex = (b: Uint8Array) => Binary.uint8ArrayToHex(b);
-const unhex = (h: string) => Binary.hexToUint8Array(h);
-let calculateSocAddress: typeof import("@woco/shared").calculateSocAddress;
-
-function addressFor(owner: string, topicHex: string, index: bigint): string {
-  const id = Binary.keccak256(Binary.concatBytes(unhex(topicHex), FeedIndex.fromBigInt(index).toUint8Array()));
-  return hex(calculateSocAddress(id, unhex(owner)));
-}
-
-function readBody(req: IncomingMessage): Promise<Uint8Array> {
-  return new Promise((resolve) => {
-    const parts: Buffer[] = [];
-    req.on("data", (c: Buffer) => parts.push(c));
-    req.on("end", () => resolve(new Uint8Array(Buffer.concat(parts))));
-  });
-}
-
-function json(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(body));
-}
-
-function feedAnswer(owner: string, topicHex: string): (res: ServerResponse) => void {
-  if (net.lookupFailed) return (res) => json(res, 404, { code: 404, message: "lookup at failed" });
-  let latest = -1n;
-  while (chunks.has(addressFor(owner, topicHex, latest + 1n))) latest++;
-  if (latest < 0n) return (res) => json(res, 404, { code: 404, message: "no update found" });
-  const payload = chunks.get(addressFor(owner, topicHex, latest))!.subarray(32 + 65 + 8);
-  return (res) =>
-    res
-      .writeHead(200, {
-        "Content-Type": "application/octet-stream",
-        "swarm-feed-index": FeedIndex.fromBigInt(latest).toHex(),
-        "swarm-feed-index-next": FeedIndex.fromBigInt(latest + 1n).toHex(),
-      })
-      .end(Buffer.from(payload));
-}
-
-const bee: Server = createServer(async (req, res) => {
-  const path = (req.url ?? "").split("?")[0]!;
-  if (req.method === "POST" && path.startsWith("/soc/")) {
-    // Uploads are pushes, not retrievals: the skip list does not stop them.
-    const url = new URL(req.url ?? "", "http://x");
-    const [, , owner, id] = url.pathname.split("/");
-    const body = await readBody(req);
-    const addr = hex(calculateSocAddress(unhex(id!), unhex(owner!)));
-    posted.push(addr);
-    if (!chunks.has(addr)) chunks.set(addr, Binary.concatBytes(unhex(id!), unhex(url.searchParams.get("sig")!), body));
-    return json(res, 201, { reference: addr });
-  }
-  if (req.method === "GET" && path.startsWith("/chunks/")) {
-    if (net.chunks500) return json(res, 500, { code: 500, message: "read chunk failed" });
-    const c = chunks.get(path.split("/")[2]!.toLowerCase());
-    if (!c) return json(res, 404, { code: 404, message: "chunk not found" });
-    return res.writeHead(200, { "Content-Type": "application/octet-stream" }).end(Buffer.from(c));
-  }
-  const m = /^\/feeds\/([0-9a-f]{40})\/([0-9a-f]{64})$/i.exec(path);
-  if (req.method === "GET" && m) {
-    net.feedLookups++;
-    const answer = feedAnswer(m[1]!.toLowerCase(), m[2]!.toLowerCase());
-    const hold = net.holdOnce;
-    if (hold && hold.topicHex === m[2]!.toLowerCase()) {
-      net.holdOnce = null;
-      hold.arrived();
-      await hold.release;
-    }
-    return answer(res);
-  }
-  json(res, 404, { code: 404, message: "Not Found" });
-});
+// The fake bee (helpers/fake-bee.ts): real signed SOCs, first write wins, and
+// bee's skip-list answers on demand.
+let bee: FakeBee;
+let chunks: FakeBee["chunks"];
+let posted: FakeBee["posted"];
+let net: FakeBee["net"];
+const skipListed = (on: boolean) => bee.skipListed(on);
+const addressFor = socAddress;
 
 // ---------------------------------------------------------------------------
 
@@ -142,8 +57,9 @@ const sleeps: number[] = [];
 let onSleep: ((ms: number) => void | Promise<void>) | null = null;
 
 before(async () => {
-  await new Promise<void>((r) => bee.listen(0, "127.0.0.1", r));
-  process.env.BEE_URL = `http://127.0.0.1:${(bee.address() as AddressInfo).port}`;
+  bee = await startFakeBee();
+  ({ chunks, posted, net } = bee);
+  process.env.BEE_URL = bee.url;
   process.env.PROXY_URL = DEAD;
   process.env.ETHERNA_GATEWAY_URL = DEAD;
   process.env.ETHERNA_TOKEN_ENDPOINT = `${DEAD}/token`;
@@ -155,7 +71,6 @@ before(async () => {
   mkdirSync(join(dir, ".data"));
 
   shared = await import("@woco/shared");
-  calculateSocAddress = shared.calculateSocAddress;
   feeds = await import("../src/lib/swarm/feeds.js");
   service = await import("../src/lib/site/service.js");
   ({ __firstWriteRetryTestHooks: retryHooks } = await import("../src/lib/swarm/first-write-retry.js"));
@@ -169,16 +84,13 @@ before(async () => {
 
 after(async () => {
   retryHooks.setSleep(null);
-  await new Promise<void>((r) => bee.close(() => r()));
+  await bee.close();
   process.chdir(originalCwd);
   rmSync(dir, { recursive: true, force: true });
 });
 
 beforeEach(() => {
-  skipListed(false);
-  net.feedLookups = 0;
-  net.holdOnce = null;
-  posted.length = 0;
+  bee.reset();
   sleeps.length = 0;
   onSleep = null;
   feeds.__feedWriteTestHooks.clearCache();
@@ -365,14 +277,15 @@ test("a display read that started before an upsert's write is not memoized", asy
   const creator = newCreator();
   const a = entry("site-page0-001");
   const b = entry("site-page1-001");
-  // A two-page directory, written directly.
+  // A two-page directory, written directly - one stamp on both pages, as the writer does.
+  const updatedAt = new Date().toISOString();
   await feeds.writeFeedPage(
     Topic.fromString(shared.siteCreatorDirectoryTopic(creator)),
-    feeds.encodeJsonFeed({ v: 1, entries: [a], updatedAt: new Date().toISOString(), pages: 1 }),
+    feeds.encodeJsonFeed({ v: 1, entries: [a], updatedAt, pages: 1 }),
   );
   await feeds.writeFeedPage(
     Topic.fromString(shared.siteCreatorDirectoryTopic(creator, 1)),
-    feeds.encodeJsonFeed({ v: 1, entries: [b], updatedAt: new Date().toISOString() }),
+    feeds.encodeJsonFeed({ v: 1, entries: [b], updatedAt }),
   );
   // The display read gets page 0, then waits on page 1 while the upsert lands.
   let arrived!: () => void;
@@ -388,3 +301,78 @@ test("a display read that started before an upsert's write is not memoized", asy
   assert.deepEqual((await service.getCreatorSites(creator)).map((e) => e.siteId), [x.siteId, a.siteId, b.siteId]);
 });
 
+
+test("a display read changes nothing the write relies on: past read-your-writes, bee's lag reads as unknown, never memoized, and the next upsert still builds on what this server wrote", async () => {
+  const creator = newCreator();
+  let clock = 2_000_000;
+  feeds.__feedWriteTestHooks.setClock(() => clock);
+  const a = entry("site-lagged-01");
+  await service.upsertCreatorSite(creator, a);
+  clock += feeds.READ_YOUR_WRITES_MS + 1;
+  bee.lagTopic(OWNER, dirTopicHex(creator), true); // bee has not seen our update yet
+
+  const reads = net.chunkReads;
+  const lookups = net.feedLookups;
+  assert.deepEqual(await service.getCreatorSites(creator), [], "display shows what bee shows");
+  assert.equal(net.chunkReads, reads, "no destination read: that is the write path's check");
+  await service.getCreatorSites(creator);
+  assert.equal(net.feedLookups, lookups + 2, "bee's absent for a feed this server wrote is not memoized");
+
+  const b = entry("site-lagged-02");
+  await service.upsertCreatorSite(creator, b);
+  assert.deepEqual(latestDirectory(creator)!.map((x) => x.siteId), [b.siteId, a.siteId], "the write path still knew ours");
+});
+
+// ---------------------------------------------------------------------------
+// More than one page: page 0 commits the page count; one stamp on every page
+// ---------------------------------------------------------------------------
+
+test("growing onto page 1: a failed page-1 write leaves page 0 as it was; the retry writes page 1 BEFORE page 0", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "log", () => {});
+  const creator = newCreator();
+  const big = (id: string) => entry(id, { brandName: "B".repeat(850) }); // ~930 bytes: four fill page 0
+  await Promise.all(["site-big-0001", "site-big-0002", "site-big-0003", "site-big-0004"].map((id) => service.upsertCreatorSite(creator, big(id))));
+  assert.equal(directoryWrites(creator).length, 1);
+  assert.equal(feeds.decodeJsonFeed<{ pages: number }>(bee.payloads(OWNER, dirTopicHex(creator))[0]!)!.pages, 0, "one page before the fifth");
+  const page1 = dirTopicHex(creator, 1);
+  bee.uploadFails(OWNER, page1, true);
+  onSleep = () => {
+    assert.equal(directoryWrites(creator).length, 1, "page 0 untouched");
+    bee.uploadFails(OWNER, page1, false);
+    posted.length = 0;
+  };
+  await service.upsertCreatorSite(creator, big("site-big-0005"));
+  assert.deepEqual(sleeps, [70_000]);
+  assert.deepEqual(posted, [addressFor(OWNER, page1, 0n), addressFor(OWNER, dirTopicHex(creator), 1n)], "page 1, then page 0");
+  assert.equal(feeds.decodeJsonFeed<{ pages: number }>(bee.payloads(OWNER, dirTopicHex(creator)).at(-1)!)!.pages, 1);
+  assert.equal((await service.getCreatorSites(creator)).length, 5);
+});
+
+test("a page 0 claiming a MISSING overflow page is never rewritten from what was read", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+  const creator = newCreator();
+  await feeds.writeFeedPage(
+    Topic.fromString(shared.siteCreatorDirectoryTopic(creator)),
+    feeds.encodeJsonFeed({ v: 1, entries: [entry("site-torn-0001")], updatedAt: new Date().toISOString(), pages: 1 }),
+  );
+  await assert.rejects(service.upsertCreatorSite(creator, entry("site-torn-0002")), /overflow page 1 of 1 missing/);
+  assert.equal(directoryWrites(creator).length, 1);
+});
+
+test("overflow pages stamped by another write than page 0 (a torn write) are never rewritten from", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+  const creator = newCreator();
+  await feeds.writeFeedPage(
+    Topic.fromString(shared.siteCreatorDirectoryTopic(creator, 1)),
+    feeds.encodeJsonFeed({ v: 1, entries: [entry("site-torn-p1")], updatedAt: "2026-10-21T00:00:02.000Z" }),
+  );
+  await feeds.writeFeedPage(
+    Topic.fromString(shared.siteCreatorDirectoryTopic(creator)),
+    feeds.encodeJsonFeed({ v: 1, entries: [entry("site-torn-p0")], updatedAt: "2026-10-21T00:00:01.000Z", pages: 1 }),
+  );
+  await assert.rejects(service.upsertCreatorSite(creator, entry("site-torn-new")), /torn/);
+  assert.equal(directoryWrites(creator).length, 1);
+});

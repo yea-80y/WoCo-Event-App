@@ -310,19 +310,19 @@ export function invalidateCreatorSitesCache(ethAddress: string): void {
  * cannot be read. Never the base of a directory write: that is
  * `readCreatorSitesStrict`, which refuses instead.
  */
-export async function getCreatorSites(
-  ethAddress: string,
-  opts: { fresh?: boolean } = {},
-): Promise<SiteDirectoryEntry[]> {
+export async function getCreatorSites(ethAddress: string): Promise<SiteDirectoryEntry[]> {
   const key = ethAddress.toLowerCase();
-  const res = await creatorSitesMemo.read(key, () => loadCreatorSites(key), opts);
+  const res = await creatorSitesMemo.read(key, () => loadCreatorSites(key));
   return res.status === "ok" ? res.data : [];
 }
 
-/** Page 0 strictly, so absent and unreadable stay apart; overflow pages leniently, as before. */
+/**
+ * Page 0 by the display read (`forWrite: false`), so absent and unreadable stay
+ * apart without the write path's side effects; overflow pages leniently, as before.
+ */
 async function loadCreatorSites(ethAddress: string): Promise<DisplayRead<SiteDirectoryEntry[]>> {
   try {
-    const page0 = await readFeedPageStrict(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)));
+    const page0 = await readFeedPageStrict(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)), { forWrite: false });
     if (page0.status === "error") return { status: "error" };
     if (page0.status === "absent") return { status: "ok", data: [] };
     const dir = decodeJsonFeed<SiteDirectory>(page0.data);
@@ -350,6 +350,11 @@ async function loadCreatorSites(ethAddress: string): Promise<DisplayRead<SiteDir
 
 // ── Write ────────────────────────────────────────────────────────────────────
 
+/**
+ * Overflow pages first (highest first), page 0 last: it commits the page count,
+ * not the contents - see the event index's writer. One `updatedAt` on every page,
+ * which `readCreatorSitesStrict` checks.
+ */
 async function writeDirectoryPages(entries: SiteDirectoryEntry[], topicFn: (p: number) => string): Promise<void> {
   const updatedAt = new Date().toISOString();
   const pages: SiteDirectoryEntry[][] = [];
@@ -366,6 +371,11 @@ async function writeDirectoryPages(entries: SiteDirectoryEntry[], topicFn: (p: n
   }
   if (current.length > 0) pages.push(current);
 
+  for (let p = pages.length - 1; p >= 1; p--) {
+    const overflow: SiteDirectory = { v: 1, entries: pages[p], updatedAt };
+    await writeFeedPage(Topic.fromString(topicFn(p)), encodeJsonFeed(overflow));
+  }
+
   const page0: SiteDirectory = {
     v: 1,
     entries: pages[0] ?? [],
@@ -373,11 +383,6 @@ async function writeDirectoryPages(entries: SiteDirectoryEntry[], topicFn: (p: n
     pages: pages.length - 1,
   };
   await writeFeedPage(Topic.fromString(topicFn(0)), encodeJsonFeed(page0));
-
-  for (let p = 1; p < pages.length; p++) {
-    const overflow: SiteDirectory = { v: 1, entries: pages[p], updatedAt };
-    await writeFeedPage(Topic.fromString(topicFn(p)), encodeJsonFeed(overflow));
-  }
 }
 
 /**
@@ -409,9 +414,15 @@ async function readCreatorSitesStrict(ethAddress: string): Promise<SiteDirectory
     if (overflow.status === "error") {
       throw new Error(`Site directory read failed (overflow page ${p}) — refusing to write: ${overflow.error.message}`);
     }
-    if (overflow.status === "absent") break;
+    // Claimed by page 0, which is written last: missing is an error, never the end.
+    if (overflow.status === "absent") throw new Error(`Site directory overflow page ${p} of ${totalPages} missing — refusing to write`);
     const decoded = decodeJsonFeed<SiteDirectory>(overflow.data);
-    if (decoded?.entries) all.push(...decoded.entries);
+    if (!decoded) throw new Error(`Site directory overflow page ${p} did not decode — refusing to write`);
+    // A page stamped by another write than page 0: a write torn between them.
+    if (decoded.updatedAt !== dir.updatedAt) {
+      throw new Error(`Site directory overflow page ${p} is torn (stamped ${decoded.updatedAt}, page 0 ${dir.updatedAt}) — refusing to write`);
+    }
+    if (decoded.entries) all.push(...decoded.entries);
   }
   return all;
 }
@@ -430,11 +441,12 @@ async function readCreatorSitesStrict(ethAddress: string): Promise<SiteDirectory
  * do not await this; the site itself is unaffected either way.
  */
 export function upsertCreatorSite(ethAddress: string, entry: SiteDirectoryEntry): Promise<void> {
-  return creatorDirectoryQueue.enqueue(ethAddress.toLowerCase(), entry);
+  return creatorDirectoryQueue.enqueue(ethAddress.toLowerCase(), entry).written;
 }
 
 const creatorDirectoryQueue = createFirstWriteRetryQueue<SiteDirectoryEntry[], SiteDirectoryEntry>({
   label: "[site] Creator directory",
+  healthKey: "siteDirectory",
   read: readCreatorSitesStrict,
   write: async (creator, existing, entries) => {
     const updated = entries.reduce(applyUpsert, existing);

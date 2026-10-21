@@ -28,7 +28,7 @@ export interface DisplayReadMemoOptions<T> {
 }
 
 export interface DisplayReadMemo<T> {
-  read(key: string, load: () => Promise<DisplayRead<T>>, opts?: { fresh?: boolean }): Promise<DisplayRead<T>>;
+  read(key: string, load: () => Promise<DisplayRead<T>>): Promise<DisplayRead<T>>;
   invalidate(key: string): void;
 }
 
@@ -47,14 +47,14 @@ export function createDisplayReadMemo<T>(opts: DisplayReadMemoOptions<T>): Displ
   const inFlight = new Map<string, Promise<DisplayRead<T>>>();
 
   return {
-    async read(key, load, { fresh = false } = {}) {
-      if (!fresh) {
-        const m = memo.get(key);
-        if (m && clock() - m.at < (opts.isEmpty(m.data) ? opts.emptyTtlMs : opts.ttlMs)) return { status: "ok", data: m.data };
-        const joined = inFlight.get(key);
-        if (joined) return joined;
-      }
-      const p = load().catch((): DisplayRead<T> => ({ status: "error" }));
+    async read(key, load) {
+      const m = memo.get(key);
+      if (m && clock() - m.at < (opts.isEmpty(m.data) ? opts.emptyTtlMs : opts.ttlMs)) return { status: "ok", data: m.data };
+      const joined = inFlight.get(key);
+      if (joined) return joined;
+      // Inside an async function: a load that throws before returning a promise
+      // is an error answer too, never a rejection out of a display read.
+      const p = (async () => load())().catch((): DisplayRead<T> => ({ status: "error" }));
       inFlight.set(key, p);
       try {
         const res = await p;

@@ -56,13 +56,23 @@ test("an error, or a load that throws, is never memoized", async () => {
   assert.deepEqual(await m.read("k2", () => Promise.reject(new Error("boom"))), { status: "error" });
 });
 
-test("concurrent callers share one read; fresh bypasses the memo", async () => {
+test("a load that throws SYNCHRONOUSLY is an error answer, not a rejection, and is not memoized", async () => {
+  const m = memo();
+  let n = 0;
+  const throwing = (): Promise<DisplayRead<string[]>> => {
+    n++;
+    throw new Error("thrown before any promise");
+  };
+  assert.deepEqual(await m.read("k", throwing), { status: "error" });
+  assert.deepEqual(await m.read("k", throwing), { status: "error" });
+  assert.equal(n, 2);
+});
+
+test("concurrent callers share one read", async () => {
   const m = memo();
   const { calls, load } = counting(() => ({ status: "ok", data: ["a"] }));
   await Promise.all([m.read("k", load), m.read("k", load), m.read("k", load)]);
   assert.equal(calls.n, 1);
-  await m.read("k", load, { fresh: true });
-  assert.equal(calls.n, 2);
 });
 
 test("invalidate drops the memo, and a read in flight answers its caller but is neither joined nor memoized", async () => {

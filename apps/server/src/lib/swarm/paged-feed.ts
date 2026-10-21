@@ -31,7 +31,16 @@ export interface PagedEnvelope<T> {
   updatedAt: string;
 }
 
-/** Split `items` into <4096-byte pages and write page 0 (+ overflow). */
+/**
+ * Split `items` into <4096-byte pages and write them: overflow pages first
+ * (highest first), page 0 LAST. Page 0 alone says how many overflow pages there
+ * are, so writing it last commits the page COUNT - a failed overflow write (a new
+ * page's first write can meet bee's skip list, #942) can no longer leave a page 0
+ * claiming a page never written. The CONTENTS are not atomic: when page 0's write
+ * fails, overflow pages already rewritten in place sit under the old page 0 with
+ * entries shifted. `makeEnvelope` MUST put `updatedAt` on every page - one value
+ * per write - so `readPagedFeedStrict` can refuse pages that disagree.
+ */
 export async function writePagedFeed<T>(
   items: T[],
   topicFn: (p: number) => string,
@@ -52,32 +61,34 @@ export async function writePagedFeed<T>(
   if (current.length > 0) pages.push(current);
   if (pages.length === 0) pages.push([]); // always (re)write page 0, even when emptied
 
-  await writeFeedPage(
-    Topic.fromString(topicFn(0)),
-    encodeJsonFeed(makeEnvelope({ items: pages[0], pages: pages.length - 1, updatedAt })),
-  );
-  for (let p = 1; p < pages.length; p++) {
+  for (let p = pages.length - 1; p >= 1; p--) {
     await writeFeedPage(
       Topic.fromString(topicFn(p)),
       encodeJsonFeed(makeEnvelope({ items: pages[p], pages: 0, updatedAt })),
     );
   }
+  await writeFeedPage(
+    Topic.fromString(topicFn(0)),
+    encodeJsonFeed(makeEnvelope({ items: pages[0], pages: pages.length - 1, updatedAt })),
+  );
 }
 
 /**
  * Strict read for the WRITE path — returns full prior contents or throws on any
- * transient read error. Bootstrap (page 0 absent) returns [].
+ * transient read error. Bootstrap (page 0 absent) returns no items and a null
+ * `head`. `head` is page 0's decoded envelope, for fields kept beside the items
+ * (a directory's categories), so they come from the same strict read.
  */
 export async function readPagedFeedStrict<T>(
   topicFn: (p: number) => string,
   extract: (env: unknown) => T[] | undefined,
   pagesOf: (env: unknown) => number,
-): Promise<T[]> {
+): Promise<{ items: T[]; head: unknown }> {
   const page0 = await readFeedPageStrict(Topic.fromString(topicFn(0)));
   if (page0.status === "error") {
     throw new Error(`Feed read failed (page 0) — refusing to write: ${page0.error.message}`);
   }
-  if (page0.status === "absent") return [];
+  if (page0.status === "absent") return { items: [], head: null };
   const env0 = decodeJsonFeed<unknown>(page0.data);
   if (!env0) throw new Error("Feed page 0 decoded to null — refusing to write");
 
@@ -88,14 +99,22 @@ export async function readPagedFeedStrict<T>(
     if (pg.status === "error") {
       throw new Error(`Feed read failed (overflow page ${p}) — refusing to write: ${pg.error.message}`);
     }
-    if (pg.status === "absent") break;
+    // Claimed by page 0, which is written last: missing is an error, never the end.
+    if (pg.status === "absent") throw new Error(`Feed overflow page ${p} of ${totalPages} missing — refusing to write`);
     const env = decodeJsonFeed<unknown>(pg.data);
-    if (!env) continue;
+    if (!env) throw new Error(`Feed overflow page ${p} did not decode — refusing to write`);
+    // A page stamped by another write than page 0: a write torn between them
+    // (see writePagedFeed). Rebuilding from it would lose an entry for good.
+    if (stampOf(env) !== stampOf(env0)) {
+      throw new Error(`Feed overflow page ${p} is torn (stamped ${String(stampOf(env))}, page 0 ${String(stampOf(env0))}) — refusing to write`);
+    }
     const items = extract(env);
     if (items) all.push(...items);
   }
-  return all;
+  return { items: all, head: env0 };
 }
+
+const stampOf = (env: unknown) => (env as { updatedAt?: unknown } | null)?.updatedAt;
 
 /** Lenient read for GET paths — swallows transient errors into []. */
 export async function readPagedFeedLenient<T>(
