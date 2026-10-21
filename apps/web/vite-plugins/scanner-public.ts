@@ -5,13 +5,11 @@ import type { Plugin } from 'vite'
 /**
  * The only files the door scanner takes from `public/`.
  *
- * `public/` also holds test pages (passkey-check.html, passkey-window-test.html,
- * its -sw.js, popup-test.html) that call `navigator.credentials` with the RP ID
- * `woco.eth.limo`. The scanner is served at `scan.woco.eth.limo`, under that RP
- * ID, where such a page could ask for a user's passkey - so the scanner build
- * copies this list (`publicDir: false`) instead of the whole directory, and a
- * file added to `public/` never reaches it, or its service worker's precache,
- * by default.
+ * `public/` is the app's, and has held pages that call `navigator.credentials`
+ * (the passkey test pages of 2026-10, gone since the passkey window). The scanner
+ * is served at `scan.woco.eth.limo`, its own origin, so the scanner build copies
+ * this list (`publicDir: false`) instead of the whole directory: a file added to
+ * `public/` never reaches it, or its service worker's precache, by default.
  */
 export const SCANNER_PUBLIC_FILES = ['logo.png'] as const
 

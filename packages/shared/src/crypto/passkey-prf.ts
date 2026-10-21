@@ -46,8 +46,10 @@
 
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
-import { deriveSecpFromSeed } from "./secp-hkdf.js";
+import { addressForPrivateKey } from "./secp-hkdf.js";
+import { scalarFromOkm48, scalarToPrivateKey } from "./secp-scalar.js";
 import type { Hex0x } from "../types.js";
 
 /** HKDF info for a passkey account's identity seed. FROZEN. */
@@ -126,14 +128,20 @@ export function passkeySeedKek(prfSecret: string | Uint8Array): Uint8Array {
   return hkdf(sha256, passkeyPrfBytes(prfSecret), new Uint8Array(0), utf8ToBytes(PASSKEY_SEED_KEK_INFO), 32);
 }
 
+/** The private key that owns this credential's portability envelope SOC: the
+ *  seed-derived-key construction of secp-hkdf.ts, with the PRF output as its seed. */
+export function portabilitySocOwnerPrivateKey(prfSecret: string | Uint8Array): Uint8Array {
+  const okm = hkdf(sha256, passkeyPrfBytes(prfSecret), new Uint8Array(0), utf8ToBytes(PORTABILITY_SOC_OWNER_INFO), 48);
+  return scalarToPrivateKey(scalarFromOkm48(okm));
+}
+
 /** The secp256k1 key that owns this credential's portability envelope SOC. */
 export function portabilitySocOwnerKey(prfSecret: string | Uint8Array): {
   privKey: Hex0x;
   address: string;
 } {
-  const prfHex = bytesToHex(passkeyPrfBytes(prfSecret));
-  const { privateKey, address } = deriveSecpFromSeed(prfHex, PORTABILITY_SOC_OWNER_INFO, "passkey PRF output");
-  return { privKey: `0x${bytesToHex(privateKey)}` as Hex0x, address: address.toLowerCase() };
+  const privateKey = portabilitySocOwnerPrivateKey(prfSecret);
+  return { privKey: `0x${bytesToHex(privateKey)}` as Hex0x, address: addressForPrivateKey(privateKey).toLowerCase() };
 }
 
 /** The 32-byte seed the portability envelope's HPKE recipient key derives from
@@ -161,4 +169,46 @@ export function passkeyGuardianEscrowMaster(prfSecret: string | Uint8Array): Uin
 /** The 32-byte seed of this passkey's box key (X-Wing's own `sk`). The caller zeroes it. */
 export function passkeyBoxSeed(prfSecret: string | Uint8Array): Uint8Array {
   return hkdf(sha256, passkeyPrfBytes(prfSecret), new Uint8Array(0), utf8ToBytes(PASSKEY_BOX_INFO), 32);
+}
+
+/** keccak256 of the PRF output: the Kernel's ECDSA owner key (FROZEN, see the header). */
+export function passkeyOwnerKey(prfSecret: string | Uint8Array): Uint8Array {
+  return keccak_256(passkeyPrfBytes(prfSecret));
+}
+
+/**
+ * Every key a main or added passkey gives its account - what the sign-in window hands
+ * the WoCo app, so the PRF output itself never leaves the window. Private keys only:
+ * the app computes addresses and the box keypair, so the window carries no curve code.
+ */
+export interface PasskeyAccountKeys {
+  /** keccak256(prf): the Kernel's ECDSA owner key. */
+  ownerKey: Uint8Array;
+  /** The identity seed of an account this passkey created (`passkeyIdentitySeed`). */
+  seed: Uint8Array;
+  seedKek: Uint8Array;
+  boxSeed: Uint8Array;
+  portabilitySocKey: Uint8Array;
+  portabilityHpkeSeed: Uint8Array;
+}
+
+export function passkeyAccountKeys(prfSecret: string | Uint8Array): PasskeyAccountKeys {
+  return {
+    ownerKey: passkeyOwnerKey(prfSecret),
+    seed: hexToBytes(passkeyIdentitySeed(prfSecret).slice(2)),
+    seedKek: passkeySeedKek(prfSecret),
+    boxSeed: passkeyBoxSeed(prfSecret),
+    portabilitySocKey: portabilitySocOwnerPrivateKey(prfSecret),
+    portabilityHpkeSeed: portabilityHpkeSeed(prfSecret),
+  };
+}
+
+/** What a BACKUP passkey gives: the guardian's owner key and its escrow master. */
+export interface PasskeyGuardianKeys {
+  ownerKey: Uint8Array;
+  escrowMaster: Uint8Array;
+}
+
+export function passkeyGuardianKeys(prfSecret: string | Uint8Array): PasskeyGuardianKeys {
+  return { ownerKey: passkeyOwnerKey(prfSecret), escrowMaster: passkeyGuardianEscrowMaster(prfSecret) };
 }

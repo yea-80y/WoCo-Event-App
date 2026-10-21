@@ -5,9 +5,8 @@ import {
   ACCOUNT_KEYS_PURPOSE,
   StorageKeys,
   canonicalSignatureBytes,
-  passkeyIdentitySeed,
-  passkeySeedKek,
   type EncryptedBlob,
+  type PasskeyAccountKeys,
   type EIP712Signer,
 } from "@woco/shared";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
@@ -129,10 +128,11 @@ export async function requestIdentitySeed(
 export async function establishPasskeyIdentitySeed(
   seedAddress: string,
   parent: string,
-  prfSecret: string,
+  keys: Pick<PasskeyAccountKeys, "seed" | "seedKek">,
 ): Promise<{ seed: string }> {
-  const seed = passkeyIdentitySeed(prfSecret);
-  await storeLockedSeed(seedAddress, parent, seed, prfSecret);
+  let seed = "0x";
+  for (const b of keys.seed) seed += b.toString(16).padStart(2, "0");
+  await storeLockedSeed(seedAddress, parent, seed, keys.seedKek);
   return { seed };
 }
 
@@ -155,14 +155,13 @@ function publicKeysKey(seedAddress: string): string {
   return `${StorageKeys.PUBLIC_KEYS}:${seedAddress.toLowerCase()}`;
 }
 
-/** The passkey's seed-lock key; the account-secret chain is locked under it too (#186). */
-export async function importSeedKek(prfSecret: string): Promise<CryptoKey> {
-  const derived = passkeySeedKek(prfSecret);
+/** The passkey's seed-lock key (`PasskeyAccountKeys.seedKek`, from the sign-in window);
+ *  the account-secret chain is locked under it too (#186). The caller keeps its bytes. */
+export async function importSeedKek(seedKek: Uint8Array): Promise<CryptoKey> {
   // A plain ArrayBuffer copy, as encryption.ts does: WebCrypto's types refuse a
   // view that might sit on a SharedArrayBuffer.
-  const raw = new Uint8Array(new ArrayBuffer(derived.byteLength));
-  raw.set(derived);
-  derived.fill(0);
+  const raw = new Uint8Array(new ArrayBuffer(seedKek.byteLength));
+  raw.set(seedKek);
   try {
     return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
   } finally {
@@ -174,9 +173,9 @@ export async function storeLockedSeed(
   seedAddress: string,
   parent: string,
   seed: string,
-  prfSecret: string,
+  seedKek: Uint8Array,
 ): Promise<void> {
-  const kek = await importSeedKek(prfSecret);
+  const kek = await importSeedKek(seedKek);
   const blob = await encrypt(kek, AAD.IDENTITY_SEED_LOCKED(seedAddress, parent), { seed });
   await putKV(lockedSeedKey(seedAddress), blob);
 }
@@ -198,9 +197,9 @@ export async function hasLockedSeed(seedAddress: string): Promise<boolean> {
 export async function openLockedSeed(
   seedAddress: string,
   parent: string,
-  prfSecret: string,
+  seedKek: Uint8Array,
 ): Promise<string | null> {
-  const kek = await importSeedKek(prfSecret);
+  const kek = await importSeedKek(seedKek);
   const aad = AAD.IDENTITY_SEED_LOCKED(seedAddress, parent);
   const slot = lockedSeedKey(seedAddress);
   const open = async (blob: EncryptedBlob | null): Promise<string | null> => {

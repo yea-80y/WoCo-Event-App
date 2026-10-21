@@ -7,6 +7,8 @@ dist-ssr
 dist-site
 dist-multisite
 dist-scanner
+dist-auth
+dist-auth-dev
 
 # Logs
 *.log

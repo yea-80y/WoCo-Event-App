@@ -62,17 +62,17 @@ export async function hasLockedChain(seedAddress: string): Promise<boolean> {
   return (await getKV<EncryptedBlob>(lockedKey(seedAddress))) !== null;
 }
 
-export async function storeLockedChain(seedAddress: string, parent: string, chain: AccountChain, prfSecret: string): Promise<void> {
-  const kek = await importSeedKek(prfSecret);
+export async function storeLockedChain(seedAddress: string, parent: string, chain: AccountChain, seedKek: Uint8Array): Promise<void> {
+  const kek = await importSeedKek(seedKek);
   await putKV(lockedKey(seedAddress), await encrypt(kek, AAD.ACCOUNT_CHAIN_LOCKED(seedAddress, parent), chain));
 }
 
 /** This account's locked chain, or null when there is none (generation 0) or it is not this account's. */
-export async function openLockedChain(seedAddress: string, parent: string, prfSecret: string): Promise<AccountChain | null> {
+export async function openLockedChain(seedAddress: string, parent: string, seedKek: Uint8Array): Promise<AccountChain | null> {
   const blob = await getKV<EncryptedBlob>(lockedKey(seedAddress));
   if (!blob) return null;
   try {
-    return parseAccountChain(await decrypt(await importSeedKek(prfSecret), AAD.ACCOUNT_CHAIN_LOCKED(seedAddress, parent), blob));
+    return parseAccountChain(await decrypt(await importSeedKek(seedKek), AAD.ACCOUNT_CHAIN_LOCKED(seedAddress, parent), blob));
   } catch {
     // Another account reachable from this credential: its chain is left for it.
     return null;

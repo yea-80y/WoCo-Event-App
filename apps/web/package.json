@@ -15,7 +15,9 @@
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
     "build:scanner": "vite build --config vite.scanner.config.ts",
     "dev:scanner": "vite --config vite.scanner.config.ts",
-    "build:ticket": "vite build --config vite.ticket.config.ts"
+    "build:ticket": "vite build --config vite.ticket.config.ts",
+    "build:auth": "vite build --config vite.auth.config.ts",
+    "dev:auth": "vite build --config vite.auth.config.ts --mode dev-window --watch & vite preview --config vite.auth.config.ts --mode dev-window"
   },
   "dependencies": {
     "@coinbase/wallet-sdk": "^4.4.0",

@@ -244,7 +244,7 @@ test("a SILENT establish never starts a ceremony — web3auth's raw key, or a pa
       // FORBID a ceremony: a silent caller whose keys are behind gets a refusal, never a
       // sheet - as a silent HOLDER signature does, refused with `HolderKeyLockedError`
       // (which also makes asking for one, `signTypedDataAsHolder(..., { silent: true })`, safe).
-      /web3auth|_getContentFeedSigner|_ensureIdentitySeed|_passkeyPrfSecret|_requireCurrentKeys\(\{ prompt: !opts\.silent \}\)|throw new HolderKeyLockedError\(\);$|^    signTypedDataAsHolder: \(typed\) => signTypedDataAsHolder\(typed as Parameters<typeof signTypedDataAsHolder>\[0\], \{ silent: true \}\),$/,
+      /web3auth|_getContentFeedSigner|_ensureIdentitySeed|_passkeyKeys|_requireCurrentKeys\(\{ prompt: !opts\.silent \}\)|throw new HolderKeyLockedError\(\);$|^    signTypedDataAsHolder: \(typed\) => signTypedDataAsHolder\(typed as Parameters<typeof signTypedDataAsHolder>\[0\], \{ silent: true \}\),$/,
       `a silent establish escaped its gates: ${line.trim()}`,
     );
   }
@@ -257,10 +257,10 @@ test("a SILENT establish never starts a ceremony — web3auth's raw key, or a pa
   // before anything could start a ceremony, and the eager caller checks it too.
   assert.match(
     src,
-    /if \(opts\.silent && _kind === "passkey" && !_passkeyPrfSecret\) return false;/,
+    /if \(opts\.silent && _kind === "passkey" && !_passkeyKeys\) return false;/,
   );
   const eager = src.slice(src.indexOf("async function _establishPasskeySeedEagerly"));
-  assert.match(eager.slice(0, 300), /if \(_kind !== "passkey" \|\| !_passkeyPrfSecret\) return;/);
+  assert.match(eager.slice(0, 300), /if \(_kind !== "passkey" \|\| !_passkeyKeys\) return;/);
 });
 
 test("the eager passkey establish can never derive for a rotated credential or an unknown Kernel", () => {
@@ -283,10 +283,10 @@ test("the eager passkey establish can never derive for a rotated credential or a
   const deviceRestore = body.indexOf("if (await restoreIdentitySeed(seedAddr))");
   assert.ok(passkey > 0 && deviceRestore > passkey, "passkey branch → device-key restore");
   const unlock = src.slice(src.indexOf("async function _unlockPasskeySeed("));
-  const open = unlock.indexOf("await openLockedSeed(seedAddr, parent, prf)");
+  const open = unlock.indexOf("await openLockedSeed(seedAddr, parent, keys.seedKek)");
   // Either binding refuses (#746 step 3): a recovered OR an added passkey's seed was carried.
   const refusal = unlock.indexOf("if (await _boundKernelAddress(seedAddr))");
-  const prf = unlock.indexOf("await establishPasskeyIdentitySeed(seedAddr, parent, prf)");
+  const prf = unlock.indexOf("await establishPasskeyIdentitySeed(seedAddr, parent, keys)");
   assert.ok(open > 0 && refusal > open && prf > refusal, "open locked → binding refusal → PRF derive");
   assert.match(src, /if \(!envelopeUnknown\) await _establishPasskeySeedEagerly\(\);/);
 });

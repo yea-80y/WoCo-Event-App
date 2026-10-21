@@ -2,7 +2,8 @@
 
 > **Historical record (status 2026-10-05).** The February 2026 design in which a passkey's PRF output became a plain secp256k1 account; a passkey login now opens a
 > ZeroDev Kernel smart account on Arbitrum One, its identity seed is an HKDF of the PRF output (#642), and every passkey on an account is a co-owner (#746).
-> Current: [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md), [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md), [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
+> Since 2026-10-21 every ceremony runs in the passkey sign-in window and the RP ID is `auth.woco.eth.limo`, not `woco.eth.limo`: [PASSKEY_WINDOW.md](./PASSKEY_WINDOW.md).
+> Current: [PASSKEY_WINDOW.md](./PASSKEY_WINDOW.md), [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md), [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md), [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
 
 WoCo supports passkey-based authentication using the **WebAuthn PRF extension**
 to deterministically derive an Ethereum (secp256k1) private key from a passkey.

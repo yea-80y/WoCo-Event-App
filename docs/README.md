@@ -18,6 +18,7 @@ matters**. This index sorts every tracked document by how much you should trust 
 |---|---|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | The system, layer by layer: what the server is for, which chain does what, how a request is authenticated, how an event is created and sold |
 | [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md) | All four keys, the one identity seed, sealed envelopes (X-Wing), passkey accounts, login methods |
+| [PASSKEY_WINDOW.md](./PASSKEY_WINDOW.md) | The passkey sign-in window on `auth.woco.eth.limo`: why, what it guarantees, what crosses, how it ships |
 | [SWARM_DATA_MODEL.md](./SWARM_DATA_MODEL.md) | Chunks and addressing, mutable feeds from immutable chunks, topic derivation, bands, postage, the gateway whitelist |
 | [TICKETING.md](./TICKETING.md) | Manifests and Merkle roots, sale and mint, what makes a ticket genuine, the door, refunds, certificates |
 | [OBJECTS.md](./OBJECTS.md) | What a signed object is, how it differs from a verifiable credential, and why it is not called a POD |

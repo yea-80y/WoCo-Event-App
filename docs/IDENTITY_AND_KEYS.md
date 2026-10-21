@@ -120,7 +120,9 @@ happens at login while that output is in memory, unless the recovery binding say
 was rotated in or the login could not read its portability envelope. A found envelope that names a
 different seed is never overwritten by the back-fill: an account's seed does not change. All three
 labels live in `packages/shared/src/crypto/passkey-prf.ts` and are pinned by
-`identity-vectors.test.ts`; `PASSKEY_PRF_SALT_INPUT` is frozen twice over as a result.
+`identity-vectors.test.ts`; `PASSKEY_PRF_SALT_INPUT` is frozen twice over as a result. Every derivation
+from the PRF output runs in the passkey sign-in window, which hands the app the derived keys only
+([PASSKEY_WINDOW.md](./PASSKEY_WINDOW.md)).
 What this does NOT cover: the Kernel owner, sessions and SOC signatures stay secp256k1, and a
 recovered account's seed is still whatever its escrow carried (stored seed wins). The at-rest
 slot's AAD moved to `woco/device/identity-seed/v2:{addr}` with it, so every device re-derives

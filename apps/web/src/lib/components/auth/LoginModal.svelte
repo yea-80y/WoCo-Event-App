@@ -57,7 +57,7 @@
   // woco.eth.limo instead of a picker (sign-in-host.ts). Read once: the hostname
   // cannot change without a page load.
   const offCanonicalHost =
-    typeof window !== "undefined" && mustSignInElsewhere(window.location.hostname, import.meta.env.DEV);
+    typeof window !== "undefined" && mustSignInElsewhere(window.location.origin);
 
   // A social app's built-in browser can sign no one in - no passkeys, and Google
   // refuses it (#812). Checked once, when the sheet first opens, so detection

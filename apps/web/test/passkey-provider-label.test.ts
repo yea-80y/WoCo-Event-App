@@ -14,26 +14,30 @@ import { fileURLToPath } from "node:url";
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const ACCOUNT = read("../src/lib/auth/passkey-account.ts");
+const WINDOW = read("../src/auth-window/ceremonies.ts");
 
 test("a new passkey's record carries the manager that made it", () => {
-  // Read once, before the PRF step, so a refusal can name the same manager.
+  // The window reads the AAGUID once, BEFORE the PRF step, so a refusal can name the
+  // same manager; the app maps it to the label it records.
+  const create = WINDOW.slice(WINDOW.indexOf('case "create": {'));
+  assert.match(create, /const aaguid = aaguidOf\(credential\);\s*return accountResult\(credential, await prfAfterCreate\(deps, credential, salt, aaguid, label\), null, aaguid\);/);
   assert.match(
     ACCOUNT,
-    /const provider = providerOf\(credential\);\s*const prfOutput = await prfAfterCreate\(credential, rpId, salt, provider\);\s*const meta: PasskeyCredentialMeta = \{\s*credentialId: toBase64url\(credential\.rawId\),\s*rpId,\s*provider,\s*\};/,
+    /const meta: PasskeyCredentialMeta = \{ credentialId: r\.credentialId, rpId: PASSKEY_RP_ID, provider: passkeyProviderFromAaguid\(r\.aaguid\) \};/,
   );
 });
 
 test("a sign-in keeps the label recorded for the same passkey instead of erasing it", () => {
   assert.match(
     ACCOUNT,
-    /\.\.\.\(prev\?\.credentialId === credentialId && prev\.provider \? \{ provider: prev\.provider \} : \{\}\)/,
+    /\.\.\.\(prev\?\.credentialId === r\.credentialId && prev\.provider \? \{ provider: prev\.provider \} : \{\}\)/,
   );
 });
 
 test("reading the label can never fail a sign-up", () => {
-  const start = ACCOUNT.indexOf("function providerOf(");
-  const body = ACCOUNT.slice(start, ACCOUNT.indexOf("\n}\n", start));
-  assert.match(body, /try \{[\s\S]*\} catch \{\s*return "unknown";\s*\}/);
+  const start = WINDOW.indexOf("function aaguidOf(");
+  const body = WINDOW.slice(start, WINDOW.indexOf("\n}\n", start));
+  assert.match(body, /try \{[\s\S]*\} catch \{\s*return null;\s*\}/);
 });
 
 function sources(dir: string): { rel: string; code: string }[] {

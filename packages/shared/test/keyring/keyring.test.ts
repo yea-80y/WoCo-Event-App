@@ -17,12 +17,12 @@ import { deriveFeedSignerKey } from "../../src/crypto/feed-signer.js";
 import { deriveXWingKeypairFromSeed } from "../../src/crypto/xwing.js";
 import { orderKeyRef } from "../../src/event/order-key.js";
 import { PASSKEY_BOX_INFO } from "../../src/crypto/passkey-prf.js";
+import { passkeyBoxKeypair } from "../../src/keyring/passkey-box.js";
 import {
   DOOR_PASS_SECRET_INFO,
   accountKeysOf,
   doorPassSecret,
   newAccountSecret,
-  passkeyBoxKeypair,
 } from "../../src/keyring/account-secret.js";
 import {
   BOX_KEY_DOMAIN,

@@ -2,101 +2,25 @@
  * What a refused passkey ceremony is told (an iPhone, 2026-10-09). The browser
  * says NotAllowedError for a cancelled sheet, for a ceremony it would not start
  * (no gesture it accepts, another ceremony pending, an app's embedded browser) and
- * for the fallback assertion after a creation that gave no secret. One sentence
- * for all three sent a person whose passkey HAD been created to make another, and
- * one whose prompt never opened to "try again" with no idea why.
+ * for the follow-up after a creation that gave no secret. One sentence for all three
+ * sent a person whose passkey HAD been created to make another, and one whose prompt
+ * never opened to "try again" with no idea why.
  *
- * Runs the REAL passkey-account code; only the authenticator, the clock,
- * `window.location` and IndexedDB are shimmed (same shims as passkey-prf-at-create).
+ * The window times each refusal (`quick`, auth-window-ceremonies.test.ts); this runs
+ * the REAL passkey-account code against a scripted window and checks the words.
  *
- * MUTATION: drop the try/catch around the fallback get() in `prfAfterCreate` and
- * "created without its secret" goes red; drop the timing in `browserCeremony` and
- * both "no sheet" tests go red; swap the noSheet branch in PasskeyLogin below the
- * noAssertion one and the wiring test goes red.
+ * MUTATION: drop the quick mark in `errorFromWindow` and both "no sheet" tests go red;
+ * map CreatedWithoutSecret to a cancel and "created without its secret" goes red; swap
+ * the noSheet branch in PasskeyLogin below the noAssertion one and the wiring test goes red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { installFakeIndexedDB, scriptedWindow } from "./fake-passkey-window.ts";
 
-// --- minimal in-memory IndexedDB
-function installFakeIndexedDB() {
-  const data = new Map<string, unknown>();
-  const stores = new Set<string>();
-  const fire = (req: Record<string, unknown>, result?: unknown) =>
-    queueMicrotask(() => {
-      req.result = result;
-      (req.onsuccess as ((e: unknown) => void) | undefined)?.({ target: req });
-    });
-  const objectStore = () => ({
-    get: (k: string) => { const req: Record<string, unknown> = {}; fire(req, data.has(k) ? data.get(k) : undefined); return req; },
-    put: (v: unknown, k: string) => { const req: Record<string, unknown> = {}; data.set(k, v); fire(req); return req; },
-    delete: (k: string) => { const req: Record<string, unknown> = {}; data.delete(k); fire(req); return req; },
-    clear: () => { const req: Record<string, unknown> = {}; data.clear(); fire(req); return req; },
-  });
-  const db = {
-    objectStoreNames: { contains: (n: string) => stores.has(n) },
-    createObjectStore: (n: string) => { stores.add(n); return {}; },
-    transaction: () => ({ objectStore }),
-    onclose: null,
-  };
-  (globalThis as { indexedDB?: unknown }).indexedDB = {
-    open: () => {
-      const req: Record<string, unknown> = {};
-      queueMicrotask(() => {
-        req.result = db;
-        (req.onupgradeneeded as ((e: unknown) => void) | undefined)?.({ target: req });
-        (req.onsuccess as ((e: unknown) => void) | undefined)?.({ target: req });
-      });
-      return req;
-    },
-  };
-}
-
-const RAW_ID = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
-const PRF = new Uint8Array(32).fill(7);
-
-/** The scripted clock: how long each browser call appears to take. */
-let now = 0;
-let callTakesMs = 0;
-Object.defineProperty(globalThis, "performance", { value: { now: () => now }, configurable: true, writable: true });
-
-/** What the authenticator does, per test: a credential, or a refusal. */
-let createOutcome: "credential" | "refuse" = "credential";
-let getOutcome: "credential" | "refuse" = "credential";
-let createExt: Record<string, unknown> = {};
-
-const refuse = () => new DOMException("Operation failed.", "NotAllowedError");
-
-Object.defineProperty(globalThis, "navigator", {
-  value: {
-    credentials: {
-      create: async () => {
-        now += callTakesMs;
-        if (createOutcome === "refuse") throw refuse();
-        return {
-          rawId: RAW_ID.buffer.slice(0) as ArrayBuffer,
-          authenticatorAttachment: "platform",
-          getClientExtensionResults: () => createExt,
-        };
-      },
-      get: async () => {
-        now += callTakesMs;
-        if (getOutcome === "refuse") throw refuse();
-        return {
-          rawId: RAW_ID.buffer.slice(0) as ArrayBuffer,
-          authenticatorAttachment: "platform",
-          response: { userHandle: null },
-          getClientExtensionResults: () => ({ prf: { results: { first: PRF } } }),
-        };
-      },
-    },
-  },
-  configurable: true,
-  writable: true,
-});
-(globalThis as { window?: unknown }).window = { location: { hostname: "localhost" } };
 installFakeIndexedDB();
+const win = scriptedWindow();
 
 const {
   createPasskeyAccount,
@@ -106,17 +30,14 @@ const {
   PasskeyAssertionUnavailableError,
   PROMPT_DID_NOT_OPEN_MESSAGE,
   isQuickRefusal,
+  __setPasskeyWindowForTests,
 } = await import("../src/lib/auth/passkey-account.ts");
+__setPasskeyWindowForTests(win.run);
 
-function reset(o: { create?: typeof createOutcome; get?: typeof getOutcome; ms?: number; createExt?: Record<string, unknown> }) {
-  createOutcome = o.create ?? "credential";
-  getOutcome = o.get ?? "credential";
-  callTakesMs = o.ms ?? 3000;
-  createExt = o.createExt ?? {};
-}
+const refused = (quick: boolean) => ({ name: "NotAllowedError" as const, quick });
 
 test("a creation refused after a sheet (seconds) keeps the cancelled-or-not-permitted wording", async () => {
-  reset({ create: "refuse", ms: 3000 });
+  win.answer(refused(false));
   await assert.rejects(createPasskeyAccount(), (e: unknown) => {
     assert.ok(e instanceof PasskeyCeremonyCancelledError);
     assert.equal(e.noSheet, false);
@@ -127,7 +48,7 @@ test("a creation refused after a sheet (seconds) keeps the cancelled-or-not-perm
 });
 
 test("a creation refused before any sheet could open says the prompt did not open", async () => {
-  reset({ create: "refuse", ms: 20 });
+  win.answer(refused(true));
   await assert.rejects(createPasskeyAccount(), (e: unknown) => {
     assert.ok(e instanceof PasskeyCeremonyCancelledError);
     assert.equal(e.noSheet, true);
@@ -138,9 +59,9 @@ test("a creation refused before any sheet could open says the prompt did not ope
 });
 
 test("created, but the fallback assertion for its secret was refused: said as that, never as a cancelled creation", async () => {
-  // No PRF at creation (a third-party password manager), then the second ceremony
-  // - run long after the tap - is refused.
-  reset({ createExt: {}, get: "refuse", ms: 20 });
+  // No PRF at creation (a third-party password manager), then the follow-up was
+  // refused: the window says so as its own refusal.
+  win.answer({ name: "CreatedWithoutSecret" });
   await assert.rejects(createPasskeyAccount(), (e: unknown) => {
     assert.ok(e instanceof PasskeyCreatedWithoutSecretError);
     assert.match(e.message, /was created/);
@@ -148,20 +69,20 @@ test("created, but the fallback assertion for its secret was refused: said as th
     assert.ok(!(e instanceof PasskeyCeremonyCancelledError));
     return true;
   });
-  // The same after a sheet the person dismissed: still the created passkey's story.
-  reset({ createExt: {}, get: "refuse", ms: 3000 });
+  // However it was refused, it is still the created passkey's story.
+  win.answer({ name: "CreatedWithoutSecret" });
   await assert.rejects(createPasskeyAccount(), PasskeyCreatedWithoutSecretError);
 });
 
 test("a sign-in refused before any sheet is not 'you may have cancelled', and offers no create", async () => {
-  reset({ get: "refuse", ms: 20 });
+  win.answer(refused(true));
   await assert.rejects(authenticatePasskey(), (e: unknown) => {
     assert.ok(e instanceof PasskeyAssertionUnavailableError);
     assert.equal(e.noSheet, true);
     assert.equal(e.message, PROMPT_DID_NOT_OPEN_MESSAGE);
     return true;
   });
-  reset({ get: "refuse", ms: 3000 });
+  win.answer(refused(false));
   await assert.rejects(authenticatePasskey(), (e: unknown) => {
     assert.ok(e instanceof PasskeyAssertionUnavailableError);
     assert.equal(e.noSheet, false);
@@ -171,7 +92,7 @@ test("a sign-in refused before any sheet is not 'you may have cancelled', and of
 });
 
 test("the quick-refusal mark is per error object and only for NotAllowedError", async () => {
-  assert.equal(isQuickRefusal(new DOMException("x", "NotAllowedError")), false, "unmarked until a ceremony saw it");
+  assert.equal(isQuickRefusal(new DOMException("x", "NotAllowedError")), false, "unmarked until the window said quick");
   assert.equal(isQuickRefusal(null), false);
   assert.equal(isQuickRefusal("NotAllowedError"), false);
 });

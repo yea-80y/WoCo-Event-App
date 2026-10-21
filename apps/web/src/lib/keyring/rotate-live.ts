@@ -106,7 +106,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
   async function ownEvents(signer = h.oldSigner.address) {
     const [{ getEventsByCreatorResult }, { eventContentTopic }] = await Promise.all([
       import("../api/events.js"),
-      import("@woco/shared"),
+      import("@woco/shared/swarm/soc"),
     ]);
     const res = await getEventsByCreatorResult(parent);
     if (!res.ok) throw new Error("Couldn't read your events - nothing was changed. Try again.");
@@ -128,7 +128,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
   }
 
   async function ownSiteConfig(siteId: string, signer: string) {
-    const { siteConfigTopic } = await import("@woco/shared");
+    const { siteConfigTopic } = await import("@woco/shared/site/topics");
     const site = await readOwn<import("@woco/shared").Site>(signer, siteConfigTopic(siteId), "site");
     if (!site || site.siteId !== siteId) throw new Error("Couldn't read one of your websites - nothing was changed. Try again.");
     return site;
@@ -161,11 +161,11 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     },
     loadPending: async () => {
       const { openPendingRotation } = await import("./pending-rotation.js");
-      return (await openPendingRotation(self, parent, h.self.prfSecret)) as PendingRotation | null;
+      return (await openPendingRotation(self, parent, h.self.seedKek)) as PendingRotation | null;
     },
     savePending: async (p) => {
       const { storePendingRotation } = await import("./pending-rotation.js");
-      await storePendingRotation(self, parent, p, h.self.prfSecret);
+      await storePendingRotation(self, parent, p, h.self.seedKek);
     },
     clearPending: async () => {
       const { clearPendingRotation } = await import("./pending-rotation.js");
@@ -191,7 +191,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     copySiteConfigs: async (keys) => {
       const [{ writeContentFeed }, { siteConfigTopic }, { feedRouteFor, ETHERNA_GATEWAY_URL }] = await Promise.all([
         import("../swarm/content-feed.js"),
-        import("@woco/shared"),
+        import("@woco/shared/site/topics"),
         import("../swarm/gateways.js"),
       ]);
       for (const entry of await ownSites()) {
@@ -206,10 +206,11 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     },
 
     copyProfile: async (keys) => {
-      const [{ readContentFeed, readContentFeedResult, writeContentFeed }, { FEED_ROUTES }, { profileDataContentTopic, profileAvatarContentTopic, organiserNoticeContentTopic }] = await Promise.all([
+      const [{ readContentFeed, readContentFeedResult, writeContentFeed }, { FEED_ROUTES }, { profileDataContentTopic, profileAvatarContentTopic }, { organiserNoticeContentTopic }] = await Promise.all([
         import("../swarm/content-feed.js"),
         import("../swarm/gateways.js"),
-        import("@woco/shared"),
+        import("@woco/shared/swarm/soc"),
+        import("@woco/shared/legal/organiser-notice"),
       ]);
       const route = FEED_ROUTES.profile;
       for (const topic of [profileDataContentTopic(parent), profileAvatarContentTopic(parent)]) {

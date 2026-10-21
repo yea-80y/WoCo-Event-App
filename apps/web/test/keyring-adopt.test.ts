@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { Wallet } from "ethers";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { buildKeyRing, boxKeyRefOf, NO_RING, type KeyRing } from "@woco/shared/keyring/ring";
-import { newAccountSecret, passkeyBoxKeypair } from "@woco/shared/keyring/account-secret";
+import { newAccountSecret } from "@woco/shared/keyring/account-secret";
+import { passkeyBoxKeypair } from "@woco/shared/keyring/passkey-box";
 import { signBoxKeyStatement } from "@woco/shared/keyring/box-key";
 import { adoptKeyRing } from "../src/lib/keyring/adopt.ts";
 

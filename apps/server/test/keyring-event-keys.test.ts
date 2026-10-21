@@ -125,7 +125,8 @@ test("creating under keys the account has left is refused before anything is wri
 // The ring-backed cases need a real ring at the anchor: build one through the shared
 // primitives and serve its chunks.
 const { buildKeyRing, encodeKeyRing, NO_RING, boxKeyRefOf } = await import("@woco/shared/keyring/ring");
-const { newAccountSecret, passkeyBoxKeypair, accountKeysOf } = await import("@woco/shared/keyring/account-secret");
+const { newAccountSecret, accountKeysOf } = await import("@woco/shared/keyring/account-secret");
+const { passkeyBoxKeypair } = await import("@woco/shared/keyring/passkey-box");
 const { signBoxKeyStatement } = await import("@woco/shared/keyring/box-key");
 const { bytesTreeChunks, bytesTreeRoot } = await import("@woco/shared/swarm/bytes-tree");
 const { Wallet } = await import("ethers");

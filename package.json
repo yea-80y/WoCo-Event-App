@@ -28,6 +28,8 @@
     "deploy": "npm run build:deploy && npm run upload:swarm && npm run deploy:scanner",
     "check": "npm run check --workspaces --if-present",
     "build:scanner": "npm run build:scanner -w @woco/web",
+    "build:auth": "npm run build:auth -w @woco/web",
+    "dev:auth": "npm run dev:auth -w @woco/web",
     "upload:scanner": "node scripts/upload-scanner-to-swarm.cjs",
     "deploy:scanner": "npm run build:scanner && npm run upload:scanner"
   },

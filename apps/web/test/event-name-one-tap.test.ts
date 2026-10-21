@@ -127,7 +127,7 @@ test("background pointer: a name the RPC cannot see yet is tried again, spaced, 
 test("the silent signer refuses before any ceremony could start, after the awaits that a closing window can outlast", () => {
   const kernel = body(STORE, "async function _ensureKernel(");
   const deviceGate = kernel.indexOf("await _boundKernelFor(");
-  const guard = kernel.indexOf("if (opts.silent && !(_passkeyPrivateKey && _passkeyPrfSecret && _seedAddress)) throw new HolderKeyLockedError();");
+  const guard = kernel.indexOf("if (opts.silent && !(_passkeyPrivateKey && _passkeyKeys && _seedAddress)) throw new HolderKeyLockedError();");
   const ceremony = kernel.indexOf("await _ensurePasskeyKey();");
   assert.ok(deviceGate >= 0 && guard > deviceGate && ceremony > guard, "device gate -> silent guard -> ceremony");
   assert.match(kernel.slice(deviceGate, guard), /_expireUnlockIfDue\(\);/, "a window that closed meanwhile relocks first");

@@ -14,7 +14,9 @@ import {
   type DeviceGrantMessage,
   type DeviceGrantRevokeMessage,
   type PasskeyProviderId,
+  type PasskeyAccountKeys,
 } from "@woco/shared";
+import type { PortabilitySecrets } from "./recovery-portability.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import { AUTH_NOTICE_KEY } from "./auth-notice.js";
 import {
@@ -132,10 +134,11 @@ let _loginStage = $state<"waiting" | "stalled" | "finalizing" | null>(null);
 
 // In-memory only — never exposed reactively
 let _passkeyPrivateKey: string | null = null;
-// The passkey's PRF output (#642): the root of its identity seed and portability
-// keys. Set and cleared at exactly the sites `_passkeyPrivateKey` is — the two come
-// out of one ceremony and neither is derivable from the other.
-let _passkeyPrfSecret: string | null = null;
+// What the passkey's PRF output gives besides the owner key (#642): its identity seed,
+// seed lock, box key and portability keys - handed over by the sign-in window, which
+// keeps the output itself. Set and cleared at exactly the sites `_passkeyPrivateKey`
+// is - the two come out of one ceremony.
+let _passkeyKeys: PasskeyAccountKeys | null = null;
 let _web3authPrivateKey: string | null = null;
 /** The background key retry after a slow reload is still running (#803). */
 let _web3authKeyRetrying = false;
@@ -417,7 +420,7 @@ function _keysHost(): AccountKeysHost {
       if (_unlocked) _unlocked = { ..._unlocked, chain };
     },
     lockGen: () => _lockGen,
-    prf: () => _passkeyPrfSecret,
+    passkeyKeys: () => _passkeyKeys,
     ownerKey: () => _passkeyPrivateKey,
     self: () => _seedAddress?.toLowerCase() ?? null,
     relock: () => _relockPasskey(),
@@ -565,7 +568,7 @@ function _relockPasskey(): void {
   _keysVerdict = "pending";
   _identitySeedPresent = false;
   _passkeyPrivateKey = null;
-  _passkeyPrfSecret = null;
+  _passkeyKeys = null;
   _kernel = null;
 }
 
@@ -745,7 +748,7 @@ async function _feedSignerIfPresent(): Promise<ContentFeedSigner | null> {
  * exactly as it was.
  */
 async function _establishPasskeySeedEagerly(): Promise<void> {
-  if (_kind !== "passkey" || !_passkeyPrfSecret) return;
+  if (_kind !== "passkey" || !_passkeyKeys) return;
   // The ceremony that just ran is a fresh confirm: it restarts an open window, as
   // GitHub's sudo mode does on a success (#746).
   const held = _unlocked;
@@ -1115,7 +1118,7 @@ let _offerPickerNext = false;
 
 async function _ensurePasskeyKey(): Promise<void> {
   _expireUnlockIfDue();
-  if (_passkeyPrivateKey && _passkeyPrfSecret && _seedAddress) return;
+  if (_passkeyPrivateKey && _passkeyKeys && _seedAddress) return;
   if (_passkeyKeyInFlight) return _passkeyKeyInFlight;
   _passkeyKeyInFlight = (async () => {
     let result: Awaited<ReturnType<typeof restorePasskeyAccount>>;
@@ -1185,7 +1188,7 @@ async function _ensurePasskeyKey(): Promise<void> {
     }
 
     _passkeyPrivateKey = result.privateKey;
-    _passkeyPrfSecret = result.prfSecret;
+    _passkeyKeys = result.keys;
     _seedAddress = result.address; // PRF-EOA address — seed slot/AAD key
   })();
   const inFlight = _passkeyKeyInFlight;
@@ -1312,7 +1315,7 @@ async function _boundKernelAddress(seedAddress: string | null): Promise<`0x${str
  * session exists.
  */
 async function _verifyPortabilityEnvelope(
-  prfSecret: string,
+  portability: PortabilitySecrets,
   seedAddress: string,
 ): Promise<
   | { preserved: `0x${string}`; identitySeed: string }
@@ -1322,7 +1325,7 @@ async function _verifyPortabilityEnvelope(
 > {
   try {
     const { readPortabilityEnvelope } = await import("./recovery-portability.js");
-    const read = await readPortabilityEnvelope({ prfSecret });
+    const read = await readPortabilityEnvelope({ portability });
     if (read.status === "absent") return null;
     if (read.status !== "found") {
       // Either bytes were there and we could not use them (`unusable`), or nobody
@@ -1532,7 +1535,7 @@ async function _clearSeedEverywhere(eoa: string): Promise<void> {
 /** The one accessor bundle both backfill preambles read through (#260). */
 function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherDeps {
   return {
-    getPasskeyPrfSecret: () => _passkeyPrfSecret,
+    getPasskeyPortability: () => _passkeyKeys,
     getSeedAddress: () => _seedAddress,
     recoveryKernelFor: _boundKernelAddress,
     // The back-fill runs with the PRF output in memory: the unlocked seed, or the
@@ -1540,7 +1543,7 @@ function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherD
     restoreIdentitySeed: async (seedAddress: string) => {
       const unlocked = _unlockedSeed();
       if (unlocked && _unlocked?.seedAddress === seedAddress.toLowerCase()) return unlocked;
-      return _passkeyPrfSecret && _parent ? openLockedSeed(seedAddress, _parent, _passkeyPrfSecret) : null;
+      return _passkeyKeys && _parent ? openLockedSeed(seedAddress, _parent, _passkeyKeys.seedKek) : null;
     },
   };
 }
@@ -1568,7 +1571,7 @@ async function _ensureKernel(opts: { silent?: boolean } = {}): Promise<void> {
   // A silent build must never START a ceremony, as `_ensureIdentitySeed` (checked after
   // the await above, which a closing window can outlast).
   _expireUnlockIfDue();
-  if (opts.silent && !(_passkeyPrivateKey && _passkeyPrfSecret && _seedAddress)) throw new HolderKeyLockedError();
+  if (opts.silent && !(_passkeyPrivateKey && _passkeyKeys && _seedAddress)) throw new HolderKeyLockedError();
   await _ensurePasskeyKey();
   // A Kernel built at sign-in assumed the ECDSA root; the first signature reads the
   // account's root and opens it with the validator it really has (co-owners, #746).
@@ -2093,7 +2096,7 @@ function _verifyRecoveredBindingInBackground(
  *  Deferred past the Kernel prebuild so the two don't contend for the first
  *  seconds after login, and past any plausible first user action, so the sign-out
  *  a heal performs lands on an idle screen rather than mid-flow. */
-function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, prfSecret: string): void {
+function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, portability: PortabilitySecrets): void {
   const stillSignedInAs = (e: string, parent: string): boolean =>
     _kind === "passkey" &&
     _seedAddress?.toLowerCase() === e.toLowerCase() &&
@@ -2108,17 +2111,17 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, prfSecret: 
         const { reprobeEnvelope } = await import("./envelope-reprobe.js");
         const { readKernelSignerFor } = await import("./kernel-account.js");
         const outcome = await reprobeEnvelope(
-          { kind: "passkey", eoa, cachedParent, prfSecret },
+          { kind: "passkey", eoa, cachedParent, portability },
           {
             // A co-owned account reads as this key when it is on the list (#746).
             readKernelOwner: (kernel) => readKernelSignerFor(kernel, eoa),
             envelopeExists: async (key) => {
               const { portabilityEnvelopeExists } = await import("./recovery-portability.js");
-              return portabilityEnvelopeExists({ prfSecret: key });
+              return portabilityEnvelopeExists({ portability: key });
             },
             readEnvelope: async (key) => {
               const { readPortabilityEnvelope } = await import("./recovery-portability.js");
-              return readPortabilityEnvelope({ prfSecret: key });
+              return readPortabilityEnvelope({ portability: key });
             },
             putRecoveryBinding: _putRecoveryBinding,
             clearIdentitySeed: _clearSeedEverywhere,
@@ -2321,7 +2324,7 @@ async function _runWeb3AuthSignIn(
         _web3authSeedAddress = address;
         _kernel = null;
         _passkeyPrivateKey = null;
-        _passkeyPrfSecret = null;
+        _passkeyKeys = null;
         step = "restore";
         await _restoreCachedAuth();
         step = "feed";
@@ -2407,7 +2410,7 @@ async function _runWeb3AuthSignIn(
     _web3authSeedAddress = address;
     _kernel = kernel;
     _passkeyPrivateKey = null;
-    _passkeyPrfSecret = null;
+    _passkeyKeys = null;
 
     step = "restore";
     await _restoreCachedAuth();
@@ -2565,7 +2568,7 @@ async function loginCoinbase(): Promise<boolean> {
     _kind = "coinbase";
     _parent = address;
     _passkeyPrivateKey = null;
-    _passkeyPrfSecret = null;
+    _passkeyKeys = null;
 
     await _restoreCachedAuth();
 
@@ -2658,10 +2661,10 @@ async function _loginAddedPasskey(
 ): Promise<void> {
   const seedAddr = account.address;
   const parent = start.parent.toLowerCase();
-  let seed = start.seed ?? (await openLockedSeed(seedAddr, parent, account.prfSecret));
+  let seed = start.seed ?? (await openLockedSeed(seedAddr, parent, account.keys.seedKek));
   if (!seed) {
     const { readPortabilityEnvelope } = await import("./recovery-portability.js");
-    const read = await readPortabilityEnvelope({ prfSecret: account.prfSecret });
+    const read = await readPortabilityEnvelope({ portability: account.keys });
     if (read.status === "found" && read.value.preservedKernelAddress.toLowerCase() === parent) {
       seed = read.value.identitySeed;
     } else {
@@ -2733,10 +2736,10 @@ async function _loginAddedPasskey(
   _kind = "passkey";
   _parent = parent;
   _passkeyPrivateKey = account.privateKey;
-  _passkeyPrfSecret = account.prfSecret;
+  _passkeyKeys = account.keys;
   _seedAddress = seedAddr;
   _kernel = null;
-  await storeLockedSeed(seedAddr, parent, seed, account.prfSecret);
+  await storeLockedSeed(seedAddr, parent, seed, account.keys.seedKek);
   if (verdict === "owner" || onList) {
     // A co-owner, or made the main one since it was added: the account's own passkey now.
     await _putRecoveryBinding(seedAddr, parent);
@@ -2914,7 +2917,7 @@ async function addPasskeyOnThisDevice(
   onStep?.("saving");
   const { writePortabilityEnvelope } = await import("./recovery-portability.js");
   try {
-    await writePortabilityEnvelope({ prfSecret: added.prfSecret, preservedKernelAddress: parent, identitySeed: seed });
+    await writePortabilityEnvelope({ portability: added.keys, preservedKernelAddress: parent, identitySeed: seed });
   } catch (e) {
     console.warn("[auth] added passkey's envelope not written:", e);
     throw new Error(
@@ -2928,7 +2931,7 @@ async function addPasskeyOnThisDevice(
   // Both passkeys are on this device: the new one goes into the account's key ring in
   // the same op that puts it on the list (#186).
   const { memberOf } = await import("../keyring/members.js");
-  const ring = await _ringForChange([await memberOf(parent, added)]);
+  const ring = await _ringForChange([await memberOf(parent, { address: added.address, privateKey: added.privateKey, boxSeed: added.keys.boxSeed, seedKek: added.keys.seedKek })]);
   const grant = await _addCoOwnerWithRecord(
     added.address,
     () => _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId)),
@@ -3177,7 +3180,7 @@ async function linkThisDevice(opts: import("./device-link.js").LinkThisDeviceOpt
         // The account's later secrets first (#186), locked under this passkey, so the
         // unlock the sign-in makes opens the current generation, not generation 0.
         if (secret.chain) {
-          await storeLockedChain(account.address.toLowerCase(), secret.parent, secret.chain, account.prfSecret);
+          await storeLockedChain(account.address.toLowerCase(), secret.parent, secret.chain, account.keys.seedKek);
         }
         await _loginAddedPasskey(account, { parent: secret.parent, seed: secret.seed });
       } finally {
@@ -3270,7 +3273,7 @@ async function _becomeOwner(seedAddr: string, parent: string): Promise<void> {
 async function _retryLinkedEnvelope(seedAddr: string): Promise<void> {
   const key = linkedEnvelopePendingKey(seedAddr);
   try {
-    if (!globalThis.localStorage?.getItem(key) || !_sessionAddress || !_passkeyPrfSecret) return;
+    if (!globalThis.localStorage?.getItem(key) || !_sessionAddress || !_passkeyKeys) return;
     if (await _maybeBackfillPortabilityEnvelope()) globalThis.localStorage?.removeItem(key);
   } catch {
     /* retried at the next sign-in */
@@ -3353,7 +3356,7 @@ async function loginPasskeyResult(
         _kind = "passkey";
         _parent = cachedKernel;
         _passkeyPrivateKey = account.privateKey;
-        _passkeyPrfSecret = account.prfSecret;
+        _passkeyKeys = account.keys;
         _seedAddress = account.address;
         _kernel = null;
         await _restoreCachedAuth();
@@ -3362,7 +3365,7 @@ async function loginPasskeyResult(
         // The cache entry was seeded from an ABSENCE, and #245 proved an absence
         // can be true at the time and false forever after. Throttled, chain-gated
         // re-check — see _scheduleEnvelopeReprobe.
-        _scheduleEnvelopeReprobe(cachedKernel, account.address, account.prfSecret);
+        _scheduleEnvelopeReprobe(cachedKernel, account.address, account.keys);
         _verifyCoOwnerInBackground(cachedKernel, account.address);
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
@@ -3378,7 +3381,7 @@ async function loginPasskeyResult(
       // fast path. Owner staleness is re-checked in the background; the Kernel
       // rebuilds lazily at the preserved address via the binding (`_ensureKernel`
       // honours it and still asserts the parent).
-      const seed = await openLockedSeed(account.address, override.toLowerCase(), account.prfSecret);
+      const seed = await openLockedSeed(account.address, override.toLowerCase(), account.keys.seedKek);
       if (seed) {
         const parent = override.toLowerCase();
         if (account.attachment === "cross-platform") await _guardPasskeyRecord(account, parent);
@@ -3389,7 +3392,7 @@ async function loginPasskeyResult(
         _kind = "passkey";
         _parent = parent;
         _passkeyPrivateKey = account.privateKey;
-        _passkeyPrfSecret = account.prfSecret;
+        _passkeyKeys = account.keys;
         _seedAddress = account.address;
         _kernel = null;
         _setUnlockedSeed(account.address, parent, seed);
@@ -3473,10 +3476,10 @@ async function loginPasskeyResult(
     // The read could not say either way, so this login may be on the wrong Kernel.
     let envelopeUnknown = false;
     const identitySeedPresent = override
-      ? !!(await openLockedSeed(account.address, override, account.prfSecret))
+      ? !!(await openLockedSeed(account.address, override, account.keys.seedKek))
       : false;
     if (!override || !identitySeedPresent) {
-      const check = await _verifyPortabilityEnvelope(account.prfSecret, account.address);
+      const check = await _verifyPortabilityEnvelope(account.keys, account.address);
       if (check === null) {
         envelopeAbsent = true; // definitive — makes this login cacheable below
       } else if (check !== "unavailable") {
@@ -3531,7 +3534,7 @@ async function loginPasskeyResult(
     if (portabilityRestore) {
       // Under the account this login commits to, so the eager unlock below opens it:
       // the same address as the envelope's today, by construction rather than by luck.
-      await storeLockedSeed(account.address, kernel.address, portabilityRestore.identitySeed, account.prfSecret);
+      await storeLockedSeed(account.address, kernel.address, portabilityRestore.identitySeed, account.keys.seedKek);
       await _putRecoveryBinding(account.address, portabilityRestore.preserved);
       _feedSignerAddressMemo = null;
     }
@@ -3544,7 +3547,7 @@ async function loginPasskeyResult(
     _kind = "passkey";
     _parent = kernel.address;
     _passkeyPrivateKey = account.privateKey;
-    _passkeyPrfSecret = account.prfSecret;
+    _passkeyKeys = account.keys;
     _seedAddress = account.address;
     _kernel = kernel;
     // Queued the moment the account exists, before anything can mint its first
@@ -3736,7 +3739,7 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
   // A silent establish must never START a ceremony. For passkey it is silent only
   // because the PRF output is already in memory; without it this would be a
   // biometric the user did not ask for.
-  if (opts.silent && _kind === "passkey" && !_passkeyPrfSecret) return false;
+  if (opts.silent && _kind === "passkey" && !_passkeyKeys) return false;
   if (_seedInFlight) return _seedInFlight;
 
   // The SILENT establish (the web3auth and passkey eager paths — see
@@ -3845,11 +3848,11 @@ async function _unlockPasskeySeed(seedAddr: string): Promise<boolean> {
   await _ensurePasskeyKey();
   // `seedAddr` was read before the ceremony; if it was the parent fallback it is
   // not the PRF-EOA, and a seed stored under it would sit behind the wrong AAD.
-  const prf = _passkeyPrfSecret;
-  if (!prf || _seedAddress?.toLowerCase() !== seedAddr.toLowerCase()) {
+  const keys = _passkeyKeys;
+  if (!keys || _seedAddress?.toLowerCase() !== seedAddr.toLowerCase()) {
     throw new Error("Passkey PRF output unavailable for identity derivation");
   }
-  let seed = await openLockedSeed(seedAddr, parent, prf);
+  let seed = await openLockedSeed(seedAddr, parent, keys.seedKek);
   if (!seed) {
     // Recovered OR added (#746): either way the seed was carried here, and this
     // passkey's own derivation would be a different account.
@@ -3858,7 +3861,7 @@ async function _unlockPasskeySeed(seedAddr: string): Promise<boolean> {
       _seedUnavailable = "recovered-no-copy";
       return false;
     }
-    seed = (await establishPasskeyIdentitySeed(seedAddr, parent, prf)).seed;
+    seed = (await establishPasskeyIdentitySeed(seedAddr, parent, keys)).seed;
   }
   // The account may have changed while the sheet was open; its seed is not ours.
   if (_kind !== "passkey" || _parent !== parent) return false;
@@ -4560,7 +4563,7 @@ async function recoverAndRekey(args: {
     let newOwnerPrivKey: `0x${string}`;
     // Passkey branch only: the fresh credential's PRF output, which roots the
     // portability envelope this device writes after the rotation (#642).
-    let newOwnerPrfSecret: string | null = null;
+    let newOwnerKeys: PasskeyAccountKeys | null = null;
     // #158: the minted passkey's metadata, held UNWRITTEN until the commit block.
     // Which credential this device logs in with is local state, so it is committed
     // with the other local state once the rotation is proven — not at mint time,
@@ -4665,7 +4668,7 @@ async function recoverAndRekey(args: {
       const fresh = await createPasskeyAccountUnpinned();
       newOwnerAddress = fresh.address; // PRF-EOA == ECDSA sudo owner of the rebuilt Kernel
       newOwnerPrivKey = fresh.privateKey;
-      newOwnerPrfSecret = fresh.prfSecret;
+      newOwnerKeys = fresh.keys;
       pendingCredential = fresh.credential;
     }
     const newSeedAddress = newOwnerAddress;
@@ -4847,8 +4850,8 @@ async function recoverAndRekey(args: {
     // deriving a new address from the rotated credential — by construction, with
     // no second secret to store and no way for the two to fall out of step.
     // AFTER _clearStaleAuthForSwitch, which clears it.
-    if (newOwnerKind === "passkey" && newOwnerPrfSecret) {
-      await storeLockedSeed(newSeedAddress, target, identitySeed, newOwnerPrfSecret);
+    if (newOwnerKind === "passkey" && newOwnerKeys) {
+      await storeLockedSeed(newSeedAddress, target, identitySeed, newOwnerKeys.seedKek);
     } else {
       await storeIdentitySeed(newSeedAddress, identitySeed);
     }
@@ -4877,10 +4880,10 @@ async function recoverAndRekey(args: {
       _web3authPrivateKey = newOwnerPrivKey;
       _web3authSeedAddress = newSeedAddress;
       _passkeyPrivateKey = null;
-      _passkeyPrfSecret = null;
+      _passkeyKeys = null;
     } else {
       _passkeyPrivateKey = newOwnerPrivKey;
-      _passkeyPrfSecret = newOwnerPrfSecret;
+      _passkeyKeys = newOwnerKeys;
       _web3authPrivateKey = null;
       _web3authSeedAddress = null;
     }
@@ -5015,7 +5018,7 @@ function _upgradeHost(): import("./upgrade-to-passkey.js").UpgradeStoreHost {
       const { parent, passkey } = marker;
       await _putRecoveryBinding(passkey, parent);
       // An Undo in another tab may have dropped it; this tab still holds it (Fable sign-off).
-      if (live) await storeLockedSeed(passkey, parent, live.seed, live.prfSecret);
+      if (live) await storeLockedSeed(passkey, parent, live.seed, live.keys.seedKek);
       await pinPasskeyCredential(marker.credential);
       await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
       await putKV(StorageKeys.PARENT_ADDRESS, parent);
@@ -5025,7 +5028,7 @@ function _upgradeHost(): import("./upgrade-to-passkey.js").UpgradeStoreHost {
       _seedAddress = passkey;
       _deviceRole = false;
       _passkeyPrivateKey = live?.privateKey ?? null;
-      _passkeyPrfSecret = live?.prfSecret ?? null;
+      _passkeyKeys = live?.keys ?? null;
       _web3authPrivateKey = null;
       _web3authSeedAddress = null;
       _web3authKeyRetrying = false;
@@ -5265,7 +5268,7 @@ async function clearAllAuth(): Promise<void> {
   // locks it under the passkey and deletes it then.
   const keepUnlockedLegacy =
     _kind === "passkey" &&
-    !_passkeyPrfSecret &&
+    !_passkeyKeys &&
     !!seedAddr &&
     !!(await _recoveryKernelFor(seedAddr).catch(() => undefined)) &&
     !(await hasLockedSeed(seedAddr).catch(() => true));
@@ -5319,7 +5322,7 @@ async function clearAllAuth(): Promise<void> {
   _deviceRole = false;
   _lockGen++;
   _passkeyPrivateKey = null;
-  _passkeyPrfSecret = null;
+  _passkeyKeys = null;
   _web3authPrivateKey = null;
   _web3authKeyRetrying = false;
   _seedAddress = null;

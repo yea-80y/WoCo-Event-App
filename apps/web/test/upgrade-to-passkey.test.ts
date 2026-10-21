@@ -20,7 +20,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { deriveFeedSignerKey, passkeyIdentitySeed, type Hex0x } from "@woco/shared";
+import { deriveFeedSignerKey, passkeyAccountKeys, passkeyIdentitySeed, type Hex0x } from "@woco/shared";
 import {
   BACKUPS_FAILED_MESSAGE,
   COPY_FAILED_MESSAGE,
@@ -60,6 +60,9 @@ const PASSKEY = "0x3333333333333333333333333333333333333333";
 const OLD_SEED = `0x${"a1".repeat(32)}`;
 const PRF = `0x${"b2".repeat(32)}`;
 const NEW_SEED = passkeyIdentitySeed(PRF);
+/** What the sign-in window hands over for that PRF; the app never sees PRF itself. */
+const KEYS = passkeyAccountKeys(PRF);
+const KEK = `0x${Buffer.from(KEYS.seedKek).toString("hex")}`;
 const OLD_FEED = deriveFeedSignerKey(OLD_SEED);
 const NEW_FEED = deriveFeedSignerKey(NEW_SEED);
 const LIKE_A = `0x${"0a".repeat(32)}` as Hex0x;
@@ -112,7 +115,7 @@ function fakes(over: Partial<PrepareDeps> & { writeOk?: (signer: FeedKey, subjec
     oldSeed: async () => (rec("oldSeed")(), OLD_SEED),
     readReferrer: async (feed) => (rec("readReferrer")(feed), REFERRER),
     readProfile: async (feed) => (rec("readProfile")(feed), { data: { v: 1, displayName: "A" }, avatar: { v: 1, avatarRef: "ab" } }),
-    mintPasskey: async () => (rec("mintPasskey")(), { address: PASSKEY, privateKey: `0x${"c3".repeat(32)}`, prfSecret: PRF, credential: CREDENTIAL }),
+    mintPasskey: async () => (rec("mintPasskey")(), { address: PASSKEY, privateKey: `0x${"c3".repeat(32)}`, keys: KEYS, credential: CREDENTIAL }),
     removeBackups: async () => rec("removeBackups")(),
     putBinding: async (...a) => rec("putBinding")(...a),
     storeLockedSeed: async (...a) => rec("storeLockedSeed")(...a),
@@ -140,6 +143,7 @@ function everyArg(calls: Call[]): string[] {
   const out: string[] = [];
   const walk = (v: unknown) => {
     if (typeof v === "string") out.push(v.toLowerCase());
+    else if (v instanceof Uint8Array) out.push(`0x${Buffer.from(v).toString("hex")}`);
     else if (Array.isArray(v)) v.forEach(walk);
     else if (v && typeof v === "object") Object.values(v).forEach(walk);
   };
@@ -263,14 +267,14 @@ test("PQ1: the new seed is passkeyIdentitySeed(PRF) - and the email side never s
   const f = fakes();
   await prepareUpgrade(f.deps);
   const stored = f.calls.find((c) => c.name === "storeLockedSeed")!.args;
-  assert.deepEqual(stored, [PASSKEY, PARENT, NEW_SEED, PRF]);
-  assert.deepEqual(f.calls.find((c) => c.name === "writeEnvelope")!.args, [{ prfSecret: PRF, parent: PARENT, seed: NEW_SEED }]);
+  assert.deepEqual(stored, [PASSKEY, PARENT, NEW_SEED, KEYS.seedKek]);
+  assert.deepEqual(f.calls.find((c) => c.name === "writeEnvelope")!.args, [{ portability: { portabilitySocKey: KEYS.portabilitySocKey, portabilityHpkeSeed: KEYS.portabilityHpkeSeed }, parent: PARENT, seed: NEW_SEED }]);
   assert.notEqual(NEW_SEED, OLD_SEED);
   // The email key's own steps - the backup removal it signs, the reads of its feed -
   // were handed nothing derived from the passkey.
   for (const c of f.calls.filter((c) => ["removeBackups", "hostsSomething", "backupsRemovable", "oldSeed", "readLive", "readReferrer", "readProfile"].includes(c.name))) {
     const args = everyArg([c]);
-    assert.ok(!args.includes(NEW_SEED) && !args.includes(PRF), `${c.name} saw the passkey's secret`);
+    assert.ok(!args.includes(NEW_SEED) && !args.includes(KEK), `${c.name} saw the passkey's secret`);
   }
 });
 
@@ -279,8 +283,9 @@ test("PQ4: the new seed reaches only its PRF-locked copy and the PRF-sealed enve
   await prepareUpgrade(f.deps);
   const seen = f.calls.filter((c) => everyArg([c]).includes(NEW_SEED.toLowerCase())).map((c) => c.name);
   assert.deepEqual(seen.sort(), ["storeLockedSeed", "writeEnvelope"]);
-  // Each of those carries the passkey's PRF output - the key it is sealed under.
-  for (const name of seen) assert.ok(everyArg(f.calls.filter((c) => c.name === name)).includes(PRF.toLowerCase()), name);
+  // Each of those carries a key the passkey's PRF output gives - the one it is sealed under.
+  assert.ok(everyArg(f.calls.filter((c) => c.name === "storeLockedSeed")).includes(KEK), "locked under the seed lock");
+  assert.ok(everyArg(f.calls.filter((c) => c.name === "writeEnvelope")).includes(`0x${Buffer.from(KEYS.portabilityHpkeSeed).toString("hex")}`), "sealed to the portability key");
   // The copies are SIGNED by the new feed key (a KDF child of the seed), never handed the seed.
   assert.deepEqual(f.calls.find((c) => c.name === "writeProfile")!.args[0], NEW_FEED.address);
   assert.deepEqual(f.calls.find((c) => c.name === "writeReferral")!.args, [NEW_FEED.address, REFERRER]);

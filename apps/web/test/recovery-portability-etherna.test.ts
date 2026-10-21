@@ -16,6 +16,7 @@
 
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { passkeyAccountKeys } from "@woco/shared";
 import {
   PORTABILITY_SOC_IDENTIFIER_INPUT,
   calculateSocAddress,
@@ -45,9 +46,10 @@ import {
 } from "./fake-swarm-net.js";
 
 const PRF = "0x" + "5a".repeat(32);
+const KEYS = passkeyAccountKeys(PRF);
 const KERNEL = "0x" + "ab".repeat(20);
 const SEED = "0x" + "cd".repeat(32);
-const SECRETS = { prfSecret: PRF, preservedKernelAddress: KERNEL, identitySeed: SEED };
+const SECRETS = { portability: KEYS, preservedKernelAddress: KERNEL, identitySeed: SEED };
 
 const BASE = contentFeedSocIdentifier(PORTABILITY_SOC_IDENTIFIER_INPUT);
 
@@ -61,7 +63,7 @@ function newDevice(net: Net): void {
 }
 
 async function owner(): Promise<string> {
-  return (await derivePortabilityKeys(PRF)).socOwnerAddress.replace(/^0x/, "").toLowerCase();
+  return (await derivePortabilityKeys(KEYS)).socOwnerAddress.replace(/^0x/, "").toLowerCase();
 }
 
 /** The identifier a server request asked about. */
@@ -82,13 +84,13 @@ test("written through Etherna's batch, and found by the passkey's next device be
   assert.deepEqual(log.map((s) => s.gatewayUrl), [ETHERNA_GATEWAY_URL]);
 
   newDevice(net);
-  const read = await readPortabilityEnvelope({ prfSecret: PRF });
+  const read = await readPortabilityEnvelope({ portability: KEYS });
   assert.deepEqual(read, { status: "found", value: { preservedKernelAddress: KERNEL, identitySeed: SEED } });
   assert.ok(serverRequests().length > 0);
   for (const u of serverRequests()) assert.equal(gatewayParam(u), ETHERNA_GATEWAY_URL, u);
 
   newDevice(net);
-  assert.deepEqual(await portabilityEnvelopeExists({ prfSecret: PRF }), { status: "present" });
+  assert.deepEqual(await portabilityEnvelopeExists({ portability: KEYS }), { status: "present" });
 });
 
 test("Etherna unreachable before the chunk spread: `unreadable`, never the cacheable `absent`", async () => {
@@ -98,16 +100,16 @@ test("Etherna unreachable before the chunk spread: `unreadable`, never the cache
   net.ethernaDown = true;
 
   newDevice(net);
-  const read = await readPortabilityEnvelope({ prfSecret: PRF });
+  const read = await readPortabilityEnvelope({ portability: KEYS });
   assert.equal(read.status, "unreadable", JSON.stringify(read));
   newDevice(net);
-  const exists = await portabilityEnvelopeExists({ prfSecret: PRF });
+  const exists = await portabilityEnvelopeExists({ portability: KEYS });
   assert.equal(exists.status, "unreadable", JSON.stringify(exists));
 });
 
 test("a never-recovered passkey asks versions 0 and 1 only - never the pre-versioning address", async () => {
   newDevice({ ourBee: new Map(), etherna: new Map() });
-  assert.deepEqual(await readPortabilityEnvelope({ prfSecret: PRF }), { status: "absent" });
+  assert.deepEqual(await readPortabilityEnvelope({ portability: KEYS }), { status: "absent" });
   const asked = serverRequests().map(askedId).sort();
   assert.deepEqual(asked, [hex(versionedSocIdentifier(BASE, 0)), hex(versionedSocIdentifier(BASE, 1))].sort());
   assert.ok(!asked.includes(hex(BASE)), "the legacy identifier was asked");
@@ -123,7 +125,7 @@ test("a found from a scan Etherna could not finish is still used - an envelope's
   net.ethernaDown = true;
 
   newDevice(net);
-  const read = await readPortabilityEnvelope({ prfSecret: PRF });
+  const read = await readPortabilityEnvelope({ portability: KEYS });
   assert.deepEqual(read, { status: "found", value: { preservedKernelAddress: KERNEL, identitySeed: SEED } });
   assert.deepEqual(decideBackfill(read, SECRETS), { action: "skipped", reason: "envelope already current" });
 });

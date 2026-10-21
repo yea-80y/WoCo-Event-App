@@ -7,16 +7,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Wallet, keccak256 } from "ethers";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { passkeyAccountKeys } from "@woco/shared";
 import { openKeyRing, type KeyRing } from "@woco/shared/keyring/ring";
 import { verifyBoxKeyStatement } from "@woco/shared/keyring/box-key";
-import { newAccountSecret, passkeyBoxKeypair } from "@woco/shared/keyring/account-secret";
+import { newAccountSecret } from "@woco/shared/keyring/account-secret";
+import { passkeyBoxKeypair } from "@woco/shared/keyring/passkey-box";
 import { memberOf, ringWithMembers } from "../src/lib/keyring/members.ts";
 
 const PARENT = "0x" + "ab".repeat(20);
 function passkey(n: number) {
   const prfSecret = "0x" + n.toString(16).padStart(2, "0").repeat(32);
   const privateKey = keccak256(prfSecret);
-  return { prfSecret, privateKey, address: new Wallet(privateKey).address.toLowerCase() };
+  const { boxSeed, seedKek } = passkeyAccountKeys(prfSecret);
+  return { prfSecret, privateKey, boxSeed, seedKek, address: new Wallet(privateKey).address.toLowerCase() };
 }
 const hex = (b: Uint8Array) => `0x${bytesToHex(b)}`;
 const A = passkey(1);

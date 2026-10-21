@@ -34,8 +34,8 @@
 import {
   PORTABILITY_ENVELOPE_VERSION,
   PORTABILITY_SOC_IDENTIFIER_INPUT,
-  portabilitySocOwnerKey,
-  portabilityHpkeSeed,
+  addressForPrivateKey,
+  type PasskeyAccountKeys,
   type PortabilityEnvelope,
 } from "@woco/shared";
 import {
@@ -59,21 +59,28 @@ export interface PortabilityKeys {
   hpke: GuardianEncryptionKeypair;
 }
 
+/** The two portability keys a passkey gives (`PasskeyAccountKeys`, from the sign-in
+ *  window): never the PRF output, which stays in the window. */
+export type PortabilitySecrets = Pick<PasskeyAccountKeys, "portabilitySocKey" | "portabilityHpkeSeed">;
+
 /**
- * Derive the two keys from a passkey's PRF output (`_passkeyPrfSecret` in
- * auth-store). Distinct HKDF labels ⇒ the SOC-owner key and the HPKE recipient key
- * don't reveal each other, and neither reveals the PRF output.
+ * The envelope's keys from a passkey's portability secrets. Distinct HKDF labels ⇒ the
+ * SOC-owner key and the HPKE recipient key don't reveal each other, and neither
+ * reveals the PRF output.
  */
-export async function derivePortabilityKeys(prfSecret: string): Promise<PortabilityKeys> {
-  const soc = portabilitySocOwnerKey(prfSecret);
-  const hpkeSeed = portabilityHpkeSeed(prfSecret);
+export async function derivePortabilityKeys(portability: PortabilitySecrets): Promise<PortabilityKeys> {
+  const socKey = portability.portabilitySocKey;
+  let socOwnerPrivKey = "0x";
+  for (const b of socKey) socOwnerPrivKey += b.toString(16).padStart(2, "0");
+  // A copy: the caller keeps its own, and this one is zeroed once the keypair exists.
+  const hpkeSeed = portability.portabilityHpkeSeed.slice();
   let hpke: GuardianEncryptionKeypair;
   try {
     hpke = await deriveEncryptionKeypairFromSeed(hpkeSeed);
   } finally {
     hpkeSeed.fill(0);
   }
-  return { socOwnerPrivKey: soc.privKey, socOwnerAddress: soc.address, hpke };
+  return { socOwnerPrivKey, socOwnerAddress: addressForPrivateKey(socKey).toLowerCase(), hpke };
 }
 
 /**
@@ -86,14 +93,14 @@ export async function derivePortabilityKeys(prfSecret: string): Promise<Portabil
  * to handle — this throws on any error.
  */
 export async function writePortabilityEnvelope(args: {
-  prfSecret: string;
+  portability: PortabilitySecrets;
   preservedKernelAddress: string;
   identitySeed: string;
   /** Test seam — production posts through our relay. */
   transport?: SocTransport;
 }): Promise<void> {
-  const { prfSecret, preservedKernelAddress, identitySeed } = args;
-  const keys = await derivePortabilityKeys(prfSecret);
+  const { portability, preservedKernelAddress, identitySeed } = args;
+  const keys = await derivePortabilityKeys(portability);
 
   // The preserved Kernel goes INSIDE the sealed bundle (v2 privacy fix) — never
   // cleartext on the chunk, so a reader can't link socOwnerAddress → real Kernel.
@@ -162,7 +169,7 @@ export type PortabilityRead =
   | { status: "unusable"; reason: string };
 
 /**
- * Read + open the portability envelope for the passkey whose PRF output is `prfSecret`.
+ * Read + open the portability envelope for the passkey whose secrets are `portability`.
  * Does NOT perform the on-chain owner check — the caller MUST verify
  * `Kernel(preservedKernelAddress).owner == PRF-EOA` before trusting the result.
  *
@@ -170,11 +177,11 @@ export type PortabilityRead =
  * envelope chunk exists, i.e. this really is a never-recovered account.
  */
 export async function readPortabilityEnvelope(args: {
-  prfSecret: string;
+  portability: PortabilitySecrets;
   /** Test seam — production always takes the real content-feed read. */
   readFeed?: typeof readContentFeedResult;
 }): Promise<PortabilityRead> {
-  const keys = await derivePortabilityKeys(args.prfSecret);
+  const keys = await derivePortabilityKeys(args.portability);
 
   const read = await (args.readFeed ?? readContentFeedResult)<PortabilityEnvelope>(
     keys.socOwnerAddress,
@@ -281,13 +288,13 @@ export async function readPortabilityEnvelope(args: {
  * Three states, for the usual reason: a failed lookup is not an absence.
  */
 export async function portabilityEnvelopeExists(args: {
-  prfSecret: string;
+  portability: PortabilitySecrets;
 }): Promise<{ status: "present" } | { status: "absent" } | { status: "unreadable"; reason: string }> {
   const [keys, { probeSoc }, { contentFeedSocIdentifier, versionedSocIdentifier }] =
     await Promise.all([
-      derivePortabilityKeys(args.prfSecret),
+      derivePortabilityKeys(args.portability),
       import("../swarm/probe-soc.js"),
-      import("@woco/shared"),
+      import("@woco/shared/swarm/soc"),
     ]);
 
   const base = contentFeedSocIdentifier(PORTABILITY_SOC_IDENTIFIER_INPUT);
@@ -400,7 +407,7 @@ const _backfillInFlight = new Map<string, Promise<PortabilityBackfill>>();
  * without the new secret.
  */
 export interface PortabilityBackfillArgs {
-  prfSecret: string;
+  portability: PortabilitySecrets;
   preservedKernelAddress: string;
   identitySeed: string;
 }
@@ -414,11 +421,11 @@ export function backfillPortabilityEnvelope(
   },
 ): Promise<PortabilityBackfill> {
   // Keyed by the envelope's SOC owner ADDRESS — public and 1:1 with the passkey —
-  // so the map never holds the PRF output itself. A missing or malformed secret
+  // so the map never holds a secret. A missing or malformed secret
   // throws here rather than coalescing every such caller onto one slot.
   let key: string;
   try {
-    key = portabilitySocOwnerKey(args.prfSecret).address;
+    key = addressForPrivateKey(args.portability.portabilitySocKey).toLowerCase();
   } catch (e) {
     return Promise.reject(new Error(`backfillPortabilityEnvelope: ${(e as Error).message}`));
   }
@@ -446,11 +453,11 @@ function _withDeadline(
 }
 
 async function _backfillOnce(args: PortabilityBackfillArgs & { transport?: SocTransport }): Promise<PortabilityBackfill> {
-  const read = await readPortabilityEnvelope({ prfSecret: args.prfSecret });
+  const read = await readPortabilityEnvelope({ portability: args.portability });
   const decision = decideBackfill(read, args);
   if (decision.action !== "write") return decision;
   await writePortabilityEnvelope({
-    prfSecret: args.prfSecret,
+    portability: args.portability,
     preservedKernelAddress: args.preservedKernelAddress,
     identitySeed: args.identitySeed,
     transport: args.transport,

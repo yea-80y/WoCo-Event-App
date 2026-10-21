@@ -6,11 +6,11 @@
  *  - the pre-check that names the fix BEFORE Create (`passkey-readiness.ts`);
  *  - the setup steps, in order, in every iPhone message;
  *  - a creation whose password manager says outright it has no PRF
- *    (`prf.enabled === false`): refused at once, naming the manager, with no
- *    second prompt that would read "sign in to finish" for a passkey that never can.
+ *    (`prf.enabled === false`): refused at once in the window, with no second
+ *    prompt, and named here by the manager the window reports.
  *
- * MUTATIONS (each red, then restored): drop the `enabled === false` refusal in
- * `prfAfterCreate` (1 fail); count a MISSING `extension:prf` as false (3); let
+ * MUTATIONS (each red, then restored): drop the manager from `errorFromWindow`'s
+ * PrfUnsupported (2 fail); count a MISSING `extension:prf` as false (3); let
  * Chrome on iOS through the provider check (1); drop step 1's app hint (2); drop the
  * PasskeyLogin branch (1); stop carrying the manager into the probe's refusal (1);
  * drop the added passkey's label (1); drop the Apple-Passwords branch (1).
@@ -19,86 +19,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { installFakeIndexedDB, scriptedWindow } from "./fake-passkey-window.ts";
 
-// --- the REAL passkey-account module with a scripted authenticator (as passkey-prf-at-create.test.ts)
-function installFakeIndexedDB() {
-  const data = new Map<string, unknown>();
-  const stores = new Set<string>();
-  const fire = (req: Record<string, unknown>, result?: unknown) =>
-    queueMicrotask(() => {
-      req.result = result;
-      (req.onsuccess as ((e: unknown) => void) | undefined)?.({ target: req });
-    });
-  const objectStore = () => ({
-    get: (k: string) => { const req: Record<string, unknown> = {}; fire(req, data.has(k) ? data.get(k) : undefined); return req; },
-    put: (v: unknown, k: string) => { const req: Record<string, unknown> = {}; data.set(k, v); fire(req); return req; },
-    delete: (k: string) => { const req: Record<string, unknown> = {}; data.delete(k); fire(req); return req; },
-    clear: () => { const req: Record<string, unknown> = {}; data.clear(); fire(req); return req; },
-  });
-  const db = {
-    objectStoreNames: { contains: (n: string) => stores.has(n) },
-    createObjectStore: (n: string) => { stores.add(n); return {}; },
-    transaction: () => ({ objectStore }),
-    onclose: null,
-  };
-  (globalThis as { indexedDB?: unknown }).indexedDB = {
-    open: () => {
-      const req: Record<string, unknown> = {};
-      queueMicrotask(() => {
-        req.result = db;
-        (req.onupgradeneeded as ((e: unknown) => void) | undefined)?.({ target: req });
-        (req.onsuccess as ((e: unknown) => void) | undefined)?.({ target: req });
-      });
-      return req;
-    },
-  };
-}
-
-const GPM_AAGUID = "ea9b8d664d011d213ce4b6b48cb575d4";
-/** Authenticator data carrying an AAGUID: rpIdHash 32 | flags (AT set) | signCount 4 | aaguid 16. */
-function authDataWith(aaguidHex: string): ArrayBuffer {
-  const d = new Uint8Array(53);
-  d[32] = 0x45;
-  for (let i = 0; i < 16; i++) d[37 + i] = parseInt(aaguidHex.slice(i * 2, i * 2 + 2), 16);
-  return d.buffer;
-}
-
-let createExt: Record<string, unknown> = {};
-let aaguid: string | null = GPM_AAGUID;
-const calls = { create: 0, get: 0 };
-
-Object.defineProperty(globalThis, "navigator", {
-  value: {
-    credentials: {
-      create: async () => {
-        calls.create++;
-        return {
-          rawId: new Uint8Array(16).fill(1).buffer,
-          authenticatorAttachment: "platform",
-          response: { getAuthenticatorData: () => (aaguid ? authDataWith(aaguid) : new ArrayBuffer(37)) },
-          getClientExtensionResults: () => createExt,
-        };
-      },
-      get: async () => {
-        calls.get++;
-        return {
-          rawId: new Uint8Array(16).fill(1).buffer,
-          authenticatorAttachment: "platform",
-          response: { userHandle: null },
-          getClientExtensionResults: () => ({}),
-        };
-      },
-    },
-  },
-  configurable: true,
-  writable: true,
-});
-(globalThis as { window?: unknown }).window = { location: { hostname: "localhost" } };
+// --- the REAL passkey-account module against a scripted passkey window (fake-passkey-window.ts).
+// The window decides "no PRF" and that there is no second prompt (auth-window-ceremonies.test.ts);
+// the app names the manager it reports.
 installFakeIndexedDB();
+const win = scriptedWindow();
+const GPM_AAGUID = "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4";
 
-const { createPasskeyAccount, createAddedPasskey, createPasskeyBackupKey, PasskeyPrfUnsupportedError } = await import(
-  "../src/lib/auth/passkey-account.ts"
-);
+const { createPasskeyAccount, createAddedPasskey, createPasskeyBackupKey, PasskeyPrfUnsupportedError, __setPasskeyWindowForTests } =
+  await import("../src/lib/auth/passkey-account.ts");
+__setPasskeyWindowForTests(win.run);
 const GPM = { id: "google-password-manager", name: "Google Password Manager" };
 const { passkeyReadinessFrom } = await import("../src/lib/auth/passkey-readiness.ts");
 const copy = await import("../src/lib/auth/passkey-refusal-copy.ts");
@@ -115,28 +47,22 @@ const ANDROID = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like
 // --- the creation
 
 test("a manager that says it has no PRF is refused at once, named, with no second prompt", async () => {
-  createExt = { prf: { enabled: false } };
-  aaguid = GPM_AAGUID;
-  calls.get = 0;
+  win.answer({ name: "PrfUnsupported", aaguid: GPM_AAGUID, label: "WoCo Account" });
   const e = await createPasskeyAccount().then(
     () => assert.fail("must not create an account"),
     (err: unknown) => err,
   );
   assert.ok(e instanceof PasskeyPrfUnsupportedError);
-  assert.equal(calls.get, 0, "no follow-up assertion: it could only fail, as 'sign in to finish'");
   assert.equal(e.provider, "google-password-manager");
   assert.match(e.message, /^Google Password Manager saved the passkey/);
   assert.match(e.message, /Delete the "WoCo Account" passkey from Google Password Manager/);
   assert.doesNotMatch(e.message, /PRF|extension/);
 });
 
-test("an unidentified manager is not named, and the probe still runs when creation said nothing", async () => {
-  createExt = {};
-  aaguid = null;
-  calls.get = 0;
+test("an unidentified manager is not named", async () => {
+  win.answer({ name: "PrfUnsupported", aaguid: null, label: "WoCo Account" });
   const e = await createPasskeyAccount().then(() => assert.fail("no PRF anywhere"), (err: unknown) => err);
   assert.ok(e instanceof PasskeyPrfUnsupportedError);
-  assert.equal(calls.get, 1, "Samsung Pass rule kept: silence at creation is probed once");
   assert.equal(e.provider, "unknown");
   assert.match(e.message, /^This password manager saved the passkey/);
 });
@@ -221,15 +147,14 @@ test("Apple Passwords without the secret is sent to a software update, never bac
 });
 
 test("an ADDED passkey's refusal names its own label, never the main passkey's", async () => {
-  createExt = { prf: { enabled: false } };
-  aaguid = GPM_AAGUID;
+  win.answer({ name: "PrfUnsupported", aaguid: GPM_AAGUID, label: "WoCo Account - added 11 Oct" });
   const e = await createAddedPasskey({ exclude: [], createdOn: "11 Oct" }).then(
     () => assert.fail("must refuse"),
     (err: unknown) => err as Error,
   );
   assert.ok(e instanceof PasskeyPrfUnsupportedError);
   assert.match(e.message, /Delete the "WoCo Account - added 11 Oct" passkey/);
-  createExt = { prf: { enabled: false } };
+  win.answer({ name: "PrfUnsupported", aaguid: GPM_AAGUID, label: "WoCo Backup" });
   const b = await createPasskeyBackupKey().then(() => assert.fail("must refuse"), (err: unknown) => err as Error);
   assert.match(b.message, /Delete the "WoCo Backup" passkey/);
 });

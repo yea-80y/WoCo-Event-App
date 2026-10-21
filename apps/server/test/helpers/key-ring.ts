@@ -4,7 +4,8 @@
  */
 import { Wallet } from "ethers";
 import { buildKeyRing, encodeKeyRing, NO_RING, boxKeyRefOf } from "@woco/shared/keyring/ring";
-import { accountKeysOf, newAccountSecret, passkeyBoxKeypair } from "@woco/shared/keyring/account-secret";
+import { accountKeysOf, newAccountSecret } from "@woco/shared/keyring/account-secret";
+import { passkeyBoxKeypair } from "@woco/shared/keyring/passkey-box";
 import { signBoxKeyStatement } from "@woco/shared/keyring/box-key";
 import { bytesTreeChunks, bytesTreeRoot } from "@woco/shared/swarm/bytes-tree";
 import { _setCurrentRingDepsForTests } from "../../src/lib/keyring/current-ring.js";

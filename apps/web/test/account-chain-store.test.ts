@@ -53,7 +53,7 @@ test("an unreadable chain is unknown, never ok; a lagging \"none\" keeps the rin
   const v = kbody("export async function verifyCurrentKeys");
   assert.match(v, /if \(ref === "error"\) return "unknown";/);
   assert.match(v, /if \(ref === held \|\| ref === null\) return "ok";/);
-  assert.match(v, /if \(!prf\) return "behind";/);
+  assert.match(v, /if \(!keys\) return "behind";/);
 });
 
 test("signing and sealing demand the confirmed generation; silent paths sign nothing otherwise", () => {
@@ -104,7 +104,7 @@ test("a cached signer signs only for the ring it was committed under", () => {
 });
 
 test("a seed restored without the chain's window copy - while a locked chain exists - is relocked", () => {
-  assert.match(kbody("export async function loadAccountChain"), /else if \(!prf && \(await hasLockedChain\(seedAddr\)\)\) \{[\s\S]*h\.relock\(\);/);
+  assert.match(kbody("export async function loadAccountChain"), /else if \(!keys && \(await hasLockedChain\(seedAddr\)\)\) \{[\s\S]*h\.relock\(\);/);
 });
 
 test("a relock drops the chain and the verdict with the seed", () => {
@@ -146,7 +146,7 @@ test("a linked device stores the handed-over secrets BEFORE it signs in, then ad
 
 test("an unfinished removal: past the flip it finishes by itself, before it the person decides", () => {
   const load = kbody("export async function loadAccountChain");
-  assert.match(load, /if \(verdict === "ok"\) \{[\s\S]*if \(prf\) void removalLeftHere\(h, seedAddr\);/, "only on a confirmed unlock");
+  assert.match(load, /if \(verdict === "ok"\) \{[\s\S]*if \(keys\) void removalLeftHere\(h, seedAddr\);/, "only on a confirmed unlock");
   const left = kbody("async function removalLeftHere");
   assert.match(left, /if \(flipped\) await rotateOnRemovalFor\(h, \[\], \{ resume: true \}\);\s*else h\.setPendingRemoval\(\{ going: p\.going \}\);/);
   assert.match(left, /if \(!p \|\| p\.parent !== u\.parent\) return;/);

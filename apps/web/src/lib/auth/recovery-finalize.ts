@@ -16,14 +16,14 @@
  */
 
 import type { AuthKind } from "@woco/shared";
-import type { PortabilityBackfill, PortabilityBackfillArgs } from "./recovery-portability.js";
+import type { PortabilityBackfill, PortabilityBackfillArgs, PortabilitySecrets } from "./recovery-portability.js";
 import type { SessionProbeResult } from "./session-probe.js";
 
 /** The accessors the gather step needs — a subset of the finalize deps, shared
  *  with auth-store's mint-time backfill so both callers feed the SAME preamble. */
 export interface BackfillGatherDeps {
   /** The passkey's PRF output — the root of the portability envelope keys (#642). */
-  getPasskeyPrfSecret: () => string | null;
+  getPasskeyPortability: () => PortabilitySecrets | null;
   /** PRF-EOA address — the key the identity seed and recovery binding are stored under. */
   getSeedAddress: () => string | null;
   /** The preserved Kernel address bound to this passkey at recovery time. */
@@ -123,9 +123,9 @@ export type BackfillGather =
  *    secret it existed to protect.
  */
 export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<BackfillGather> {
-  const prfSecret = deps.getPasskeyPrfSecret();
+  const portability = deps.getPasskeyPortability();
   const seedAddress = deps.getSeedAddress();
-  if (!prfSecret || !seedAddress) {
+  if (!portability || !seedAddress) {
     return {
       status: "unavailable",
       reason: "passkey key material not in memory",
@@ -171,7 +171,7 @@ export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<Back
 
   return {
     status: "ready",
-    args: { prfSecret, preservedKernelAddress: preserved, identitySeed },
+    args: { portability, preservedKernelAddress: preserved, identitySeed },
   };
 }
 

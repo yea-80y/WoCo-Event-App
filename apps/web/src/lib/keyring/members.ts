@@ -8,11 +8,13 @@
 import type { KeyRing, KeyRingMember } from "@woco/shared/keyring/ring";
 import type { AccountChain } from "../auth/account-chain.js";
 
-/** The key material one passkey ceremony yields: its owner key (keccak256(prf)) and its PRF output. */
+/** What this passkey brings to the ring: its owner key (keccak256(prf)), its box seed,
+ *  and the seed-lock key a removal under way is kept under. */
 export interface PasskeyKeys {
   address: string;
   privateKey: string;
-  prfSecret: string;
+  boxSeed: Uint8Array;
+  seedKek: Uint8Array;
 }
 
 function bytes(hex: string): Uint8Array {
@@ -56,12 +58,12 @@ export async function memberFromWire(x: unknown, parent: string): Promise<KeyRin
 
 /** This passkey as a ring member of `parent`. */
 export async function memberOf(parent: string, key: PasskeyKeys): Promise<KeyRingMember> {
-  const [{ passkeyBoxKeypair }, { signBoxKeyStatement }, { boxKeyRefOf }] = await Promise.all([
+  const [{ passkeyBoxKeypairFromSeed }, { signBoxKeyStatement }, { boxKeyRefOf }] = await Promise.all([
     import("@woco/shared/keyring/account-secret"),
     import("@woco/shared/keyring/box-key"),
     import("@woco/shared/keyring/ring"),
   ]);
-  const box = passkeyBoxKeypair(key.prfSecret);
+  const box = passkeyBoxKeypairFromSeed(key.boxSeed);
   box.secretKey.fill(0);
   const owner = bytes(key.privateKey);
   try {

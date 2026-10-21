@@ -27,7 +27,6 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { deriveFeedSignerKey } from "../crypto/feed-signer.js";
-import { passkeyBoxSeed } from "../crypto/passkey-prf.js";
 import { deriveXWingKeypairFromSeed, xwing, type XWingKeypair } from "../crypto/xwing.js";
 import { orderKeyRef } from "../event/order-key.js";
 import type { Hex0x } from "../types.js";
@@ -88,13 +87,9 @@ export function doorPassSecret(secret: Uint8Array, eventId: string, passId: stri
   );
 }
 
-/** A passkey's box key, from its PRF output. */
-export function passkeyBoxKeypair(prfSecret: string | Uint8Array): XWingKeypair {
-  const seed = passkeyBoxSeed(prfSecret);
-  try {
-    const { secretKey, publicKey } = xwing.keygen(seed);
-    return { secretKey, publicKey };
-  } finally {
-    seed.fill(0);
-  }
+/** A passkey's box key from its box seed, the form the sign-in window hands over (the
+ *  PRF-taking form is `passkeyBoxKeypair` in keyring/passkey-box.ts, which the app never loads). */
+export function passkeyBoxKeypairFromSeed(boxSeed: Uint8Array): XWingKeypair {
+  const { secretKey, publicKey } = xwing.keygen(boxSeed);
+  return { secretKey, publicKey };
 }
