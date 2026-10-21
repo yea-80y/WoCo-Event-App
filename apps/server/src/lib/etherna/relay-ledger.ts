@@ -62,6 +62,12 @@ export const WARMUP_MS = 60 * 60 * 1000;
  * may still land in Etherna's store.
  */
 export const SETTLE_MIN_AGE_MS = 5 * 60 * 1000;
+/**
+ * A send not on our bee this long after it first went is the push alarm: Etherna
+ * took it and the network never got it (2026-10-20, every save for a day). The
+ * sweep looks at ~5 min and again at ~10, so two misses come first.
+ */
+export const PENDING_ALARM_MS = 15 * 60 * 1000;
 /** Past this the rail is off: ~10 days of the relay's per-account hourly limit, a few MB of files. */
 export const MAX_ENTRIES = 10_000;
 /**
@@ -428,21 +434,27 @@ export function relayLedgerState(): {
   unlisted: number;
   readsCleared: number;
   pending: number;
+  /** Pending past PENDING_ALARM_MS since the first send. */
+  stalePending: number;
   failover: number;
   oldestPendingAt: string | null;
   oldestFailoverAt: string | null;
 } {
   ensureLoaded();
   let pending = 0;
+  let stalePending = 0;
   let failover = 0;
   let oldestPendingAt: string | null = null;
   let oldestFailoverAt: string | null = null;
+  const t = now();
   for (const e of entries.values()) {
     if (e.status === "failover") {
       failover++;
       if (!oldestFailoverAt || e.at < oldestFailoverAt) oldestFailoverAt = e.at;
     } else {
       pending++;
+      // `at`, never `updatedAt`: a repeat send and a restart both refresh that.
+      if (t - Date.parse(e.at) >= PENDING_ALARM_MS) stalePending++;
       if (!oldestPendingAt || e.at < oldestPendingAt) oldestPendingAt = e.at;
     }
   }
@@ -458,6 +470,7 @@ export function relayLedgerState(): {
     unlisted,
     readsCleared,
     pending,
+    stalePending,
     failover,
     oldestPendingAt,
     oldestFailoverAt,

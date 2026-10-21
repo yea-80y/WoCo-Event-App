@@ -22,6 +22,7 @@ import {
   failoverMode,
   loadRelayLedger,
   markPending,
+  PENDING_ALARM_MS,
   relayLedgerHasRoom,
   relayLedgerState,
   relayLedgerUsable,
@@ -231,9 +232,15 @@ export function startRelayLedgerSweep(): void {
  * `/api/health` `ethernaFailover`. RED when the ledger cannot be trusted (a file
  * unreadable, a write still not on disk - `dirty`), is full (the rail is then
  * off), or the mode is not understood. During an Etherna outage the breaker reads
- * open much of the time: each pass's first move-back attempt trips it. Expected. Waiting
+ * open much of the time: each pass's first move-back attempt trips it. Expected. Failover
  * entries are reported, not alarmed on: they wait on an Etherna outage, which is
  * Etherna's, and `postage.etherna` watches its batch.
+ *
+ * `push` is RED while a pending send is past PENDING_ALARM_MS: Etherna said yes and
+ * our bee still cannot find it (2026-10-20). It clears when the sweep sees the chunk
+ * or both stores say absent. One that never will - its batch died before Etherna
+ * pushed it - is cleared by moving its file out with the server stopped. Unknown
+ * (`null`) while the list cannot be read.
  */
 export function ethernaFailoverHealth(): Record<string, unknown> {
   const { mode, configError } = failoverMode();
@@ -242,6 +249,7 @@ export function ethernaFailoverHealth(): Record<string, unknown> {
     ok: ledger.readable && !ledger.full && !ledger.dirty && !configError,
     mode,
     ...(configError ? { configError } : {}),
+    push: { ok: ledger.readable ? ledger.stalePending === 0 : null, alarmAfterMinutes: PENDING_ALARM_MS / 60_000 },
     ledger,
     sinceBoot: { ...stats },
     lastSweepAt,

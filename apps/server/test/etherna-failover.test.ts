@@ -416,6 +416,58 @@ test("ledger: due entries are old enough, of the asked status only", () => {
   assert.deepEqual(ledger.dueEntries("pending", 10), []);
 });
 
+const pushAlarm = () => failover.ethernaFailoverHealth().push as { ok: boolean | null; alarmAfterMinutes: number };
+const stale = () => ledger.relayLedgerState().stalePending;
+
+test("push alarm: a send not on our bee 15 minutes after it first went is red, and pages", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const p = signedSoc(1);
+  ledger.noteEthernaSend(p.address, p.owner, p.identifier);
+  const sentAt = now;
+  now = sentAt + ledger.PENDING_ALARM_MS - 1;
+  assert.equal(pushAlarm().ok, true);
+  assert.equal(stale(), 0);
+  now = sentAt + ledger.PENDING_ALARM_MS;
+  assert.equal(pushAlarm().ok, false);
+  assert.equal(stale(), 1);
+  assert.equal(pushAlarm().alarmAfterMinutes, 15);
+  assert.equal(failover.ethernaFailoverHealth().ok, true, "the list itself is fine");
+
+  const { alarmGate } = await import("../src/lib/health/alarm-gate.js");
+  const gate = alarmGate({ ethernaFailover: failover.ethernaFailoverHealth() }, "ethernaFailover.push");
+  assert.equal(gate.status, 503);
+  assert.deepEqual((gate.body as { red: string[] }).red, ["ethernaFailover.push"]);
+
+  ledger.resolveEntries([{ address: p.address, updatedAt: ledger.getRelayEntry(p.address)!.updatedAt }]);
+  assert.equal(pushAlarm().ok, true, "seen on our bee: clear");
+});
+
+test("push alarm: timed from the first send - a repeat send or a restart does not reset it", () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const p = signedSoc(1);
+  ledger.noteEthernaSend(p.address, p.owner, p.identifier);
+  const sentAt = now;
+  now = sentAt + ledger.PENDING_ALARM_MS - 60_000;
+  ledger.noteEthernaSend(p.address, p.owner, p.identifier);
+  now = sentAt + ledger.PENDING_ALARM_MS;
+  assert.equal(pushAlarm().ok, false, "a repeat send");
+  restart();
+  assert.equal(pushAlarm().ok, false, "a restart");
+});
+
+test("push alarm: failover entries never count; an unreadable list is unknown, not green", () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const f = signedSoc(2);
+  ledger.noteFailover(f.address, f.owner, f.identifier, PARENT);
+  now += 10 * ledger.PENDING_ALARM_MS;
+  assert.equal(pushAlarm().ok, true);
+  assert.equal(stale(), 0);
+
+  writeFileSync(join(LEDGER(), `${"ee".repeat(32)}.json`), '{"owner":"nope"}');
+  restart();
+  assert.equal(pushAlarm().ok, null);
+});
+
 // ---------------------------------------------------------------------------
 // The read rule
 // ---------------------------------------------------------------------------

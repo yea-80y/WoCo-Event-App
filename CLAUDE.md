@@ -612,7 +612,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     `/api/health` `ethernaFailover` alarms; also red when full (10,000 entries = rail off) or `ledger.dirty`
     (a write not yet on disk, retried each minute: do not restart until it clears, or delete the directory
     first). After a ROLLBACK to a build without it, delete the directory when rolling forward: that build's
-    Etherna sends are not listed)
+    Etherna sends are not listed. `ethernaFailover.push` red = a send still not on our bee 15 min on (Etherna
+    not pushing, 2026-10-20); one that never will arrive (its batch died first) is cleared by moving its
+    file out with the server stopped)
   checkin-door-entries/ (live door attendee list — per event, later buyers' email + card name sealed to the
     door pass's key, plus erasure removals. Losing it only empties the door's later-buyer list until the
     pass is regenerated (scanning unaffected); losing it after an erasure can leave a scanner showing that
