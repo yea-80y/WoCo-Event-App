@@ -16,6 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import { createRequire } from "node:module";
 import { build } from "vite";
 import { acceptPasskeyWindowReply, passkeyAccountKeys, type PasskeyWindowAccountResult } from "@woco/shared";
 import {
@@ -81,6 +82,22 @@ test("the rules refuse another channel, a second script, or a CSP that does not 
   }
   assert.ok(authWindowProblems(ok.replace("</main>", "<script>1</script></main>"), AUTH_WINDOW_PRODUCTION).length > 0);
   assert.ok(authWindowProblems(ok.replace(/script-src 'sha256-[^']+'/, "script-src 'sha256-AAAA'"), AUTH_WINDOW_PRODUCTION).some((p) => /CSP/.test(p)));
+});
+
+test("the upload script refuses a dev window, and names the contenthash the Safe sets", async () => {
+  const upload = createRequire(import.meta.url)("../../../scripts/upload-auth-window.cjs") as {
+    windowProblems(index: string, notFound: string): string[];
+    contenthashFor(ref: string): string;
+  };
+  const p = await prod;
+  assert.deepEqual(upload.windowProblems(p.index, p.notFound), []);
+  const d = upload.windowProblems((await dev).index, p.notFound);
+  assert.ok(d.some((x) => /localhost/.test(x)) && d.some((x) => /production/.test(x)), d.join("; "));
+  assert.ok(upload.windowProblems(p.index.replace(/script-src 'sha256-[^']+'/, "script-src 'sha256-AAAA'"), p.notFound).length > 0);
+  assert.ok(upload.windowProblems(p.index, "<script>1</script>").length > 0, "a scripted 404 is refused");
+  const ref = "ab".repeat(32);
+  assert.equal(upload.contenthashFor(ref), `0xe40101fa011b20${ref}`);
+  assert.throws(() => upload.contenthashFor("xyz"));
 });
 
 // --- a sandbox browser -------------------------------------------------------
