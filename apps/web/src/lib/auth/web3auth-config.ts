@@ -29,6 +29,28 @@ type Web3AuthModule = typeof import("@web3auth/modal");
 export const WEB3AUTH_SESSION_SECONDS = 30 * 86400;
 
 /**
+ * How the sign-in looks: WoCo's colours, name and mark, so it reads as WoCo's own
+ * step rather than a white box from somewhere else over a dark app (owner
+ * 2026-10-22). Web3Auth's "Powered by MetaMask" footer stays as their mark.
+ * Display only - web3auth-key-inputs.test.ts pins that nothing here can select a
+ * key. The SDK passes the same object to its sign-in pop-up as `whiteLabel`, so
+ * the email-code window should follow it too. The in-page modal's greys and font
+ * have no option; app.css maps them onto our tokens.
+ */
+export const WEB3AUTH_LOOK = {
+  appName: "WoCo",
+  // WoCo has no light theme.
+  mode: "dark" as const,
+  // --accent / --accent-ink. The SDK derives its shades from a hex, so no var() here.
+  theme: { primary: "#C7F23A", onPrimary: "#0B0B09" },
+  borderRadiusType: "small" as const,
+  buttonRadiusType: "square" as const,
+  // The order the sign-in button's marks promise. The SDK appends every other
+  // enabled method after these, so none is hidden.
+  loginMethodsOrder: ["google", "apple", "facebook", "twitter"],
+};
+
+/**
  * Constructor options for a Web3Auth instance that yields the raw recovery key.
  * 🔴 FUNDS-CRITICAL: the key is a deterministic function of (user login) ×
  * VITE_WEB3AUTH_CLIENT_ID × network. Changing clientId or network changes every
@@ -41,7 +63,10 @@ export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string, uxMo
   // (#244). Under plain Node (the unit test) the setting reads as absent and the
   // validator refuses `undefined` — the same verdict, reached the same way.
   const networkEnv = buildEnv(() => import.meta.env.VITE_WEB3AUTH_NETWORK as string | undefined);
-  return web3AuthOptionsFor(mod, clientId, resolveWeb3AuthNetwork(networkEnv), uxMode);
+  // The app icon from wherever this build's assets are served (its <base href>):
+  // the modal shows it, and Web3Auth's pop-up loads it from the same address.
+  const logo = typeof document === "undefined" ? undefined : new URL("icons/icon-192.png", document.baseURI).href;
+  return web3AuthOptionsFor(mod, clientId, resolveWeb3AuthNetwork(networkEnv), uxMode, logo);
 }
 
 /**
@@ -54,6 +79,7 @@ export function web3AuthOptionsFor(
   clientId: string,
   network: Web3AuthNetworkName,
   uxMode: Web3AuthUxMode = "popup",
+  logo?: string,
 ) {
   const { WEB3AUTH_NETWORK, CHAIN_NAMESPACES, CONNECTOR_INITIAL_AUTHENTICATION_MODE } = mod;
   const web3AuthNetwork =
@@ -73,6 +99,7 @@ export function web3AuthOptionsFor(
     tickerName: "Ethereum",
     logo: "https://web3auth.io/images/web3authlog.png",
   };
+  const look = logo ? { ...WEB3AUTH_LOOK, logoLight: logo, logoDark: logo } : WEB3AUTH_LOOK;
 
   return {
     clientId,
@@ -101,7 +128,11 @@ export function web3AuthOptionsFor(
     // uxMode: how the sign-in page is reached - transport only, never a key input
     // (web3auth-redirect.ts). "redirect" on an iPhone/iPad sign-in (owner decision
     // 2026-10-12); left out otherwise, so the pop-up options stay byte-identical.
-    uiConfig: uxMode === "redirect" ? { consentRequired: false, uxMode: mod.UX_MODE.REDIRECT } : { consentRequired: false },
+    // The look goes first, so nothing in it can switch consent back on.
+    uiConfig:
+      uxMode === "redirect"
+        ? { ...look, consentRequired: false, uxMode: mod.UX_MODE.REDIRECT }
+        : { ...look, consentRequired: false },
   };
 }
 
