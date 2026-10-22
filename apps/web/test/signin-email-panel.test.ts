@@ -65,3 +65,11 @@ test("the hand-off to Web3Auth is said before the Google and Apple buttons, neve
   assert.ok(note > 0 && note < gated.indexOf('connection: "google"'), "above the buttons it explains");
   assert.ok(gated.includes("handled by Web3Auth, our sign-in partner - you'll see their name next."));
 });
+
+test("the screen ends with Web3Auth's own Powered by MetaMask mark, as their modal does", () => {
+  assert.ok(panel.includes('<img class="powered-by" src="https://images.web3auth.io/metamask-footer-logo-dark.svg" alt="Powered by MetaMask"'));
+  // The same file the modal's footer shows in dark mode (Footer.js), from a host the CSP already allows.
+  const footer = readFileSync(new URL("../node_modules/@web3auth/modal/dist/lib.esm/packages/modal/src/ui/components/Footer/Footer.js", import.meta.url), "utf8");
+  assert.ok(footer.includes('src: "https://images.web3auth.io/metamask-footer-logo-dark.svg"'));
+  assert.ok(read("../vite-plugins/csp.ts").includes('"https://images.web3auth.io", // login-method icons in the Web3Auth modal'));
+});

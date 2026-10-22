@@ -215,6 +215,9 @@
       {#if inApp}
         <p class="hint">Email or social sign-in may not complete in this browser.</p>
       {/if}
+      <!-- Web3Auth's own mark, the image its modal ends with: their sign-in, their
+           mark, kept now that this screen stands in for the modal (owner 2026-10-22). -->
+      <img class="powered-by" src="https://images.web3auth.io/metamask-footer-logo-dark.svg" alt="Powered by MetaMask" width="200" height="36" />
     </div>
   {:else}
     <!-- Web3Auth's modal offers email, SMS and every social sign-in the project
@@ -498,6 +501,13 @@
     font-size: 0.75rem;
     font-weight: 500;
     color: var(--text-muted);
+  }
+
+  .powered-by {
+    align-self: center;
+    width: auto;
+    height: 30px;
+    margin-top: 0.25rem;
   }
 
   .blocked {
