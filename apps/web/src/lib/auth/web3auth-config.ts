@@ -20,31 +20,40 @@ import type { Web3AuthUxMode } from "./web3auth-redirect.js";
 type Web3AuthModule = typeof import("@web3auth/modal");
 
 /**
- * How long a Web3Auth sign-in lasts: 30 days, the SDK's maximum, matching the
- * WoCo session it unlocks. Unset, the project dashboard's value applies - 1 day
- * for ours (read from the project config 2026-10-07) - and the first reload
- * after it ran out signed the person out of a WoCo session still valid for weeks
- * (#803). Not a key input: only clientId and network change keys.
+ * How long a Web3Auth sign-in lasts: 1 day, the most the free (Base) plan allows on
+ * sapphire_mainnet. Web3Auth's plan check (citadel-service feature-access, measured
+ * for our project 2026-10-22) allows exactly 86400 and refuses 86401 with "session
+ * length configured more than 1 day ... not available on base plan", and its sign-in
+ * frame then fails every login behind "Cannot redefine property: name". Devnet allows
+ * anything, which is how 30 days (#803) passed testing. The cost: an email or Google
+ * user signs in again after a day, while the WoCo session it unlocks lasts 30 (#803's
+ * restore path handles the lapse). 30 days again only with the Growth plan. Sent
+ * explicitly, so a longer dashboard value cannot slip into the check. Not a key input.
  */
-export const WEB3AUTH_SESSION_SECONDS = 30 * 86400;
+export const WEB3AUTH_SESSION_SECONDS = 86400;
 
 /**
- * How the sign-in looks: WoCo's colours, name and mark, so it reads as WoCo's own
- * step rather than a white box from somewhere else over a dark app (owner
- * 2026-10-22). Web3Auth's "Powered by MetaMask" footer stays as their mark.
- * Display only - web3auth-key-inputs.test.ts pins that nothing here can select a
- * key. The SDK passes the same object to its sign-in pop-up as `whiteLabel`, so
- * the email-code window should follow it too. The in-page modal's greys and font
- * have no option; app.css maps them onto our tokens.
+ * Options the free plan refuses on sapphire_mainnet: Web3Auth's sign-in frame counts
+ * any of these in `whiteLabel` as whitelabelling (its I6 check, auth.web3auth.io v11,
+ * read 2026-10-22) and the plan check rejects it. Mode, corner styles and method
+ * order are not on the list, and neither is our CSS (app.css).
+ */
+export const WEB3AUTH_PAID_WHITELABEL_KEYS = ["appName", "appUrl", "logoDark", "logoLight", "theme", "tncLink", "privacyPolicy"] as const;
+
+/**
+ * How the sign-in looks, within the free plan (owner 2026-10-22): dark, softened
+ * corners and the sign-ins people know first. WoCo's colours, accent and type come
+ * from app.css, which the plan check never sees; a name, logo or theme colour here
+ * would be whitelabelling (WEB3AUTH_PAID_WHITELABEL_KEYS) and fail every sign-in.
+ * Web3Auth's "Powered by MetaMask" footer stays as their mark. Display only -
+ * web3auth-key-inputs.test.ts pins that nothing here can select a key.
  */
 export const WEB3AUTH_LOOK = {
-  appName: "WoCo",
   // WoCo has no light theme.
   mode: "dark" as const,
-  // --accent / --accent-ink. The SDK derives its shades from a hex, so no var() here.
-  theme: { primary: "#C7F23A", onPrimary: "#0B0B09" },
-  borderRadiusType: "small" as const,
-  buttonRadiusType: "square" as const,
+  // The SDK's middle settings: 16px window, 8px buttons. Square read as harsh (owner 2026-10-22).
+  borderRadiusType: "medium" as const,
+  buttonRadiusType: "rounded" as const,
   // The order the sign-in button's marks promise. The SDK appends every other
   // enabled method after these, so none is hidden.
   loginMethodsOrder: ["google", "apple", "facebook", "twitter"],
@@ -63,10 +72,7 @@ export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string, uxMo
   // (#244). Under plain Node (the unit test) the setting reads as absent and the
   // validator refuses `undefined` — the same verdict, reached the same way.
   const networkEnv = buildEnv(() => import.meta.env.VITE_WEB3AUTH_NETWORK as string | undefined);
-  // The app icon from wherever this build's assets are served (its <base href>):
-  // the modal shows it, and Web3Auth's pop-up loads it from the same address.
-  const logo = typeof document === "undefined" ? undefined : new URL("icons/icon-192.png", document.baseURI).href;
-  return web3AuthOptionsFor(mod, clientId, resolveWeb3AuthNetwork(networkEnv), uxMode, logo);
+  return web3AuthOptionsFor(mod, clientId, resolveWeb3AuthNetwork(networkEnv), uxMode);
 }
 
 /**
@@ -79,7 +85,6 @@ export function web3AuthOptionsFor(
   clientId: string,
   network: Web3AuthNetworkName,
   uxMode: Web3AuthUxMode = "popup",
-  logo?: string,
 ) {
   const { WEB3AUTH_NETWORK, CHAIN_NAMESPACES, CONNECTOR_INITIAL_AUTHENTICATION_MODE } = mod;
   const web3AuthNetwork =
@@ -99,7 +104,6 @@ export function web3AuthOptionsFor(
     tickerName: "Ethereum",
     logo: "https://web3auth.io/images/web3authlog.png",
   };
-  const look = logo ? { ...WEB3AUTH_LOOK, logoLight: logo, logoDark: logo } : WEB3AUTH_LOOK;
 
   return {
     clientId,
@@ -131,8 +135,8 @@ export function web3AuthOptionsFor(
     // The look goes first, so nothing in it can switch consent back on.
     uiConfig:
       uxMode === "redirect"
-        ? { ...look, consentRequired: false, uxMode: mod.UX_MODE.REDIRECT }
-        : { ...look, consentRequired: false },
+        ? { ...WEB3AUTH_LOOK, consentRequired: false, uxMode: mod.UX_MODE.REDIRECT }
+        : { ...WEB3AUTH_LOOK, consentRequired: false },
   };
 }
 
