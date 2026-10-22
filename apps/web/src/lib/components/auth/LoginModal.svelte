@@ -20,6 +20,7 @@
   import { takeSignInFailure, type SignInFailureView } from "../../auth/signin-failure-notice.js";
   import SignInFailureDetails from "./SignInFailureDetails.svelte";
   import { onMount } from "svelte";
+  import { readSignInHint, sheetState, type SignInHint } from "../../auth/sign-in-hint.js";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
 
@@ -80,6 +81,21 @@
       });
     });
   });
+
+  // What this device says about who is signing in (sign-in-hint.ts). Re-read on every
+  // opening - a sign-in or sign-out since the last one changes it - and `null` until
+  // read, so the sheet never flashes one layout before another.
+  let hint = $state<SignInHint | null>(null);
+  $effect(() => {
+    if (!visible) {
+      hint = null;
+      return;
+    }
+    void readSignInHint().then((h) => {
+      if (visible) hint = h;
+    });
+  });
+  const sheet = $derived(hint ? sheetState(hint, organiserSignIn) : "new");
 
   // A redirect sign-in coming back (iPhone/iPad): the sheet opens on the email
   // scene while the store finishes it, and closes on success. A failure returns
@@ -231,16 +247,17 @@
 {#if visible}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="backdrop" role="presentation" onclick={handleBackdrop}>
-    <div class="modal" role="dialog" aria-modal="true" aria-label="Login">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="login-title">
       <header>
         <div class="modal-heading">
           <span class="kicker kicker--plain">WoCo</span>
-          <h2>
+          <h2 id="login-title">
             {authing ? "Signing in"
               : view === "wallet" ? "Connect a wallet"
               : loginRequest.context === "invite" ? "Create your account"
               : loginRequest.context === "ticket" ? "Add your ticket"
               : organiserSignIn ? "Organiser sign in"
+              : sheet === "known" ? "Welcome back"
               : "Sign in"}
           </h2>
           {#if authing || view === "wallet"}
@@ -252,7 +269,8 @@
           {:else if loginRequest.context === "ticket"}
             <p class="context-sub">Sign in, or create a free account. Your ticket goes straight into it.</p>
           {:else if organiserSignIn}
-            <p class="context-sub">Organisers sign in with a passkey. New here? Creating one takes a minute.</p>
+            <!-- "New here?" is the sheet's own Create button now. -->
+            <p class="context-sub">Organisers sign in with a passkey.</p>
           {/if}
         </div>
         <button class="close-btn" onclick={close} aria-label="Close">
@@ -326,8 +344,8 @@
         <!-- Hidden rather than unmounted on the wallet screen, so a passkey
              error or the create-account offer is still there on the way back. -->
         <div class="methods" class:offstage={view !== "main"}>
-          {#if inAppBrowser === undefined}
-            <!-- The in-app check has not answered yet: nothing to flash. -->
+          {#if inAppBrowser === undefined || hint === null}
+            <!-- The in-app check or the device hint has not answered yet: nothing to flash. -->
           {:else if inAppBrowser}
             <!-- An app's built-in browser: the way out comes first and alone.
                  Passkeys are not offered - the ceremony is refused before any
@@ -350,6 +368,8 @@
           {:else}
           <PasskeyLogin
             organiser={organiserSignIn}
+            {sheet}
+            newAccountFirst={loginRequest.context === "invite"}
             oncomplete={handleComplete}
             onstart={(mode) => start("passkey", mode === "create")}
             onsettle={settle}
@@ -359,7 +379,7 @@
             {#snippet alternative()}
               <!-- Organising needs a passkey account (#746 step 5): an organiser sign-in offers no other way in. -->
               {#if !organiserSignIn}
-                <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} />
+                <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} lastUsed={sheet === "email"} />
               {/if}
             {/snippet}
           </PasskeyLogin>

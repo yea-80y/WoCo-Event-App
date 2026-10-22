@@ -73,6 +73,7 @@ import { HolderKeyLockedError } from "./holder-key-locked.js";
 import { allSecretsOf, clearChainWindow, clearLockedChain, currentSecretOf, storeLockedChain, type AccountChain } from "./account-chain.js";
 import type { AccountKeysHost, KeysVerdict } from "../keyring/account-keys.js";
 import { linkedEnvelopePendingKey } from "./make-main-key.js";
+import { wayInOf } from "./sign-in-hint.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
 import { apiBase } from "../api/http.js";
 import { unlocksWhen } from "../attendee/gate/unlock-copy.js";
@@ -5254,6 +5255,11 @@ async function clearAllAuth(): Promise<void> {
   await step("identity-keys", () =>
     Promise.all([delKV(StorageKeys.AUTH_KIND), delKV(StorageKeys.PARENT_ADDRESS), delKV(StorageKeys.SEED_ADDRESS)]),
   );
+  // After the identity keys, before the kind resets: only a COMMITTED sign-in sets
+  // `_kind`, so this records the way in that actually opened this account (linked,
+  // recovered and upgraded ones included). The sign-in sheet's hint only.
+  const wayIn = wayInOf(_kind);
+  if (wayIn) await step("last-way-in", () => putKV(StorageKeys.LAST_WAY_IN, wayIn));
   await step("session", () => clearSession());
   // Dropping the seed drops the feed signer, the issuing key and the encryption
   // key with it — there is one secret at rest now, so there is one thing to wipe

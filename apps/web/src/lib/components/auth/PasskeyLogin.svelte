@@ -13,8 +13,9 @@
     passkeyRefusalAdvice,
   } from "../../auth/passkey-refusal-copy.js";
   import { PASSKEY_PROVIDERS } from "@woco/shared";
+  import type { SheetState } from "../../auth/sign-in-hint.js";
   import PasskeyReadyNotice from "./PasskeyReadyNotice.svelte";
-  import { onMount, type Snippet } from "svelte";
+  import { onMount, tick, type Snippet } from "svelte";
 
   interface Props {
     oncomplete?: () => void;
@@ -28,9 +29,16 @@
     organiser?: boolean;
     /** The sheet's other main way in (email / Google), placed right under the passkey button. */
     alternative?: Snippet;
+    /** What this device says about who is signing in (sign-in-hint.ts). */
+    sheet?: SheetState;
+    /** An invite ("Create your account"): Create takes the fill when nothing is known. */
+    newAccountFirst?: boolean;
   }
 
-  let { oncomplete, onstart, onsettle, onlink, organiser = false, alternative }: Props = $props();
+  let { oncomplete, onstart, onsettle, onlink, organiser = false, alternative, sheet = "new", newAccountFirst = false }: Props = $props();
+  /** Where focus goes when a sign-in found nothing: the create choice this sheet shows. */
+  let createChoice = $state<HTMLButtonElement | undefined>();
+  let createLink = $state<HTMLButtonElement | undefined>();
   let error = $state<string | null>(null);
   let supported = $state(false);
   /** Set with `supported` on mount, so the no-passkey line never flashes before the check. */
@@ -93,7 +101,9 @@
       } else if (res.noAssertion && mode === "signin") {
         offerCreate = true;
         showHelp = true;
-        error = "No passkey was used. If you cancelled, try again — otherwise you can create a new account below.";
+        error = "No passkey was used. If you cancelled, try again - if you're new to WoCo, create an account below.";
+        // Emphasis alone is invisible to a screen reader: take focus to the way forward.
+        void tick().then(() => (sheet === "new" ? createChoice : createLink)?.focus());
       } else if (mode === "create" && res.error?.name === "PasskeyCeremonyCancelledError" && (apple = appleDevice())) {
         // After a sheet (a quick refusal is noSheet, above): on an iPhone or iPad this
         // is also what "no password manager set up for passkeys" ends in.
@@ -115,6 +125,13 @@
   }
 </script>
 
+{#snippet passkeyIcon()}
+  <!-- Passkey / fingerprint icon -->
+  <svg class="passkey-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M17.81 4.47c-.08 0-.16-.02-.23-.06C15.66 3.42 14 3 12.01 3c-1.98 0-3.86.47-5.57 1.41-.24.13-.54.04-.68-.2-.13-.24-.04-.55.2-.68C7.82 2.52 9.86 2 12.01 2c2.13 0 3.99.47 6.03 1.52.25.13.34.43.21.67-.09.18-.26.28-.44.28zM3.5 9.72a.499.499 0 0 1-.25-.93C5.45 7.33 8.34 6.25 12 6.25c3.67 0 6.56 1.08 8.75 2.54.23.16.29.48.13.71-.16.23-.48.29-.71.13C18.14 8.31 15.36 7.25 12 7.25c-3.35 0-6.13 1.06-8.25 2.34-.08.09-.16.13-.25.13zM12 22c-1.23 0-2.4-.32-3.37-.96-.13-.09-.21-.23-.21-.39 0-.16.07-.32.21-.41l.66-.45a.678.678 0 0 1 .68-.03c.65.37 1.33.56 2.03.56 2.37 0 4.3-2.07 4.3-4.61 0-2.55-1.93-4.61-4.3-4.61-2.33 0-4.29 2.02-4.3 4.53v.08c-.01.53-.19 1.88-1.3 3.48-.07.1-.18.16-.3.18h-.02c-.12 0-.24-.05-.31-.15A8.24 8.24 0 0 1 4 14.35C4 9.73 7.59 6 12 6s8 3.73 8 8.35S16.41 22 12 22zM7.33 15.63c-.56 0-1.01-.49-1.01-1.09 0-.6.45-1.09 1.01-1.09.56 0 1.01.49 1.01 1.09 0 .6-.45 1.09-1.01 1.09z" fill="currentColor"/>
+  </svg>
+{/snippet}
+
 {#if supported && stays}
   <!-- Signed in already: `alternative` is not offered beside "Got it", where it would read as a second choice. -->
   <div class="passkey-login stays" role="status">
@@ -128,21 +145,45 @@
   </div>
 {:else if supported}
   <div class="passkey-login">
-    <button
-      class="passkey-btn"
-      onclick={() => run("signin")}
-      disabled={auth.busy}
-    >
-      <!-- Passkey / fingerprint icon -->
-      <svg class="passkey-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M17.81 4.47c-.08 0-.16-.02-.23-.06C15.66 3.42 14 3 12.01 3c-1.98 0-3.86.47-5.57 1.41-.24.13-.54.04-.68-.2-.13-.24-.04-.55.2-.68C7.82 2.52 9.86 2 12.01 2c2.13 0 3.99.47 6.03 1.52.25.13.34.43.21.67-.09.18-.26.28-.44.28zM3.5 9.72a.499.499 0 0 1-.25-.93C5.45 7.33 8.34 6.25 12 6.25c3.67 0 6.56 1.08 8.75 2.54.23.16.29.48.13.71-.16.23-.48.29-.71.13C18.14 8.31 15.36 7.25 12 7.25c-3.35 0-6.13 1.06-8.25 2.34-.08.09-.16.13-.25.13zM12 22c-1.23 0-2.4-.32-3.37-.96-.13-.09-.21-.23-.21-.39 0-.16.07-.32.21-.41l.66-.45a.678.678 0 0 1 .68-.03c.65.37 1.33.56 2.03.56 2.37 0 4.3-2.07 4.3-4.61 0-2.55-1.93-4.61-4.3-4.61-2.33 0-4.29 2.02-4.3 4.53v.08c-.01.53-.19 1.88-1.3 3.48-.07.1-.18.16-.3.18h-.02c-.12 0-.24-.05-.31-.15A8.24 8.24 0 0 1 4 14.35C4 9.73 7.59 6 12 6s8 3.73 8 8.35S16.41 22 12 22zM7.33 15.63c-.56 0-1.01-.49-1.01-1.09 0-.6.45-1.09 1.01-1.09.56 0 1.01.49 1.01 1.09 0 .6-.45 1.09-1.01 1.09z" fill="currentColor"/>
-      </svg>
-      {#if auth.busy}
-        Authenticating...
-      {:else}
-        Sign in with Passkey
-      {/if}
-    </button>
+    {#if sheet === "new"}
+      <!-- Nothing known about this device (sign-in-hint.ts), so the two passkey choices
+           sit side by side, each saying who it is for: iOS answers a newcomer's "Sign in"
+           with its own "no passkeys" sheet, and no page can tell beforehand. Sign in takes
+           the fill: its wrong tap costs a newcomer one sheet, while Create's costs a
+           returning user a second account (Fable 10-22) - except on an invite, whose
+           heading already says "Create your account". -->
+      <button class="passkey-btn choice" class:outlined={newAccountFirst} onclick={() => run("signin")} disabled={auth.busy}>
+        {@render passkeyIcon()}
+        <span class="choice-text">
+          <span class="choice-label">{auth.busy ? "Authenticating..." : "Sign in with Passkey"}</span>
+          <span class="choice-sub">I already have a WoCo passkey</span>
+        </span>
+      </button>
+      <button bind:this={createChoice} class="passkey-btn choice" class:outlined={!newAccountFirst} onclick={() => run("create")} disabled={auth.busy}>
+        <svg class="passkey-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span class="choice-text">
+          <span class="choice-label">Create an account</span>
+          <span class="choice-sub">New to WoCo</span>
+        </span>
+      </button>
+    {:else}
+      <button
+        class="passkey-btn"
+        onclick={() => run("signin")}
+        disabled={auth.busy}
+      >
+        {@render passkeyIcon()}
+        {#if auth.busy}
+          Authenticating...
+        {:else}
+          Sign in with Passkey
+          <!-- Inside the button: part of its name, not a colour cue beside it. -->
+          {#if sheet === "known"}<span class="last-used">Last used</span>{/if}
+        {/if}
+      </button>
+    {/if}
 
     <!-- Right under the button it is about, and still right above the email
          button that the refusal advice points to ("... below"). -->
@@ -161,14 +202,17 @@
            knows about THIS device, so it cannot tell a brand-new user from a
            returning one on a new device — promoting create on its say-so is how a
            returning user ends up with a second account. Let the user say which. -->
-      <button
-        class="create-btn"
-        class:emphasised={offerCreate}
-        onclick={() => run("create")}
-        disabled={auth.busy}
-      >
-        New to WoCo? Create a passkey account
-      </button>
+      {#if sheet !== "new"}
+        <button
+          bind:this={createLink}
+          class="create-btn"
+          class:emphasised={offerCreate}
+          onclick={() => run("create")}
+          disabled={auth.busy}
+        >
+          New to WoCo? Create a passkey account
+        </button>
+      {/if}
 
       {#if onlink}
         {#if otherDevice && error}
@@ -260,6 +304,47 @@
 
   .passkey-btn:hover:not(:disabled) {
     background: var(--accent-hover);
+  }
+
+  /* The first-visit pair: one height, label over who it is for. */
+  .passkey-btn.choice {
+    min-height: 3.75rem;
+    justify-content: flex-start;
+    text-align: left;
+    padding: 0.75rem 1rem;
+  }
+
+  .passkey-btn.outlined {
+    background: transparent;
+    color: var(--text);
+    border-color: var(--border-hover);
+  }
+
+  .passkey-btn.outlined:hover:not(:disabled) {
+    background: transparent;
+    border-color: var(--text-muted);
+  }
+
+  .choice-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .choice-sub {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    opacity: 0.8;
+  }
+
+  .last-used {
+    margin-left: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    background: var(--accent-ink);
+    color: var(--accent);
   }
 
   .passkey-btn:active:not(:disabled) {

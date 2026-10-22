@@ -25,7 +25,7 @@ const account = read("../src/lib/auth/web3auth-account.ts");
 
 /** The three branches of the method picker, in source order. */
 function branches() {
-  const unknown = modal.indexOf("{#if inAppBrowser === undefined}");
+  const unknown = modal.indexOf("{#if inAppBrowser === undefined || hint === null}");
   const inApp = modal.indexOf("{:else if inAppBrowser}", unknown);
   // The real-browser branch is the `{:else}` right before the passkey button
   // (the in-app branch has an inner `{:else}` of its own, for the invite).
@@ -55,9 +55,10 @@ test("an organiser invite in an in-app browser gets the way out and an explanati
 
 test("until the in-app check has answered, nothing is rendered - no flash of buttons that are about to be hidden", () => {
   const { unknown } = branches();
-  const markup = unknown.replace(/<!--[\s\S]*?-->/g, "").replace("{#if inAppBrowser === undefined}", "").trim();
+  const markup = unknown.replace(/<!--[\s\S]*?-->/g, "").replace("{#if inAppBrowser === undefined || hint === null}", "").trim();
   assert.equal(markup, "", `no element in the unknown branch: ${markup}`);
   assert.ok(modal.includes("$state<InAppBrowser | null | undefined>(undefined)"));
+  assert.ok(modal.includes("$state<SignInHint | null>(null)"), "the device hint, likewise, starts unknown");
 });
 
 test("a real browser keeps the full picker: passkeys first, then email", () => {

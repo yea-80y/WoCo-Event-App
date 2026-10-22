@@ -18,9 +18,11 @@
     /** The app's built-in browser this page is in, if any: a stalled or timed-out
      *  wait then offers the way out beside Try again (owner decision 2026-10-10). */
     inApp: InAppBrowser | null;
+    /** This device's last way in was email or social (sign-in-hint.ts). */
+    lastUsed?: boolean;
   }
 
-  let { oncomplete, onstart, onsettle, inApp }: Props = $props();
+  let { oncomplete, onstart, onsettle, inApp, lastUsed = false }: Props = $props();
 
   /** The last attempt's failure: its line, and (with no words of its own) a code
    *  to screenshot and Web3Auth's redacted reason behind a tap (SignInFailureDetails). */
@@ -105,7 +107,7 @@
       {#if auth.busy}
         <span class="w3a-busy"><span class="spinner"></span>Connecting…</span>
       {:else}
-        <span class="w3a-label">Continue with email or social</span>
+        <span class="w3a-label">Continue with email or social{#if lastUsed}<span class="last-used">Last used</span>{/if}</span>
         <span class="w3a-icons" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <rect x="3" y="5" width="18" height="14" rx="1.5" stroke="currentColor" stroke-width="1.8"/>
@@ -180,6 +182,17 @@
 
   /* The sign-in itself, sized as the passkey button's equal: a real choice, not a
      footnote. (Try again in the stalled panel keeps the plain .w3a-btn.) */
+  /* Inside the button: part of its name, not a colour cue beside it. */
+  .last-used {
+    margin-left: 0.5rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+
   .w3a-btn--main {
     flex-direction: column;
     gap: 0.375rem;

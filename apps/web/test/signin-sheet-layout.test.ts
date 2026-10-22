@@ -11,6 +11,13 @@
  * MUTATION: move `{@render alternative?.()}` below the Create button, or the
  * ready notice above it, and the order test goes red; drop the `{:else if
  * checked}` branch and a browser without passkeys loses its only sign-in.
+ *
+ * The first-visit pair (owner + Fable 10-22, sign-in-hint.ts): with nothing known
+ * about the device, Sign in and Create sit side by side ABOVE the email button -
+ * a deliberate change to the 10-20 rule "email right under the passkey button",
+ * which still holds for a device that has signed in before. MUTATION: give Create
+ * the fill outside an invite, drop a sub-line, or show the small Create beside
+ * the pair, and "the first-visit pair" goes red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -23,6 +30,16 @@ const modal = read("../src/lib/components/auth/LoginModal.svelte");
 const passkey = markup(read("../src/lib/components/auth/PasskeyLogin.svelte"));
 const email = read("../src/lib/components/auth/Web3AuthLogin.svelte");
 const emailMarkup = markup(email);
+
+/** The full branch's sign-in block: the first-visit pair, then the single button. */
+function signInBlock(full: string) {
+  const open = full.indexOf('{#if sheet === "new"}');
+  const single = full.indexOf("{:else}", open);
+  // The block's own closing tag, at its indent (the tag inside the button has its own).
+  const close = full.indexOf("\n    {/if}\n", single) + 1;
+  assert.ok(open > 0 && single > open && close > single, "pair, then single");
+  return { pair: full.slice(open, single), single: full.slice(single, close), after: full.slice(close) };
+}
 
 /** PasskeyLogin's branches, in source order. */
 function branches() {
@@ -49,24 +66,27 @@ test("the modal hands the email sign-in to PasskeyLogin as its `alternative`, wi
   const guard = body.indexOf("{#if !organiserSignIn}", snippet);
   const button = body.indexOf("<Web3AuthLogin", guard);
   assert.ok(snippet > 0 && guard > snippet && button > guard, "snippet, then the guard, then the button");
-  assert.ok(body.includes('<Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} />'));
+  assert.ok(body.includes('<Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} lastUsed={sheet === "email"} />'));
   assert.equal(modal.split("<Web3AuthLogin").length - 1, 2, "one for a real browser, one for an in-app one - never a second copy");
 });
 
 test("default order: passkey, its error, email / Google, the ready notice, then create / add device / help, then Secured by", () => {
   const { full } = branches();
-  const at = (needle: string) => {
-    const i = full.indexOf(needle);
+  const { single } = signInBlock(full);
+  const at = (needle: string, from = 0) => {
+    const i = full.indexOf(needle, from);
     assert.ok(i > 0, needle);
     return i;
   };
+  const singleAt = full.indexOf(single);
   const order = [
-    at('onclick={() => run("signin")}'),
+    at('onclick={() => run("signin")}', singleAt),
     at("{#if error && !otherDevice}"),
     at("{@render alternative?.()}"),
     at("<PasskeyReadyNotice invite={organiser} />"),
     at('<div class="more">'),
-    at('onclick={() => run("create")}'),
+    at('{#if sheet !== "new"}'),
+    at('onclick={() => run("create")}', at('<div class="more">')),
     at("onclick={onlink}"),
     at('class="help-link"'),
     at('<div class="providers">'),
@@ -77,9 +97,9 @@ test("default order: passkey, its error, email / Google, the ready notice, then 
   assert.equal(full.split("{#if error && !otherDevice}").length - 1, 1, "the error line is not repeated at the bottom");
 });
 
-test("Create stays secondary: an outlined small button, emphasised only after a sign-in found nothing", () => {
+test("a device that has signed in before: Create stays secondary - an outlined small button, emphasised only after a sign-in found nothing", () => {
   const { full } = branches();
-  assert.match(full, /<button\s+class="create-btn"\s+class:emphasised=\{offerCreate\}\s+onclick=\{\(\) => run\("create"\)\}/);
+  assert.match(full, /\{#if sheet !== "new"\}\s*<button\s+bind:this=\{createLink\}\s+class="create-btn"\s+class:emphasised=\{offerCreate\}\s+onclick=\{\(\) => run\("create"\)\}/);
   const style = read("../src/lib/components/auth/PasskeyLogin.svelte").split("<style>")[1]!;
   assert.match(style, /\.create-btn \{[^}]*background: transparent;[^}]*color: var\(--text-muted\);/);
 });
@@ -121,12 +141,52 @@ test("the secondary lines read as one group, with no em dash in the new words", 
   }
 });
 
-test("on a phone the two choices come first: nothing tall sits above the email button by default", () => {
-  // The modal's header and gaps fixed (LoginModal <style>), the passkey button and
-  // the email button are the first two things in the picker; only an error the
-  // person just caused can come between them.
+test("on a phone the choices come first: nothing tall sits between the passkey buttons and the email button", () => {
+  // The modal's header and gaps fixed (LoginModal <style>), the passkey button(s) and
+  // the email button are the first things in the picker; only an error the person
+  // just caused can come between them.
   const { full } = branches();
-  const between = full.slice(full.indexOf("</button>"), full.indexOf("{@render alternative?.()}"));
+  const { after } = signInBlock(full);
+  const between = after.slice(0, after.indexOf("{@render alternative?.()}"));
   const shown = between.replace(/<!--[\s\S]*?-->/g, "").replace(/\{#if error && !otherDevice\}[\s\S]*?\{\/if\}/, "").trim();
-  assert.equal(shown, "</button>", `only the error line may sit between them: ${shown}`);
+  assert.equal(shown, "{/if}", `only the error line may sit between them: ${shown}`);
+});
+
+test("the first-visit pair: Sign in filled over an equal outlined Create, each saying who it is for; an invite flips the fill", () => {
+  const { pair, single } = signInBlock(branches().full);
+  const signin = pair.indexOf('onclick={() => run("signin")}');
+  const create = pair.indexOf('onclick={() => run("create")}');
+  assert.ok(signin > 0 && create > signin, "Sign in above Create");
+  assert.match(pair, /<button class="passkey-btn choice" class:outlined=\{newAccountFirst\} onclick=\{\(\) => run\("signin"\)\}/);
+  assert.match(pair, /<button bind:this=\{createChoice\} class="passkey-btn choice" class:outlined=\{!newAccountFirst\} onclick=\{\(\) => run\("create"\)\}/);
+  // The sub-lines are INSIDE the buttons: part of each one's accessible name.
+  for (const [label, sub] of [["Sign in with Passkey", "I already have a WoCo passkey"], ["Create an account", "New to WoCo"]]) {
+    const at = pair.indexOf(sub);
+    assert.ok(pair.indexOf(label) > 0 && at > pair.indexOf(label) && pair.indexOf("</button>", at) > at, sub);
+  }
+  assert.ok(!single.includes('run("create")'), "the single button is Sign in only");
+  assert.match(single, /\{#if sheet === "known"\}<span class="last-used">Last used<\/span>\{\/if\}/, "a known device tags it");
+  const style = read("../src/lib/components/auth/PasskeyLogin.svelte").split("<style>")[1]!;
+  assert.match(style, /\.passkey-btn\.choice \{[^}]*min-height: 3\.75rem;/, "one height");
+  assert.match(style, /\.passkey-btn\.outlined \{[^}]*background: transparent;/);
+});
+
+test("a sign-in that found nothing moves focus to the create choice the sheet shows, and the copy has no em dash", () => {
+  const src = read("../src/lib/components/auth/PasskeyLogin.svelte");
+  const branch = src.slice(src.indexOf('} else if (res.noAssertion && mode === "signin") {'), src.indexOf("} else if (mode === \"create\""));
+  assert.ok(branch.includes('void tick().then(() => (sheet === "new" ? createChoice : createLink)?.focus());'));
+  assert.ok(branch.includes("No passkey was used. If you cancelled, try again - if you're new to WoCo, create an account below."));
+  assert.ok(!branch.includes("—"));
+});
+
+test("the modal: one hint per opening, its layout from sheetState, 'Welcome back' only under no context heading, email tagged only in the email layout", () => {
+  assert.ok(modal.includes("const sheet = $derived(hint ? sheetState(hint, organiserSignIn) : \"new\");"));
+  assert.ok(modal.includes("void readSignInHint().then((h) => {"));
+  const heading = modal.slice(modal.indexOf('<h2 id="login-title">'), modal.indexOf("</h2>"));
+  const order = ['"Signing in"', '"Connect a wallet"', '"Create your account"', '"Add your ticket"', '"Organiser sign in"', 'sheet === "known" ? "Welcome back"', ': "Sign in"'].map((n) => heading.indexOf(n));
+  for (let i = 0; i < order.length; i++) assert.ok(order[i]! > 0 && (i === 0 || order[i]! > order[i - 1]!), `heading step ${i}`);
+  assert.ok(modal.includes('aria-labelledby="login-title"') && !modal.includes('aria-label="Login"'), "the dialog is named by what it says");
+  assert.ok(modal.includes('<p class="context-sub">Organisers sign in with a passkey.</p>'), "'New here?' is the Create button now");
+  assert.match(modal, /<PasskeyLogin\s+organiser=\{organiserSignIn\}\s+\{sheet\}\s+newAccountFirst=\{loginRequest\.context === "invite"\}/);
+  assert.match(email, /<span class="w3a-label">Continue with email or social\{#if lastUsed\}<span class="last-used">Last used<\/span>\{\/if\}<\/span>/);
 });
