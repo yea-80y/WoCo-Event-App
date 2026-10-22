@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import { navigate } from "../router/router.svelte.js";
+  import { runningBuildIndex } from "../boot/build-label";
   import { WOCO_COMPANY_LINE } from "@woco/shared";
   import TicketStub from "../components/icons/sprites/TicketStub.svelte";
   import DoorOpen from "../components/icons/sprites/DoorOpen.svelte";
@@ -28,6 +29,9 @@
   import HomeIcon from "lucide-svelte/icons/house";
   import Users from "lucide-svelte/icons/users-round";
   import Mail from "lucide-svelte/icons/mail";
+
+  // Read once: a handover to a newer build has already rewritten the stamp by mount.
+  const buildIndex = runningBuildIndex();
 </script>
 
 
@@ -478,6 +482,9 @@
     </div>
     <div class="footer-fine mono">© 2026 · YOUR FOLLOWING IS YOURS TO KEEP</div>
     <p class="footer-company">{WOCO_COMPANY_LINE}</p>
+    <!-- Deliberately near-invisible: for us and testers to say which build a screen
+         is from, without a `?v=` address (owner 2026-10-22). -->
+    {#if buildIndex !== null}<p class="footer-build mono">v{buildIndex}</p>{/if}
   </footer>
 </div>
 
@@ -1342,6 +1349,14 @@
   }
 
   /* ── Footer ─────────────────────────────────────────────────────── */
+
+  .footer-build {
+    margin: 0.5rem 0 0;
+    font-size: 0.5625rem;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    opacity: 0.55;
+  }
 
   .footer {
     max-width: calc(1100px + 3rem);
