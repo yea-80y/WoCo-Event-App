@@ -78,7 +78,8 @@ test("a stalled wait brings the picker back in place of the spinner, with Try ag
   assert.ok(email.includes("{escapeLabel}"), "the way out, labelled for the platform");
   const retry = email.slice(email.indexOf("async function retry()"), email.indexOf("</script>"));
   assert.ok(retry.includes("auth.cancelLogin();") && retry.indexOf("await attempt;") > retry.indexOf("auth.cancelLogin();"));
-  assert.ok(retry.indexOf("await login();") > retry.indexOf("await attempt;"), "a fresh attempt only once the stalled one has settled");
+  // The same sign-in again: from WoCo's email screen that is the button they pressed (lastRoute).
+  assert.ok(retry.indexOf("await login(lastRoute);") > retry.indexOf("await attempt;"), "a fresh attempt only once the stalled one has settled");
 });
 
 test("the store reports a stall as its own stage, and the account module closes the SDK's loader on it", () => {

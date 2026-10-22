@@ -24,11 +24,18 @@ import {
   SURVIVOR_INTERFERED_MESSAGE,
   SURVIVOR_STILL_LOADING_MESSAGE,
 } from "./web3auth-survivor.js";
-import { Web3AuthSignInError, WEB3AUTH_TIMED_OUT_MESSAGE, isWeb3AuthCancel } from "./web3auth-signin-error.js";
+import {
+  Web3AuthSignInError,
+  WEB3AUTH_POPUP_BLOCKED_MESSAGE,
+  WEB3AUTH_TIMED_OUT_MESSAGE,
+  isWeb3AuthCancel,
+  isWeb3AuthPopupBlocked,
+} from "./web3auth-signin-error.js";
 import { awaitWeb3AuthSignIn, browserSignInWaitDeps, type SignInWaitDeps } from "./web3auth-signin-wait.js";
 import { markSignInStep } from "./signin-failure.js";
 
-import { adaptWeb3AuthSdk, type KeyProvider, type Web3AuthInstance, type Web3AuthV11Like } from "./web3auth-sdk-adapter.js";
+import { adaptWeb3AuthSdk, AUTH_CONNECTOR, type KeyProvider, type Web3AuthInstance, type Web3AuthV11Like } from "./web3auth-sdk-adapter.js";
+import { directLoginParams, type Web3AuthRoute } from "./web3auth-direct.js";
 import { tapConnectorStartErrors, type TappableLog } from "./web3auth-start-errors.js";
 import {
   browserWeb3AuthUxMode,
@@ -294,8 +301,13 @@ async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ addre
 }
 
 /**
- * Open the Web3Auth PnP modal (email / social). Returns the address and raw
- * private key on success. Does NOT log out — the session stays active for
+ * Open the Web3Auth PnP modal (email / social), or - given a `route` from WoCo's
+ * own panel - start that one sign-in without the modal (web3auth-direct.ts). Every
+ * rule below holds for both: only the call that starts the attempt differs, and it
+ * runs after any surviving session has been ended - which matters doubly here,
+ * because the SDK's connect logs in only when no key is already held
+ * (authConnector `connectWithProvider`), so a survivor would answer it silently.
+ * Returns the address and raw private key on success. Does NOT log out — the session stays active for
  * `restoreWeb3AuthSession` to pick up on the next page load.
  *
  * This function ALWAYS authenticates (#182). An explicit "Continue with
@@ -314,7 +326,7 @@ async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ addre
  * the person in.
  */
 export async function loginWithWeb3Auth(
-  opts: { onStall?: () => void } = {},
+  opts: { onStall?: () => void; route?: Web3AuthRoute } = {},
 ): Promise<{ address: string; privateKey: `0x${string}` }> {
   const NOT_CONFIGURED = "Email login isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).";
   // Pop-up, or (iPhone/iPad) a redirect of this tab that `finishWeb3AuthRedirectSignIn`
@@ -366,9 +378,14 @@ export async function loginWithWeb3Auth(
     if (!tab) throw markSignInStep(new Error("no tab storage for a redirect sign-in"), "sdk", ["redirect", "no-tab-storage"]);
     writeRedirectMarker(tab, _page().location().hash, _page().now());
   }
+  // A route the project does not offer as its default method falls back to the
+  // modal, which handles every other kind itself.
+  const params = opts.route && instance.loginMethods ? directLoginParams(instance.loginMethods(), opts.route) : null;
+  const direct = Boolean(params && instance.connectTo);
+  const started = params && instance.connectTo ? instance.connectTo(AUTH_CONNECTOR, params) : instance.connect();
   const wait = awaitWeb3AuthSignIn<MinimalProvider>(
     instance,
-    instance.connect(),
+    started,
     {
       onStall: () => {
         // The SDK's loader has no close of its own while connecting (#841); its
@@ -398,6 +415,9 @@ export async function loginWithWeb3Auth(
       // `isWeb3AuthSessionLive`: anything the SDK still names is ended or refused,
       // and a logout it cannot run is swallowed.
       if (w.connected) await _endInterferingSession(w);
+      // Said plainly, with one tap to open it: that tap is a fresh gesture, and the
+      // instance is built by then (WoCo's panel only).
+      if (isWeb3AuthPopupBlocked(e)) throw new Web3AuthSignInError(WEB3AUTH_POPUP_BLOCKED_MESSAGE, false, false, true);
       // A non-Error rejection (the auth iframe's LOGIN_FAILED string) is wrapped
       // with its value kept as the cause - that value is the clue the code carries.
       throw markSignInStep(e, "connect", [`st.${w.status}`]);
@@ -414,6 +434,7 @@ export async function loginWithWeb3Auth(
   } finally {
     _abortWait = null;
     _closeModal(w);
+    if (direct && !instance.connected) _resetModalScreen(instance);
   }
   if (!provider) throw new Web3AuthSignInError(SIGN_IN_CANCELLED_MESSAGE, true);
   markWeb3AuthSessionEstablished();
@@ -421,6 +442,21 @@ export async function loginWithWeb3Auth(
     return await _extractKeyAndAddress(provider);
   } catch (e) {
     throw markSignInStep(e, "key");
+  }
+}
+
+/**
+ * Build the sign-in instance before the click, when WoCo's email panel opens: a
+ * browser lets a pop-up open only shortly after a tap, and building takes a
+ * network round. Pop-up devices only - a redirect has no pop-up to lose. Signs
+ * nobody in: a stored session it loads is still ended by the click's own rule.
+ */
+export async function prewarmWeb3AuthSignIn(): Promise<void> {
+  if (_page().uxMode() !== "popup") return;
+  try {
+    await _getInstance("popup");
+  } catch {
+    /* the click builds it again, and reports */
   }
 }
 
@@ -574,6 +610,21 @@ export function cancelWeb3AuthSignIn(): void {
 function _closeModal(w: Web3AuthInstance): void {
   try {
     (w as unknown as { loginModal?: { closeModal?: () => void } }).loginModal?.closeModal?.();
+  } catch {
+    /* best effort */
+  }
+}
+
+/**
+ * A direct start (WoCo's own panel) that did not sign in leaves the modal's own
+ * screen on its "connecting" loader: the SDK shows it on CONNECTING whatever
+ * started the attempt, but clears it after a failure only for one the modal
+ * started itself (loginModal.js `subscribeCoreEvents`). Back to the sign-in
+ * options, or More ways opens on that loader. Internal and guarded, as above.
+ */
+function _resetModalScreen(w: Web3AuthInstance): void {
+  try {
+    (w as unknown as { loginModal?: { setState?: (s: { status: string }) => void } }).loginModal?.setState?.({ status: "initialized" });
   } catch {
     /* best effort */
   }

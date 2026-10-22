@@ -70,6 +70,28 @@ test("the font: the SDK's container font and its sans variable both lose to ours
   assert.match(ours.body, /\n  font-family: var\(--font-body\);/);
 });
 
+test("brand marks in colour: the SDK shows its colour image on hover only, and our rule shows it always (owner 2026-10-22)", () => {
+  const list = read("../node_modules/@web3auth/modal/dist/lib.esm/packages/modal/src/ui/components/SocialLoginList/SocialLoginList.js").replace(/\s+/g, " ");
+  // Apple, GitHub and X have no colour mark: both images are the white one.
+  assert.match(list, /const hoverId = method === AUTH_CONNECTION\.APPLE \|\| method === AUTH_CONNECTION\.GITHUB \|\| method === AUTH_CONNECTION\.TWITTER \? imageId : `login-\$\{method\}-active`;/);
+  assert.match(list, /id: "active-login-img", src: `https:\/\/images\.web3auth\.io\/\$\{hoverId\}\$\{extension\}`, alt: "active-login-img", className: "wta:hidden wta:size-5 wta:object-contain wta:group-hover:block"/);
+  assert.match(list, /id: "login-img", src: `https:\/\/images\.web3auth\.io\/\$\{imageId\}\$\{extension\}`, alt: "login-img", className: "wta:block wta:size-5 wta:object-contain wta:group-hover:hidden"/);
+  const prefix = "#w3a-parent-container:not(#\\#):not(#\\#):not(#\\#):not(#\\#):not(#\\#)";
+  for (const [id, display] of [["#active-login-img", "block"], ["#login-img", "none"]] as const) {
+    const at = appCss.indexOf(`${prefix} ${id} {`);
+    assert.ok(at > 0, `app.css lost the ${id} rule`);
+    assert.match(appCss.slice(at, appCss.indexOf("}", at)), new RegExp(`display: ${display};`));
+  }
+  // Theirs: the container class, four :not()s and utility classes. Ours: the
+  // container id, five :not()s and the image's id - more ids, so ours wins.
+  for (const util of [".wta\\\\:hidden{display:none", ".wta\\\\:block{display:block", ".wta\\\\:group-hover\\\\:block:is("]) {
+    const at = sdkCss.indexOf(util);
+    assert.ok(at > 0, `the SDK no longer has ${util}`);
+    const selector = sdkCss.slice(sdkCss.lastIndexOf("}", at) + 1, at);
+    assert.ok(specificity(selector.trim(), SDK_NOT)[0] < 7, `${selector} now carries as many ids as ours`);
+  }
+});
+
 test("the accent is ours too: CSS maps the SDK's primary scale onto our accent tokens, since a theme option is paid (2026-10-22)", () => {
   const sdk = sdkRuleDeclaring("--app-primary-600");
   assert.ok(beats(specificity(ours.selector, OUR_NOT), specificity(sdk.selector, SDK_NOT)));

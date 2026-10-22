@@ -17,6 +17,7 @@ import {
   type PasskeyAccountKeys,
 } from "@woco/shared";
 import type { PortabilitySecrets } from "./recovery-portability.js";
+import type { Web3AuthRoute } from "./web3auth-direct.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import { AUTH_NOTICE_KEY } from "./auth-notice.js";
 import {
@@ -2234,15 +2235,17 @@ async function loginWeb3(): Promise<boolean> {
 }
 
 /**
- * Open the Web3Auth PnP modal (email / social login). Extracts the raw key
+ * Open the Web3Auth PnP modal (email / social login), or start the one sign-in a
+ * WoCo button named (`route`, web3auth-direct.ts). Extracts the raw key
  * client-side and keeps it in memory as the session signer, sourced from
  * Web3Auth's MPC reconstruction. Web3Auth's stored session enables silent
  * restore on page reload.
  */
-async function loginWeb3Auth(): Promise<boolean> {
+async function loginWeb3Auth(route?: Web3AuthRoute): Promise<boolean> {
   return _runWeb3AuthSignIn("waiting", async (m) => {
     _cancelLogin = m.cancelWeb3AuthSignIn;
     return m.loginWithWeb3Auth({
+      route,
       onStall: () => {
         _loginStage = "stalled";
       },
@@ -2503,6 +2506,14 @@ function prefetchPasskeySdk(): Promise<void> {
  * its click on `init()` + the modal, not on downloading the bundle.
  */
 let _web3authPrefetch: Promise<void> | null = null;
+/** Build the sign-in instance ahead of a tap on WoCo's email panel (web3auth-account.ts). */
+function prewarmWeb3AuthSignIn(): void {
+  void import("./web3auth-account.js").then(
+    (m) => m.prewarmWeb3AuthSignIn(),
+    () => {},
+  );
+}
+
 function prefetchWeb3AuthSdk(): Promise<void> {
   if (!_web3authPrefetch) {
     _web3authPrefetch = import("@web3auth/modal").then(
@@ -5452,6 +5463,7 @@ export const auth = {
   prefetchCoinbaseSdk,
   prefetchPasskeySdk,
   prefetchWeb3AuthSdk,
+  prewarmWeb3AuthSignIn,
   ensureSession,
   resetSession,
   logout,

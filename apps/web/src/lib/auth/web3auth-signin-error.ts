@@ -18,17 +18,23 @@ export const WEB3AUTH_KEY_LOADING_MESSAGE =
 export const WEB3AUTH_TIMED_OUT_MESSAGE =
   "Your Google or email sign-in didn't come back to this page. Tap Try again - or, inside an app's built-in browser, open WoCo in your real browser first.";
 
+/** The browser refused the sign-in window: the panel offers one tap, a fresh gesture, to open it. */
+export const WEB3AUTH_POPUP_BLOCKED_MESSAGE = "Your browser kept the sign-in window closed.";
+
 export class Web3AuthSignInError extends Error {
   /** They closed the modal or the popup: nothing went wrong, so say nothing. */
   readonly cancelled: boolean;
   /** The wait ran out with no result (web3auth-signin-wait.ts): offer a retry and the way out. */
   readonly timedOut: boolean;
+  /** The pop-up never opened (WEB3AUTH_POPUP_BLOCKED_MESSAGE). */
+  readonly blocked: boolean;
 
-  constructor(message: string, cancelled = false, timedOut = false) {
+  constructor(message: string, cancelled = false, timedOut = false, blocked = false) {
     super(message);
     this.name = WEB3AUTH_SIGNIN_ERROR_NAME;
     this.cancelled = cancelled;
     this.timedOut = timedOut;
+    this.blocked = blocked;
   }
 }
 
@@ -41,4 +47,23 @@ export function isWeb3AuthSignInError(e: unknown): e is Web3AuthSignInError {
 export function isWeb3AuthCancel(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
   return e.message === "User closed the modal" || (e as { code?: unknown }).code === 5114;
+}
+
+/**
+ * The browser refused the sign-in pop-up. The sign-in path opens it through
+ * customauth's PopupHandler (re-exported by `@web3auth/auth`), whose `open()`
+ * throws a plain `Error("popup window is blocked")` with no code; the connector
+ * emits that raw error, or wraps it as the cause of its own 5111. `@web3auth/auth`'s
+ * own LoginError 5115 is kept for its other pop-ups. Matched at any depth. A browser
+ * allows a pop-up only shortly after a tap, and a click that waited on the SDK can miss that.
+ */
+export function isWeb3AuthPopupBlocked(e: unknown): boolean {
+  let x: unknown = e;
+  for (let depth = 0; depth < 4 && typeof x === "object" && x !== null; depth++) {
+    if ((x as { code?: unknown }).code === 5115) return true;
+    const message = (x as { message?: unknown }).message;
+    if (typeof message === "string" && message.toLowerCase().includes("popup window is blocked")) return true;
+    x = (x as { cause?: unknown }).cause;
+  }
+  return false;
 }

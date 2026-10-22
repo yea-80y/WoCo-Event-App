@@ -84,6 +84,37 @@ test("the REAL modal's own email button path (onSocialLogin -> this.connectTo) r
   }
 });
 
+test("WoCo's own email button (the adapter's connectTo) reaches the REAL SDK the same way: normalised, same ids, no loginMode (owner 2026-10-22)", async () => {
+  const probe = new mod.Web3Auth(web3AuthOptionsFor(mod, "BPi5_test", "sapphire_mainnet") as never);
+  const owner = connectToOwner(probe);
+  const original = owner.connectTo;
+  const seen: unknown[][] = [];
+  owner.connectTo = async function (...args: unknown[]) {
+    seen.push(args);
+    return null;
+  };
+  try {
+    const sdk = new mod.Web3Auth(web3AuthOptionsFor(mod, "BPi5_test", "sapphire_mainnet") as never);
+    const w = adaptWeb3AuthSdk(sdk as never);
+    const { directLoginParams } = await import("../src/lib/auth/web3auth-direct.ts");
+    const params = directLoginParams(
+      { email_passwordless: { authConnection: EMAIL_PASSWORDLESS, authConnectionId: "w3a-email-passwordless", groupedAuthConnectionId: "w3a-group", isDefault: true } },
+      { kind: "email", email: "Someone@example.com" },
+    );
+    assert.ok(params && w.connectTo);
+    assert.equal(await w.connectTo("auth", params), null, "nothing connected: null, as connect() reports it");
+    assert.equal(seen.length, 1);
+    const [connector, sent, loginMode] = seen[0] as [string, { loginHint: string; authConnectionId: string; groupedAuthConnectionId: string }, unknown];
+    assert.equal(connector, "auth");
+    assert.equal(sent.loginHint, "someone@example.com");
+    assert.equal(sent.authConnectionId, "w3a-email-passwordless");
+    assert.equal(sent.groupedAuthConnectionId, "w3a-group");
+    assert.equal(loginMode, undefined, "the SDK labels it no-modal itself");
+  } finally {
+    owner.connectTo = original;
+  }
+});
+
 const src = (rel: string) => readFileSync(new URL(`../node_modules/${rel}`, import.meta.url), "utf8").replace(/\s+/g, " ");
 const ui = "@web3auth/modal/dist/lib.esm/packages/modal/src";
 

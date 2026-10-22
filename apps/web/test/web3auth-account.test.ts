@@ -27,8 +27,14 @@ const memory = new Map<string, string>();
   removeItem: (k) => void memory.delete(k),
 };
 
-const { loginWithWeb3Auth, restoreWeb3AuthSession, logoutWeb3Auth, cancelWeb3AuthSignIn, setWeb3AuthFactoryForTests } =
-  await import("../src/lib/auth/web3auth-account.js");
+const {
+  loginWithWeb3Auth,
+  restoreWeb3AuthSession,
+  logoutWeb3Auth,
+  cancelWeb3AuthSignIn,
+  setWeb3AuthFactoryForTests,
+  prewarmWeb3AuthSignIn,
+} = await import("../src/lib/auth/web3auth-account.js");
 const { SURVIVOR_STILL_LOADING_MESSAGE, SURVIVOR_INTERFERED_MESSAGE } = await import(
   "../src/lib/auth/web3auth-survivor.js"
 );
@@ -88,10 +94,13 @@ class FakeSdk extends EventEmitter {
   connectCalls = 0;
   logouts: Array<{ cleanup?: boolean } | undefined> = [];
   modalClosed = 0;
+  /** What was put on the SDK's own modal screen (loginModal.setState). */
+  modalStates: Array<{ status?: string }> = [];
   /** A connect() waiting on its pop-up; the modal's close settles it as a cancel
    *  (modalManager.connect's MODAL_VISIBILITY handler) unless it had connected. */
   pendingConnect: { reject: (e: Error) => void } | null = null;
   loginModal = {
+    setState: (st: { status?: string }) => void this.modalStates.push(st),
     closeModal: () => {
       this.modalClosed++;
       if (this.pendingConnect && !LIVE_STATUSES.includes(this.status)) {
@@ -139,8 +148,34 @@ class FakeSdk extends EventEmitter {
     this.emit("connected", { reconnected: false });
   }
 
+  /** Sign-ins started without the chooser (WoCo's email panel), with their params. */
+  connectToCalls: Array<{ name: string; params: Record<string, unknown> }> = [];
+
+  /** The project's login methods, as the modal holds them after init. */
+  loginMethods() {
+    return this.world.methods;
+  }
+
+  async connectTo(name: string, params: Record<string, unknown>) {
+    this.connectToCalls.push({ name, params });
+    if (this.world.popupBlocked === "raw") {
+      // What connectTo rejects with: customauth's PopupHandler error, emitted raw on ERRORED.
+      throw new Error("popup window is blocked");
+    }
+    if (this.world.popupBlocked === "wrapped") {
+      // The connector's own rethrow: 5111 with the raw error as its cause.
+      throw Object.assign(new Error("Failed to login with auth"), { code: 5111, cause: new Error("popup window is blocked") });
+    }
+    return this.login();
+  }
+
   async connect() {
     this.connectCalls++;
+    return this.login();
+  }
+
+  /** What completing the sign-in in the pop-up does, however it was started. */
+  private async login() {
     if (this.spent) throw new Error("connect() on a spent instance - the real SDK never settles here (#803)");
     if (this.world.popupNeverAnswers) {
       // The pop-up's result never reaches this page: connect() waits forever.
@@ -197,6 +232,14 @@ class World {
   logoutNoop = false;
   /** The sign-in pop-up completes (or not) somewhere this page never hears about. */
   popupNeverAnswers = false;
+  /** The browser refuses to open the sign-in pop-up, in either shape the SDK passes it on. */
+  popupBlocked: "raw" | "wrapped" | false = false;
+  /** The project's login methods; email, Google and Apple are dashboard defaults. */
+  methods: Record<string, Record<string, unknown>> | null = {
+    email_passwordless: { authConnection: "email_passwordless", authConnectionId: "w3a-email", isDefault: true },
+    google: { name: "Google", authConnection: "google", authConnectionId: "w3a-google", isDefault: true },
+    apple: { name: "Apple", authConnection: "apple", authConnectionId: "w3a-apple", isDefault: true },
+  };
   page = new Page();
 
   install(): void {
@@ -603,4 +646,93 @@ test("a reload that was slow and then fails reads unavailable first, expired aft
   sdk.emit("rehydration_error");
   assert.deepEqual(await retry, { status: "expired" });
   assert.equal(memory.has("woco:web3auth-session-established"), false);
+});
+
+// --- WoCo's own email / Google / Apple screen (owner 2026-10-22) -----------------
+
+const EMAIL = { kind: "email", email: "name@example.com" } as const;
+const GOOGLE = { kind: "social", connection: "google" } as const;
+
+test("WoCo's email button starts that one sign-in with the modal's params, and the modal never opens", async () => {
+  const r = await loginWithWeb3Auth({ route: EMAIL });
+  const [sdk] = world.built;
+  assert.equal(r.address, addressOf(KEY_B));
+  assert.equal(sdk.connectCalls, 0, "no chooser");
+  assert.equal(sdk.connectToCalls.length, 1);
+  assert.equal(sdk.connectToCalls[0].name, "auth");
+  assert.equal(sdk.connectToCalls[0].params.authConnectionId, "w3a-email");
+  assert.equal(sdk.connectToCalls[0].params.loginHint, "name@example.com");
+});
+
+test("#182 holds for the direct start: a leftover is ended, and the fresh instance signs in the person who tapped", async () => {
+  // The SDK's connect logs in only when no key is held, so this order is what stops a silent adoption.
+  world.stored = { key: KEY_A, loads: "at-init" };
+  const r = await loginWithWeb3Auth({ route: GOOGLE });
+  const [first, second] = world.built;
+  assert.deepEqual(first.logouts, [{ cleanup: true }], "the leftover is ended, never adopted");
+  assert.equal(first.connectToCalls.length, 0, "the spent instance is never asked to sign in");
+  assert.equal(second.connectToCalls.length, 1);
+  assert.equal(r.address, addressOf(KEY_B));
+});
+
+test("a method the project does not offer as its default falls back to the modal", async () => {
+  world.methods = { email_passwordless: { authConnection: "email_passwordless", isDefault: false } };
+  await loginWithWeb3Auth({ route: EMAIL });
+  const [sdk] = world.built;
+  assert.equal(sdk.connectToCalls.length, 0);
+  assert.equal(sdk.connectCalls, 1, "Web3Auth's own chooser runs its other flows");
+});
+
+for (const shape of ["raw", "wrapped"] as const) {
+  test(`a blocked pop-up (${shape}) is said plainly with its own flag, and the next tap on the same instance signs in`, async () => {
+    world.popupBlocked = shape;
+    await assert.rejects(loginWithWeb3Auth({ route: GOOGLE }), (e: unknown) => {
+      assert.ok(isWeb3AuthSignInError(e) && e.blocked && !e.cancelled && !e.timedOut);
+      return true;
+    });
+    world.popupBlocked = false;
+    const r = await loginWithWeb3Auth({ route: GOOGLE });
+    assert.equal(r.address, addressOf(KEY_B));
+    assert.equal(world.built.length, 1, "built once: the second tap goes straight to the pop-up");
+  });
+}
+
+test("closing the Google pop-up is a quiet cancel, as in the modal", async () => {
+  world.connectFails = "popup-closed";
+  await assert.rejects(loginWithWeb3Auth({ route: GOOGLE }), (e: unknown) => {
+    assert.ok(isWeb3AuthSignInError(e) && e.cancelled);
+    return true;
+  });
+});
+
+test("opening the panel builds the instance ahead of the tap, and the tap reuses it", async () => {
+  await prewarmWeb3AuthSignIn();
+  assert.equal(world.built.length, 1);
+  assert.equal(world.built[0].connectToCalls.length, 0, "a warm-up signs nobody in");
+  await loginWithWeb3Auth({ route: EMAIL });
+  assert.equal(world.built.length, 1);
+  assert.equal(world.built[0].connectToCalls.length, 1);
+});
+
+test("a warm-up that fails throws nothing, and the tap builds again", async () => {
+  world.failInit = true;
+  await prewarmWeb3AuthSignIn();
+  world.failInit = false;
+  await loginWithWeb3Auth({ route: EMAIL });
+  assert.equal(world.built.length, 1);
+});
+
+test("a direct start that did not sign in puts the modal's own screen back, so More ways opens on its options", async () => {
+  world.connectFails = "popup-closed";
+  await assert.rejects(loginWithWeb3Auth({ route: GOOGLE }));
+  assert.deepEqual(world.built[0].modalStates, [{ status: "initialized" }]);
+  world.connectFails = null;
+  await loginWithWeb3Auth({ route: GOOGLE });
+  assert.equal(world.built[0].modalStates.length, 1, "a sign-in that worked leaves it alone");
+});
+
+test("the modal's own attempts never need it: the SDK resets its screen itself", async () => {
+  world.connectFails = "popup-closed";
+  await assert.rejects(loginWithWeb3Auth());
+  assert.deepEqual(world.built[0].modalStates, []);
 });

@@ -17,6 +17,8 @@
  * passes straight through. Pure: no SDK import, so it runs under node:test.
  */
 
+import type { LoginMethodConfig } from "./web3auth-direct.js";
+
 export type KeyProvider = { request: (args: { method: string }) => Promise<unknown> };
 
 /** The v11 instance, as far as this module reads it. */
@@ -50,6 +52,10 @@ export type Web3AuthInstance = {
   getUserInfo(): Promise<unknown>;
   /** The SDK's modal (internal, guarded at every use): closed by hand (#803, #841). */
   readonly loginModal?: { closeModal?: () => void };
+  /** One sign-in started without the chooser (web3auth-direct.ts); settles as connect() does. */
+  connectTo?(connectorName: string, loginParams: Record<string, unknown>): Promise<KeyProvider | null>;
+  /** The project's login methods as the modal holds them after init, or null. */
+  loginMethods?(): Record<string, LoginMethodConfig> | null;
 };
 
 /** The email/social login's connector name (`WALLET_CONNECTORS.AUTH`). */
@@ -124,6 +130,14 @@ export function adaptWeb3AuthSdk(sdk: Web3AuthV11Like): Web3AuthInstance {
     // v11 resolves with a connection (null when nothing connected); the key is the
     // auth connector's, read the same way as `provider`.
     connect: async () => ((await sdk.connect()) ? keyProvider() : null),
+    // Through the normalising wrapper above. No loginMode: the SDK then labels it
+    // "no-modal", which only tells its modal UI to stay out of the way (loginModal.js).
+    connectTo: async (connectorName, loginParams) => ((await sdk.connectTo?.(connectorName, loginParams)) ? keyProvider() : null),
+    // modalManager `filterConnectors` builds these from the dashboard's methods
+    // during init(); internal, so read defensively.
+    loginMethods: () =>
+      (sdk as unknown as { modalConfig?: { connectors?: Record<string, { loginMethods?: Record<string, LoginMethodConfig> }> } })
+        .modalConfig?.connectors?.[AUTH_CONNECTOR]?.loginMethods ?? null,
     logout: (options) => sdk.logout(options),
     getUserInfo: () => sdk.getUserInfo(),
     on: (event, fn) => void sdk.on(event, fn),
