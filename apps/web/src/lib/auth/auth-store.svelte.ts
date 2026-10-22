@@ -5252,13 +5252,17 @@ async function clearAllAuth(): Promise<void> {
       console.warn(`[auth] sign-out step "${name}" failed (continuing):`, e);
     }
   };
+  // The committed kind as stored, read before the identity keys go: `init()` clears an
+  // expired or mismatched session before it sets `_kind`, and an email user back after
+  // 30 days is who the sheet's "Last used" is for. Only a commit writes AUTH_KIND.
+  const storedKind = await getKV<AuthKind>(StorageKeys.AUTH_KIND).catch(() => null);
   await step("identity-keys", () =>
     Promise.all([delKV(StorageKeys.AUTH_KIND), delKV(StorageKeys.PARENT_ADDRESS), delKV(StorageKeys.SEED_ADDRESS)]),
   );
   // After the identity keys, before the kind resets: only a COMMITTED sign-in sets
   // `_kind`, so this records the way in that actually opened this account (linked,
   // recovered and upgraded ones included). The sign-in sheet's hint only.
-  const wayIn = wayInOf(_kind);
+  const wayIn = wayInOf(_kind !== "none" ? _kind : storedKind);
   if (wayIn) await step("last-way-in", () => putKV(StorageKeys.LAST_WAY_IN, wayIn));
   await step("session", () => clearSession());
   // Dropping the seed drops the feed signer, the issuing key and the encryption

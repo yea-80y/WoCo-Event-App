@@ -90,6 +90,12 @@ test("the rules refuse another channel, a second script, or a CSP that does not 
     ["a link it points", 'document.getElementById("home").href="https://x.example"'],
     ["a link it points", 'e.href = "https://x.example"'],
     ["a link it points", 'e.setAttribute("href","https://x.example")'],
+    ["a link it points", 'home.href += "?k=" + k'],
+    ["a link it points", 'home.host = "x.example"'],
+    ["a link it points", "home.search ??= k"],
+    ["markup it builds", 'main.innerHTML = "<a href=x>"'],
+    ["markup it builds", 'main.insertAdjacentHTML("beforeend", "<a>")'],
+    ["a click it fires", "home.click()"],
   ]) {
     const page = authWindowHtml(`"https://auth.woco.eth.limo";"auth.woco.eth.limo";["https://woco.eth.limo"];${code}`, AUTH_WINDOW_PRODUCTION);
     assert.ok(authWindowProblems(page, AUTH_WINDOW_PRODUCTION).some((p) => p.includes(channel)), channel);
@@ -99,7 +105,10 @@ test("the rules refuse another channel, a second script, or a CSP that does not 
   assert.equal(authWindowHome(AUTH_WINDOW_PRODUCTION), "https://woco.eth.limo/");
   assert.ok(authWindowProblems(ok.replace("</main>", '<a href="https://x.example">x</a></main>'), AUTH_WINDOW_PRODUCTION).some((p) => link.test(p)), "a second link");
   assert.ok(authWindowProblems(ok.replace('href="https://woco.eth.limo/"', 'href="https://x.example/"'), AUTH_WINDOW_PRODUCTION).some((p) => link.test(p)), "another target");
-  assert.ok(authWindowProblems(ok.replace('href="https://woco.eth.limo/" hidden>', 'href="https://woco.eth.limo/">'), AUTH_WINDOW_PRODUCTION).some((p) => link.test(p)), "shown from the start");
+  assert.ok(authWindowProblems(ok.replace('href="https://woco.eth.limo/" target="_top" hidden>', 'href="https://woco.eth.limo/" target="_top">'), AUTH_WINDOW_PRODUCTION).some((p) => link.test(p)), "shown from the start");
+  assert.ok(authWindowProblems(ok.replace(' target="_top" hidden>', " hidden>"), AUTH_WINDOW_PRODUCTION).some((p) => link.test(p)), "never inside a frame");
+  // `#home { display: block }` would beat a plain [hidden] rule and show the link in every state.
+  assert.match(ok, /\[hidden\] \{ display: none !important; \}/);
   assert.ok(authWindowProblems(ok.replace(/script-src 'sha256-[^']+'/, "script-src 'sha256-AAAA'"), AUTH_WINDOW_PRODUCTION).some((p) => /CSP/.test(p)));
 });
 

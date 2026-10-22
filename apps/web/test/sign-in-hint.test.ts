@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sheetState, signInHint, wayInOf } from "../src/lib/auth/sign-in-hint.js";
+import { readSignInHint, sheetState, signInHint, wayInOf } from "../src/lib/auth/sign-in-hint.js";
 
 const RP = "auth.woco.eth.limo";
 
@@ -52,15 +52,27 @@ test("only the two ways in the sheet offers are recorded", () => {
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
-test("written once, at sign-out: after the identity keys, before the kind resets, never deleted", () => {
+test("a blocked store still answers, as a device we know nothing about", async () => {
+  const never = <T>() => new Promise<T | null>(() => {});
+  assert.deepEqual(await readSignInHint(never, 20), { passkeyHere: false, last: null });
+  const failing = <T>(): Promise<T | null> => Promise.reject(new Error("no IndexedDB"));
+  assert.deepEqual(await readSignInHint(failing, 1000), { passkeyHere: false, last: null });
+  const stored: Record<string, unknown> = { "woco:auth:passkey-credential": { rpId: "auth.woco.eth.limo" }, "woco:auth:last-way-in": "email" };
+  const get = async <T>(k: string) => (stored[k] ?? null) as T | null;
+  assert.deepEqual(await readSignInHint(get, 1000), { passkeyHere: true, last: "email" });
+});
+
+test("written once, at sign-out: the stored kind read before the identity keys, the write after them and before the kind resets, never deleted", () => {
   const store = read("../src/lib/auth/auth-store.svelte.ts");
   const start = store.indexOf("async function clearAllAuth(): Promise<void> {");
   const body = store.slice(start, store.indexOf("\n}\n", start));
+  const stored = body.indexOf("const storedKind = await getKV<AuthKind>(StorageKeys.AUTH_KIND).catch(() => null);");
   const keys = body.indexOf('await step("identity-keys"');
   const write = body.indexOf('await step("last-way-in", () => putKV(StorageKeys.LAST_WAY_IN, wayIn));');
-  const kind = body.indexOf("const wayIn = wayInOf(_kind);");
+  // init() clears an expired session before it sets `_kind`: the stored kind covers it.
+  const kind = body.indexOf('const wayIn = wayInOf(_kind !== "none" ? _kind : storedKind);');
   const reset = body.indexOf('_kind = "none";');
-  assert.ok(start > 0 && keys > 0 && kind > keys && write > kind && reset > write, "identity keys, then the kind read, then the write, then the reset");
+  assert.ok(start > 0 && stored > 0 && keys > stored && kind > keys && write > kind && reset > write, "stored kind, identity keys, the kind read, the write, the reset");
   assert.equal(store.split("StorageKeys.LAST_WAY_IN").length - 1, 1, "the store's only mention is that write");
   assert.ok(!/delKV\(StorageKeys\.LAST_WAY_IN/.test(store));
 });

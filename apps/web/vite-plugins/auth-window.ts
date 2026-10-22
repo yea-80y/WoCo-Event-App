@@ -80,7 +80,8 @@ export function authWindowCsp(scriptHash: string, styleHash: string): string {
 /** The page's one link: to the app, for a window nothing opened (window.ts). Static in the
  *  HTML, never built or pointed by the script (`DENIED`, `authWindowProblems`). */
 export const authWindowHome = (target: AuthWindowTarget) => `${target.openers[0]}/`;
-const homeLink = (target: AuthWindowTarget) => `<a id="home" href="${authWindowHome(target)}" hidden>`;
+// `_top`: in a frame (which the window refuses to run in) the app must not load inside it.
+const homeLink = (target: AuthWindowTarget) => `<a id="home" href="${authWindowHome(target)}" target="_top" hidden>`;
 
 export function authWindowHtml(code: string, target: AuthWindowTarget): string {
   const script = escapeInlineScript(code);
@@ -159,7 +160,9 @@ const DENIED: Array<[string, RegExp]> = [
   ["the history API", /history\.(pushState|replaceState)/],
   ["the opener's location", /opener\.location/],
   ["a form or link it builds", /createElement\(\s*["'`](a|form|iframe|img|script|link)["'`]/],
-  ["a link it points", /\.href\s*=[^=]|setAttribute\s*\(\s*["'`](href|src|action)["'`]/],
+  ["a link it points", /\.(href|host|hostname|protocol|pathname|search|hash|port|username|password)\s*(?:[+\-*\/%&|^]|\*\*|<<|>>>?|\?\?|&&|\|\|)?=[^=]|setAttribute\s*\(\s*["'`](href|src|action)["'`]/],
+  ["markup it builds", /innerHTML|outerHTML|insertAdjacentHTML|document\.write|DOMParser/],
+  ["a click it fires", /\.click\s*\(/],
   ["dynamic import()", /\bimport\s*\(/],
   ["eval / Function", /\beval\s*\(|new Function\s*\(/],
   ["a wildcard postMessage target", /["'`]\*["'`]/],

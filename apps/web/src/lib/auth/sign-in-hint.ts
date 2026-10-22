@@ -45,11 +45,17 @@ export function signInHint(pin: { rpId?: unknown } | null, last: unknown, rpId: 
   return { passkeyHere: pin?.rpId === rpId, last: last === "passkey" || last === "email" ? last : null };
 }
 
-/** Never throws: an unreadable store reads as a device we know nothing about. */
-export async function readSignInHint(): Promise<SignInHint> {
-  const [pin, last] = await Promise.all([
-    getKV<{ rpId?: string }>(StorageKeys.PASSKEY_CREDENTIAL).catch(() => null),
-    getKV<string>(StorageKeys.LAST_WAY_IN).catch(() => null),
-  ]);
-  return signInHint(pin, last, new URL(PASSKEY_WINDOW).hostname);
+const UNKNOWN: SignInHint = { passkeyHere: false, last: null };
+
+/**
+ * Never throws, and answers within `timeoutMs`: an unreadable or blocked store reads as
+ * a device we know nothing about, rather than a sheet that stays blank (it renders
+ * nothing until this answers).
+ */
+export function readSignInHint(get: <T>(key: string) => Promise<T | null> = getKV, timeoutMs = 1000): Promise<SignInHint> {
+  const read = Promise.all([
+    get<{ rpId?: string }>(StorageKeys.PASSKEY_CREDENTIAL).catch(() => null),
+    get<string>(StorageKeys.LAST_WAY_IN).catch(() => null),
+  ]).then(([pin, last]) => signInHint(pin, last, new URL(PASSKEY_WINDOW).hostname));
+  return Promise.race([read, new Promise<SignInHint>((resolve) => setTimeout(() => resolve(UNKNOWN), timeoutMs))]);
 }
