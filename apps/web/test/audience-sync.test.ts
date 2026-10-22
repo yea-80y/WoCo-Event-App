@@ -632,7 +632,7 @@ test("no confirmed key generation to seal with: no write, nothing marked", async
 test("an unreadable event, order or check stops only itself", async () => {
   const yes = ["a@x.com", "c@x.com", "d@x.com", "e@x.com"];
   const w = world({
-    events: [event("A", "2026-01-01"), event("B", "2026-02-01"), event("C", "2026-03-01"), event("D", "2026-04-01"), event("E", "2026-05-01")],
+    events: [event("A", "2026-04-01"), event("B", "2026-05-01"), event("C", "2026-06-01"), event("D", "2026-07-01"), event("E", "2026-08-01")],
     orders: {
       A: "throw",
       B: [order({ claimerEmail: "b@x.com" })],
@@ -786,9 +786,9 @@ test("a list stamp that cannot be read trusts no mark", async () => {
 test("an event past the longest order retention is skipped without a single request", async () => {
   const w = world({
     events: [
-      event("old", "2025-08-01"), // ended 14 months ago: 12-month retention + 1 has passed
-      { ...event("long", "2025-07-01"), endDate: "2025-10-01" } as EventDirectoryEntry, // ends 12.5 months ago
-      event("recent", "2025-11-01"),
+      event("old", "2026-03-01"), // ended 7.5 months ago: 6-month retention + 1 has passed
+      { ...event("long", "2026-02-01"), endDate: "2026-03-20" } as EventDirectoryEntry, // ends just under 7 months ago
+      event("recent", "2026-05-01"),
     ],
     orders: { old: [order({ claimerEmail: "old@x.com" })], long: [order({ claimerEmail: "long@x.com" })], recent: [order({ claimerEmail: "new@x.com" })] },
     fields: { old: [], long: [], recent: [] },

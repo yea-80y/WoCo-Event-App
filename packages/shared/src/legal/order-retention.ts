@@ -9,11 +9,11 @@
  * on cannot disagree.
  */
 
-import { NOTICE_RETENTION_MONTHS, type NoticeRetentionMonths } from "./organiser-notice.js";
+import { ORDER_RETENTION_MONTHS, type NoticeRetentionMonths } from "./organiser-notice.js";
 
-/** Only a period an organiser can actually pick is an instruction to erase; anything else never is. */
+/** Only the period a notice can carry is an instruction to erase; anything else never is. */
 export function isNoticeRetentionMonths(v: unknown): v is NoticeRetentionMonths {
-  return (NOTICE_RETENTION_MONTHS as readonly unknown[]).includes(v);
+  return v === ORDER_RETENTION_MONTHS;
 }
 
 /** `ms` plus `months` UTC calendar months, time of day kept, the day clamped to the month's end. */

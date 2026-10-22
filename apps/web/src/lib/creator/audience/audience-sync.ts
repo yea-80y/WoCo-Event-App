@@ -31,7 +31,7 @@
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
-import { NOTICE_RETENTION_MONTHS, addCalendarMonthsUtc } from "@woco/shared";
+import { ORDER_RETENTION_MONTHS, addCalendarMonthsUtc } from "@woco/shared";
 import type {
   EventDirectoryEntry,
   MarketingCheckResult,
@@ -53,11 +53,10 @@ import { applyDrain, buildAttendeeContacts, type DecryptedClaim } from "./attend
 export const SYNC_INTERVAL_MS = 60 * 60_000;
 
 /**
- * An event that ended longer ago than the longest order retention an organiser
- * can pick, plus a month, has no order answers left to add from (#547): skipped
- * without a single request.
+ * An event that ended longer ago than the order retention, plus a month, has
+ * no order answers left to add from (#547): skipped without a single request.
  */
-export const RETENTION_HORIZON_MONTHS = Math.max(...NOTICE_RETENTION_MONTHS) + 1;
+export const RETENTION_HORIZON_MONTHS = ORDER_RETENTION_MONTHS + 1;
 
 export function pastRetention(ev: Pick<EventDirectoryEntry, "startDate" | "endDate">, now: number): boolean {
   const end = Date.parse(ev.endDate || ev.startDate);
