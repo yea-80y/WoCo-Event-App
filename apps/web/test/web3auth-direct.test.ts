@@ -42,6 +42,9 @@ const METHODS = {
   email_passwordless: method("email_passwordless", "Email Passwordless"),
   google: method("google", "Google"),
   apple: method("apple", "Apple"),
+  facebook: method("facebook", "Facebook"),
+  twitter: method("twitter", "Twitter"),
+  discord: method("discord", "Discord"),
 };
 
 test("SDK: a default login method is the dashboard's connection, as the modal's buttons receive it", () => {
@@ -76,7 +79,7 @@ test("Google and Apple: the modal's row and ours send the same fields from the s
     login,
     /loginParams: \{ authConnection: connectorConfig\.authConnection \|\| method, authConnectionId: connectorConfig\.authConnectionId, groupedAuthConnectionId: connectorConfig\.groupedAuthConnectionId, extraLoginOptions: connectorConfig\.extraLoginOptions, name, login_hint: "" \},/,
   );
-  for (const connection of ["google", "apple"] as const) {
+  for (const connection of ["google", "apple", "facebook", "twitter", "discord"] as const) {
     const m = METHODS[connection];
     assert.deepEqual(directLoginParams(METHODS, { kind: "social", connection }), {
       authConnection: connection,

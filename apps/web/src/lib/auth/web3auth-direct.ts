@@ -9,7 +9,8 @@
  * Pure: no SDK import, so it runs under node:test.
  */
 
-export type DirectConnection = "google" | "apple";
+/** The dashboard's default social connections WoCo's screen offers one tap each ("twitter" is X). */
+export type DirectConnection = "google" | "apple" | "facebook" | "twitter" | "discord";
 
 /** Which sign-in a WoCo button asked for; no route = Web3Auth's own chooser. */
 export type Web3AuthRoute = { kind: "email"; email: string } | { kind: "social"; connection: DirectConnection };
