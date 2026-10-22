@@ -153,12 +153,15 @@
           <button type="button" class="btn btn--primary" onclick={() => login(lastRoute)}>Open the sign-in window</button>
         </div>
       {/if}
+      <!-- Every way in on this screen leaves WoCo for Web3Auth: Google's screen says
+           "continue to web3auth.io" (its Google registration, not ours) and the email
+           code is entered on their page. Said once, before any tap, naming both brands
+           they will meet, so the hand-off is expected (owner 2026-10-22). -->
+      <p class="handoff-note">
+        Sign-in by email, Google or Apple is provided by <strong>Web3Auth (MetaMask)</strong>, an outside service. You'll see their name during sign-in.
+      </p>
       <!-- Google refuses an app's built-in browser (#812), so there it is the email box first. -->
       {#if !inApp}
-        <!-- Google's own screen says "continue to web3auth.io": its Google sign-in is
-             Web3Auth's registration, not ours, and no page of ours can change that
-             screen. Said before the tap, so the name is expected, not a surprise. -->
-        <p class="handoff-note">Sign-in with Google or Apple is handled by Web3Auth, our sign-in partner - you'll see their name next.</p>
         <button type="button" class="w3a-btn provider" onclick={() => login({ kind: "social", connection: "google" })} disabled={auth.busy}>
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
@@ -408,11 +411,19 @@
   }
 
   .handoff-note {
-    margin: 0 0 0.125rem;
-    font-size: 0.75rem;
+    margin: 0 0 0.25rem;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    font-size: 0.8125rem;
     line-height: 1.45;
-    color: var(--text-muted);
-    text-align: center;
+    color: var(--text-secondary);
+  }
+
+  .handoff-note strong {
+    color: var(--text);
+    font-weight: 600;
   }
 
   .provider {

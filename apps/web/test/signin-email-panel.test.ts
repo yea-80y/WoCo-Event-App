@@ -59,11 +59,13 @@ test("a blocked pop-up offers one tap that repeats the same sign-in", () => {
   assert.ok(script.includes("} else if (isWeb3AuthSignInError(e) && e.blocked) {\n        blocked = true;"));
 });
 
-test("the hand-off to Web3Auth is said before the Google and Apple buttons, never after", () => {
-  const gated = panel.slice(panel.indexOf("{#if !inApp}"), panel.indexOf("<form"));
-  const note = gated.indexOf('<p class="handoff-note">');
-  assert.ok(note > 0 && note < gated.indexOf('connection: "google"'), "above the buttons it explains");
-  assert.ok(gated.includes("handled by Web3Auth, our sign-in partner - you'll see their name next."));
+test("the hand-off to Web3Auth (MetaMask) is said first, for every way in on the screen - in-app browsers too", () => {
+  const note = panel.indexOf('<p class="handoff-note">');
+  assert.ok(note > 0, "the line is there");
+  assert.ok(note < panel.indexOf("{#if !inApp}"), "outside the in-app gate: email goes through Web3Auth as well");
+  assert.ok(note < panel.indexOf('connection: "google"') && note < panel.indexOf("<form"), "before any button that leaves WoCo");
+  const text = panel.slice(note, panel.indexOf("</p>", note)).replace(/\s+/g, " ");
+  assert.ok(text.includes("Sign-in by email, Google or Apple is provided by <strong>Web3Auth (MetaMask)</strong>, an outside service. You'll see their name during sign-in."));
 });
 
 test("the screen ends with Web3Auth's own Powered by MetaMask mark, as their modal does", () => {
