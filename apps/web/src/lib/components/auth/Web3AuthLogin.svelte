@@ -226,7 +226,7 @@
     <!-- Web3Auth's modal offers email, SMS and every social sign-in the project
          dashboard enables (15 on 2026-10-20, read from its configuration API).
          The marks are the ones UK buyers know best; "+ more" stands for the rest. -->
-    <button class="w3a-btn w3a-btn--main" onclick={choose} onpointerenter={() => onexpand && auth.prewarmWeb3AuthSignIn()} disabled={auth.busy}>
+    <button class="w3a-btn w3a-btn--main" onclick={choose} disabled={auth.busy}>
       {#if auth.busy}
         <span class="w3a-busy"><span class="spinner"></span>Connecting…</span>
       {:else}

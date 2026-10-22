@@ -158,12 +158,13 @@ class FakeSdk extends EventEmitter {
 
   async connectTo(name: string, params: Record<string, unknown>) {
     this.connectToCalls.push({ name, params });
-    if (this.world.popupBlocked) {
-      // The auth connector's 5111 around PopupHandler's 5115.
-      throw Object.assign(new Error("Failed to login with auth"), {
-        code: 5111,
-        cause: Object.assign(new Error("Popup was blocked."), { code: 5115 }),
-      });
+    if (this.world.popupBlocked === "raw") {
+      // What connectTo rejects with: customauth's PopupHandler error, emitted raw on ERRORED.
+      throw new Error("popup window is blocked");
+    }
+    if (this.world.popupBlocked === "wrapped") {
+      // The connector's own rethrow: 5111 with the raw error as its cause.
+      throw Object.assign(new Error("Failed to login with auth"), { code: 5111, cause: new Error("popup window is blocked") });
     }
     return this.login();
   }
@@ -231,8 +232,8 @@ class World {
   logoutNoop = false;
   /** The sign-in pop-up completes (or not) somewhere this page never hears about. */
   popupNeverAnswers = false;
-  /** The browser refuses to open the sign-in pop-up. */
-  popupBlocked = false;
+  /** The browser refuses to open the sign-in pop-up, in either shape the SDK passes it on. */
+  popupBlocked: "raw" | "wrapped" | false = false;
   /** The project's login methods; email, Google and Apple are dashboard defaults. */
   methods: Record<string, Record<string, unknown>> | null = {
     email_passwordless: { authConnection: "email_passwordless", authConnectionId: "w3a-email", isDefault: true },
@@ -682,17 +683,19 @@ test("a method the project does not offer as its default falls back to the modal
   assert.equal(sdk.connectCalls, 1, "Web3Auth's own chooser runs its other flows");
 });
 
-test("a blocked pop-up is said plainly with its own flag, and the next tap on the same instance signs in", async () => {
-  world.popupBlocked = true;
-  await assert.rejects(loginWithWeb3Auth({ route: GOOGLE }), (e: unknown) => {
-    assert.ok(isWeb3AuthSignInError(e) && e.blocked && !e.cancelled && !e.timedOut);
-    return true;
+for (const shape of ["raw", "wrapped"] as const) {
+  test(`a blocked pop-up (${shape}) is said plainly with its own flag, and the next tap on the same instance signs in`, async () => {
+    world.popupBlocked = shape;
+    await assert.rejects(loginWithWeb3Auth({ route: GOOGLE }), (e: unknown) => {
+      assert.ok(isWeb3AuthSignInError(e) && e.blocked && !e.cancelled && !e.timedOut);
+      return true;
+    });
+    world.popupBlocked = false;
+    const r = await loginWithWeb3Auth({ route: GOOGLE });
+    assert.equal(r.address, addressOf(KEY_B));
+    assert.equal(world.built.length, 1, "built once: the second tap goes straight to the pop-up");
   });
-  world.popupBlocked = false;
-  const r = await loginWithWeb3Auth({ route: GOOGLE });
-  assert.equal(r.address, addressOf(KEY_B));
-  assert.equal(world.built.length, 1, "built once: the second tap goes straight to the pop-up");
-});
+}
 
 test("closing the Google pop-up is a quiet cancel, as in the modal", async () => {
   world.connectFails = "popup-closed";

@@ -50,14 +50,19 @@ export function isWeb3AuthCancel(e: unknown): boolean {
 }
 
 /**
- * Web3Auth's "Popup was blocked" (`LoginError` 5115, PopupHandler.open), which the
- * auth connector passes on as the cause of its own 5111. A browser allows a pop-up
- * only shortly after a tap, and a click that waited on the SDK can miss that.
+ * The browser refused the sign-in pop-up. The sign-in path opens it through
+ * customauth's PopupHandler (re-exported by `@web3auth/auth`), whose `open()`
+ * throws a plain `Error("popup window is blocked")` with no code; the connector
+ * emits that raw error, or wraps it as the cause of its own 5111. `@web3auth/auth`'s
+ * own LoginError 5115 is kept for its other pop-ups. Matched at any depth. A browser
+ * allows a pop-up only shortly after a tap, and a click that waited on the SDK can miss that.
  */
 export function isWeb3AuthPopupBlocked(e: unknown): boolean {
   let x: unknown = e;
   for (let depth = 0; depth < 4 && typeof x === "object" && x !== null; depth++) {
     if ((x as { code?: unknown }).code === 5115) return true;
+    const message = (x as { message?: unknown }).message;
+    if (typeof message === "string" && message.toLowerCase().includes("popup window is blocked")) return true;
     x = (x as { cause?: unknown }).cause;
   }
   return false;

@@ -75,3 +75,8 @@ test("the screen ends with Web3Auth's own Powered by MetaMask mark, as their mod
   assert.ok(footer.includes('src: "https://images.web3auth.io/metamask-footer-logo-dark.svg"'));
   assert.ok(read("../vite-plugins/csp.ts").includes('"https://images.web3auth.io", // login-method icons in the Web3Auth modal'));
 });
+
+test("nothing of Web3Auth loads before the person picks email or social: no hover warm-up (cookie notice: 'only if you sign in')", () => {
+  assert.ok(!email.includes("onpointerenter"), "a hover is not a choice");
+  assert.ok(read("../../../docs/legal/COOKIE_NOTICE.md").includes("Only if you sign in with social or email"));
+});

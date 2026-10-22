@@ -128,3 +128,11 @@ test("SDK: why a direct start must reset the modal's screen - CONNECTING sets it
   assert.match(src(`${ui}/ui/interfaces.js`), /INITIALIZED: "initialized",/);
   assert.match(modal, /_defineProperty\(this, "open", \(\) => \{ var _this\$analytics, _this\$uiConfig\$wallet, _this\$uiConfig\$wallet2; this\.setState\(\{ modalVisibility: true \}\);/, "opening it does not reset the screen");
 });
+
+test("SDK: a blocked sign-in pop-up is customauth's plain Error, not a coded LoginError (Fable, #959)", () => {
+  // The connector's PopupHandler comes from @web3auth/auth, which re-exports customauth wholesale.
+  assert.match(src("@web3auth/no-modal/dist/lib.esm/connectors/auth-connector/authConnector.js"), /import \{[^}]*\bPopupHandler\b[^}]*\} from '@web3auth\/auth';/);
+  assert.match(src("@web3auth/auth/dist/lib.esm/index.js"), /^export \* from '@toruslabs\/customauth';/);
+  assert.match(src("@toruslabs/customauth/dist/lib.esm/index.js"), /export \{ PopupHandler \} from '\.\/utils\/PopupHandler\.js';/);
+  assert.match(src("@toruslabs/customauth/dist/lib.esm/utils/PopupHandler.js"), /if \(!this\.window\) throw new Error\("popup window is blocked"\);/);
+});
