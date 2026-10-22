@@ -27,8 +27,9 @@ Account keys leave the window only (i) to the window that opened it, captured on
 origin is exactly `https://woco.eth.limo`, (iii) by `postMessage` to that literal origin, (iv) once, (v)
 after a tap in the window, (vi) from a page running only on `https://auth.woco.eth.limo`, unframed, under a
 hash CSP (`default-src 'none'`, `connect-src 'none'`, `webrtc 'block'`), with no storage, network, URL data or other channel;
-(vii) the raw PRF output never leaves at all. `test/auth-window-artifact.test.ts` builds the real file and
-runs it in a sandbox against these.
+(vii) the raw PRF output never leaves at all. Its one link is static in the HTML, goes to the app, and shows only
+when nothing opened the window; the build refuses a script that points or builds one. `test/auth-window-artifact.test.ts`
+builds the real file and runs it in a sandbox against these.
 
 What crosses, per answer (`PasskeyAccountKeys`): the owner key `keccak256(prf)`, the seed of an account
 this passkey made, the seed lock, the box seed (#186), the portability SOC key and HPKE seed - private keys
