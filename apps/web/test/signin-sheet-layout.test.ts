@@ -66,8 +66,10 @@ test("the modal hands the email sign-in to PasskeyLogin as its `alternative`, wi
   const guard = body.indexOf("{#if !organiserSignIn}", snippet);
   const button = body.indexOf("<Web3AuthLogin", guard);
   assert.ok(snippet > 0 && guard > snippet && button > guard, "snippet, then the guard, then the button");
-  assert.ok(body.includes('<Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} lastUsed={sheet === "email"} />'));
-  assert.equal(modal.split("<Web3AuthLogin").length - 1, 2, "one for a real browser, one for an in-app one - never a second copy");
+  assert.ok(body.includes('<Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} lastUsed={sheet === "email"} onexpand={() => (view = "email")} />'));
+  // The two entry buttons open WoCo's email screen, the third copy (owner 2026-10-22).
+  assert.equal(modal.split("<Web3AuthLogin").length - 1, 3, "a real browser's entry, an in-app one's, and the email screen - never a fourth");
+  assert.equal(modal.split("<Web3AuthLogin panel").length - 1, 1, "one email screen");
 });
 
 test("default order: passkey, its error, email / Google, the ready notice, then create / add device / help, then Secured by", () => {

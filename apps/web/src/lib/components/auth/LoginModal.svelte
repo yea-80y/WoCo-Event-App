@@ -129,7 +129,9 @@
   // a requirement to someone who has never held one, so the first screen only
   // offers what works for everybody. Mounted on demand: nothing a wallet needs
   // is fetched unless someone asks for it.
-  let view = $state<"main" | "wallet">("main");
+  // Email and social get one too (owner 2026-10-22): WoCo's own Google / Apple /
+  // email screen, in place of Web3Auth's chooser, one tap from the main screen.
+  let view = $state<"main" | "wallet" | "email">("main");
 
   // Keyboard users land on the way back, not on the page behind the modal.
   function focusOnMount(node: HTMLElement) {
@@ -361,6 +363,7 @@
                 onstart={() => start("email")}
                 onsettle={settle}
                 inApp={inAppBrowser}
+                onexpand={() => (view = "email")}
               />
             {:else}
               <p class="in-app-invite">Organiser accounts use a passkey, which this browser can't create. Open WoCo in your browser to continue.</p>
@@ -379,7 +382,7 @@
             {#snippet alternative()}
               <!-- Organising needs a passkey account (#746 step 5): an organiser sign-in offers no other way in. -->
               {#if !organiserSignIn}
-                <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} lastUsed={sheet === "email"} />
+                <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} lastUsed={sheet === "email"} onexpand={() => (view = "email")} />
               {/if}
             {/snippet}
           </PasskeyLogin>
@@ -396,6 +399,15 @@
           {/if}
           {/if}
         </div>
+
+        {#if view === "email"}
+          <div class="methods">
+            <button type="button" class="text-btn back-btn" onclick={() => (view = "main")} use:focusOnMount>
+              <span aria-hidden="true">←</span> All sign-in options
+            </button>
+            <Web3AuthLogin panel oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={inAppBrowser ?? null} />
+          </div>
+        {/if}
 
         {#if view === "wallet"}
           <div class="methods">

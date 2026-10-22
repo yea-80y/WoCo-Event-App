@@ -340,6 +340,17 @@ textarea { resize: vertical; }
   font-family: var(--font-body);
 }
 
+/* Each sign-in button carries the brand's colour mark and a white one, and shows
+   the colour one only on hover (SocialLoginList.js). Ours always: people find
+   their button by the logo they know. Apple, GitHub and X have no colour mark, so
+   both images are the white one. */
+#w3a-parent-container:not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) #active-login-img {
+  display: block;
+}
+#w3a-parent-container:not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) #login-img {
+  display: none;
+}
+
 /* ── Selection — make highlights match the brand ─────────────────────── */
 
 ::selection {
