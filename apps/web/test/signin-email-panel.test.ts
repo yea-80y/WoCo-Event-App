@@ -32,10 +32,15 @@ test("the entry button opens the screen and warms the SDK on the way; without on
   assert.ok(script.includes("if (panel) auth.prewarmWeb3AuthSignIn();"), "the panel builds the instance before any tap");
 });
 
-test("each button starts its own sign-in; More ways is Web3Auth's chooser", () => {
+test("Google, then one tile each for Apple, Facebook, X and Discord - each its own sign-in - and More for Web3Auth's list", () => {
   assert.ok(panel.includes('onclick={() => login({ kind: "social", connection: "google" })}'));
-  assert.ok(panel.includes('onclick={() => login({ kind: "social", connection: "apple" })}'));
-  assert.ok(panel.includes('class="more-ways" onclick={() => login()}'));
+  const tiles = panel.slice(panel.indexOf('<div class="tiles">'), panel.indexOf('<div class="or"'));
+  for (const [connection, label] of [["apple", "Apple"], ["facebook", "Facebook"], ["twitter", "X"], ["discord", "Discord"]]) {
+    assert.ok(tiles.includes(`aria-label="Continue with ${label}" onclick={() => login({ kind: "social", connection: "${connection}" })}`), label);
+    assert.ok(tiles.includes(`<span class="tile-label">${label}</span>`), `${label} is named, not just a logo`);
+  }
+  assert.ok(tiles.includes('aria-label="More ways to sign in" onclick={() => login()}'), "More is Web3Auth's own chooser");
+  assert.ok(panel.indexOf('<div class="tiles">') < panel.indexOf("<form"), "the other sign-ins sit above the email box, in sight");
   // Google refuses an app's built-in browser (#812): there the email box leads.
   const gated = panel.slice(panel.indexOf("{#if !inApp}"), panel.indexOf("<form"));
   assert.ok(gated.includes('connection: "google"') && gated.includes('connection: "apple"'));
@@ -59,13 +64,14 @@ test("a blocked pop-up offers one tap that repeats the same sign-in", () => {
   assert.ok(script.includes("} else if (isWeb3AuthSignInError(e) && e.blocked) {\n        blocked = true;"));
 });
 
-test("the hand-off to Web3Auth (MetaMask) is said first, for every way in on the screen - in-app browsers too", () => {
+test("the hand-off to Web3Auth (MetaMask) is one plain line, first, for every way in on the screen - in-app browsers too", () => {
   const note = panel.indexOf('<p class="handoff-note">');
   assert.ok(note > 0, "the line is there");
   assert.ok(note < panel.indexOf("{#if !inApp}"), "outside the in-app gate: email goes through Web3Auth as well");
   assert.ok(note < panel.indexOf('connection: "google"') && note < panel.indexOf("<form"), "before any button that leaves WoCo");
   const text = panel.slice(note, panel.indexOf("</p>", note)).replace(/\s+/g, " ");
-  assert.ok(text.includes("Sign-in by email, Google or Apple is provided by <strong>Web3Auth (MetaMask)</strong>, an outside service. You'll see their name during sign-in."));
+  assert.ok(text.includes("Sign-in by <strong>Web3Auth (MetaMask)</strong>. You'll see their name next."));
+  assert.doesNotMatch(email.slice(email.indexOf(".handoff-note {"), email.indexOf("}", email.indexOf(".handoff-note {"))), /border|background/, "a line, not a box");
 });
 
 test("the screen ends with Web3Auth's own Powered by MetaMask mark, as their modal does", () => {
@@ -79,4 +85,11 @@ test("the screen ends with Web3Auth's own Powered by MetaMask mark, as their mod
 test("nothing of Web3Auth loads before the person picks email or social: no hover warm-up (cookie notice: 'only if you sign in')", () => {
   assert.ok(!email.includes("onpointerenter"), "a hover is not a choice");
   assert.ok(read("../../../docs/legal/COOKIE_NOTICE.md").includes("Only if you sign in with social or email"));
+});
+
+test("an app's built-in browser: the email box, then Web3Auth's list as a plain link (no tiles there)", () => {
+  const after = panel.slice(panel.indexOf("</form>"));
+  const inApp = after.slice(after.indexOf("{#if inApp}"), after.indexOf("{/if}", after.indexOf("{#if inApp}")));
+  assert.ok(inApp.includes('class="more-ways" onclick={() => login()}'));
+  assert.ok(panel.includes('<label class="sr-only" for="w3a-email">Email address</label>'), "the field keeps a name for screen readers");
 });

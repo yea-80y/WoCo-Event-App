@@ -153,14 +153,12 @@
           <button type="button" class="btn btn--primary" onclick={() => login(lastRoute)}>Open the sign-in window</button>
         </div>
       {/if}
-      <!-- Every way in on this screen leaves WoCo for Web3Auth: Google's screen says
-           "continue to web3auth.io" (its Google registration, not ours) and the email
-           code is entered on their page. Said once, before any tap, naming both brands
-           they will meet, so the hand-off is expected (owner 2026-10-22). -->
-      <p class="handoff-note">
-        Sign-in by email, Google or Apple is provided by <strong>Web3Auth (MetaMask)</strong>, an outside service. You'll see their name during sign-in.
-      </p>
-      <!-- Google refuses an app's built-in browser (#812), so there it is the email box first. -->
+      <!-- Every way in on this screen leaves WoCo for Web3Auth (Google's screen says
+           "continue to web3auth.io"; the email code is entered on their page): said once,
+           in one line, before any tap (owner 2026-10-22). -->
+      <p class="handoff-note">Sign-in by <strong>Web3Auth (MetaMask)</strong>. You'll see their name next.</p>
+      <!-- Google refuses an app's built-in browser (#812), and the others are no surer
+           there: the email box leads, with Web3Auth's own list one tap away below it. -->
       {#if !inApp}
         <button type="button" class="w3a-btn provider" onclick={() => login({ kind: "social", connection: "google" })} disabled={auth.busy}>
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -171,16 +169,34 @@
           </svg>
           Continue with Google
         </button>
-        <button type="button" class="w3a-btn provider" onclick={() => login({ kind: "social", connection: "apple" })} disabled={auth.busy}>
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C3.79 16.17 4.36 9.53 8.7 9.28c1.28.06 2.15.72 2.9.78.96-.2 1.88-.89 2.9-.8 1.21.11 2.13.6 2.73 1.54-2.48 1.52-1.89 4.87.58 5.8-.48 1.34-.97 2.68-1.76 3.68zM12.03 9.22c-.12-2.37 1.79-4.37 4.03-4.56.27 2.6-2.34 4.68-4.03 4.56z" fill="currentColor"/>
-          </svg>
-          Continue with Apple
-        </button>
+        <!-- The next sign-ins people know, each one tap, in sight; More is Web3Auth's
+             own list (phone, LINE, GitHub ...). Labels sit inside the buttons. -->
+        <div class="tiles">
+          <button type="button" class="tile" aria-label="Continue with Apple" onclick={() => login({ kind: "social", connection: "apple" })} disabled={auth.busy}>
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C3.79 16.17 4.36 9.53 8.7 9.28c1.28.06 2.15.72 2.9.78.96-.2 1.88-.89 2.9-.8 1.21.11 2.13.6 2.73 1.54-2.48 1.52-1.89 4.87.58 5.8-.48 1.34-.97 2.68-1.76 3.68zM12.03 9.22c-.12-2.37 1.79-4.37 4.03-4.56.27 2.6-2.34 4.68-4.03 4.56z" fill="currentColor"/></svg>
+            <span class="tile-label">Apple</span>
+          </button>
+          <button type="button" class="tile" aria-label="Continue with Facebook" onclick={() => login({ kind: "social", connection: "facebook" })} disabled={auth.busy}>
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M9.101 23.691v-7.98H6.627v-3.667h2.474v-1.58c0-4.085 1.848-5.978 5.858-5.978.401 0 .955.042 1.468.103a8.68 8.68 0 0 1 1.141.195v3.325a8.623 8.623 0 0 0-.653-.036 26.805 26.805 0 0 0-.733-.009c-.707 0-1.259.096-1.675.309a1.686 1.686 0 0 0-.679.622c-.258.42-.374.995-.374 1.752v1.297h3.919l-.386 2.103-.287 1.564h-3.246v8.245C19.396 23.238 24 18.179 24 12.044c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.628 3.874 10.35 9.101 11.647Z" fill="#0866FF"/></svg>
+            <span class="tile-label">Facebook</span>
+          </button>
+          <button type="button" class="tile" aria-label="Continue with X" onclick={() => login({ kind: "social", connection: "twitter" })} disabled={auth.busy}>
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z" fill="currentColor"/></svg>
+            <span class="tile-label">X</span>
+          </button>
+          <button type="button" class="tile" aria-label="Continue with Discord" onclick={() => login({ kind: "social", connection: "discord" })} disabled={auth.busy}>
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 0 0-4.8851-1.5152.0741.0741 0 0 0-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 0 0-.0785-.037 19.7363 19.7363 0 0 0-4.8852 1.515.0699.0699 0 0 0-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 0 0 .0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 0 0 .0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 0 0-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 0 1-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 0 1 .0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 0 1 .0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 0 1-.0066.1276 12.2986 12.2986 0 0 1-1.873.8914.0766.0766 0 0 0-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 0 0 .0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 0 0 .0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 0 0-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z" fill="#5865F2"/></svg>
+            <span class="tile-label">Discord</span>
+          </button>
+          <button type="button" class="tile" aria-label="More ways to sign in" onclick={() => login()} disabled={auth.busy}>
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/></svg>
+            <span class="tile-label">More</span>
+          </button>
+        </div>
         <div class="or" aria-hidden="true">or</div>
       {/if}
       <form class="email-form" onsubmit={submitEmail} novalidate>
-        <label class="email-label" for="w3a-email">Email</label>
+        <label class="sr-only" for="w3a-email">Email address</label>
         <input
           id="w3a-email"
           type="email"
@@ -192,7 +208,7 @@
           autocapitalize="none"
           spellcheck="false"
           enterkeyhint="go"
-          placeholder="name@example.com"
+          placeholder="Email address"
           aria-invalid={emailError ? "true" : undefined}
           aria-describedby={emailError ? "w3a-email-error" : undefined}
           disabled={auth.busy}
@@ -201,7 +217,7 @@
           <p class="field-error" id="w3a-email-error" role="alert">{emailError}</p>
         {/if}
         <button type="submit" class="btn btn--primary email-submit" disabled={auth.busy}>Email me a code</button>
-        <p class="new-note">New to WoCo? Signing in creates your account.</p>
+        <p class="new-note">New here? This creates your account.</p>
       </form>
       {#if failure}
         {#key failure}
@@ -211,11 +227,8 @@
           <a class="open-btn" href={escape.href}>{escapeLabel}</a>
         {/if}
       {/if}
-      <button type="button" class="more-ways" onclick={() => login()} disabled={auth.busy}>
-        More ways to sign in
-        <span class="more-list">Facebook, X, Discord, phone and more</span>
-      </button>
       {#if inApp}
+        <button type="button" class="more-ways" onclick={() => login()} disabled={auth.busy}>More ways to sign in</button>
         <p class="hint">Email or social sign-in may not complete in this browser.</p>
       {/if}
       <!-- Web3Auth's own mark, the image its modal ends with: their sign-in, their
@@ -412,18 +425,58 @@
 
   .handoff-note {
     margin: 0 0 0.25rem;
-    padding: 0.625rem 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-surface);
     font-size: 0.8125rem;
     line-height: 1.45;
-    color: var(--text-secondary);
+    color: var(--text-muted);
+    text-align: center;
+    text-wrap: balance;
   }
 
   .handoff-note strong {
-    color: var(--text);
+    color: var(--text-secondary);
     font-weight: 600;
+  }
+
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.375rem;
+  }
+
+  .tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3rem;
+    padding: 0.625rem 0.125rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    color: var(--text);
+    transition: border-color var(--transition);
+  }
+
+  .tile:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+
+  .tile:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .tile svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* 10px: "Facebook" fits a tile on a 360px phone (about 50px wide). */
+  .tile-label {
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    white-space: nowrap;
   }
 
   .provider {
@@ -459,12 +512,6 @@
     gap: 0.5rem;
   }
 
-  .email-label {
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--text-secondary);
-  }
-
   /* 16px: below that, iOS zooms the page when the field takes focus. */
   .email-form input {
     width: 100%;
@@ -493,10 +540,8 @@
   }
 
   .more-ways {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.125rem;
+    display: block;
+    margin: 0 auto;
     padding: 0.5rem 0 0;
     font-size: 0.8125rem;
     font-weight: 600;
@@ -506,12 +551,6 @@
 
   .more-ways:hover:not(:disabled) {
     color: var(--accent-text);
-  }
-
-  .more-list {
-    font-size: 0.75rem;
-    font-weight: 500;
-    color: var(--text-muted);
   }
 
   .powered-by {
