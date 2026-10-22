@@ -19,6 +19,13 @@
     /** What the name should resolve to once linked: a site's FEED manifest. */
     targetHash?: string;
     onclaim?: (label: string) => void;
+    /**
+     * Run at the tap that links a name (claim, re-link, pick an owned one), before
+     * anything else awaits: the one moment a browser lets a passkey sheet open, so
+     * the parent can load the key that signs the name's pointer after `onclaim`.
+     * Must not throw.
+     */
+    onbeforeclaim?: (label: string) => Promise<void>;
     /** Unlink the name from THIS site. The name is not released — it stays in
      *  the organiser's account and can be pointed at something else. */
     onunlink?: () => void;
@@ -44,7 +51,7 @@
     onbeforerename?: () => Promise<boolean> | boolean;
   }
 
-  let { claimedLabel = $bindable<string | undefined>(undefined), targetHash = '', onclaim, onunlink, stripeConnected, onstripesetup, singleName = false, onbeforerename }: Props = $props();
+  let { claimedLabel = $bindable<string | undefined>(undefined), targetHash = '', onclaim, onbeforeclaim, onunlink, stripeConnected, onstripesetup, singleName = false, onbeforerename }: Props = $props();
 
   // ── Unlock gate ──────────────────────────────────────────────────────────────
   // ONE rule, the server's (lib/gate/check.ts): a ticket, published events, Stripe
@@ -95,7 +102,8 @@
   // A name is permanent on Arbitrum, so an organiser who already claimed one must
   // be able to point it at this site rather than being forced to mint another
   // (otherwise earlier names get stranded). "new" mints; "existing" just links a
-  // name they already own — the deploy hook sets its contenthash on next publish.
+  // name they already own. Either way the parent points it: at once for a site
+  // that is already published, else the deploy hook does on the first publish.
   let claimMode = $state<'new' | 'existing'>('new');
   type OwnedState = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
   let ownedState = $state<OwnedState>('idle');
@@ -127,9 +135,17 @@
     if (next === 'existing') void loadOwned();
   }
 
-  // Linking an already-owned name needs no on-chain write — the user owns it and
-  // the site deploy hook repoints its contenthash. Just record it on the site.
-  function useExisting(label: string) {
+  // Linking an already-owned name mints nothing - the user owns it. Record it on
+  // the site; the parent repoints its contenthash (see `onbeforeclaim`).
+  async function useExisting(label: string) {
+    if (claiming) return;
+    // `claiming` latches a second tap behind the passkey sheet.
+    claiming = true;
+    try {
+      await onbeforeclaim?.(label);
+    } finally {
+      claiming = false;
+    }
     claimedLabel = label;
     onclaim?.(label);
   }
@@ -299,6 +315,12 @@
       claimError = MAIN_PASSKEY_REQUIRED_MESSAGE;
       return;
     }
+    claiming = true;
+    try {
+      await onbeforeclaim?.(rawInput.toLowerCase().trim());
+    } finally {
+      claiming = false;
+    }
 
     if (!auth.isConnected) {
       const ok = await loginRequest.request();
@@ -356,6 +378,7 @@
     claimError = '';
     const label = rawInput.toLowerCase().trim();
     try {
+      await onbeforeclaim?.(label);
       claimedLabel = label;
       renaming = false;
       onclaim?.(label);
@@ -566,7 +589,11 @@
       {#if profileHidden && (ownedState === 'ready' || ownedState === 'empty')}
         <p class="reuse-hint">Your profile domain can't be used for a site or event.</p>
       {/if}
-      <p class="reuse-hint">Linking a domain you own points it at this site on your next publish, replacing wherever it points now.</p>
+      {#if targetHash && onbeforeclaim}
+        <p class="reuse-hint">Linking a domain you own points it at this site straight away, replacing wherever it points now.</p>
+      {:else}
+        <p class="reuse-hint">Linking a domain you own points it at this site on your next publish, replacing wherever it points now.</p>
+      {/if}
     {:else}
     <!-- Label input row -->
     <div class="input-row">

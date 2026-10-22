@@ -206,6 +206,45 @@ test("a site's Publish tap asks first, and its name is pointed the same way as a
   assert.match(msb, /auth\.isAccountOwner &&\s*\(auth\.kind === 'passkey' \|\| auth\.kind === 'web3auth'\)/, "a wallet is not told its name follows");
 });
 
+test("a name claimed for a published site is pointed at once, the way Publish points it", () => {
+  // Svelte functions are indented, so `body` would run to the end of the file.
+  const fn = (src: string, signature: string) => {
+    const start = src.indexOf(signature);
+    assert.ok(start >= 0, `${signature} must exist`);
+    const end = src.indexOf("\n  }\n", start);
+    assert.ok(end > start);
+    return src.slice(start, end);
+  };
+  const msb = read("lib/creator/builder/MultiSiteBuilder.svelte");
+  assert.match(msb, /onbeforeclaim=\{armClaimPointer\}/);
+  assert.match(msb, /onclaim=\{\(label\) => \{ site\.subEnsLabel = label; void pointClaimedName\(label\); \}\}/);
+
+  const arm = fn(msb, "async function armClaimPointer(");
+  assert.match(arm, /if \(!feedHash \|\| label === followingName \|\| !auth\.isConnected \|\| !auth\.hasSession \|\| !auth\.isAccountOwner\) return;/, "never published, or already following: nothing to sign for");
+  assert.match(arm, /try \{\s*await auth\.ensureOrganiserUnlock\(\{ holderKey: true \}\);\s*\} catch \{/, "a declined sheet never blocks the claim");
+
+  const point = fn(msb, "async function pointClaimedName(");
+  assert.match(point, /if \(!manifest \|\| label === followingName \|\| !auth\.isAccountOwner\) return;/);
+  assert.match(point, /if \(publishState === 'publishing' \|\| subEnsPointing\) return;/, "one pointer at a time");
+  assert.match(point, /subEnsPointing = true;/, "Publish is held while the target is worked out");
+  assert.match(point, /if \(owner && feedManifestFor\(owner, topic\) === manifest\) feed = \{ owner, topic \};/, "only this account's own feed for this site");
+  assert.match(point, /const topic = multisiteFeedTopic\(siteId\);/);
+  assert.match(point, /if \(!feed \|\| site\.siteId !== siteId\) return;/);
+  assert.match(point, /await pointSiteName\(subEnsPointer\);/, "the one silent signer");
+  assert.doesNotMatch(point, /signTypedDataAsHolder/);
+
+  // Each picker tap that links a name runs the hook before anything else awaits.
+  const picker = read("lib/creator/builder/SubENSPicker.svelte");
+  for (const signature of ["async function doClaim(", "async function doRelink(", "async function useExisting("]) {
+    const tap = fn(picker, signature);
+    const at = tap.indexOf("await onbeforeclaim?.(");
+    assert.ok(at > 0, `${signature} runs the hook`);
+    assert.doesNotMatch(tap.slice(0, at), /await /, `${signature}: nothing may await before the tap's passkey sheet`);
+    assert.ok(at < tap.indexOf("onclaim?.("), `${signature}: before the name is handed over`);
+    assert.match(tap.slice(0, at), /claiming = true;/, `${signature}: a second tap behind the sheet starts nothing`);
+  }
+});
+
 test("the button checks a feed target too, and a refused one offers no retry", () => {
   const prompt = read("lib/components/sub-ens/NamePointerPrompt.svelte");
   assert.match(prompt, /if \(targetIsFeed && feed\) await pointNameAtFeed\(label, target, feed, sign\);/);
