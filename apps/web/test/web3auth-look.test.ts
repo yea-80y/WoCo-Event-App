@@ -69,3 +69,14 @@ test("the font: the SDK's container font and its sans variable both lose to ours
   assert.match(ours.body, /--wta-font-sans: var\(--font-body\);/);
   assert.match(ours.body, /\n  font-family: var\(--font-body\);/);
 });
+
+test("the accent is ours too: CSS maps the SDK's primary scale onto our accent tokens, since a theme option is paid (2026-10-22)", () => {
+  const sdk = sdkRuleDeclaring("--app-primary-600");
+  assert.ok(beats(specificity(ours.selector, OUR_NOT), specificity(sdk.selector, SDK_NOT)));
+  for (const n of ["50", "100", "200", "300", "400", "500", "600", "700", "800", "900"]) {
+    assert.match(ours.body, new RegExp(`--app-primary-${n}: var\\(--accent[a-z-]*\\);`), `--app-primary-${n}`);
+  }
+  assert.match(ours.body, /--app-on-primary: var\(--accent-ink\);/);
+  // Only the paid theme option paints these inline (loginModal.js), and we never pass it.
+  assert.match(read("../node_modules/@web3auth/modal/dist/lib.esm/packages/modal/src/ui/loginModal.js"), /applyWhiteLabelTheme\(Color, rootElement, this\.uiConfig\.theme\);/);
+});

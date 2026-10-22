@@ -56,11 +56,12 @@ test("boot restore: a session still loading returns unavailable before any expir
   );
 });
 
-test("every instance asks for the 30-day session, the SDK's maximum", async () => {
+test("every instance asks for a 1-day session, the free plan's maximum on mainnet (2026-10-22)", async () => {
   const { WEB3AUTH_SESSION_SECONDS } = await import("../src/lib/auth/web3auth-config.js");
-  assert.equal(WEB3AUTH_SESSION_SECONDS, 30 * 86400);
+  // 30 days (#803) needs Web3Auth's Growth plan: on Base, 86401 s fails every sign-in.
+  assert.equal(WEB3AUTH_SESSION_SECONDS, 86400);
   const options = config.slice(config.indexOf("export function buildWeb3AuthOptions("));
-  assert.ok(options.includes("sessionTime: WEB3AUTH_SESSION_SECONDS,"), "unset = the dashboard's 1 day");
+  assert.ok(options.includes("sessionTime: WEB3AUTH_SESSION_SECONDS,"), "sent explicitly, so a longer dashboard value cannot reach the plan check");
 });
 
 const store = read("../src/lib/auth/auth-store.svelte.ts");

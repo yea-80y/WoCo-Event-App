@@ -319,10 +319,11 @@ textarea { resize: vertical; }
 
 /* ── Web3Auth sign-in modal — our surfaces and type ──────────────────── */
 
-/* The modal renders into our page and draws its dark mode from a grey scale it
-   declares on its container; its options set only the accent (web3auth-config.ts
-   WEB3AUTH_LOOK). Ours names the container by id plus the SDK's five :not()s, so it
-   outranks theirs (web3auth-look.test.ts). */
+/* The modal renders into our page and draws its dark mode and accent from scales
+   it declares on its container. A theme colour passed as an option is whitelabelling,
+   which the free plan refuses (web3auth-config.ts WEB3AUTH_LOOK), so both come from
+   here. Ours names the container by id plus the SDK's five :not()s, so it outranks
+   theirs (web3auth-look.test.ts). */
 #w3a-parent-container:not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) {
   --app-gray-900: var(--bg-surface);
   --app-gray-800: var(--bg-elevated);
@@ -336,6 +337,17 @@ textarea { resize: vertical; }
   --app-gray-50: var(--text);
   --app-red-400: var(--error);
   --app-red-500: var(--error);
+  --app-primary-50: var(--accent-subtle);
+  --app-primary-100: var(--accent-subtle);
+  --app-primary-200: var(--accent-text);
+  --app-primary-300: var(--accent-text);
+  --app-primary-400: var(--accent-text);
+  --app-primary-500: var(--accent);
+  --app-primary-600: var(--accent);
+  --app-primary-700: var(--accent-press);
+  --app-primary-800: var(--accent-press);
+  --app-primary-900: var(--accent-press);
+  --app-on-primary: var(--accent-ink);
   --wta-font-sans: var(--font-body);
   font-family: var(--font-body);
 }

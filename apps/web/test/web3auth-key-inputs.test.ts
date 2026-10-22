@@ -21,14 +21,14 @@
  *
  * MUTATIONS (each went red, then restored): an option added (useSFAKey: true); the
  * network mapping swapped; the chain namespace changed; consent no longer pinned off;
- * a key option slipped into the look (WEB3AUTH_LOOK); a logo adding more than its two fields.
+ * a key option slipped into the look (WEB3AUTH_LOOK); a paid whitelabel key or a 2-day session (free-plan guard).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const mod = await import("@web3auth/modal");
-const { web3AuthOptionsFor, WEB3AUTH_SESSION_SECONDS, WEB3AUTH_LOOK } = await import("../src/lib/auth/web3auth-config.ts");
+const { web3AuthOptionsFor, WEB3AUTH_SESSION_SECONDS, WEB3AUTH_LOOK, WEB3AUTH_PAID_WHITELABEL_KEYS } = await import("../src/lib/auth/web3auth-config.ts");
 const { isWeb3AuthSessionLive } = await import("../src/lib/auth/web3auth-survivor.ts");
 
 const CLIENT = "BPi5_pinned_client_id";
@@ -139,22 +139,22 @@ test("consent_requiring: pinned off in our options, and never read as a live ses
   assert.equal(isWeb3AuthSessionLive({ ...base, status: "connected" } as never), true);
 });
 
-test("the look is display only: pinned literally, a logo adds only the two logo fields (owner 2026-10-22)", () => {
+test("the look is display only, and free: pinned literally, no option the Base plan refuses (owner 2026-10-22)", () => {
   // Literal, not WEB3AUTH_LOOK: the whole-object pin above spreads the look, so a
   // key-selecting option slipped into it must fail here.
   assert.deepEqual(WEB3AUTH_LOOK, {
-    appName: "WoCo",
     mode: "dark",
-    theme: { primary: "#C7F23A", onPrimary: "#0B0B09" },
-    borderRadiusType: "small",
-    buttonRadiusType: "square",
+    borderRadiusType: "medium",
+    buttonRadiusType: "rounded",
     loginMethodsOrder: ["google", "apple", "facebook", "twitter"],
   });
-  const logo = "https://assets.example/icons/icon-192.png";
+  // Web3Auth's sign-in frame counts any of these as whitelabelling and the free
+  // plan refuses the whole sign-in; a session over 1 day likewise (web3auth-config.ts).
+  assert.deepEqual([...WEB3AUTH_PAID_WHITELABEL_KEYS], ["appName", "appUrl", "logoDark", "logoLight", "theme", "tncLink", "privacyPolicy"]);
   for (const uxMode of ["popup", "redirect"] as const) {
-    const plain = web3AuthOptionsFor(mod, CLIENT, "sapphire_mainnet", uxMode);
-    const branded = web3AuthOptionsFor(mod, CLIENT, "sapphire_mainnet", uxMode, logo);
-    assert.deepEqual(branded, { ...plain, uiConfig: { ...plain.uiConfig, logoLight: logo, logoDark: logo } });
+    const options = web3AuthOptionsFor(mod, CLIENT, "sapphire_mainnet", uxMode);
+    for (const key of WEB3AUTH_PAID_WHITELABEL_KEYS) assert.ok(!(key in options.uiConfig), `${key} is a paid option`);
+    assert.ok(options.sessionTime <= 86400, "over 1 day is a paid option");
   }
   // The auth connector hands uiConfig over as whiteLabel - the look of Web3Auth's
   // own sign-in pages, serialised into the pop-up's state beside the login params.
