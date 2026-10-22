@@ -633,7 +633,9 @@
     const siteId = site.siteId;
     const manifest = feedHash.replace(/^0x/, '').toLowerCase();
     if (!manifest || label === followingName || !auth.isAccountOwner) return;
-    if (publishState === 'publishing' || subEnsPointing) return;
+    // A publish already tapped (its sheet, its notice check) carries the label into its
+    // deploy, which points the name itself.
+    if (publishState === 'publishing' || subEnsPointing || publishArming || noticeChecking) return;
     // Publish waits from here: its deploy would point the same name.
     subEnsPointing = true;
     let feed: { owner: string; topic: string } | null = null;

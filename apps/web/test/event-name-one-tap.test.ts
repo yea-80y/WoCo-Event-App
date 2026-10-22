@@ -225,7 +225,9 @@ test("a name claimed for a published site is pointed at once, the way Publish po
 
   const point = fn(msb, "async function pointClaimedName(");
   assert.match(point, /if \(!manifest \|\| label === followingName \|\| !auth\.isAccountOwner\) return;/);
-  assert.match(point, /if \(publishState === 'publishing' \|\| subEnsPointing\) return;/, "one pointer at a time");
+  assert.match(point, /if \(publishState === 'publishing' \|\| subEnsPointing \|\| publishArming \|\| noticeChecking\) return;/, "one pointer at a time, including a Publish still before its deploy");
+  // Publish's pre-deploy steps are what that guard reads: its sheet, then its notice check.
+  assert.match(read("lib/creator/builder/MultiSiteBuilder.svelte"), /noticeChecking = true;\s*try \{\s*const status = await ownNoticeStatus\(\);/);
   assert.match(point, /subEnsPointing = true;/, "Publish is held while the target is worked out");
   assert.match(point, /if \(owner && feedManifestFor\(owner, topic\) === manifest\) feed = \{ owner, topic \};/, "only this account's own feed for this site");
   assert.match(point, /const topic = multisiteFeedTopic\(siteId\);/);
