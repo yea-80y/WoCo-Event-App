@@ -20,14 +20,15 @@
  * and cannot be pinned here - the laptop sign-in in the PR's test list covers it.
  *
  * MUTATIONS (each went red, then restored): an option added (useSFAKey: true); the
- * network mapping swapped; the chain namespace changed; consent no longer pinned off.
+ * network mapping swapped; the chain namespace changed; consent no longer pinned off;
+ * a key option slipped into the look (WEB3AUTH_LOOK); a logo adding more than its two fields.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const mod = await import("@web3auth/modal");
-const { web3AuthOptionsFor, WEB3AUTH_SESSION_SECONDS } = await import("../src/lib/auth/web3auth-config.ts");
+const { web3AuthOptionsFor, WEB3AUTH_SESSION_SECONDS, WEB3AUTH_LOOK } = await import("../src/lib/auth/web3auth-config.ts");
 const { isWeb3AuthSessionLive } = await import("../src/lib/auth/web3auth-survivor.ts");
 
 const CLIENT = "BPi5_pinned_client_id";
@@ -52,7 +53,7 @@ const expected = (web3AuthNetwork: string) => ({
   defaultChainId: "0x1",
   sessionTime: WEB3AUTH_SESSION_SECONDS,
   initialAuthenticationMode: "connect-only",
-  uiConfig: { consentRequired: false },
+  uiConfig: { ...WEB3AUTH_LOOK, consentRequired: false },
 });
 
 test("the options, whole: mainnet and devnet map to their exact network names, nothing else selects a key", () => {
@@ -67,7 +68,7 @@ test("iPhone/iPad redirect options: the SAME options, plus uxMode and nothing el
   for (const network of ["sapphire_mainnet", "sapphire_devnet"] as const) {
     const popup = web3AuthOptionsFor(mod, CLIENT, network);
     const redirect = web3AuthOptionsFor(mod, CLIENT, network, "redirect");
-    assert.deepEqual(redirect, { ...expected(network), uiConfig: { consentRequired: false, uxMode: "redirect" } });
+    assert.deepEqual(redirect, { ...expected(network), uiConfig: { ...WEB3AUTH_LOOK, consentRequired: false, uxMode: "redirect" } });
     assert.deepEqual(web3AuthOptionsFor(mod, CLIENT, network, "popup"), popup, "the pop-up options stay byte-identical");
     const { uiConfig: _r, ...redirectKeyInputs } = redirect;
     const { uiConfig: _p, ...popupKeyInputs } = popup;
@@ -127,7 +128,7 @@ test("SDK: the default email login sends the dashboard's connection ids, combine
 });
 
 test("consent_requiring: pinned off in our options, and never read as a live session if it ever appears", () => {
-  assert.deepEqual(web3AuthOptionsFor(mod, CLIENT, "sapphire_mainnet").uiConfig, { consentRequired: false });
+  assert.equal(web3AuthOptionsFor(mod, CLIENT, "sapphire_mainnet").uiConfig.consentRequired, false);
   // App options win over the dashboard's: both merges put ours last.
   const manager = flat(src("@web3auth/modal/dist/lib.esm/packages/modal/src/modalManager.js"));
   assert.match(manager, /this\.options\.uiConfig = deepmerge\(cloneDeep\(projectConfig\.whitelabel \|\| \{\}\), this\.options\.uiConfig \|\| \{\}\);/);
@@ -136,4 +137,28 @@ test("consent_requiring: pinned off in our options, and never read as a live ses
   const base = { connected: true, cachedConnector: "auth" };
   assert.equal(isWeb3AuthSessionLive({ ...base, status: "consent_requiring" } as never), false);
   assert.equal(isWeb3AuthSessionLive({ ...base, status: "connected" } as never), true);
+});
+
+test("the look is display only: pinned literally, a logo adds only the two logo fields (owner 2026-10-22)", () => {
+  // Literal, not WEB3AUTH_LOOK: the whole-object pin above spreads the look, so a
+  // key-selecting option slipped into it must fail here.
+  assert.deepEqual(WEB3AUTH_LOOK, {
+    appName: "WoCo",
+    mode: "dark",
+    theme: { primary: "#C7F23A", onPrimary: "#0B0B09" },
+    borderRadiusType: "small",
+    buttonRadiusType: "square",
+    loginMethodsOrder: ["google", "apple", "facebook", "twitter"],
+  });
+  const logo = "https://assets.example/icons/icon-192.png";
+  for (const uxMode of ["popup", "redirect"] as const) {
+    const plain = web3AuthOptionsFor(mod, CLIENT, "sapphire_mainnet", uxMode);
+    const branded = web3AuthOptionsFor(mod, CLIENT, "sapphire_mainnet", uxMode, logo);
+    assert.deepEqual(branded, { ...plain, uiConfig: { ...plain.uiConfig, logoLight: logo, logoDark: logo } });
+  }
+  // The auth connector hands uiConfig over as whiteLabel - the look of Web3Auth's
+  // own sign-in pages, serialised into the pop-up's state beside the login params.
+  const c = flat(connector);
+  assert.match(c, /const uiConfig = coreOptions\.uiConfig \|\| \{\}; connectorSettings\.whiteLabel = uiConfig;/);
+  assert.match(c, /whiteLabel: JSON\.stringify\(this\.authInstance\.options\.whiteLabel\), loginParams: JSON\.stringify\(loginParams\),/);
 });

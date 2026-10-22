@@ -317,6 +317,29 @@ textarea { resize: vertical; }
   z-index: 0;
 }
 
+/* ── Web3Auth sign-in modal — our surfaces and type ──────────────────── */
+
+/* The modal renders into our page and draws its dark mode from a grey scale it
+   declares on its container; its options set only the accent (web3auth-config.ts
+   WEB3AUTH_LOOK). Ours names the container by id plus the SDK's five :not()s, so it
+   outranks theirs (web3auth-look.test.ts). */
+#w3a-parent-container:not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) {
+  --app-gray-900: var(--bg-surface);
+  --app-gray-800: var(--bg-elevated);
+  --app-gray-700: var(--border);
+  --app-gray-600: var(--border-hover);
+  --app-gray-500: var(--text-dim);
+  --app-gray-400: var(--text-muted);
+  --app-gray-300: var(--text-secondary);
+  --app-gray-200: var(--text);
+  --app-gray-100: var(--text);
+  --app-gray-50: var(--text);
+  --app-red-400: var(--error);
+  --app-red-500: var(--error);
+  --wta-font-sans: var(--font-body);
+  font-family: var(--font-body);
+}
+
 /* ── Selection — make highlights match the brand ─────────────────────── */
 
 ::selection {
