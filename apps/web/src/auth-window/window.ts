@@ -42,6 +42,7 @@ const line = el("line");
 const go = el("go") as HTMLButtonElement;
 const cancel = el("cancel") as HTMLButtonElement;
 const note = el("note");
+const home = el("home");
 
 const loadedAt = Date.now();
 // Captured ONCE: a later `window.opener` could be a page the opener navigated to.
@@ -99,6 +100,9 @@ function onMessage(ev: MessageEvent): void {
   title.textContent = copy.title;
   asker.textContent = new URL(target!).host;
   line.textContent = ` ${copy.line}`;
+  // Only a sign-in can be a newcomer's wrong turn (iOS answers it with its own "no
+  // passkeys" sheet); every other action names an account already there.
+  if (r.action === "signin") note.textContent = "New to WoCo? Cancel, then create an account.";
   go.hidden = false;
   go.focus();
 }
@@ -150,8 +154,10 @@ function onCancel(): void {
 }
 
 if (location.origin !== __AUTH_SELF_ORIGIN__ || window.top !== window || !opener) {
-  say("Open this from WoCo to sign in.", { title: "Sign in to WoCo" });
+  say("This page only works when WoCo opens it. Go to WoCo and tap Sign in.", { title: "Open WoCo to sign in" });
   note.hidden = true;
+  // A bookmark or a restored tab: no WoCo tab opened this one, so there is none to go back to.
+  home.hidden = false;
 } else {
   window.addEventListener("message", onMessage);
   go.addEventListener("click", () => void onContinue());

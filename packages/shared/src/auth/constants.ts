@@ -59,6 +59,10 @@ export const StorageKeys = {
   // Kernel override, and never a seed derived from this passkey.
   DEVICE_KERNEL_BINDING: "woco:auth:device-kernel",
   PASSKEY_CREDENTIAL: "woco:auth:passkey-credential",
+  // Which way in this device last used, "passkey" | "email" - written at sign-out from
+  // the committed kind, kept after it like the pin above. The sign-in sheet's "Last used"
+  // and its first-visit chooser read it (sign-in-hint.ts); nothing else may.
+  LAST_WAY_IN: "woco:auth:last-way-in",
   // RETIRED (#501): the sub-ENS `registerWithPermit` session key's slot. Nothing
   // writes it any more — every name is minted by the WoCo sponsor wallet — but
   // devices that used the gasless rail still hold a serialized permission

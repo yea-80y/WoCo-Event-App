@@ -61,6 +61,7 @@ button { font: inherit; font-weight: 600; width: 100%; padding: 14px; border-rad
 #go:disabled { opacity: .5; cursor: default; }
 #cancel { margin-top: 8px; border: 1px solid var(--line); background: none; color: var(--muted); }
 .note { margin: 20px 0 0; font-size: 12px; }
+#home { display: block; padding: 14px; border-radius: 6px; background: var(--accent); color: var(--accent-text); font-weight: 600; text-decoration: none; }
 `;
 
 export function authWindowCsp(scriptHash: string, styleHash: string): string {
@@ -76,7 +77,13 @@ export function authWindowCsp(scriptHash: string, styleHash: string): string {
   ].join("; ");
 }
 
-export function authWindowHtml(code: string): string {
+/** The page's one link: to the app, for a window nothing opened (window.ts). Static in the
+ *  HTML, never built or pointed by the script (`DENIED`, `authWindowProblems`). */
+export const authWindowHome = (target: AuthWindowTarget) => `${target.openers[0]}/`;
+// `_top`: in a frame (which the window refuses to run in) the app must not load inside it.
+const homeLink = (target: AuthWindowTarget) => `<a id="home" href="${authWindowHome(target)}" target="_top" hidden>`;
+
+export function authWindowHtml(code: string, target: AuthWindowTarget): string {
   const script = escapeInlineScript(code);
   return `<!DOCTYPE html>
 <html lang="en">
@@ -96,6 +103,7 @@ export function authWindowHtml(code: string): string {
   <p><span id="asker"></span><span id="line">Connecting to WoCo...</span></p>
   <button type="button" id="go" hidden>Continue</button>
   <button type="button" id="cancel" hidden>Cancel</button>
+  ${homeLink(target)}Go to WoCo</a>
   <p class="note" id="note">Your passkey stays on your device.</p>
   <noscript><p>Turn on JavaScript to sign in.</p></noscript>
 </main>
@@ -152,6 +160,9 @@ const DENIED: Array<[string, RegExp]> = [
   ["the history API", /history\.(pushState|replaceState)/],
   ["the opener's location", /opener\.location/],
   ["a form or link it builds", /createElement\(\s*["'`](a|form|iframe|img|script|link)["'`]/],
+  ["a link it points", /\.(href|host|hostname|protocol|pathname|search|hash|port|username|password)\s*(?:[+\-*\/%&|^]|\*\*|<<|>>>?|\?\?|&&|\|\|)?=[^=]|setAttribute\s*\(\s*["'`](href|src|action)["'`]/],
+  ["markup it builds", /innerHTML|outerHTML|insertAdjacentHTML|document\.write|DOMParser/],
+  ["a click it fires", /\.click\s*\(/],
   ["dynamic import()", /\bimport\s*\(/],
   ["eval / Function", /\beval\s*\(|new Function\s*\(/],
   ["a wildcard postMessage target", /["'`]\*["'`]/],
@@ -169,6 +180,8 @@ export function authWindowProblems(html: string, target: AuthWindowTarget): stri
   if ((html.match(/<script\b/g) ?? []).length !== 1) problems.push("more than one script element");
   if (csp !== authWindowCsp(sha256Base64(script), sha256Base64(style))) problems.push("the CSP does not pin exactly this script and style");
   for (const [what, re] of DENIED) if (re.test(script)) problems.push(`the script uses ${what}`);
+  const links = html.replace(script, "").match(/<a\b[^>]*>/g) ?? [];
+  if (links.length !== 1 || links[0] !== homeLink(target)) problems.push(`the page does not carry exactly one link, hidden, to ${authWindowHome(target)}`);
   const literal = (v: unknown) => JSON.stringify(v);
   if (!script.includes(literal(target.selfOrigin))) problems.push(`the script does not name its origin ${target.selfOrigin}`);
   if (!script.includes(literal(target.rpId))) problems.push(`the script does not name its RP ID ${target.rpId}`);
@@ -191,7 +204,7 @@ export function authWindowPlugin(target: AuthWindowTarget): Plugin {
       const [fileName, chunk] = entry;
       for (const name of Object.keys(bundle)) if (name !== fileName && bundle[name]!.type === "chunk") this.error(`the sign-in window split into a second chunk (${name})`);
       delete bundle[fileName];
-      const html = authWindowHtml(chunk.code);
+      const html = authWindowHtml(chunk.code, target);
       const problems = authWindowProblems(html, target);
       if (problems.length) this.error(`the sign-in window breaks its rules: ${problems.join("; ")}`);
       this.emitFile({ type: "asset", fileName: "index.html", source: html });

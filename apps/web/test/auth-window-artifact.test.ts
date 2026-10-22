@@ -10,7 +10,9 @@
  *  - skip the framing / origin / opener check at load -> "a framed or misplaced window does nothing";
  *  - reply to ev.origin or "*" instead of the literal -> "answers go to the literal origin";
  *  - drop the zeroing after postMessage -> "the window's copies are zeroed";
- *  - accept a second request -> "only the first request is answered".
+ *  - accept a second request -> "only the first request is answered";
+ *  - show the home link in any state but "nothing opened me", or point it from the script ->
+ *    "the one link" / "the rules refuse".
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -22,6 +24,7 @@ import { acceptPasskeyWindowReply, passkeyAccountKeys, type PasskeyWindowAccount
 import {
   AUTH_WINDOW_DEV,
   AUTH_WINDOW_PRODUCTION,
+  authWindowHome,
   authWindowHtml,
   authWindowProblems,
   authWindowTarget,
@@ -84,11 +87,28 @@ test("the rules refuse another channel, a second script, or a CSP that does not 
     ["the history API", "history.replaceState(null,'','#x')"],
     ["the opener's location", "opener.location.href"],
     ["a form or link it builds", 'document.createElement("form")'],
+    ["a link it points", 'document.getElementById("home").href="https://x.example"'],
+    ["a link it points", 'e.href = "https://x.example"'],
+    ["a link it points", 'e.setAttribute("href","https://x.example")'],
+    ["a link it points", 'home.href += "?k=" + k'],
+    ["a link it points", 'home.host = "x.example"'],
+    ["a link it points", "home.search ??= k"],
+    ["markup it builds", 'main.innerHTML = "<a href=x>"'],
+    ["markup it builds", 'main.insertAdjacentHTML("beforeend", "<a>")'],
+    ["a click it fires", "home.click()"],
   ]) {
-    const page = authWindowHtml(`"https://auth.woco.eth.limo";"auth.woco.eth.limo";["https://woco.eth.limo"];${code}`);
+    const page = authWindowHtml(`"https://auth.woco.eth.limo";"auth.woco.eth.limo";["https://woco.eth.limo"];${code}`, AUTH_WINDOW_PRODUCTION);
     assert.ok(authWindowProblems(page, AUTH_WINDOW_PRODUCTION).some((p) => p.includes(channel)), channel);
   }
   assert.ok(authWindowProblems(ok.replace("</main>", "<script>1</script></main>"), AUTH_WINDOW_PRODUCTION).length > 0);
+  const link = /link, hidden, to https:\/\/woco\.eth\.limo\//;
+  assert.equal(authWindowHome(AUTH_WINDOW_PRODUCTION), "https://woco.eth.limo/");
+  assert.ok(authWindowProblems(ok.replace("</main>", '<a href="https://x.example">x</a></main>'), AUTH_WINDOW_PRODUCTION).some((p) => link.test(p)), "a second link");
+  assert.ok(authWindowProblems(ok.replace('href="https://woco.eth.limo/"', 'href="https://x.example/"'), AUTH_WINDOW_PRODUCTION).some((p) => link.test(p)), "another target");
+  assert.ok(authWindowProblems(ok.replace('href="https://woco.eth.limo/" target="_top" hidden>', 'href="https://woco.eth.limo/" target="_top">'), AUTH_WINDOW_PRODUCTION).some((p) => link.test(p)), "shown from the start");
+  assert.ok(authWindowProblems(ok.replace(' target="_top" hidden>', " hidden>"), AUTH_WINDOW_PRODUCTION).some((p) => link.test(p)), "never inside a frame");
+  // `#home { display: block }` would beat a plain [hidden] rule and show the link in every state.
+  assert.match(ok, /\[hidden\] \{ display: none !important; \}/);
   assert.ok(authWindowProblems(ok.replace(/script-src 'sha256-[^']+'/, "script-src 'sha256-AAAA'"), AUTH_WINDOW_PRODUCTION).some((p) => /CSP/.test(p)));
 });
 
@@ -128,7 +148,8 @@ function sandbox(html: string, opts: { origin?: string; framed?: boolean; opener
     if (!els.has(id)) {
       const listeners: Array<() => void> = [];
       els.set(id, {
-        id, textContent: "", hidden: ["go", "cancel"].includes(id), disabled: false, onclick: null as null | (() => void),
+        // Hidden as the HTML ships it.
+        id, textContent: "", hidden: new RegExp(`id="${id}"[^>]*\\shidden[\\s>]`).test(html), disabled: false, onclick: null as null | (() => void),
         addEventListener: (_t: string, f: () => void) => listeners.push(f), focus() {},
         click() {
           listeners.forEach((f) => f());
@@ -223,7 +244,37 @@ test("a framed or misplaced window does nothing at all", async () => {
     const s = sandbox(html, { ...opts, credentials: creds() });
     assert.equal(s.posted.length, 0, JSON.stringify(opts));
     assert.equal(s.listening(), false, JSON.stringify(opts));
-    assert.match(s.el("line").textContent, /Open this from WoCo/);
+    assert.equal(s.el("title").textContent, "Open WoCo to sign in");
+    assert.match(s.el("line").textContent, /only works when WoCo opens it\. Go to WoCo and tap Sign in\./);
+    assert.equal(s.el("home").hidden, false, "nothing to go back to: the link to WoCo shows");
+  }
+});
+
+test("the one link stays hidden whenever WoCo did open the window", async () => {
+  const html = (await prod).index;
+  const states: Array<[string, (s: ReturnType<typeof sandbox>) => Promise<void> | void]> = [
+    ["waiting", () => {}],
+    ["asked", (s) => s.send(request())],
+    ["timed out", (s) => s.timers.forEach((f) => f())],
+    ["out of step", (s) => s.send(request({ v: 2 }))],
+    ["cancelled", (s) => { s.send(request()); s.el("cancel").click(); s.timers.forEach((f) => f()); }],
+    ["signed in", async (s) => { s.send(request()); s.el("go").click(); await settle(() => s.posted.length > 1); s.timers.forEach((f) => f()); }],
+  ];
+  for (const [name, act] of states) {
+    const s = sandbox(html, { credentials: creds([assertion()]) });
+    await act(s);
+    assert.equal(s.el("home").hidden, true, name);
+  }
+});
+
+test("a sign-in's note points a newcomer at Create; every other action keeps the reassurance", async () => {
+  const html = (await prod).index;
+  assert.match(html, /<p class="note" id="note">Your passkey stays on your device\.<\/p>/);
+  for (const action of ["signin", "restore", "create"]) {
+    const s = sandbox(html, { credentials: creds() });
+    s.send(request(action === "restore" ? { action, credentialId: "A".repeat(16), fallback: false } : { action }));
+    assert.equal(s.el("go").hidden, false, action);
+    assert.equal(s.el("note").textContent, action === "signin" ? "New to WoCo? Cancel, then create an account." : "", action);
   }
 });
 
