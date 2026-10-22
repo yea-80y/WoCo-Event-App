@@ -90,6 +90,20 @@
     eventNameVerified = nameIsVerified(label, creator);
     void verifyName(label, creator).then((ok) => { eventNameVerified = ok; });
   });
+  // The organiser's profile name, under the same rule: most organisers claim a
+  // name and never set a display name, and "Hosted by 0x…" hid the name they chose.
+  let creatorNameVerified = $state(false);
+  $effect(() => {
+    const label = creatorProfile?.subEnsLabel;
+    const creator = event?.creatorAddress;
+    if (!label || !creator) { creatorNameVerified = false; return; }
+    creatorNameVerified = nameIsVerified(label, creator);
+    void verifyName(label, creator).then((ok) => { creatorNameVerified = ok; });
+  });
+  const creatorName = $derived(
+    creatorProfile?.displayName ||
+      (creatorProfile?.subEnsLabel && creatorNameVerified ? `${creatorProfile.subEnsLabel}.woco.eth` : ""),
+  );
   let ticketQty = $state<Record<string, number>>({});
   let now = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval>;
@@ -246,7 +260,7 @@
       <div class="creator-info">
         <span class="creator-label">Hosted by</span>
         <span class="creator-name">
-          {creatorProfile?.displayName || `${event.creatorAddress.slice(0, 6)}...${event.creatorAddress.slice(-4)}`}
+          {creatorName || `${event.creatorAddress.slice(0, 6)}...${event.creatorAddress.slice(-4)}`}
         </span>
       </div>
       <!-- Follow the ORGANISER'S ACCOUNT, not their name: the audience belongs

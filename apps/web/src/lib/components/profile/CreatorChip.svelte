@@ -3,6 +3,7 @@
   import { socialProfileSubject } from "@woco/shared";
   import { getProfile } from "../../api/profiles.js";
   import { rememberLabel } from "../../profile/label-cache.js";
+  import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { navigate } from "../../router/router.svelte.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import UserAvatar from "./UserAvatar.svelte";
@@ -23,8 +24,20 @@
 
   let profile = $state<UserProfile | null>(null);
 
+  // A claimed name is the author's own claim in a client-signed feed, so it
+  // shows only once its on-chain owner is this address (verify-name.ts).
+  let nameVerified = $state(false);
+  $effect(() => {
+    const label = profile?.subEnsLabel;
+    if (!label) { nameVerified = false; return; }
+    nameVerified = nameIsVerified(label, address);
+    void verifyName(label, address).then((ok) => { nameVerified = ok; });
+  });
+
   const displayName = $derived(
-    profile?.displayName || `${address.slice(0, 6)}...${address.slice(-4)}`,
+    profile?.displayName ||
+      (profile?.subEnsLabel && nameVerified ? `${profile.subEnsLabel}.woco.eth` : "") ||
+      `${address.slice(0, 6)}...${address.slice(-4)}`,
   );
 
   // A follow targets the ACCOUNT, so anyone with a profile is followable — the

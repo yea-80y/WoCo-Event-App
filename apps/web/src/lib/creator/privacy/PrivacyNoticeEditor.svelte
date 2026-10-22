@@ -335,14 +335,14 @@
         </fieldset>
 
         <fieldset disabled={waiting === "publish"}>
-          <legend>How long you keep order-form answers</legend>
+          <legend>How long to keep each booking's answers</legend>
           {#each NOTICE_RETENTION_MONTHS as m}
             <label class="check">
               <input type="radio" name="retention" value={m} bind:group={draft.orderRetentionMonths} />
               <span>{m} months after the event{m === NOTICE_DEFAULTS.orderRetentionMonths ? " (most organisers)" : ""}</span>
             </label>
           {/each}
-          <p class="field-hint">WoCo deletes them for you when the time is up. Delete any guest lists you've downloaded by then too.</p>
+          <p class="field-hint">Buyers who join your mailing list stay on it, with their answers, until they unsubscribe. This deletes the copy kept with each booking - for buyers who didn't join, that's the only copy, and you can keep it only while you need it for the event, refunds and disputes. WoCo deletes it for you when the time is up. Delete any guest lists you've downloaded by then too.</p>
           <label class="field">
             <span class="field-label">Anything else you use the answers for (optional)</span>
             <input type="text" bind:value={draft.extraOrderFormUse} maxlength={ORGANISER_NOTICE_LIMITS.extraOrderFormUse} placeholder="For example: Planning the running order" aria-invalid={!!fieldErrors.extraOrderFormUse} />
