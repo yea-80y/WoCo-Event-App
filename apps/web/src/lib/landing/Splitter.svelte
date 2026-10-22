@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import { navigate } from "../router/router.svelte.js";
+  import { runningBuildIndex } from "../boot/build-label";
   import { WOCO_COMPANY_LINE } from "@woco/shared";
   import TicketStub from "../components/icons/sprites/TicketStub.svelte";
   import DoorOpen from "../components/icons/sprites/DoorOpen.svelte";
@@ -28,6 +29,9 @@
   import HomeIcon from "lucide-svelte/icons/house";
   import Users from "lucide-svelte/icons/users-round";
   import Mail from "lucide-svelte/icons/mail";
+
+  // Read once: a handover to a newer build has already rewritten the stamp by mount.
+  const buildIndex = runningBuildIndex();
 </script>
 
 
@@ -177,7 +181,7 @@
       <h3>Your name on it, not ours.</h3>
       <p>
         Your artwork, your colours, your name at the top. No WoCo logo in the
-        corner, no eleven other events down the side.
+        corner.
       </p>
       <p>
         Point your own domain at it, or start on a free web address with your
@@ -219,9 +223,9 @@
         require are built in and run on every send.
       </p>
       <p>
-        Then email your people from here. Emailing your own ticket buyers is
-        free, and always will be. Coming soon: send from your own domain, so
-        your emails arrive in your name.
+        Then email your people from here. Email is included with your
+        ticketing - no email plan and no per-send charge. Coming soon: send
+        from your own domain, so your emails arrive in your name.
       </p>
       <p>
         Fans can follow you too, and you'll see your following grow on your
@@ -258,8 +262,8 @@
             <h3>More than a QR code.</h3>
             <p>
               Most tickets are a barcode in an email - once it's scanned, it's
-              spent. A WoCo ticket is a signed record in an open format, recorded
-              onchain, so anyone can check it's real without asking us.
+              spent. A WoCo ticket is a cryptographically signed record in an
+              open format, so anyone can check it's real without asking us.
             </p>
             <p>
               It's something to build on. Open a presale only to people who came
@@ -276,7 +280,7 @@
             achieve.
           </p>
 
-          <span class="built-spec mono">Open format · signed · onchain</span>
+          <span class="built-spec mono">Open format · signed · verifiable by anyone</span>
         </article>
 
         <article class="built-item">
@@ -478,6 +482,9 @@
     </div>
     <div class="footer-fine mono">© 2026 · YOUR FOLLOWING IS YOURS TO KEEP</div>
     <p class="footer-company">{WOCO_COMPANY_LINE}</p>
+    <!-- Deliberately near-invisible: for us and testers to say which build a screen
+         is from, without a `?v=` address (owner 2026-10-22). -->
+    {#if buildIndex !== null}<p class="footer-build mono">v{buildIndex}</p>{/if}
   </footer>
 </div>
 
@@ -1342,6 +1349,14 @@
   }
 
   /* ── Footer ─────────────────────────────────────────────────────── */
+
+  .footer-build {
+    margin: 0.5rem 0 0;
+    font-size: 0.5625rem;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    opacity: 0.55;
+  }
 
   .footer {
     max-width: calc(1100px + 3rem);
