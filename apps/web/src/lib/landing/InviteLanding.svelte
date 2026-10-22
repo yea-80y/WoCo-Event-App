@@ -117,7 +117,7 @@
     <section class="block">
       <h2 class="section-label">How it works</h2>
       <ol class="steps">
-        <li>Create your account with email, a passkey or a wallet.</li>
+        <li>Create your account with a passkey.</li>
         <li>Verify with Stripe so you can get paid.</li>
         <li>Put your first event on sale.</li>
       </ol>

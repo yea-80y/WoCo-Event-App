@@ -96,9 +96,11 @@
             <span class="pillar-tag mono">Swarm</span>
             <h3>Storage is an open network.</h3>
             <p>
-              Signed content lives on Swarm, a decentralised storage network.
-              Anyone can read it and check the signature. Only the owner can
-              write to it.
+              Your content lives on Swarm, a decentralised storage network, and
+              only its owner can write to it. Public things like events, pages
+              and profiles are signed, so anyone can check who wrote them.
+              Private things like buyers' details and mailing lists are
+              encrypted before they're stored.
             </p>
           </div>
           <div class="pillar">
@@ -126,12 +128,12 @@
         <span class="block-label mono">02 · Identity</span>
         <h2>Your account</h2>
         <p>
-          Sign in with a passkey, or with your email or Google account.
+          Sign in with a passkey, or with your email or a social login.
           Organising uses a passkey account. Your account sets up two things: a
           session key that signs each request you make to our API and expires
           after 30 days, and your long-term keys. A passkey account makes those
           keys from a secret only the passkey can produce, with no signature
-          involved. An email or Google account makes them from one fixed
+          involved. An email or social login makes them from one fixed
           signature, which your browser turns into keys.
         </p>
         <ul class="keys">
@@ -140,14 +142,14 @@
           <li><span class="mono">Encryption key</span><span>An X-Wing key that opens the order details your buyers send you.</span></li>
         </ul>
         <p>
-          An email or Google account makes the same keys again on any device,
+          An email or social login makes the same keys again on any device,
           and so does a passkey that syncs to your other devices. To add a
           device with its own passkey, the new device shows a code and one you
           already use scans it. Your keys are then sealed to the new device, so
           only it can open them on the way across. Our servers never hold them.
           Removing a passkey moves your content and encryption keys to a new
           random secret. It is sealed to each passkey you keep, in a key ring
-          your account names onchain. Passkey and email accounts are smart
+          your account names onchain. Passkey, email and social accounts are smart
           accounts on Arbitrum One.
         </p>
       </section>

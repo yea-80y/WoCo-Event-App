@@ -177,7 +177,7 @@
       <h3>Your name on it, not ours.</h3>
       <p>
         Your artwork, your colours, your name at the top. No WoCo logo in the
-        corner, no eleven other events down the side.
+        corner.
       </p>
       <p>
         Point your own domain at it, or start on a free web address with your
@@ -219,9 +219,9 @@
         require are built in and run on every send.
       </p>
       <p>
-        Then email your people from here. Emailing your own ticket buyers is
-        free, and always will be. Coming soon: send from your own domain, so
-        your emails arrive in your name.
+        Then email your people from here. Email is included with your
+        ticketing - no email plan and no per-send charge. Coming soon: send
+        from your own domain, so your emails arrive in your name.
       </p>
       <p>
         Fans can follow you too, and you'll see your following grow on your
@@ -258,8 +258,8 @@
             <h3>More than a QR code.</h3>
             <p>
               Most tickets are a barcode in an email - once it's scanned, it's
-              spent. A WoCo ticket is a signed record in an open format, recorded
-              onchain, so anyone can check it's real without asking us.
+              spent. A WoCo ticket is a cryptographically signed record in an
+              open format, so anyone can check it's real without asking us.
             </p>
             <p>
               It's something to build on. Open a presale only to people who came
@@ -276,7 +276,7 @@
             achieve.
           </p>
 
-          <span class="built-spec mono">Open format · signed · onchain</span>
+          <span class="built-spec mono">Open format · signed · verifiable by anyone</span>
         </article>
 
         <article class="built-item">
