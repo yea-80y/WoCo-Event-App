@@ -91,13 +91,17 @@ export const NOTICE_SHARING_TEXT: Record<NoticeSharing, string> = {
 
 /**
  * Months after the event when a buyer's order-form answers are deleted (what a
- * mailing-list entry keeps stays until they unsubscribe). Pick-only, never free
- * text: the retention sweep carries it out (#547). No shorter option
- * (owner 2026-10-13): a card dispute can arrive ~120 days after a sale, and the
- * organiser may need the attendee's details to answer it.
+ * mailing-list entry keeps stays until they unsubscribe). The retention sweep
+ * carries it out (#547). ONE period, never asked (owner 2026-10-22): a card
+ * dispute over a ticket can arrive up to 120 days after the event, so 6 months
+ * covers it with margin, and nothing an organiser needs these answers for lasts
+ * longer - payment records and the ticket itself are kept on their own terms,
+ * and a buyer who wants the organiser's emails is on the mailing list. Still
+ * stored in each notice, so what a published notice told buyers and what the
+ * sale snapshots for the sweep are one value.
  */
-export const NOTICE_RETENTION_MONTHS = [6, 12] as const;
-export type NoticeRetentionMonths = (typeof NOTICE_RETENTION_MONTHS)[number];
+export const ORDER_RETENTION_MONTHS = 6;
+export type NoticeRetentionMonths = typeof ORDER_RETENTION_MONTHS;
 
 /**
  * What a new notice starts with - the answer nearly every organiser gives. Only a
@@ -107,11 +111,9 @@ export type NoticeRetentionMonths = (typeof NOTICE_RETENTION_MONTHS)[number];
  */
 export const NOTICE_DEFAULTS: {
   sharing: NoticeSharing[];
-  orderRetentionMonths: NoticeRetentionMonths;
   marketing: MarketingMode;
 } = {
   sharing: [...NOTICE_SHARING],
-  orderRetentionMonths: 6,
   marketing: "own-events",
 };
 
@@ -205,7 +207,7 @@ export function validateOrganiserNotice(raw: unknown, expectedAddress: string): 
   if (!Array.isArray(o.sharing)) return null;
   const picked = new Set<unknown>(o.sharing);
   if (picked.size !== o.sharing.length || o.sharing.some((x) => !(NOTICE_SHARING as readonly unknown[]).includes(x))) return null;
-  if (!(NOTICE_RETENTION_MONTHS as readonly unknown[]).includes(o.orderRetentionMonths)) return null;
+  if (o.orderRetentionMonths !== ORDER_RETENTION_MONTHS) return null;
   const out: OrganiserNotice = {
     format: ORGANISER_NOTICE_FORMAT,
     address: o.address,
@@ -328,7 +330,7 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   const labels = orderFieldLabels(ev?.orderFields);
   // An unconfirmed draft reads with the defaults a new notice starts from.
   const sharing = n ? n.sharing : NOTICE_DEFAULTS.sharing;
-  const months = n ? n.orderRetentionMonths : NOTICE_DEFAULTS.orderRetentionMonths;
+  const months = n ? n.orderRetentionMonths : ORDER_RETENTION_MONTHS;
   const ownEvents = (n ? noticeMarketingMode(n) : NOTICE_DEFAULTS.marketing) === "own-events";
   const asksQuestions = !ev || labels.length > 0;
   // Named by `listPlacement`, as the checkout wording and the list import read them:

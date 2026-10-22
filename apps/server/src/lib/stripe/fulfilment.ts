@@ -373,8 +373,8 @@ export async function fulfilPaidSession(
   // What the buyer was shown and did. Absent is NOT a decline: no control was
   // shown, so nothing is recorded, in either mode.
   const marketing = marketingFromMetadata(session.metadata);
-  // Checkout's snapshot of the notice (#547). Anything but a period an organiser
-  // can pick is no instruction: the order is then never erased by the sweep.
+  // Checkout's snapshot of the notice (#547). Anything but the period a notice
+  // can carry is no instruction: the order is then never erased by the sweep.
   const retainMonths = isNoticeRetentionMonths(Number(metaRetainMonths)) ? Number(metaRetainMonths) : undefined;
 
   const claimedAt = new Date(webhookEventCreated * 1000).toISOString();

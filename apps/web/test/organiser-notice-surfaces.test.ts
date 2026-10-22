@@ -217,7 +217,10 @@ test("the editor offers choices and reassures: no disclaimer, no network warning
   assert.match(ed, /value="own-events" bind:group=\{draft\.marketingBasis\}/);
   assert.match(ed, /value="consent" bind:group=\{draft\.marketingBasis\}/);
   assert.match(ed, /bind:group=\{draft\.sharing\}/);
-  assert.match(ed, /bind:group=\{draft\.orderRetentionMonths\}/);
+  // One retention period, never asked (owner 2026-10-22): the notice stores the
+  // constant, so no draft field and no choice an organiser could change.
+  assert.doesNotMatch(ed, /draft\.orderRetentionMonths|name="retention"/);
+  assert.match(ed, /orderRetentionMonths: ORDER_RETENTION_MONTHS,/);
   // One keep rule for both boxes (owner 2026-10-15): the tailoring switch went, so
   // a published notice is written without it and its hint is gone.
   assert.doesNotMatch(ed, /tailored/i);

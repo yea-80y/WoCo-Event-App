@@ -38,8 +38,10 @@ type RetentionDeps = import("../src/lib/attendee-batch/retention.js").RetentionD
 type EventContractTarget = import("../src/lib/chain/event-contract.js").EventContractTarget;
 
 const DAY = 86_400_000;
-/** Series end onchain. + 6 months = 2026-07-31T18:00Z, + 12 = 2027-01-31T18:00Z. */
+/** Series end onchain. + 6 months = 2026-07-31T18:00Z. */
 const END = Date.parse("2026-01-31T18:00:00.000Z");
+/** A later series: + 6 months = 2026-12-30T18:00Z, after NOW. */
+const LATER_END = Date.parse("2026-06-30T18:00:00.000Z");
 const DUE6 = Date.parse("2026-07-31T18:00:00.000Z");
 const NOW = Date.parse("2026-10-14T12:00:00.000Z");
 const CONTRACT = { chainId: 42161, address: "0x" + "c0".repeat(20), version: "ledger" } as unknown as EventContractTarget;
@@ -125,8 +127,8 @@ function ok(run: Awaited<ReturnType<typeof live>>) {
 test("a due order is erased with its rule recorded; one not yet due is kept", async () => {
   await fresh();
   const due = await stored({ retainMonths: 6 });
-  const later = await stored({ retainMonths: 12 });
-  const { deps } = fakeDeps();
+  const later = await stored({ retainMonths: 6, seriesId: "s2" });
+  const { deps } = fakeDeps({ ends: { s2: LATER_END } });
   const { summary } = ok(await live(deps));
   const rec = ledger.getOrderRecord(due)!;
   assert.equal(rec.state, "burned");
@@ -154,12 +156,14 @@ test("no period, or one an organiser cannot pick, is never erased - and needs no
   await fresh();
   const none = await stored({ retainMonths: undefined });
   const three = await stored({ retainMonths: 3 });
+  // Offered until 2026-10-22; a sale snapshotted with it is no instruction now.
+  const twelve = await stored({ retainMonths: 12 });
   const { deps, calls } = fakeDeps();
   const { summary, items } = ok(await live(deps));
   assert.deepEqual(calls.erase, []);
   assert.equal(calls.chainEnd, 0);
-  assert.equal(summary.skipped.noRetainMonths, 2);
-  assert.equal(ledger.isOrderErased(none) || ledger.isOrderErased(three), false);
+  assert.equal(summary.skipped.noRetainMonths, 3);
+  assert.equal(ledger.isOrderErased(none) || ledger.isOrderErased(three) || ledger.isOrderErased(twelve), false);
   assert.ok(items.every((it) => it.reason === "noRetainMonths" && it.daysOverdue === null));
 });
 
@@ -576,8 +580,8 @@ const auth = { authorization: `Bearer ${"t".repeat(40)}`, "content-type": "appli
 test("ops preview lists every order with its due date and action, erasing nothing", async () => {
   await fresh();
   const ref = await stored();
-  await stored({ retainMonths: 12 });
-  const { deps, calls } = fakeDeps({ sessions: () => new Map([[ref, "cs_live_1"]]) });
+  await stored({ seriesId: "s2" });
+  const { deps, calls } = fakeDeps({ ends: { s2: LATER_END }, sessions: () => new Map([[ref, "cs_live_1"]]) });
   retention._resetOrderRetentionForTests(NOW, deps);
   const res = await app.request("/api/ops/attendee-batch/retention/preview?limit=5", { headers: auth });
   assert.equal(res.status, 200);

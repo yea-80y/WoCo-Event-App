@@ -1,6 +1,6 @@
 # Data Processing Addendum
 
-**Last updated:** 14 October 2026
+**Last updated:** 22 October 2026
 **Version:** 1.0
 
 This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
@@ -239,12 +239,12 @@ As set out in section 6 above.
 
 ## Annex 3 - Standing instruction: how long order answers are kept
 
-Your privacy notice tells attendees how long their order-form answers are kept: 6 or 12 months after
-the event. The notice editor starts at 6 months - our proposal - and the period becomes yours when you
-confirm and publish the notice. It is your standing instruction to us, carried out as follows:
+Your privacy notice tells attendees their order-form answers are kept until 6 months after the
+event - long enough for refunds and card disputes. It is the one period we offer, and it becomes your
+standing instruction to us when you confirm and publish the notice, carried out as follows:
 
 1. **Period.** Each order is kept for the period your published notice gave when that ticket was sold.
-   A later change to your notice applies to later sales, not earlier ones.
+   If the period ever changes, the change applies to later sales, not earlier ones.
 2. **Clock.** The period runs from the event's end as registered onchain when its tickets went on
    sale, which cannot be changed afterwards - never from a date later edited on the event page. A
    cancelled event runs on the same clock.

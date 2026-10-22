@@ -24,13 +24,12 @@
     noticeDate,
     noticeMarketingMode,
     NOTICE_DEFAULTS,
-    NOTICE_RETENTION_MONTHS,
     NOTICE_SHARING,
     NOTICE_SHARING_TEXT,
     ORGANISER_NOTICE_FORMAT,
     ORGANISER_NOTICE_LIMITS,
+    ORDER_RETENTION_MONTHS,
     type MarketingMode,
-    type NoticeRetentionMonths,
     type NoticeSharing,
     type OrganiserNoticeField,
     type OrganiserNotice,
@@ -47,7 +46,6 @@
 
   type Draft = Record<OrganiserNoticeField, string> & {
     sharing: NoticeSharing[];
-    orderRetentionMonths: NoticeRetentionMonths;
     marketingBasis: MarketingMode;
   };
 
@@ -62,7 +60,6 @@
       extraSharing: "",
       extraOrderFormUse: "",
       sharing: [...NOTICE_DEFAULTS.sharing],
-      orderRetentionMonths: NOTICE_DEFAULTS.orderRetentionMonths,
       // A new draft only: a published notice loads its own answer below.
       marketingBasis: NOTICE_DEFAULTS.marketing,
     };
@@ -117,7 +114,7 @@
     return {
       ...(stripEmpty(text) as Pick<OrganiserNotice, "organiserName">),
       sharing: NOTICE_SHARING.filter((c) => draft.sharing.includes(c)),
-      orderRetentionMonths: draft.orderRetentionMonths,
+      orderRetentionMonths: ORDER_RETENTION_MONTHS,
       ...(draft.marketingBasis === "own-events" ? { marketingBasis: "own-events" as const } : {}),
     };
   }
@@ -190,7 +187,6 @@
         saved = n;
         for (const f of TEXT_FIELDS) draft[f] = n[f] ?? "";
         draft.sharing = [...n.sharing];
-        draft.orderRetentionMonths = n.orderRetentionMonths;
         draft.marketingBasis = noticeMarketingMode(n);
         return;
       }
@@ -335,14 +331,8 @@
         </fieldset>
 
         <fieldset disabled={waiting === "publish"}>
-          <legend>How long you keep order-form answers</legend>
-          {#each NOTICE_RETENTION_MONTHS as m}
-            <label class="check">
-              <input type="radio" name="retention" value={m} bind:group={draft.orderRetentionMonths} />
-              <span>{m} months after the event{m === NOTICE_DEFAULTS.orderRetentionMonths ? " (most organisers)" : ""}</span>
-            </label>
-          {/each}
-          <p class="field-hint">WoCo deletes them for you when the time is up. Delete any guest lists you've downloaded by then too.</p>
+          <legend>How long booking answers are kept</legend>
+          <p class="field-hint">WoCo deletes the copy kept with each booking {ORDER_RETENTION_MONTHS} months after the event - long enough for refunds and card disputes. Buyers who join your mailing list stay on it, with their answers, until they unsubscribe. Delete any guest lists you've downloaded by then too.</p>
           <label class="field">
             <span class="field-label">Anything else you use the answers for (optional)</span>
             <input type="text" bind:value={draft.extraOrderFormUse} maxlength={ORGANISER_NOTICE_LIMITS.extraOrderFormUse} placeholder="For example: Planning the running order" aria-invalid={!!fieldErrors.extraOrderFormUse} />

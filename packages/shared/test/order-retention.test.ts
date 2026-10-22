@@ -34,8 +34,8 @@ test("bad input throws rather than producing a date", () => {
   assert.throws(() => addCalendarMonthsUtc(0, 1.5), RangeError);
 });
 
-test("only a period an organiser can pick is an instruction to erase", () => {
+test("only the period a notice can carry is an instruction to erase", () => {
   assert.equal(isNoticeRetentionMonths(6), true);
-  assert.equal(isNoticeRetentionMonths(12), true);
-  for (const v of [0, 1, 3, 7, 24, "6", undefined, null, Number.NaN]) assert.equal(isNoticeRetentionMonths(v), false, String(v));
+  // 12 was offered until 2026-10-22 (owner: one period, never asked).
+  for (const v of [0, 1, 3, 7, 12, 24, "6", undefined, null, Number.NaN]) assert.equal(isNoticeRetentionMonths(v), false, String(v));
 });

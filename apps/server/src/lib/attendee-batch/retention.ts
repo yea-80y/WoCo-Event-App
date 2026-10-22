@@ -9,7 +9,7 @@
  *
  * Erasure is irreversible and keeping an order one more day is not, so every
  * doubt keeps the order, counted so it is seen:
- *   - no retainMonths, or one an organiser cannot pick: never erased;
+ *   - no retainMonths, or one no notice can carry: never erased;
  *   - the clock is the series' onchain `eventEndTs` (fixed at registration),
  *     never the organiser-signed feed `endDate`; no eventId/seriesId, no
  *     registration record, an RPC that cannot answer or no end onchain keeps it;

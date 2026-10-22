@@ -783,11 +783,11 @@ describe("happy path", () => {
   });
 
   test("#547: checkout's retention snapshot reaches the held-order claim and the fallback store; anything else carries none", async () => {
-    const held = await run({ retainMonths: "12" }, { held: true });
-    assert.deepEqual(held.f.retention, [{ via: "claimHeldOrder", retainMonths: 12 }]);
+    const held = await run({ retainMonths: "6" }, { held: true });
+    assert.deepEqual(held.f.retention, [{ via: "claimHeldOrder", retainMonths: 6 }]);
     const fallback = await run({ orderRef: null, retainMonths: "6" }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
     assert.deepEqual(fallback.f.retention, [{ via: "storeOrderBlob", retainMonths: 6 }]);
-    for (const bad of ["3", "0", "6x", ""]) {
+    for (const bad of ["3", "0", "6x", "", "12"]) {
       const r = await run({ retainMonths: bad }, { held: true });
       assert.deepEqual(r.f.retention, [{ via: "claimHeldOrder", retainMonths: undefined }], `"${bad}" is no instruction`);
     }
