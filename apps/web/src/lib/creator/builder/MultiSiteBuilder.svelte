@@ -123,7 +123,8 @@
    *  the organiser could see it (#484). */
   let subEnsNotice = $state<{ tone: 'info' | 'warn'; text: string } | null>(null);
   /** The site's name is not on this site's feed yet: the holder signs once - in the
-   *  background after the Publish tap's confirm (`pointSiteName`), else with the button. */
+   *  background after the Publish or claim tap's confirm (`pointSiteName`), else with
+   *  the button. */
   let subEnsPointer = $state<Extract<SiteDeploySubEns, { status: 'awaiting_signature' }> | null>(null);
   let subEnsPointing = $state(false);
   let subEnsPointerNote = $state<string | null>(null);
@@ -609,6 +610,53 @@
     }
   }
 
+  /** The claim tap on a published site: the key that signs the name's pointer, loaded
+   *  while the tap still lets a passkey sheet open, as the Publish tap does. */
+  async function armClaimPointer(label: string) {
+    if (!feedHash || label === followingName || !auth.isConnected || !auth.hasSession || !auth.isAccountOwner) return;
+    try {
+      await auth.ensureOrganiserUnlock({ holderKey: true });
+    } catch {
+      // Declined: the claim still goes ahead, and the name waits for its button.
+    }
+  }
+
+  /**
+   * A name claimed or picked for a site that is already published points at it now,
+   * not on the next publish, which until then left it serving nothing (owner
+   * 2026-10-23). The Publish tap's pointer (`pointSiteName`), with its target worked
+   * out here - the site's feed under this account's own signer - instead of handed
+   * back by a deploy. Never published, or published under another key: the next
+   * publish points it, as before.
+   */
+  async function pointClaimedName(label: string) {
+    const siteId = site.siteId;
+    const manifest = feedHash.replace(/^0x/, '').toLowerCase();
+    if (!manifest || label === followingName || !auth.isAccountOwner) return;
+    // A publish already tapped (its sheet, its notice check) carries the label into its
+    // deploy, which points the name itself.
+    if (publishState === 'publishing' || subEnsPointing || publishArming || noticeChecking) return;
+    // Publish waits from here: its deploy would point the same name.
+    subEnsPointing = true;
+    let feed: { owner: string; topic: string } | null = null;
+    try {
+      const owner = await auth.getContentFeedSignerAddress();
+      const { feedManifestFor } = await import('../../swarm/feed-manifest-address.js');
+      const topic = multisiteFeedTopic(siteId);
+      if (owner && feedManifestFor(owner, topic) === manifest) feed = { owner, topic };
+    } catch (e) {
+      console.error('[sub-ens] claimed name not pointed:', e);
+    } finally {
+      subEnsPointing = false;
+    }
+    if (!feed || site.siteId !== siteId) return;
+    subEnsNotice = null;
+    subEnsPointerNote = null;
+    subEnsPointerFeed = feed;
+    subEnsPointer = { label, status: 'awaiting_signature', target: manifest, feedOwner: 'client' };
+    await pointSiteName(subEnsPointer);
+  }
+
   /** The on-device draft (single slot), or null. A never-published site only
    *  exists here — there's nothing on Swarm to load. */
   function localDraftFor(siteId: string): Site | null {
@@ -994,7 +1042,8 @@
         <SubENSPicker
           bind:claimedLabel={site.subEnsLabel}
           targetHash={feedHash}
-          onclaim={(label) => { site.subEnsLabel = label; }}
+          onbeforeclaim={armClaimPointer}
+          onclaim={(label) => { site.subEnsLabel = label; void pointClaimedName(label); }}
           onunlink={() => { site.subEnsLabel = undefined; }}
           stripeConnected={stripeConnected}
           onstripesetup={() => { stripeModalOpen = true; }}
