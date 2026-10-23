@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { OrderField, SeriesClaimStatus } from "@woco/shared";
-  import { HEALTH_FIELD_NOTE, isHealthField, orderFieldRequired } from "@woco/shared";
+  import { HEALTH_FIELD_NOTE, isHealthField, ORDER_EMAIL_FIELD_ID, orderFieldRequired } from "@woco/shared";
   import {
     TRANSACTIONAL_EMAIL_NOTICE,
     CHECKOUT_PRIVACY_SUMMARY,
@@ -27,6 +27,9 @@
     formValid: () => boolean;
     formData: Record<string, string>;
     stripeEmail: string;
+    /** Confirm email, beside whichever box holds the ticket address (#982). */
+    emailConfirm: string;
+    emailMismatch: boolean;
     /** Organiser display name — the consent must name who is being consented to. */
     organiserName?: string;
     /** The event, so the privacy line can link the organiser's notice for it. */
@@ -55,6 +58,8 @@
     formValid,
     formData = $bindable(),
     stripeEmail = $bindable(),
+    emailConfirm = $bindable(),
+    emailMismatch,
     organiserName,
     eventId,
     marketingWording,
@@ -120,6 +125,9 @@
         {/if}
         {#if isHealthField(field)}<span class="field-note">{HEALTH_FIELD_NOTE}</span>{/if}
       </label>
+      {#if field.id === ORDER_EMAIL_FIELD_ID}
+        {@render confirmBox(orderFieldRequired(field, { canUseAccount: authConnected }))}
+      {/if}
     {/each}
   {/if}
 
@@ -133,7 +141,16 @@
         placeholder="your@email.com"
       />
     </label>
+    {@render confirmBox(true)}
   {/if}
+
+  {#snippet confirmBox(required: boolean)}
+    <label class="form-field">
+      <span class="form-label">Confirm email {#if required}<span class="required">*</span>{/if}</span>
+      <input type="email" bind:value={emailConfirm} aria-invalid={emailMismatch} />
+      {#if emailMismatch}<span class="field-error" role="alert">The emails don't match</span>{/if}
+    </label>
+  {/snippet}
 
   <!-- Notice + consent sit ABOVE the action buttons: both must be visible
        before submission, not after it. -->
@@ -213,6 +230,12 @@
   .field-note {
     font-size: 0.6875rem;
     color: var(--text-muted);
+    line-height: 1.35;
+  }
+
+  .field-error {
+    font-size: 0.6875rem;
+    color: var(--error);
     line-height: 1.35;
   }
 

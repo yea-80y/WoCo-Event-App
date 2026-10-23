@@ -10,7 +10,7 @@
   import { CheckoutError, createCheckoutSession, OrderKeyStaleError } from "../../api/stripe.js";
   import type { MarketingMode, SeriesClaimStatus } from "@woco/shared";
   import { isMarketingChanged, listKeeps, MARKETING_CURRENT_VERSION, marketingChoice, marketingWording as buildMarketingWording, shownMarketingMode } from "@woco/shared";
-  import { orderFieldRequired, orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
+  import { buyerEmailConfirmed, buyerEmailMismatch, ORDER_EMAIL_FIELD_ID, orderFieldRequired, orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
   import { buildOrderSnapshot as buildOrderSnapshotPure } from "./claim/helpers.js";
@@ -109,6 +109,8 @@
   const hasStripe = $derived(!!payment?.stripeEnabled);
   let stripeLoading = $state(false);
   let stripeEmail = $state("");
+  /** The Confirm email box beside whichever box holds the ticket address (#982). */
+  let emailConfirm = $state("");
   // eventId/seriesId are per-mount stable (component remounts per series) —
   // the init-time captures below are intentional.
   // svelte-ignore state_referenced_locally
@@ -164,6 +166,12 @@
    *  screen to type into. */
   const hasEmailField = $derived(orderFormCollectsEmail(orderFields, orderKey));
   const hasOrderForm = $derived(orderFormShown(orderFields, orderKey));
+  /** The address the buyer typed for the ticket: the form's field, else our own
+   *  box - which is not on screen for a signed-in buyer, so a value left in it
+   *  from before sign-in is nothing to confirm. */
+  const typedEmail = $derived(hasEmailField ? formData[ORDER_EMAIL_FIELD_ID] ?? "" : linked ? "" : stripeEmail);
+  const emailConfirmed = $derived(buyerEmailConfirmed(typedEmail, emailConfirm));
+  const emailMismatch = $derived(buyerEmailMismatch(typedEmail, emailConfirm));
 
   /** True while we refresh availability when the form opens. */
   let prefetching = $state(false);
@@ -176,6 +184,7 @@
   let intentToCheckout = $state(eager);
 
   const formValid = $derived(() => {
+    if (!emailConfirmed) return false;
     if (!orderFields?.length) return true;
     const fieldsFilled = orderFields.every((f) =>
       !orderFieldRequired(f, { canUseAccount: linked }) || (formData[f.id] ?? "").trim().length > 0
@@ -356,6 +365,12 @@
           : "Please enter an email address to continue.";
         return;
       }
+      // The form is on screen by now (the early return above), so this is the
+      // pair the buyer sees. A typo'd address loses the ticket (#982).
+      if (!emailConfirmed) {
+        error = "The emails don't match.";
+        return;
+      }
 
       // Pre-upload encrypted order to Swarm BEFORE the Stripe redirect. Fast
       // path: the prefetch hook already did this while the user was typing and
@@ -521,6 +536,8 @@
       {formValid}
       bind:formData
       bind:stripeEmail
+      bind:emailConfirm
+      {emailMismatch}
       {marketingWording}
       {marketingTicked}
       onMarketingChange={setMarketingTicked}
@@ -540,6 +557,10 @@
       showEmailInput={!linked && !hasEmailField}
       onCheckout={handleStripeCheckout}
       onStripeEmailChange={(v) => { stripeEmail = v; }}
+      {emailConfirm}
+      {emailConfirmed}
+      {emailMismatch}
+      onEmailConfirmChange={(v) => { emailConfirm = v; }}
       {eventId}
       {organiserName}
       {marketingWording}

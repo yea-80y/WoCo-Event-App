@@ -13,6 +13,11 @@
     showEmailInput: boolean;
     onCheckout: () => void;
     onStripeEmailChange: (v: string) => void;
+    /** Confirm email under the email box (#982); Pay waits for a match while the box is shown. */
+    emailConfirm: string;
+    emailConfirmed: boolean;
+    emailMismatch: boolean;
+    onEmailConfirmChange: (v: string) => void;
     /** The event and organiser, for the point-of-collection privacy line. */
     eventId: string;
     organiserName?: string;
@@ -37,6 +42,10 @@
     showEmailInput,
     onCheckout,
     onStripeEmailChange,
+    emailConfirm,
+    emailConfirmed,
+    emailMismatch,
+    onEmailConfirmChange,
     eventId,
     organiserName,
     marketingWording,
@@ -69,7 +78,7 @@
 
   <button
     class="stripe-btn stripe-btn--primary"
-    disabled={stripeLoading || soldOut}
+    disabled={stripeLoading || soldOut || (showEmailInput && !emailConfirmed)}
     onclick={onCheckout}
   >
     {#if stripeLoading}
@@ -88,6 +97,16 @@
       value={stripeEmail}
       oninput={(e) => onStripeEmailChange((e.target as HTMLInputElement).value)}
     />
+    <input
+      class="stripe-email-input stripe-email-confirm"
+      type="email"
+      placeholder="Confirm email"
+      aria-label="Confirm email"
+      aria-invalid={emailMismatch}
+      value={emailConfirm}
+      oninput={(e) => onEmailConfirmChange((e.target as HTMLInputElement).value)}
+    />
+    {#if emailMismatch}<p class="stripe-email-error" role="alert">The emails don't match</p>{/if}
   {/if}
   <!-- Point of collection: the email (here or on Stripe's page) goes to the organiser. -->
   <p class="pay-privacy">
@@ -258,5 +277,16 @@
 
   .stripe-email-input::placeholder {
     color: var(--text-muted);
+  }
+
+  /* Pairs with the box above: the sheet's gap would split them. */
+  .stripe-email-confirm {
+    margin-top: -0.375rem;
+  }
+
+  .stripe-email-error {
+    margin: -0.5rem 0 0;
+    font-size: 0.6875rem;
+    color: var(--error);
   }
 </style>

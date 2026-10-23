@@ -12,6 +12,8 @@ import {
   orderFormCollectsEmail,
   orderFieldRequired,
   resolveBuyerEmail,
+  buyerEmailConfirmed,
+  buyerEmailMismatch,
 } from "../../src/event/order-email.js";
 import type { OrderField } from "../../src/crypto/types.js";
 
@@ -81,4 +83,26 @@ test("#639: every other field follows the organiser's tick, account or not", () 
     assert.equal(orderFieldRequired(name, { canUseAccount }), true);
     assert.equal(orderFieldRequired(guestEmail, { canUseAccount }), false);
   }
+});
+
+test("#982: the confirm box must repeat the address, trimmed and in any case", () => {
+  assert.equal(buyerEmailConfirmed("buyer@example.com", "buyer@example.com"), true);
+  assert.equal(buyerEmailConfirmed(" Buyer@Example.com ", "buyer@EXAMPLE.com"), true);
+  assert.equal(buyerEmailConfirmed("buyer@example.com", "buyr@example.com"), false, "the typo this exists for");
+  assert.equal(buyerEmailConfirmed("buyer@example.com", ""), false, "an untouched confirm box is not a confirmation");
+});
+
+test("#982: a blank address has nothing to confirm", () => {
+  // The "enter an email" checks name that case; a confirm gate here would hide them.
+  assert.equal(buyerEmailConfirmed("", ""), true);
+  assert.equal(buyerEmailConfirmed("   ", "stray@example.com"), true);
+});
+
+test("#982: the mismatch line waits until typing more cannot make a match", () => {
+  assert.equal(buyerEmailMismatch("buyer@example.com", ""), false, "nothing typed in the second box");
+  assert.equal(buyerEmailMismatch("buyer@example.com", "Buyer@ex"), false, "still typing it out");
+  assert.equal(buyerEmailMismatch("buyer@example.com", "buyer@example.com"), false);
+  assert.equal(buyerEmailMismatch("buyer@example.com", "buyr"), true);
+  assert.equal(buyerEmailMismatch("buyer@example.com", "buyer@example.com.uk"), true, "longer than the address");
+  assert.equal(buyerEmailMismatch("", "buyer@example.com"), false, "a blank address has nothing to confirm");
 });

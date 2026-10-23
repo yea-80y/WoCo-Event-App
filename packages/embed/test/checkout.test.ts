@@ -198,8 +198,14 @@ const KEY = new Uint8Array(1216).fill(7);
 const EMAIL: OrderField = { id: "__email", type: "email", label: "Email", required: true };
 const NAME: OrderField = { id: "name", type: "text", label: "Name", required: true };
 const GUEST: OrderField = { id: "guest", type: "email", label: "Guest's email", required: false };
-const panel = (fields: OrderField[] | undefined, formData: Record<string, string>, inlineEmail = "", key: Uint8Array | undefined = KEY) =>
-  validateBuyPanel({ fields, verifiedKey: key, formData, inlineEmail });
+/** The confirm box repeats whichever address was typed unless a test says otherwise (#982). */
+const panel = (
+  fields: OrderField[] | undefined,
+  formData: Record<string, string>,
+  inlineEmail = "",
+  key: Uint8Array | undefined = KEY,
+  emailConfirm = formData.__email ?? inlineEmail,
+) => validateBuyPanel({ fields, verifiedKey: key, formData, inlineEmail, emailConfirm });
 
 test("the default order form's email field is the ticket address (the #597 dead-end)", () => {
   assert.deepEqual(panel([EMAIL, NAME], { __email: " buyer@example.com ", name: "Ann" }), { ok: true, email: "buyer@example.com" });
@@ -237,8 +243,38 @@ test("a guest's email field never becomes the ticket address", () => {
 });
 
 test("a form that cannot be shown (no organiser key) falls back to the widget's box, never a dead-end", () => {
-  const noKey = validateBuyPanel({ fields: [EMAIL], verifiedKey: undefined, formData: {}, inlineEmail: "me@example.com" });
+  const noKey = validateBuyPanel({ fields: [EMAIL], verifiedKey: undefined, formData: {}, inlineEmail: "me@example.com", emailConfirm: "me@example.com" });
   assert.deepEqual(noKey, { ok: true, email: "me@example.com" });
+});
+
+// ── #982: a typo'd address loses the ticket, so the buyer types it twice ────
+
+test("a confirm box that does not match stops the purchase, on either address box", () => {
+  const formMismatch = { ok: false, error: "The emails don't match" };
+  assert.deepEqual(panel([EMAIL], { __email: "buyer@example.com" }, "", KEY, "buyr@example.com"), formMismatch);
+  assert.deepEqual(panel([NAME], { name: "Ann" }, "me@example.com", KEY, "me@exmaple.com"), formMismatch);
+  assert.deepEqual(panel(undefined, {}, "me@example.com", KEY, "me@exmaple.com"), formMismatch);
+});
+
+test("an empty confirm box asks for the address again", () => {
+  const ask = { ok: false, error: "Confirm your email address" };
+  assert.deepEqual(panel([EMAIL], { __email: "buyer@example.com" }, "", KEY, ""), ask);
+  assert.deepEqual(panel(undefined, {}, "me@example.com", KEY, "  "), ask);
+});
+
+test("the confirm box matches trimmed and in any case", () => {
+  assert.deepEqual(panel([EMAIL], { __email: "Buyer@Example.com" }, "", KEY, " buyer@example.COM "), { ok: true, email: "Buyer@Example.com" });
+});
+
+test("the form's confirm box is checked where it sits, under the email field", () => {
+  // Name comes after the email + confirm pair on screen, so its message waits.
+  assert.deepEqual(panel([EMAIL, NAME], { __email: "buyer@example.com" }, "", KEY, "buyr@example.com"), { ok: false, error: "The emails don't match" });
+  assert.deepEqual(panel([NAME, EMAIL], { __email: "buyer@example.com" }, "", KEY, "buyr@example.com"), { ok: false, error: "Name is required" });
+});
+
+test("a blank address names the missing address, never the confirm box", () => {
+  assert.deepEqual(panel([EMAIL], {}, "", KEY, "buyer@example.com"), { ok: false, error: "Email is required" });
+  assert.deepEqual(panel(undefined, {}, "", KEY, "me@example.com"), { ok: false, error: "Enter a valid email address" });
 });
 
 test("the sealed key is declared only with a box (#186)", () => {
@@ -256,4 +292,17 @@ test("a stale-key refusal names a key to re-seal to - only a well-formed, differ
   assert.equal(staleOrderKeyRef({ ok: false, code: "ORDER_KEY_STALE", encryptionKeyRef: "XYZ" }, k0), null);
   assert.equal(staleOrderKeyRef({ ok: false, code: "OTHER", encryptionKeyRef: k1 }, k0), null);
   assert.equal(staleOrderKeyRef({ ok: false, code: "ORDER_KEY_STALE" }, k0), null);
+});
+
+test("#982: the widget shows Confirm email under each address box and checks the box the buyer typed in", () => {
+  const fields = widget.slice(widget.indexOf("private renderOrderFields("), widget.indexOf("private renderBuyPanel("));
+  assert.match(fields, /if \(f\.id === ORDER_EMAIL_FIELD_ID\) fieldsHtml \+= this\.renderEmailConfirm\(seriesId, st\);/);
+  const panel = widget.slice(widget.indexOf("private renderBuyPanel("), widget.indexOf("private renderSeries("));
+  const box = panel.indexOf("data-email-input=");
+  assert.ok(box > 0 && panel.indexOf("this.renderEmailConfirm(s.seriesId, st)", box) > box, "under the widget's own box");
+  assert.ok(panel.indexOf("this.renderEmailConfirm(s.seriesId, st)") < panel.indexOf("Continue to payment"));
+  assert.match(widget, /inlineEmail: st\.email,\n\s*emailConfirm: st\.emailConfirm,/);
+  assert.match(widget, /st\.emailConfirm = el\.value;/);
+  // Cancel forgets it with the address it confirmed.
+  assert.match(widget, /st\.email = "";\n\s*st\.emailConfirm = "";/);
 });
