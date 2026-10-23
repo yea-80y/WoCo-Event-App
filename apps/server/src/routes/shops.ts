@@ -66,7 +66,7 @@ import type {
 } from "@woco/shared";
 import { signCheckoutTag } from "../lib/stripe/checkout-provenance.js";
 import { MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
-import { CHECKOUT_PAYMENT_METHOD_TYPES } from "../lib/stripe/checkout-payment-methods.js";
+import { CARD_ONLY_PAYMENT_METHOD_TYPES } from "../lib/stripe/checkout-payment-methods.js";
 
 const shopsRouter = new Hono<AppEnv>();
 
@@ -532,7 +532,7 @@ shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
     const session = await s.checkout.sessions.create(
       {
         mode: "payment",
-        payment_method_types: CHECKOUT_PAYMENT_METHOD_TYPES,
+        payment_method_types: CARD_ONLY_PAYMENT_METHOD_TYPES,
         line_items: order.lines.map((l) => ({
           price_data: {
             currency,
