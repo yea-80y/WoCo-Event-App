@@ -170,6 +170,8 @@ test("the first-visit pair: Sign in filled over an equal outlined Create, each s
   assert.match(single, /\{#if sheet === "known"\}<span class="last-used">Last used<\/span>\{\/if\}/, "a known device tags it");
   const style = read("../src/lib/components/auth/PasskeyLogin.svelte").split("<style>")[1]!;
   assert.match(style, /\.passkey-btn\.choice \{[^}]*min-height: 3\.75rem;/, "one height");
+  assert.match(style, /\.passkey-btn\.choice \{[^}]*text-align: center;/, "centred like the other buttons");
+  assert.doesNotMatch(style, /\.passkey-btn\.choice \{[^}]*justify-content: flex-start;/, "not pushed to the left");
   assert.match(style, /\.passkey-btn\.outlined \{[^}]*background: transparent;/);
 });
 
