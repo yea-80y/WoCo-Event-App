@@ -11,7 +11,7 @@ import { getHeldOrder } from "../lib/attendee-batch/held-orders.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { contractKey } from "../lib/chain/event-contract.js";
-import { slotRefundStates } from "../lib/stripe/ticket-sales.js";
+import { slotPaidTimes, slotRefundStates } from "../lib/stripe/ticket-sales.js";
 import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
 
 /** Maximum concurrent Swarm downloads when fetching v2 order blobs */
@@ -103,6 +103,7 @@ orders.get("/:id/orders", requireAuth, async (c) => {
       {
         const { contract, onChainEventId, slotCount } = sold;
         const refunds = slotRefundStates(onChainEventId, contractKey(contract));
+        const paidTimes = slotPaidTimes(onChainEventId, contractKey(contract));
 
         // Slot reads are public view calls, but they are still one RPC round trip
         // EACH, and `slotCount` is however many tickets this series has sold. An
@@ -162,7 +163,9 @@ orders.get("/:id/orders", requireAuth, async (c) => {
             // Burner address — unique per ticket, proves on-chain slot ownership.
             // The actual claimer identity is inside the encrypted order blob.
             claimerAddress: slotData.owner,
-            claimedAt: "",   // not stored on-chain in v1; available inside encryptedOrder
+            // When the buyer paid, from the sale record: neither the chain nor the
+            // sealed order carries a time. "" = no sale record names this slot.
+            claimedAt: paidTimes.get(slot) ?? "",
             via: "stripe" as const,
             ...(encryptedOrder ? { encryptedOrder } : {}),
           };

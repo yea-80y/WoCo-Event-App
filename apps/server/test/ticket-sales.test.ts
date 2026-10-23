@@ -304,6 +304,35 @@ describe("slotRefundStates (organiser orders view)", () => {
   });
 });
 
+describe("slotPaidTimes (organiser orders view)", () => {
+  test("each slot gets its own sale's payment time; another event or contract gets none", () => {
+    stub({ paidAt: "2026-10-20T18:00:00.000Z" });
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1]);
+    stub({ sessionId: "cs_2", paymentIntentId: "pi_2", paidAt: "2026-10-21T09:30:00.000Z" });
+    ts.recordSaleSlots("cs_2", EV, CONTRACT, [2]);
+
+    const times = ts.slotPaidTimes(EV, CONTRACT);
+    assert.deepEqual(
+      [...times.entries()].sort(([a], [b]) => a - b),
+      [[0, "2026-10-20T18:00:00.000Z"], [1, "2026-10-20T18:00:00.000Z"], [2, "2026-10-21T09:30:00.000Z"]],
+    );
+    assert.equal(ts.slotPaidTimes(EV, "421614:0x" + "c2".repeat(20)).size, 0, "another contract's slots are not these");
+    assert.equal(ts.slotPaidTimes(OTHER_EV, CONTRACT).size, 0);
+  });
+
+  test("the payment time survives a restart; a record without one gives its recorded time", () => {
+    stub({ paidAt: "2026-10-20T18:00:00.000Z" });
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [0]);
+    const old = stub({ sessionId: "cs_2", paymentIntentId: "pi_2" });
+    ts.recordSaleSlots("cs_2", EV, CONTRACT, [1]);
+
+    ts.__resetForTests();
+    const times = ts.slotPaidTimes(EV, CONTRACT);
+    assert.equal(times.get(0), "2026-10-20T18:00:00.000Z");
+    assert.equal(times.get(1), old.recordedAt);
+  });
+});
+
 describe("a record file that cannot be read", () => {
   for (const [name, contents] of [
     ["truncated JSON", `{"cs_1": {"sessionId": "cs_1", "slo`],

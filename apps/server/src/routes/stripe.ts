@@ -1445,6 +1445,8 @@ stripe.post("/webhook", async (c) => {
               quantity: verdict.kind === "ours" ? Math.max(1, Math.min(10, parseInt(md.quantity ?? "1", 10) || 1)) : 0,
               amountTotal: session.amount_total ?? 0,
               currency: session.currency ?? "",
+              // The payment time fulfilment stamps as `claimedAt` too.
+              paidAt: new Date(event.created * 1000).toISOString(),
               ...(verdict.kind === "tampered" ? { tampered: true, autoRefunded: session.amount_total ?? 0 } : {}),
             });
           } catch (err) {

@@ -64,6 +64,8 @@ export interface TicketSale {
   amountTotal: number;
   currency: string;
   recordedAt: string;
+  /** When the buyer paid: the webhook event's `created`, not when we consumed it. */
+  paidAt?: string;
   /** Ours, altered after creation, refunded in full without fulfilment. */
   tampered?: true;
   /** The on-chain event fulfilment minted against (lowercase) — the server's own mint target. */
@@ -169,6 +171,7 @@ export interface SaleStubInput {
   quantity: number;
   amountTotal: number;
   currency: string;
+  paidAt?: string;
   tampered?: boolean;
   autoRefunded?: number;
 }
@@ -192,6 +195,7 @@ export function recordSaleStub(input: SaleStubInput): TicketSale {
     amountTotal: input.amountTotal,
     currency: input.currency.toLowerCase(),
     recordedAt: new Date().toISOString(),
+    ...(input.paidAt ? { paidAt: input.paidAt } : {}),
     ...(input.tampered ? { tampered: true as const } : {}),
     slots: [],
     ...(input.autoRefunded !== undefined ? { autoRefunded: input.autoRefunded } : {}),
@@ -480,6 +484,24 @@ export function slotRefundStates(onChainEventId: string, contract: string): Map<
           ? "partial"
           : null;
     if (state) for (const slot of sale.slots) out.set(slot, state);
+  }
+  return out;
+}
+
+/**
+ * When each slot of one on-chain event on one contract was paid for, for the
+ * organiser's orders view (the chain and the sealed order carry no time). A
+ * record without `paidAt` gives the time it was recorded, which is the same
+ * moment unless the webhook arrived late. Contract required, as for `voidedSlots`.
+ */
+export function slotPaidTimes(onChainEventId: string, contract: string): Map<number, string> {
+  ensureLoaded();
+  const id = onChainEventId.toLowerCase();
+  const key = contract.toLowerCase();
+  const out = new Map<number, string>();
+  for (const sale of Object.values(store)) {
+    if (sale.onChainEventId !== id || sale.contract !== key) continue;
+    for (const slot of sale.slots) out.set(slot, sale.paidAt ?? sale.recordedAt);
   }
   return out;
 }
