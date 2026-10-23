@@ -29,11 +29,15 @@ const fs = require('fs');
 const path = require('path');
 const tar = require('tar');
 const axios = require('axios');
+const { batchProblems, manifestStateProblem } = require('./swarm-batches.cjs');
 
 // Only when run: the test suite requires this file for its pure helpers.
 if (require.main === module) require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const BEE_URL = process.env.BEE_URL || 'https://gateway.woco-net.com';
+// The feed update and manifest go on the core batch, the bundle on the builds batch
+// (swarm-batches.cjs).
 const POSTAGE_BATCH_ID = process.env.POSTAGE_BATCH_ID || '';
+const BUILD_BATCH_ID = process.env.BUILD_BATCH_ID || '';
 const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || '';
 const UPLOAD_SECRET = process.env.UPLOAD_SECRET || '';
 const SSH_HOST = process.env.SSH_HOST || 'root@46.225.174.72';
@@ -223,6 +227,13 @@ if (require.main === module) (async () => {
     console.log(`Feed Topic: ${FEED_TOPIC}`);
     console.log(`Feed Owner: ${ownerHex}\n`);
 
+    const manifestState = await readJsonIfExists(MANIFEST_STATE);
+    const stateProblem = manifestStateProblem(manifestState, ownerHex, topic.toString());
+    if (stateProblem) throw new Error(`Not deploying: ${stateProblem}`);
+    const stamps = (await axios.get(`${BEE_URL}/stamps`, { timeout: 15000 })).data?.stamps;
+    const problems = batchProblems(stamps, { build: BUILD_BATCH_ID, core: POSTAGE_BATCH_ID });
+    if (problems.length) throw new Error(`Not deploying:\n  - ${problems.join('\n  - ')}`);
+
     // 1) Upload dist-scanner/ as a collection
     const tarPath = path.resolve(__dirname, '../scanner.tar');
     const filesToInclude = getAllFilesRecursive(UPLOAD_DIR);
@@ -236,7 +247,7 @@ if (require.main === module) (async () => {
     const resp = await axios.post(`${BEE_URL}/bzz`, tarData, {
       headers: {
         'Content-Type': 'application/x-tar',
-        'Swarm-Postage-Batch-Id': POSTAGE_BATCH_ID,
+        'Swarm-Postage-Batch-Id': BUILD_BATCH_ID,
         'Swarm-Index-Document': 'index.html',
         'Swarm-Error-Document': 'index.html',
         'Swarm-Collection': 'true',
@@ -252,7 +263,6 @@ if (require.main === module) (async () => {
     // 2) Create or reuse feed manifest
     await ensureDir(STATE_DIR);
     let manifestRef;
-    const manifestState = await readJsonIfExists(MANIFEST_STATE);
     if (manifestState?.manifestRef) {
       manifestRef = manifestState.manifestRef;
       console.log(`Using existing feed manifest: ${manifestRef}`);
