@@ -1,8 +1,9 @@
 /**
- * #799 — every Checkout Session the server creates offers cards only.
+ * #799 — every Checkout Session the server creates offers cards and Link only.
  *
  * Fulfilment acts only on a session completed as `paid`; a delayed-notification
  * method would complete it unpaid and the buyer would be charged with no ticket.
+ * Link always confirms immediately, so it is the one addition.
  * The list is a create-time parameter, so the guarantee is that no session is
  * created without it — checked across the whole source tree, so a new route
  * that creates a session cannot skip it.
@@ -42,8 +43,8 @@ function sessionCreateArgs(src: string): string[] {
   return out;
 }
 
-test("the list is cards and nothing else", () => {
-  assert.deepEqual(CHECKOUT_PAYMENT_METHOD_TYPES, ["card"]);
+test("the list is cards and Link, nothing else", () => {
+  assert.deepEqual(CHECKOUT_PAYMENT_METHOD_TYPES, ["card", "link"]);
 });
 
 test("every Checkout Session created in the server pins the payment methods", () => {
