@@ -69,13 +69,15 @@ export function buyerEmailConfirmed(typed: string, confirm: string): boolean {
 }
 
 /**
- * Should "The emails don't match" show? Only once the confirm box holds something
- * typing more cannot turn into a match - never on each keystroke while the buyer is
- * still typing it out.
+ * Should "The emails don't match" show? While the buyer is still typing in the
+ * confirm box, only once typing more cannot make a match - never on each keystroke.
+ * Once they have left it (`settled`), on any mismatch: a correct confirm can be a
+ * prefix of a typo'd first box ("bob@gmail.comn"), the very slip this exists for.
  */
-export function buyerEmailMismatch(typed: string, confirm: string): boolean {
+export function buyerEmailMismatch(typed: string, confirm: string, settled: boolean): boolean {
   const c = confirm.trim().toLowerCase();
-  return !!c && !buyerEmailConfirmed(typed, confirm) && !typed.trim().toLowerCase().startsWith(c);
+  if (!c || buyerEmailConfirmed(typed, confirm)) return false;
+  return settled || !typed.trim().toLowerCase().startsWith(c);
 }
 
 /**

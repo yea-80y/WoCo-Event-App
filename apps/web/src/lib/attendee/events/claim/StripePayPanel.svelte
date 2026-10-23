@@ -18,6 +18,7 @@
     emailConfirmed: boolean;
     emailMismatch: boolean;
     onEmailConfirmChange: (v: string) => void;
+    onEmailConfirmBlur: () => void;
     /** The event and organiser, for the point-of-collection privacy line. */
     eventId: string;
     organiserName?: string;
@@ -46,6 +47,7 @@
     emailConfirmed,
     emailMismatch,
     onEmailConfirmChange,
+    onEmailConfirmBlur,
     eventId,
     organiserName,
     marketingWording,
@@ -53,6 +55,7 @@
     onMarketingChange,
     cryptoFooter = null,
   }: Props = $props();
+  const mismatchId = $props.id();
 </script>
 
 <div class="pay-sheet">
@@ -103,10 +106,12 @@
       placeholder="Confirm email"
       aria-label="Confirm email"
       aria-invalid={emailMismatch}
+      aria-describedby={emailMismatch ? mismatchId : undefined}
       value={emailConfirm}
       oninput={(e) => onEmailConfirmChange((e.target as HTMLInputElement).value)}
+      onblur={onEmailConfirmBlur}
     />
-    {#if emailMismatch}<p class="stripe-email-error" role="alert">The emails don't match</p>{/if}
+    {#if emailMismatch}<p class="stripe-email-error" id={mismatchId} role="alert">The emails don't match</p>{/if}
   {/if}
   <!-- Point of collection: the email (here or on Stripe's page) goes to the organiser. -->
   <p class="pay-privacy">

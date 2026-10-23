@@ -111,6 +111,8 @@
   let stripeEmail = $state("");
   /** The Confirm email box beside whichever box holds the ticket address (#982). */
   let emailConfirm = $state("");
+  /** The buyer has left the confirm box: any mismatch shows from then on. */
+  let emailConfirmSettled = $state(false);
   // eventId/seriesId are per-mount stable (component remounts per series) —
   // the init-time captures below are intentional.
   // svelte-ignore state_referenced_locally
@@ -166,12 +168,14 @@
    *  screen to type into. */
   const hasEmailField = $derived(orderFormCollectsEmail(orderFields, orderKey));
   const hasOrderForm = $derived(orderFormShown(orderFields, orderKey));
-  /** The address the buyer typed for the ticket: the form's field, else our own
-   *  box - which is not on screen for a signed-in buyer, so a value left in it
-   *  from before sign-in is nothing to confirm. */
-  const typedEmail = $derived(hasEmailField ? formData[ORDER_EMAIL_FIELD_ID] ?? "" : linked ? "" : stripeEmail);
+  /** Our own email box's address, while that box is the one on screen: never with a
+   *  form field to type into, never for a signed-in buyer - the box is hidden then,
+   *  and a value left in it from before sign-in was never confirmed (#982). */
+  const inlineEmail = (link: boolean = linked): string => (!link && !hasEmailField ? stripeEmail.trim() : "");
+  /** The address the buyer typed for the ticket, as the confirm box must repeat it. */
+  const typedEmail = $derived(hasEmailField ? formData[ORDER_EMAIL_FIELD_ID] ?? "" : inlineEmail());
   const emailConfirmed = $derived(buyerEmailConfirmed(typedEmail, emailConfirm));
-  const emailMismatch = $derived(buyerEmailMismatch(typedEmail, emailConfirm));
+  const emailMismatch = $derived(buyerEmailMismatch(typedEmail, emailConfirm, emailConfirmSettled));
 
   /** True while we refresh availability when the form opens. */
   let prefetching = $state(false);
@@ -272,7 +276,7 @@
   // The key is part of the snapshot: a box sealed to a key since replaced is stale (#186).
   const buildOrderSnapshot = (link: boolean = linked): string => buildOrderSnapshotPure(
     formData,
-    getEmailFromForm() ?? stripeEmail.trim(),
+    getEmailFromForm() ?? inlineEmail(link),
     link ? auth.parent?.toLowerCase() ?? "" : "",
   ) + `|${orderKeyFor ?? ""}`;
 
@@ -285,7 +289,7 @@
     getShouldPrefetch: () => showOrderForm && !!orderKey && formValid(),
     getSnapshot: () => buildOrderSnapshot(),
     getFormData: () => formData,
-    getEmail: () => getEmailFromForm() ?? stripeEmail.trim(),
+    getEmail: () => getEmailFromForm() ?? inlineEmail(),
     getAddress: () => (linked ? auth.parent?.toLowerCase() ?? "" : ""),
     getQuantity: () => quantity,
     getPayHoverTick: () => payHoverTick,
@@ -354,7 +358,7 @@
     error = null;
     const linkAccount = linked;
     try {
-      const email = getEmailFromForm() || stripeEmail.trim() || undefined;
+      const email = getEmailFromForm() || inlineEmail(linkAccount) || undefined;
       const address = linkAccount ? auth.parent?.toLowerCase() || undefined : undefined;
       if (!email && !address) {
         // Deployed builder sites mount no login modal, so "sign in" names an
@@ -538,6 +542,7 @@
       bind:stripeEmail
       bind:emailConfirm
       {emailMismatch}
+      onEmailConfirmBlur={() => { emailConfirmSettled = true; }}
       {marketingWording}
       {marketingTicked}
       onMarketingChange={setMarketingTicked}
@@ -561,6 +566,7 @@
       {emailConfirmed}
       {emailMismatch}
       onEmailConfirmChange={(v) => { emailConfirm = v; }}
+      onEmailConfirmBlur={() => { emailConfirmSettled = true; }}
       {eventId}
       {organiserName}
       {marketingWording}

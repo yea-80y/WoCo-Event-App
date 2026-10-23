@@ -99,10 +99,19 @@ test("#982: a blank address has nothing to confirm", () => {
 });
 
 test("#982: the mismatch line waits until typing more cannot make a match", () => {
-  assert.equal(buyerEmailMismatch("buyer@example.com", ""), false, "nothing typed in the second box");
-  assert.equal(buyerEmailMismatch("buyer@example.com", "Buyer@ex"), false, "still typing it out");
-  assert.equal(buyerEmailMismatch("buyer@example.com", "buyer@example.com"), false);
-  assert.equal(buyerEmailMismatch("buyer@example.com", "buyr"), true);
-  assert.equal(buyerEmailMismatch("buyer@example.com", "buyer@example.com.uk"), true, "longer than the address");
-  assert.equal(buyerEmailMismatch("", "buyer@example.com"), false, "a blank address has nothing to confirm");
+  const typing = (typed: string, confirm: string) => buyerEmailMismatch(typed, confirm, false);
+  assert.equal(typing("buyer@example.com", ""), false, "nothing typed in the second box");
+  assert.equal(typing("buyer@example.com", "Buyer@ex"), false, "still typing it out");
+  assert.equal(typing("buyer@example.com", "buyer@example.com"), false);
+  assert.equal(typing("buyer@example.com", "buyr"), true);
+  assert.equal(typing("buyer@example.com", "buyer@example.com.uk"), true, "longer than the address");
+  assert.equal(typing("", "buyer@example.com"), false, "a blank address has nothing to confirm");
+});
+
+test("#982: once the buyer leaves the confirm box, any mismatch shows", () => {
+  // A correct confirm that is a prefix of a typo'd first box: the keyboard-bounce slip.
+  assert.equal(buyerEmailMismatch("bob@gmail.comn", "bob@gmail.com", false), false);
+  assert.equal(buyerEmailMismatch("bob@gmail.comn", "bob@gmail.com", true), true);
+  assert.equal(buyerEmailMismatch("bob@gmail.com", " BOB@gmail.com ", true), false, "a match is never a mismatch");
+  assert.equal(buyerEmailMismatch("bob@gmail.com", "", true), false, "an empty box says nothing");
 });

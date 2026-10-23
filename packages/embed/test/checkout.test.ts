@@ -304,5 +304,13 @@ test("#982: the widget shows Confirm email under each address box and checks the
   assert.match(widget, /inlineEmail: st\.email,\n\s*emailConfirm: st\.emailConfirm,/);
   assert.match(widget, /st\.emailConfirm = el\.value;/);
   // Cancel forgets it with the address it confirmed.
-  assert.match(widget, /st\.email = "";\n\s*st\.emailConfirm = "";/);
+  assert.match(widget, /st\.email = "";\n\s*st\.emailConfirm = "";\n\s*st\.emailConfirmSettled = false;/);
+});
+
+test("#982: leaving the widget's confirm box shows any mismatch from then on", () => {
+  const out = widget.slice(widget.indexOf('addEventListener("focusout"'));
+  const body = out.slice(0, out.indexOf("});"));
+  assert.match(body, /getAttribute\("data-email-confirm"\)/);
+  assert.match(body, /st\.emailConfirmSettled = true;\n\s*this\.refreshEmailMismatch\(sid, st\);/);
+  assert.equal(widget.match(/buyerEmailMismatch\(this\.typedEmail\(st\), st\.emailConfirm, st\.emailConfirmSettled\)/g)?.length, 2, "render and refresh");
 });

@@ -30,6 +30,7 @@
     /** Confirm email, beside whichever box holds the ticket address (#982). */
     emailConfirm: string;
     emailMismatch: boolean;
+    onEmailConfirmBlur: () => void;
     /** Organiser display name — the consent must name who is being consented to. */
     organiserName?: string;
     /** The event, so the privacy line can link the organiser's notice for it. */
@@ -60,6 +61,7 @@
     stripeEmail = $bindable(),
     emailConfirm = $bindable(),
     emailMismatch,
+    onEmailConfirmBlur,
     organiserName,
     eventId,
     marketingWording,
@@ -69,6 +71,7 @@
     onPayHover,
     onCancel,
   }: Props = $props();
+  const mismatchId = $props.id();
 </script>
 
 <div class="order-form">
@@ -126,7 +129,8 @@
         {#if isHealthField(field)}<span class="field-note">{HEALTH_FIELD_NOTE}</span>{/if}
       </label>
       {#if field.id === ORDER_EMAIL_FIELD_ID}
-        {@render confirmBox(orderFieldRequired(field, { canUseAccount: authConnected }))}
+        <!-- Starred once filled, too: Pay then waits for it, optional field or not. -->
+        {@render confirmBox(orderFieldRequired(field, { canUseAccount: authConnected }) || (formData[field.id] ?? "").trim().length > 0)}
       {/if}
     {/each}
   {/if}
@@ -147,8 +151,14 @@
   {#snippet confirmBox(required: boolean)}
     <label class="form-field">
       <span class="form-label">Confirm email {#if required}<span class="required">*</span>{/if}</span>
-      <input type="email" bind:value={emailConfirm} aria-invalid={emailMismatch} />
-      {#if emailMismatch}<span class="field-error" role="alert">The emails don't match</span>{/if}
+      <input
+        type="email"
+        bind:value={emailConfirm}
+        onblur={onEmailConfirmBlur}
+        aria-invalid={emailMismatch}
+        aria-describedby={emailMismatch ? mismatchId : undefined}
+      />
+      {#if emailMismatch}<span class="field-error" id={mismatchId} role="alert">The emails don't match</span>{/if}
     </label>
   {/snippet}
 
