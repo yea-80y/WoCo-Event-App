@@ -69,6 +69,8 @@ import { ledgerReadable, ordersForEmailHash } from "../lib/attendee-batch/ledger
 import { hashEmail } from "../lib/event/claim-service.js";
 import { heldOrdersHealth, paidUnstored } from "../lib/attendee-batch/held-orders.js";
 import { MAX_LIMIT as RETENTION_MAX_LIMIT, previewOrderRetention, runOrderRetention } from "../lib/attendee-batch/retention.js";
+import { getListingSeed, isListedForSnapshot, listedEventIds, setListed } from "../lib/event/listing-state.js";
+import { rebuildSnapshotFull, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -508,6 +510,54 @@ ops.post("/events/:id/cancel", async (c) => {
   if (!result.ok) return c.json({ ok: false, error: "The cancellation could not be saved" }, 503);
   console.warn(`[ops] event ${eventId} cancelled by ${by}`);
   return c.json({ ok: true, data: { created: result.created, cancellation: result.cancellation } });
+});
+
+// A rebuild writes the snapshot to Swarm, so tests swap these out rather than
+// reach a bee.
+let directoryRebuild = { schedule: scheduleSnapshotRebuild, full: rebuildSnapshotFull };
+
+export function _setDirectoryRebuildForTest(fake: typeof directoryRebuild): void {
+  directoryRebuild = fake;
+}
+
+/** GET /api/ops/directory — every event the public directory lists, by its stored card title. */
+ops.get("/directory", (c) => {
+  const listed = listedEventIds().map((eventId) => ({ eventId, title: getListingSeed(eventId)?.title ?? null }));
+  return c.json({ ok: true, data: { count: listed.length, listed } });
+});
+
+/**
+ * POST /api/ops/events/:id/unlist   { by }
+ *
+ * The platform takes an event out of the public directory. Same effect as the
+ * organiser's own unlist: the listing flag is cleared and the event can be listed
+ * again. Emptying the listing file instead does not work - the next rebuild
+ * re-seeds every card from the last snapshot.
+ */
+ops.post("/events/:id/unlist", async (c) => {
+  const eventId = c.req.param("id");
+  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  if (!isListedForSnapshot(eventId)) return c.json({ ok: true, data: { eventId, wasListed: false } });
+  setListed(eventId, false);
+  directoryRebuild.schedule(eventId);
+  console.warn(`[ops] event ${eventId} unlisted by ${by}`);
+  return c.json({ ok: true, data: { eventId, wasListed: true } });
+});
+
+/** POST /api/ops/directory/rebuild   { by } — a full reconcile now, instead of waiting for the 30-minute timer. */
+ops.post("/directory/rebuild", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  try {
+    await directoryRebuild.full();
+  } catch (err) {
+    return c.json({ ok: false, error: `Rebuild failed: ${(err as Error).message}` }, 502);
+  }
+  console.log(`[ops] directory rebuilt by ${by}`);
+  return c.json({ ok: true, data: { listed: listedEventIds().length } });
 });
 
 /** GET /api/ops/cancellations — every cancelled event and its refund rows (Stripe ids and amounts only). */
