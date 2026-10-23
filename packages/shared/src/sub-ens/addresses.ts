@@ -38,11 +38,11 @@ export interface SubEnsDeployment {
 }
 
 /**
- * Arbitrum One (42161) — registry v2.2, LIVE since 2026-09-21: woco.eth's L1
- * resolver (v2 `0xD935…FfD7` since 2026-09-25; v1 `0x1720…Ed8A` before) names
- * this registry, so every real name lives here.
+ * Arbitrum One (42161) — registry v2.2, the LAUNCH deploy of 2026-10-23 (same
+ * audited source as the 2026-09-21 pair, 14 reserved labels): woco.eth's L1
+ * resolver (v2 `0xD935…FfD7`) names this registry, so every real name lives here.
  * An EIP-1167 clone of OUR implementation
- * (`0x44F3CE28DFb86d6827637D6b3E55D4111cA55367`) under baseNode
+ * (`0x18F536ed9220642A7ADB4f55A4d1057C53bDa790`) under baseNode
  * `0x616c19dee44e200629c0e4918ca0fe2f6e85100ea0b354c4f888e11c07a9006f`, with
  * the admin seat — and so the registrar's owner, read live — on the #420 Safe
  * rather than an EOA, so a compromised deployer key cannot move names here.
@@ -54,9 +54,11 @@ export interface SubEnsDeployment {
  * `apps/web/test/sub-ens-mainnet-deployment.test.ts` pins both rows to digests
  * read from the live contracts.
  *
- * The v1 pair it replaced (`0x8630…A2B6` / `0xACfe…a2`) holds no name the
- * platform answers for: the L1 resolver no longer points at it, and names were
- * not carried across (owner decision 2026-09-21: start fresh).
+ * The pairs it replaced hold no name the platform answers for, and names were
+ * not carried across (owner decisions: start fresh, 2026-09-21 and again at
+ * launch): the 2026-09-21 v2.2 pair (`0x4c22…02a8` / `0x5974…fFaB`, retired
+ * 2026-10-23 - registrar removed, its sponsor revoked) and the v1 pair
+ * (`0x8630…A2B6` / `0xACfe…a2`).
  *
  * Deployment record: `contracts/deployments/42161-subens.json` in the
  * WoCo-Contracts repo.
@@ -71,9 +73,9 @@ export interface SubEnsDeployment {
  */
 export const SUB_ENS_DEPLOYMENTS = {
   42161: {
-    registry: "0x4c2265470e0134C0a2df6902ebcb5397a40102a8",
-    registrar: "0x5974bd7bb11C5a33B3d35996d4D95660F315fFaB",
-    deployBlock: 507_277_293,
+    registry: "0x00d0054Ca80d97014947CE97d58402EbED0946EE",
+    registrar: "0x2812A3F1Fe35C85a953248152eF41EeD5Dc9c12A",
+    deployBlock: 517_616_088,
   },
   421614: {
     registry: "0xAf3124EE7360c7B9FD06311102f635392da44886",
