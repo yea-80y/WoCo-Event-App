@@ -6,6 +6,19 @@ Entries before 2026-09-10 use the retired noun "POD" for what is now called "obj
 
 ---
 
+## 2026-10-23 - Launch: live payments, fresh names, fresh storage, new app feed
+
+One evening, one runbook, each step verified live before the next. Test-period state was set aside, not carried over.
+
+- Events directory reset (#978): ops routes to list, unlist and rebuild the global directory (`/api/ops/directory`, `/api/ops/events/:id/unlist`, `/api/ops/directory/rebuild`). Every test event unlisted; Discover starts empty.
+- Sub-names start fresh (#979, WoCo-Contracts #43): a new registry + registrar on Arbitrum One from the audited v2.2 source, 14 reserved labels (woco, admin, support, help, www, api, app, mail, auth, accounts, login, scan, door, scanner). The old pair is retired by Safe transactions; `woco.eth`'s L1Resolver now answers from the new registry. Addresses: `docs/DEPLOYMENTS.md`.
+- Stripe live mode. The sandbox payout, connected-account and sale stores were moved aside, so live starts with none of them.
+- New postage batches, and the frontend split across two (#980): feed updates, manifests and the sign-in window on the core batch, which is only ever topped up; app and scanner bundles on a separate builds batch (`BUILD_BATCH_ID`), replaced when it fills. The deploy refuses a builds batch under 3 days or with its fullest bucket at 3/4 (`scripts/swarm-batches.cjs`).
+- New app feed `woco-app-v1` from index 0 (#980; gateway seed in bee-slam #5). The deploy refuses a recorded feed state that belongs to another feed. `woco.eth` and `app.woco.eth` point at the new manifest. First load of woco.eth.limo: median 3.6 s on the old feed (276 entries) to 1.7 s.
+- Test-period accounts, names and Swarm data do not carry over: their batches expire on 2026-10-24.
+
+---
+
 ## 2026-10-09 - Removing a passkey moves the account to new keys (#186)
 
 - A removed passkey kept the identity seed: it could open new orders and sign as the account. Now each removal makes a random account secret the removed passkey never sees; the content-feed signer, order key and door-pass roster key come from it. Design consult with Fable before building; the owner chose an onchain anchor over the server pointer it proposed.

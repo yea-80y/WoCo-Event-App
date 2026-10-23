@@ -221,6 +221,9 @@ SWARM
 - Frontend Bee gateway: https://gateway.woco-net.com (dev) / gateway.ethswarm.org (generated prod sites)
 - Backend Bee (in-cluster): http://bee-node:1633 (internal docker DNS, set as BEE_URL on the VM)
 - Postage batch: `POSTAGE_BATCH_ID` (server-only)
+- Frontend deploys (`scripts/`) use two batches: feed updates + manifests on the core batch (`POSTAGE_BATCH_ID`,
+  never replaced, only topped up), app + scanner bundles on a builds batch (`BUILD_BATCH_ID`, replaced when full).
+  `scripts/swarm-batches.cjs` refuses the deploy on a bad split. The app feed topic is `woco-app-v1` (since launch).
 - Feed private key: `FEED_PRIVATE_KEY` (server-only). Owns PLATFORM feeds — directory pointer,
   site events index, creator site directory, issuer-log relay, recovery status, marketing pointer,
   shop config, passport collection — PLUS any event/site feed whose client sent no feed signer.
