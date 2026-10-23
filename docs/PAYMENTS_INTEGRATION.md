@@ -106,6 +106,11 @@ Base/Optimism/Mainnet/Sepolia:
 - Onboarding opens in NEW TAB during event creation to preserve form data
 - Frontend modal checks auth, prompts WoCo login if needed before Stripe API calls
 - Anyone can pay by card; a guest pays with just an email and needs no account.
+- Checkout offers card only (`CHECKOUT_PAYMENT_METHOD_TYPES`, #799); Apple Pay / Google Pay ride
+  on it. Link was tried and taken out (2026-10-23): on a Link payment Stripe attached our
+  application fee to the charge later than the webhook, so the provenance check refused to
+  fulfil until Stripe's resend (follow-up: #975). PayPal through Stripe cannot be added on direct charges (Stripe
+  supports it only on destination charges, i.e. with WoCo as the seller).
 - The `<woco-tickets>` embed is card-only guest checkout (#141): it holds seats with a countdown
   when the buy panel opens (#570) and returns the buyer to the organiser's page, which confirms
   the order through `GET /api/stripe/checkout-status` (#567, #593).
