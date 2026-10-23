@@ -56,6 +56,8 @@ module.exports = { windowProblems, contenthashFor, buildSource };
 if (require.main === module) {
   require('dotenv').config({ path: path.resolve(__dirname, '.env') });
   const BEE_URL = process.env.BEE_URL || 'https://gateway.woco-net.com';
+  // The CORE batch, never the builds one: the Safe pins this collection's reference on
+  // L1, so it must live as long as auth.woco.eth points at it (swarm-batches.cjs).
   const POSTAGE_BATCH_ID = process.env.POSTAGE_BATCH_ID || '';
   const UPLOAD_SECRET = process.env.UPLOAD_SECRET || '';
   const SSH_HOST = process.env.SSH_HOST || 'root@46.225.174.72';
