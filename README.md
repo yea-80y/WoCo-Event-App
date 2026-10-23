@@ -9,11 +9,9 @@ storage with keys the platform never holds.
 **Live app:** [woco.eth.limo](https://woco.eth.limo/) · **API:** `https://events-api.woco-net.com`
 · **Health:** [`/api/health`](https://events-api.woco-net.com/api/health)
 
-> ### Status: pre-launch
-> There are no customers and no real user data. Card payments run against Stripe **test** keys,
-> email login runs against a Web3Auth **devnet** project, and tickets mint on the ticket ledger's
-> **Arbitrum Sepolia** copy. The Arbitrum One ledger is deployed and the app switches to it at
-> launch, together with the other two. Treat everything in the running system as disposable.
+> ### Status: live
+> Card payments run on Stripe **live** keys, email and social sign-in on Web3Auth's **mainnet**
+> network, and tickets mint on the ticket ledger on **Arbitrum One**.
 
 ---
 

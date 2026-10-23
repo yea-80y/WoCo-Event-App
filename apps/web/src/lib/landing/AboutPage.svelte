@@ -290,13 +290,6 @@
           of the ticket price, and it only goes down: the organiser terms cap it
           at 1.5% and stop any update to those terms raising the cap.
         </p>
-        <!-- DELETE AT LAUNCH, alongside ClaimButton's test-card line: both name
-             the one remaining test rail, Stripe test mode. Tickets already mint
-             on Arbitrum One (chain 42161) since the 2026-10-19 server flip. -->
-        <p class="note">
-          WoCo is pre-launch. Until launch, card payments run in Stripe's test
-          mode. Tickets are already recorded on Arbitrum One.
-        </p>
         <button class="doc-link" onclick={() => navigate("/legal/organiser-terms")}>
           Organiser terms <ArrowRight size={14} strokeWidth={2.5} />
         </button>
@@ -470,14 +463,6 @@
     max-width: 64ch;
   }
   .block > p + p { margin-top: 1rem; }
-  .block > p.note {
-    margin-top: 1.25rem;
-    padding: 0.75rem 1rem;
-    border-left: 2px solid var(--accent);
-    background: var(--accent-subtle);
-    color: var(--text-secondary);
-    font-size: 0.9375rem;
-  }
 
   /* ── The short version: four ruled cells ── */
   .pillars {
