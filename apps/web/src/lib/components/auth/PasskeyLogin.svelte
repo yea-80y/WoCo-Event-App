@@ -306,11 +306,10 @@
     background: var(--accent-hover);
   }
 
-  /* The first-visit pair: one height, label over who it is for. */
+  /* The first-visit pair: one height, label over who it is for, centred like the sheet's other buttons (owner 10-23). */
   .passkey-btn.choice {
     min-height: 3.75rem;
-    justify-content: flex-start;
-    text-align: left;
+    text-align: center;
     padding: 0.75rem 1rem;
   }
 
