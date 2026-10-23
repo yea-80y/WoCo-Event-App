@@ -1,6 +1,6 @@
 /**
  * The shared address map against the contracts actually deployed on Arbitrum
- * One (registry v2.2, live 2026-09-21).
+ * One (registry v2.2, the launch deploy of 2026-10-23).
  *
  * The browser signs against `SUB_ENS_DEPLOYMENTS[42161]` directly — the
  * registrar is the `verifyingContract` of every `SetContenthash`, the registry
@@ -9,7 +9,7 @@
  * suite stayed green, because the other typed-data vectors use a made-up
  * registrar address. A stale row is a signature for a contract that refuses it.
  *
- * The two digests below were READ FROM THE LIVE CONTRACTS on 2026-09-21
+ * The two digests below were READ FROM THE LIVE CONTRACTS on 2026-10-23
  * (`setContenthashDigest` on the registrar, `releaseDigest` on the registry,
  * base name `woco.eth`, pointerNonce 0, recordVersion 1) and matched the
  * browser's own builders fed from this map. If either side moves — an address,
@@ -28,8 +28,8 @@ const BASE_NODE = namehash("woco.eth") as `0x${string}`;
 const EXPIRATION = 1_790_100_000;
 
 test("the map names the v2.2 pair the L1 resolver points at", () => {
-  assert.equal(MAINNET.registry, "0x4c2265470e0134C0a2df6902ebcb5397a40102a8");
-  assert.equal(MAINNET.registrar, "0x5974bd7bb11C5a33B3d35996d4D95660F315fFaB");
+  assert.equal(MAINNET.registry, "0x00d0054Ca80d97014947CE97d58402EbED0946EE");
+  assert.equal(MAINNET.registrar, "0x2812A3F1Fe35C85a953248152eF41EeD5Dc9c12A");
 });
 
 test("SetContenthash from the map hashes to the live registrar's digest", () => {
@@ -44,7 +44,7 @@ test("SetContenthash from the map hashes to the live registrar's digest", () => 
   });
   assert.equal(
     TypedDataEncoder.hash(domain, types, message),
-    "0x091640ca47b4cb9c4b21cc7f9970ad1f820937e098cf75a2c7b80b918c8e272f",
+    "0x2f4830f869446b616f18b67afcab3f6324833b0349aa0b29a4f172aaecfa7b9a",
   );
 });
 
@@ -59,6 +59,6 @@ test("Release from the map hashes to the live registry's digest", () => {
   });
   assert.equal(
     TypedDataEncoder.hash(domain, types, message),
-    "0x7857790e00f207fb34d0f529b47f71e966abbc301125af35f940b99bbefec9f7",
+    "0xd4dab5e5d05b8dce489853e2a56252b7fb352a19343548990c9e83ce35831db0",
   );
 });

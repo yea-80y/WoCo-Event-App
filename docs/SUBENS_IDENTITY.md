@@ -42,9 +42,9 @@ L1 resolver answers from that registry.
 
 | | Address |
 |---|---|
-| `SubENSRegistry` (L2Registry v2.2 clone, since 2026-09-21) | `0x4c2265470e0134C0a2df6902ebcb5397a40102a8` |
-| `WoCoRegistrar` | `0x5974bd7bb11C5a33B3d35996d4D95660F315fFaB` |
-| L2Registry implementation | `0x44F3CE28DFb86d6827637D6b3E55D4111cA55367` |
+| `SubENSRegistry` (L2Registry v2.2 clone, launch deploy 2026-10-23) | `0x00d0054Ca80d97014947CE97d58402EbED0946EE` |
+| `WoCoRegistrar` | `0x2812A3F1Fe35C85a953248152eF41EeD5Dc9c12A` |
+| L2Registry implementation | `0x18F536ed9220642A7ADB4f55A4d1057C53bDa790` |
 | `L1Resolver` v2 (Ethereum mainnet, since 2026-09-25) | `0xD9357945E2fc3bA586Cbc1Cdc2f79f0E512cFfD7` |
 | `L1Resolver` v1 (kept only as the rollback target) | `0x172031E6a8428617B05F2002e0e278bb8fb3Ed8A` |
 | woco.eth's own records (the apex fallback: ENS Public Resolver) | `0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63` |

@@ -16,8 +16,8 @@ Inside this repo, code reads addresses from `packages/shared` (`sub-ens/addresse
 | Contract | Address | Role |
 |---|---|---|
 | WoCoTicketLedger | [`0xEa6Eb3E153164c451A3CCdc41e1D93Cc76Ba65A2`](https://arbiscan.io/address/0xEa6Eb3E153164c451A3CCdc41e1D93Cc76Ba65A2) | The ticket ledger: one slot per sold ticket, owner-authorised transfers. Deployed 2026-09-25. **Not yet used by the app** - see below. |
-| WoCoRegistrar (sub-names v2.2) | [`0x5974bd7bb11C5a33B3d35996d4D95660F315fFaB`](https://arbiscan.io/address/0x5974bd7bb11C5a33B3d35996d4D95660F315fFaB) | Mints `*.woco.eth` names and relays holder-signed pointer and release writes. |
-| L2Registry (sub-names v2.2) | [`0x4c2265470e0134C0a2df6902ebcb5397a40102a8`](https://arbiscan.io/address/0x4c2265470e0134C0a2df6902ebcb5397a40102a8) | `*.woco.eth` names as ERC-721 tokens, with their records. A minimal-proxy clone. |
+| WoCoRegistrar (sub-names v2.2) | [`0x2812A3F1Fe35C85a953248152eF41EeD5Dc9c12A`](https://arbiscan.io/address/0x2812A3F1Fe35C85a953248152eF41EeD5Dc9c12A) | Mints `*.woco.eth` names and relays holder-signed pointer and release writes. |
+| L2Registry (sub-names v2.2) | [`0x00d0054Ca80d97014947CE97d58402EbED0946EE`](https://arbiscan.io/address/0x00d0054Ca80d97014947CE97d58402EbED0946EE) | `*.woco.eth` names as ERC-721 tokens, with their records. A minimal-proxy clone. Launch deploy, 2026-10-23. |
 | WoCoGuardianHook | [`0xF43524473EBC651969BeCc748462ED27ed39d4Db`](https://arbiscan.io/address/0xF43524473EBC651969BeCc748462ED27ed39d4Db) | ERC-7579 hook that pins which guardian accounts may call a passkey account's recovery route, with real per-guardian revocation. No owner or admin. Same address on every chain (CREATE2). |
 
 Admin roles on the ledger and the sub-name contracts are held by a Safe multisig. The platform
