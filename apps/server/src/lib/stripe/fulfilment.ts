@@ -1031,8 +1031,9 @@ export async function fulfilPaidSession(
     }
   }
 
-  // Stripe gives us the buyer's name from `customer_details` (filled by the
-  // user at checkout when card billing is collected). Baked into the ticket-card
+  // Stripe gives us the buyer's name from `customer_details` (filled at checkout
+  // when billing details are collected; a Link or wallet payment may not supply
+  // one, and every use below treats it as optional). Baked into the ticket-card
   // PNG and shown on the page, and sealed for the door below.
   const buyerName = session.customer_details?.name?.trim() || undefined;
 
