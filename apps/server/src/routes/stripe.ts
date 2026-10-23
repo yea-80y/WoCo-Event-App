@@ -1250,7 +1250,7 @@ stripe.post("/create-checkout", async (c) => {
     ), (err) => {
       const e = err as { code?: string; param?: string };
       console.warn(
-        `[stripe/create-checkout] Stripe refused Link on ${organiserRecord.stripeAccountId} ` +
+        `[stripe/create-checkout] Stripe refused the session with Link on ${organiserRecord.stripeAccountId} ` +
         `(${e.code ?? "?"}/${e.param ?? "?"}); retrying with cards only`,
       );
     });
