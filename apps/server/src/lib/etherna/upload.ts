@@ -210,6 +210,14 @@ export async function prepareEthernaFeedIndex(opts: {
   // Only the headers are wanted; the body is the feed's resolved content, which
   // the feed's owner chooses. Cancel it rather than leave it transferring.
   await indexRes.body?.cancel().catch(() => {});
+  if (indexRes.status === 403) {
+    // Etherna's gateway refuses every authenticated feed lookup (nginx 403,
+    // first seen 2026-10-23). The lookup is only a start: our bee's lookup is
+    // another lower bound, and the same walk over both sources decides.
+    console.warn(`[etherna] feed lookup refused (403) for ${topicHex.slice(0, 16)} - resolving from our bee`);
+    const { resolveFeedNextIndex } = await import("../swarm/feeds.js");
+    return { feedManifestHash, nextIndex: await resolveFeedNextIndex(topic, ownerHex, "etherna") };
+  }
   let start = 0n;
   if (indexRes.ok) {
     const h = indexRes.headers.get("swarm-feed-index-next");

@@ -65,6 +65,8 @@ function noteMiss(addr: string): void {
 const skipped = (addr: string) => (skippedUntil.get(addr) ?? -1) > clock;
 /** Topics whose bee walk fails whatever is stored ("lookup at failed"). */
 const lookupFails = new Set<string>();
+/** Etherna's gateway refusing every authenticated feed lookup (nginx 403, 2026-10-23). */
+let ethernaLookupRefused = false;
 
 const hex = (b: Uint8Array) => Binary.uint8ArrayToHex(b);
 const unhex = (h: string) => Binary.hexToUint8Array(h);
@@ -168,7 +170,10 @@ const etherna: Server = createServer(async (req, res) => {
   if (req.method === "POST" && path.startsWith("/soc/")) return socPost(req, res);
   if (req.method === "POST" && path.includes("/offers")) return json(res, 200, {});
   if (req.method === "POST" && path.startsWith("/feeds/")) return json(res, 201, { reference: "ef".repeat(32) });
-  if (req.method === "GET" && path.startsWith("/feeds/")) return json(res, 404, { code: 404, message: "no update found" });
+  if (req.method === "GET" && path.startsWith("/feeds/")) {
+    if (ethernaLookupRefused) return void res.writeHead(403, { "Content-Type": "text/html" }).end("<html><head><title>403 Forbidden</title></head></html>");
+    return json(res, 404, { code: 404, message: "no update found" });
+  }
   if (req.method === "GET" && path.startsWith("/chunks/")) {
     const stored = chunks.get(path.split("/")[2]!.toLowerCase()) ?? contents.get(path.split("/")[2]!.toLowerCase());
     if (stored) return void res.writeHead(200).end(Buffer.from(stored));
@@ -465,6 +470,26 @@ test("deploy (Etherna): our bee cannot say whether the pointer's index 0 is take
   assert.deepEqual(bzzUploads, ["etherna"]);
   assert.equal(feedHistory(shared.multisiteFeedTopic(siteId)).length, 1);
   assert.equal(ok.json.data!.feedManifestHash, "ef".repeat(32));
+  await settle();
+});
+
+test("deploy (Etherna): Etherna refuses the feed lookup (403) - resolved from our bee, and a redeploy takes the next index", async () => {
+  const who = await organiser();
+  const siteId = newSiteId();
+  ethernaLookupRefused = true;
+  try {
+    const first = await deploy(who, siteId, ETHERNA_URL);
+    assert.equal(first.status, 200, JSON.stringify(first.json));
+    assert.equal(feedHistory(shared.multisiteFeedTopic(siteId)).length, 1, "index 0");
+    await settle();
+    feeds.__feedWriteTestHooks.clearCache();
+    const second = await deploy(who, siteId, ETHERNA_URL);
+    assert.equal(second.status, 200, JSON.stringify(second.json));
+    assert.equal(feedHistory(shared.multisiteFeedTopic(siteId)).length, 2, "index 1 - never a write at the taken index 0");
+    assert.deepEqual(bzzUploads, ["etherna", "etherna"]);
+  } finally {
+    ethernaLookupRefused = false;
+  }
   await settle();
 });
 
