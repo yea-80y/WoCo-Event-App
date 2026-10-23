@@ -83,6 +83,7 @@ import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
 import { nameTargetsHealth } from "./lib/sub-ens/name-targets.js";
 import { scannerHealth, startScannerProbe } from "./lib/scanner/health.js";
 import { signInWindowHealth, startSignInWindowProbe } from "./lib/health/sign-in-window.js";
+import { createAlarmLog } from "./lib/health/alarm-log.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
@@ -923,6 +924,21 @@ setInterval(() => {
   sweepHeldOrders();
   retryPaidHeldOrders().catch((err) => console.warn("[attendee-batch] held-order retry failed:", (err as Error).message));
 }, 60_000).unref();
+// A line in the journal each time a health check turns red or green, so a page
+// from the uptime monitor can be traced after the alarm has cleared. Two minutes
+// in, so the boot probes (every 60 s from start) have answered once.
+const noteAlarms = createAlarmLog();
+const watchAlarms = () => {
+  try {
+    noteAlarms(healthReport());
+  } catch (err) {
+    console.warn("[alarm] health report failed:", (err as Error).message);
+  }
+};
+setTimeout(() => {
+  watchAlarms();
+  setInterval(watchAlarms, 60_000).unref();
+}, 2 * 60_000).unref();
 
 /**
  * Graceful shutdown.

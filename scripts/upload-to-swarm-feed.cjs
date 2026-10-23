@@ -24,22 +24,25 @@ const fs = require('fs');
 const path = require('path');
 const tar = require('tar');
 const axios = require('axios');
+const { batchProblems, manifestStateProblem } = require('./swarm-batches.cjs');
 
 // ===== CONFIG =====
 // All secrets loaded from scripts/.env (gitignored)
 // Create scripts/.env with:
 //   FEED_PRIVATE_KEY=0x<your-key>
-//   POSTAGE_BATCH_ID=<your-batch-id>
+//   POSTAGE_BATCH_ID=<core batch: feed updates + manifest, never replaced>
+//   BUILD_BATCH_ID=<builds batch: the bundle only, replaceable - see swarm-batches.cjs>
 //   BEE_URL=https://gateway.woco-net.com  (optional, defaults to gateway.woco-net.com)
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const BEE_URL = process.env.BEE_URL || 'https://gateway.woco-net.com';
 // What running pages read from; may differ from BEE_URL, the upload route.
 const PUBLIC_GATEWAY = 'https://gateway.woco-net.com';
 const POSTAGE_BATCH_ID = process.env.POSTAGE_BATCH_ID || '';
+const BUILD_BATCH_ID = process.env.BUILD_BATCH_ID || '';
 const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || '';
 const UPLOAD_SECRET = process.env.UPLOAD_SECRET || '';
 const SSH_HOST = process.env.SSH_HOST || 'root@46.225.174.72';
-const FEED_TOPIC = 'woco-events-v1';
+const FEED_TOPIC = 'woco-app-v1';
 const UPLOAD_DIR = path.resolve(__dirname, '../apps/web/dist');
 
 // Persisted state so we reuse the same manifest every time
@@ -129,6 +132,14 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     console.log(`Feed Topic: ${FEED_TOPIC}`);
     console.log(`Feed Owner: ${ownerHex}\n`);
 
+    // Both refusals come before anything is read from the feed or uploaded.
+    const manifestState = await readJsonIfExists(MANIFEST_STATE);
+    const stateProblem = manifestStateProblem(manifestState, ownerHex, topic.toString());
+    if (stateProblem) throw new Error(`Not deploying: ${stateProblem}`);
+    const stamps = (await axios.get(`${BEE_URL}/stamps`, { timeout: 15000 })).data?.stamps;
+    const problems = batchProblems(stamps, { build: BUILD_BATCH_ID, core: POSTAGE_BATCH_ID });
+    if (problems.length) throw new Error(`Not deploying:\n  - ${problems.join('\n  - ')}`);
+
     // Two-pass upload so the served index.html carries an absolute <base href>
     // pointing at our fast gateway. Without this, woco.eth.limo serves the bundle
     // and the browser fetches every JS/CSS chunk from eth.limo's content path
@@ -155,7 +166,7 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
       const resp = await axios.post(`${BEE_URL}/bzz`, tarData, {
         headers: {
           'Content-Type': 'application/x-tar',
-          'Swarm-Postage-Batch-Id': POSTAGE_BATCH_ID,
+          'Swarm-Postage-Batch-Id': BUILD_BATCH_ID,
           'Swarm-Index-Document': 'index.html',
           'Swarm-Error-Document': 'index.html',
           'Swarm-Collection': 'true',
@@ -198,7 +209,7 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     // bee's lookup can land short (#5251), and a short next index is a taken one. The
     // gateway's high-water mark only ever rises and comes from verified updates, so
     // never write below it. An older gateway (no `index` in the reply) just adds nothing.
-    const knownManifest = (await readJsonIfExists(MANIFEST_STATE))?.manifestRef;
+    const knownManifest = manifestState?.manifestRef;
     if (knownManifest) {
       try {
         const mark = await axios.post(`${BEE_URL}/admin/feeds/${knownManifest}/refresh`, {}, {
@@ -243,7 +254,6 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     // 3) Create or reuse feed manifest
     await ensureDir(STATE_DIR);
     let manifestRef;
-    const manifestState = await readJsonIfExists(MANIFEST_STATE);
 
     if (manifestState?.manifestRef) {
       manifestRef = manifestState.manifestRef;
