@@ -113,7 +113,7 @@
     </div>
 
     <!-- corner stamps -->
-    <div class="corner corner-tl mono">EST. 2025 · PRE-LAUNCH</div>
+    <div class="corner corner-tl mono">EST. 2025</div>
     <div class="corner corner-br mono">v0 // NO LOCK-IN</div>
   </section>
 
