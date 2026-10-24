@@ -30,6 +30,7 @@ import { errorClass } from "../http/error-class.js";
 import { deleteRoster, eventKey, storedRosterKeys } from "./store.js";
 import { deleteDoorEntries, storedDoorEntryKeys } from "./door-entries.js";
 import { deleteTicketHold, ticketHoldsByEvent } from "../ticket-hold/store.js";
+import { resolveTicketFailuresForEvent } from "../email/failure-ledger.js";
 
 /** Days a roster outlives its event's onchain end. Stated in DATA_INVENTORY §3.1. */
 export const ROSTER_KEPT_AFTER_END_DAYS = 2;
@@ -132,7 +133,10 @@ async function sweep({ now = Date.now(), readEnd, chainNow = chainTimeMs }: Rost
     try {
       deleteRoster(key);
       deleteDoorEntries(key);
-      for (const sessionId of holds.get(eventId) ?? []) deleteTicketHold(sessionId);
+      const held = holds.get(eventId) ?? [];
+      for (const sessionId of held) deleteTicketHold(sessionId);
+      // Nothing left to resend: the rows stop alarming and leave the dashboard.
+      if (held.length) resolveTicketFailuresForEvent(eventId, "event-ended");
     } catch (err) {
       failures.add(`delete failed (${fsCode(err)})`);
       continue;

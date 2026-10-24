@@ -52,7 +52,7 @@ export async function resendUndelivered(
   try {
     tickets = await openHeldTickets(copy.data, sessionId, secretKeys, openJsonWithAnyKey);
   } catch {
-    return { ok: false, error: "This device can't open these tickets. Sign in with the account that made the event." };
+    return { ok: false, error: "This device can't open these tickets.", code: "CANNOT_OPEN" };
   }
   return authPost<{ sentTo: string; resendsLeft: number }>(`${base(eventId)}/${encodeURIComponent(sessionId)}/resend`, {
     to,

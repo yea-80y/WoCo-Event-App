@@ -96,3 +96,9 @@ test("owner copy: a spaced hyphen, never an em dash", () => {
   const markup = panel.slice(panel.indexOf("</script>"), panel.indexOf("<style>"));
   assert.doesNotMatch(markup + panel.slice(0, panel.indexOf("</script>")), /—/);
 });
+
+test("a box this device can't open says why: keys from before a passkey change, or another account", () => {
+  assert.match(panel, /r\.code === "CANNOT_OPEN"\s*\?\s*auth\.keyRingNotice/);
+  assert.match(read("../src/lib/api/undelivered.ts"), /code: "CANNOT_OPEN"/);
+  assert.match(panel, /MAILABLE_EMAIL_RE\.test\(s\.trim\(\)\)/, "the shared address rule, not a copy");
+});

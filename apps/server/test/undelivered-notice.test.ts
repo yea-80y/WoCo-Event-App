@@ -30,12 +30,15 @@ const row = (context: Record<string, string>): EmailFailure => ({
 });
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-function rig(o: { contactEmail?: string; sendThrows?: boolean } = {}) {
+function rig(o: { address?: string | null; sendThrows?: boolean } = {}) {
   let now = Date.parse("2026-10-24T12:00:00Z");
   const sent: Array<{ msg: { to: string; subject: string; html: string; text: string }; context: Record<string, string> }> = [];
+  const asked: Array<[string, string | undefined]> = [];
   const deps: NoticeDeps = {
-    // As the live check does: the theme only for this event's organiser's site.
-    getSiteTheme: async (siteId, eventId) => (siteId === "site-1" && eventId !== "e0000000-0000-4000-8000-00000000dead" ? { ...(o.contactEmail !== undefined ? { contactEmail: o.contactEmail } : { contactEmail: "hello@venue.example" }) } : null),
+    organiserEmail: async (eventId, siteId) => {
+      asked.push([eventId, siteId]);
+      return o.address === undefined ? "organiser@stripe.example" : o.address;
+    },
     getEventTitle: async () => "Warehouse Party",
     send: async (msg, context) => {
       if (o.sendThrows) throw new Error("SES down for buyer typo@exampl.com");
@@ -44,15 +47,17 @@ function rig(o: { contactEmail?: string; sendThrows?: boolean } = {}) {
     dashboardUrl: (id) => `https://app.example/#/event/${id}/dashboard`,
     now: () => now,
   };
-  return { notify: createUndeliveredNotifier(deps), sent, tick: (ms: number) => (now += ms) };
+  return { notify: createUndeliveredNotifier(deps), sent, asked, tick: (ms: number) => (now += ms) };
 }
 
-test("a bounced ticket tells the organiser, at their site's contact address", async () => {
+test("a bounced ticket tells the organiser, with or without a site", async () => {
   const r = rig();
   r.notify(row({ stripeSessionId: "cs_live_n1aaaaaaaaaa", eventId: EVENT, siteId: "site-1" }));
+  r.notify(row({ stripeSessionId: "cs_live_n1baaaaaaaaa", eventId: "e0000000-0000-4000-8000-000000000985" }));
   await flush();
-  assert.equal(r.sent.length, 1);
-  assert.equal(r.sent[0]!.msg.to, "hello@venue.example");
+  assert.equal(r.sent.length, 2, "an event sold from the app is told too");
+  assert.deepEqual(r.asked, [[EVENT, "site-1"], ["e0000000-0000-4000-8000-000000000985", undefined]], "the site is only a fallback, passed as given");
+  assert.equal(r.sent[0]!.msg.to, "organiser@stripe.example");
   assert.equal(r.sent[0]!.msg.subject, "A ticket for Warehouse Party didn't arrive");
   assert.ok(r.sent[0]!.msg.html.includes(`https://app.example/#/event/${EVENT}/dashboard`));
 });
@@ -84,10 +89,10 @@ test("one notice per event every 6 hours, however many tickets bounce; each even
   assert.equal(r.sent.length, 3);
 });
 
-test("no site, or a site with no contact address: the dashboard is the only place", async () => {
-  const none = rig();
+test("no address for the organiser: the dashboard is the only place", async () => {
+  const none = rig({ address: null });
   none.notify(row({ stripeSessionId: "cs_live_n3aaaaaaaaaa", eventId: EVENT }));
-  const blank = rig({ contactEmail: "  " });
+  const blank = rig({ address: "  " });
   blank.notify(row({ stripeSessionId: "cs_live_n4aaaaaaaaaa", eventId: EVENT, siteId: "site-1" }));
   await flush();
   assert.equal(none.sent.length + blank.sent.length, 0);
@@ -105,13 +110,6 @@ test("a send that fails is swallowed, and logs no address", async () => {
     console.error = orig;
   }
   assert.ok(lines.length > 0 && lines.every((l) => !l.includes("typo@exampl.com")));
-});
-
-test("the event is passed with the site, so the owner check can refuse another organiser's site", async () => {
-  const r = rig();
-  r.notify(row({ stripeSessionId: "cs_live_n6aaaaaaaaaa", eventId: "e0000000-0000-4000-8000-00000000dead", siteId: "site-1" }));
-  await flush();
-  assert.equal(r.sent.length, 0);
 });
 
 test("an event with no title is still named sensibly", () => {
@@ -132,4 +130,20 @@ test("only ticket rows reach the listener: transactional, naming a sale and an e
   rec("transactional", { kind: "undelivered-notice", eventId: EVENT });
   assert.deepEqual(heard, ["cs_live_heard00000001"], "and a throwing listener changes nothing");
   assert.equal(ledger.listFailures().length, 4, "every row still recorded");
+});
+
+test("a bounced organiser notice is counted, never the undelivered-ticket alarm", () => {
+  ledger._resetForTest();
+  const rec = (context: Record<string, string>) =>
+    ledger.recordFailure({ kind: "transactional", recipients: ["org@x.co"], recipientHashes: ["h"], subject: "s", provider: "ses", error: "e", attempts: 1, retryable: false, context });
+  rec({ kind: "undelivered-notice", eventId: EVENT });
+  rec({ kind: "stripe-requirement-nudge" });
+  let h = ledger.failureHealth();
+  assert.equal(h.ok, true);
+  assert.equal(h.unresolvedOrganiserNotices, 2);
+  assert.equal(h.unresolvedTransactional, 0);
+  rec({ stripeSessionId: "cs_live_real000000001", eventId: EVENT });
+  h = ledger.failureHealth();
+  assert.equal(h.ok, false, "a buyer's ticket still is");
+  assert.equal(h.unresolvedTransactional, 1);
 });

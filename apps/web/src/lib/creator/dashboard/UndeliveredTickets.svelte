@@ -5,6 +5,7 @@
    * against the order and sends the same ticket to the address they give. The held
    * copy is opened here, with the organiser's own keys, never by the server.
    */
+  import { MAILABLE_EMAIL_RE } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { listUndelivered, resendUndelivered, type UndeliveredRow } from "../../api/undelivered.js";
 
@@ -48,7 +49,7 @@
     CANCELLATIONS_UNREADABLE: "Can't check this event right now. Try again later.",
   };
 
-  const looksMailable = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+  const looksMailable = (s: string) => MAILABLE_EMAIL_RE.test(s.trim());
 
   function startResend(sessionId: string): void {
     openFor = sessionId;
@@ -74,7 +75,15 @@
       const { secretKeys } = await orderKeysOf(secrets);
       const r = await resendUndelivered(eventId, row.sessionId, to.trim(), secretKeys, buyerName.trim() || undefined);
       if (!r.ok) {
-        error = r.error ?? "Couldn't resend the tickets.";
+        // A box that will not open on this device: the account's keys moved on since
+        // the sale (a passkey removed) and this device lacks that generation, or this
+        // is another account altogether.
+        error =
+          r.code === "CANNOT_OPEN"
+            ? auth.keyRingNotice
+              ? "This device doesn't have your account's keys from when these tickets were sold. Resend from the device you used then, or reload to fetch your keys."
+              : "This device can't open these tickets. Sign in with the account that made the event."
+            : (r.error ?? "Couldn't resend the tickets.");
         return;
       }
       sent = { sessionId: row.sessionId, to: r.data?.sentTo ?? to.trim() };

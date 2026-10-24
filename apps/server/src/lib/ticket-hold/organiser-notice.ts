@@ -2,10 +2,11 @@
  * "A ticket for your event didn't arrive" (#983) - the organiser's half of the
  * undelivered-ticket alarm, which otherwise reaches WoCo only.
  *
- * Sent to the contact address on the organiser's site, the one address an organiser
- * has given us to be reached at; an event sold without a site has none, and its
- * dashboard shows the same thing. It names the event and nothing about the buyer:
- * the dashboard, behind the organiser's sign-in, is where the order is.
+ * Sent to the email on the organiser's Stripe account - every selling organiser has
+ * one, it is theirs, and it is how WoCo already reaches them about money - read at
+ * send time and kept nowhere; else their own site's contact address. Neither = the
+ * dashboard alone. It names the event and nothing about the buyer: the dashboard,
+ * behind the organiser's sign-in, is where the order is.
  *
  * At most one per event every 6 hours, however many tickets bounce - a mistyped batch
  * or a provider outage must not turn into a stream of email. In memory: a restart may
@@ -18,8 +19,8 @@ import { companyFooterHtml, companyFooterText } from "../email/company-footer.js
 export const NOTICE_EVERY_MS = 6 * 60 * 60 * 1000;
 
 export interface NoticeDeps {
-  /** The site's contact address - null unless the site is this event's organiser's (the siteId came from checkout). */
-  getSiteTheme(siteId: string, eventId: string): Promise<{ contactEmail?: string } | null>;
+  /** Where to reach the event's organiser, or null. `siteId` is the checkout's pointer - only a fallback, and only if it is theirs. */
+  organiserEmail(eventId: string, siteId: string | undefined): Promise<string | null>;
   getEventTitle(eventId: string): Promise<string | null>;
   send(msg: { to: string; subject: string; html: string; text: string }, context: Record<string, string>): Promise<void>;
   /** Where the organiser's dashboard for an event lives. */
@@ -73,7 +74,7 @@ export function createUndeliveredNotifier(deps: NoticeDeps) {
   return (row: EmailFailure): void => {
     const eventId = row.context?.eventId;
     const siteId = row.context?.siteId;
-    if (!eventId || !siteId) return;
+    if (!eventId) return;
     const now = deps.now();
     const last = lastSent.get(eventId);
     if (last !== undefined && now - last < NOTICE_EVERY_MS) return;
@@ -81,8 +82,7 @@ export function createUndeliveredNotifier(deps: NoticeDeps) {
     lastSent.set(eventId, now);
     void (async () => {
       try {
-        const theme = await deps.getSiteTheme(siteId, eventId);
-        const to = theme?.contactEmail?.trim();
+        const to = (await deps.organiserEmail(eventId, siteId))?.trim();
         if (!to) return;
         const title = (await deps.getEventTitle(eventId).catch(() => null)) ?? "";
         const msg = buildUndeliveredNotice(title, deps.dashboardUrl(eventId));

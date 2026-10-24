@@ -341,6 +341,25 @@ export function unresolvedTicketEvents(): Map<string, number> {
 }
 
 /**
+ * The event is over and its held tickets are gone (#983): nothing can remedy these
+ * rows any more, so they stop alarming and stop showing on the organiser's dashboard.
+ * Kept, resolved, like every other row. One write.
+ */
+export function resolveTicketFailuresForEvent(eventId: string, by: string): number {
+  ensureLoaded();
+  const at = new Date().toISOString();
+  let n = 0;
+  for (const e of entries) {
+    if (e.resolvedAt || e.kind !== "transactional" || e.context?.eventId !== eventId || !e.context.stripeSessionId) continue;
+    e.resolvedAt = at;
+    e.resolvedBy = by;
+    n++;
+  }
+  if (n) persist();
+  return n;
+}
+
+/**
  * The organiser resent this ticket (#983): resolve the row and add the address it went
  * to as one more recipient, so an access or erasure request for that address reaches
  * this record too (`failuresForHash`, `eraseRecipient`). One write.
@@ -392,8 +411,18 @@ export interface FailureHealth {
   ok: boolean;
   unresolved: number;
   unresolvedTransactional: number;
+  /** Unresolved mail TO ORGANISERS about their account or event - counted, never the alarm. */
+  unresolvedOrganiserNotices: number;
   oldestUnresolved?: string;
 }
+
+/**
+ * Transactional mail to an organiser, not to a buyer: retried, failed over and kept
+ * with its address like a ticket, but its bouncing is not "somebody paid and has no
+ * ticket", which is what the alarm means (and what the uptime monitor pages on).
+ */
+const ORGANISER_NOTICE_KINDS = new Set(["undelivered-notice", "stripe-requirement-nudge"]);
+const isOrganiserNotice = (e: EmailFailure) => ORGANISER_NOTICE_KINDS.has(e.context?.kind ?? "");
 
 /**
  * For /api/health. `ok` goes false on ANY unresolved transactional failure —
@@ -402,11 +431,12 @@ export interface FailureHealth {
 export function failureHealth(): FailureHealth {
   ensureLoaded();
   const unresolved = entries.filter((e) => !e.resolvedAt);
-  const transactional = unresolved.filter((e) => e.kind === "transactional");
+  const transactional = unresolved.filter((e) => e.kind === "transactional" && !isOrganiserNotice(e));
   return {
     ok: transactional.length === 0,
     unresolved: unresolved.length,
     unresolvedTransactional: transactional.length,
+    unresolvedOrganiserNotices: unresolved.filter(isOrganiserNotice).length,
     ...(unresolved.length ? { oldestUnresolved: unresolved[unresolved.length - 1]!.ts } : {}),
   };
 }
