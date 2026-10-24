@@ -29,6 +29,7 @@ import { recordAttendeeEmail } from "../event/attendee-index.js";
 import { getSiteTheme, resolveSiteEventSigner } from "../site/service.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
 import { sealDoorEntries } from "../checkin/door-entries.js";
+import { holdTickets } from "../ticket-hold/store.js";
 import { recordFailure } from "../email/failure-ledger.js";
 import { recordPendingRefund } from "./pending-refunds.js";
 import { recordAutoRefund, recordSaleSlots, orderRefInOtherSale } from "./ticket-sales.js";
@@ -89,6 +90,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   },
   captureCheckoutConsent,
   recordAttendeeEmail,
+  holdTicketCopy: (input) => holdTickets(input, (ref) => fetchOrderKey(ref, BEE_URL)),
   getSiteTheme,
   sendTicketEmail,
   sealDoorEntries: (eventId, tickets, who) => sealDoorEntries(eventId, tickets, who),

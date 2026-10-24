@@ -6,7 +6,9 @@
  * the orders and can upload it again - so it is deleted a fixed time after the
  * event ends and nothing unrecoverable goes with it. The event's door entries
  * (later buyers' sealed email and card name, `door-entries.ts`) go with it, on the
- * same clock, whether or not a roster was ever pushed. The check-in set and the
+ * same clock, whether or not a roster was ever pushed, and so do its held tickets
+ * (each sale's QR sealed to the organiser in case its email bounced, #983): after
+ * the event a resend has nothing left to get anyone in to. The check-in set and the
  * door pass are left alone: they hold no answers.
  *
  * The end is the onchain `eventEndTs` of the event's registrations, never the
@@ -27,6 +29,7 @@ import {
 import { errorClass } from "../http/error-class.js";
 import { deleteRoster, eventKey, storedRosterKeys } from "./store.js";
 import { deleteDoorEntries, storedDoorEntryKeys } from "./door-entries.js";
+import { deleteTicketHold, ticketHoldsByEvent } from "../ticket-hold/store.js";
 
 /** Days a roster outlives its event's onchain end. Stated in DATA_INVENTORY §3.1. */
 export const ROSTER_KEPT_AFTER_END_DAYS = 2;
@@ -79,7 +82,8 @@ export async function sweepExpiredRosters(opts: RosterSweepOptions = {}): Promis
 }
 
 async function sweep({ now = Date.now(), readEnd, chainNow = chainTimeMs }: RosterSweepOptions): Promise<number> {
-  const stored = new Set([...storedRosterKeys(), ...storedDoorEntryKeys()]);
+  const holds = ticketHoldsByEvent();
+  const stored = new Set([...storedRosterKeys(), ...storedDoorEntryKeys(), ...[...holds.keys()].map(eventKey)]);
   const regsByEvent = new Map<string, Array<{ seriesId: string; onChainEventId: string }>>();
   for (const r of getAllResolutionEntries()) {
     if (!stored.has(eventKey(r.wocoEventId))) continue;
@@ -128,6 +132,7 @@ async function sweep({ now = Date.now(), readEnd, chainNow = chainTimeMs }: Rost
     try {
       deleteRoster(key);
       deleteDoorEntries(key);
+      for (const sessionId of holds.get(eventId) ?? []) deleteTicketHold(sessionId);
     } catch (err) {
       failures.add(`delete failed (${fsCode(err)})`);
       continue;

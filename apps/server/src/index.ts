@@ -120,6 +120,7 @@ import { droppedOptInsHealth } from "./lib/marketing/consent-capture.js";
 import { suppressionStoreHealth } from "./lib/marketing/suppression-store.js";
 import { sweepExpiredRosters, rosterRetentionHealth } from "./lib/checkin/roster-retention.js";
 import { doorEntriesHealth } from "./lib/checkin/door-entries.js";
+import { ticketHoldsHealth } from "./lib/ticket-hold/store.js";
 import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
 import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
 
@@ -533,6 +534,10 @@ function healthReport() {
     email: {
       provider: activeEmailProvider(),
       undelivered: failureHealth(),
+      // Held tickets (#983): each emailed ticket's QR sealed to its organiser, the copy
+      // a bounced ticket is resent from. Red while a copy is present but unreadable;
+      // `failed` counts sales emailed without one since boot (they can only be reissued).
+      ticketHolds: ticketHoldsHealth(),
       broadcasts: drainWorkerHealth(),
       // Sender pacing (#619). `ok: false` means a sender has been STOPPED for
       // bounces or complaints (an operator must look: /api/ops/sender-pacing),

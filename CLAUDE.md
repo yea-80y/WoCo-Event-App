@@ -617,6 +617,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     One that never will arrive - CHECK its batch is dead first - is cleared by moving its file out with the
     server stopped: a restart, so `ledger.dirty` false and no broadcasts running. A live batch's chunk
     moved out loses its read-rule protection)
+  ticket-holds/ (#983 — per sale, each emailed ticket's QR sealed to the organiser's order key: the ONLY copy
+    a bounced ticket can be resent from (the signing key is discarded at mint). Losing it leaves those
+    tickets reissue-only. Unreadable = never overwritten, `/api/health` `email.ticketHolds` alarm)
   checkin-door-entries/ (live door attendee list — per event, later buyers' email + card name sealed to the
     door pass's key, plus erasure removals. Losing it only empties the door's later-buyer list until the
     pass is regenerated (scanning unaffected); losing it after an erasure can leave a scanner showing that

@@ -102,6 +102,21 @@ export function doorEntrySealContext(eventId: string, passId: string, seriesId: 
   return { info: DOOR_ENTRY_SEAL_INFO, aad: `${DOOR_ENTRY_SEAL_INFO}:${eventId}:${passId}:${seriesId}:${edition}` };
 }
 
+/** HPKE info for a HELD TICKET (a sold ticket's QR, sealed to the organiser in case its email bounces, #983). FROZEN. */
+export const TICKET_HOLD_SEAL_INFO = "woco/ticket-hold/v1";
+
+/**
+ * A held ticket is bound to its event, its ticket type and its edition: lifted to
+ * another ticket it fails its tag, so an organiser resending one buyer's ticket
+ * cannot be handed another's. Same id rule as orders.
+ */
+export function ticketHoldSealContext(eventId: string, seriesId: string, edition: number): SealContext {
+  if (!ID_RE.test(eventId) || !ID_RE.test(seriesId) || !Number.isInteger(edition) || edition < 1) {
+    throw new Error("ticket hold seal context: malformed event, series or edition");
+  }
+  return { info: TICKET_HOLD_SEAL_INFO, aad: `${TICKET_HOLD_SEAL_INFO}:${eventId}:${seriesId}:${edition}` };
+}
+
 /** HPKE info for a door-key proof CHALLENGE (a nonce sealed to the account's order key). FROZEN. */
 export const DOOR_KEY_PROOF_SEAL_INFO = "woco/door-key-proof/v1";
 
