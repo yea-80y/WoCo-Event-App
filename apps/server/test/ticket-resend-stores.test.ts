@@ -96,3 +96,19 @@ test("all three routes need a signed session", async () => {
     assert.equal(res.status, 401, `${method} ${path}`);
   }
 });
+
+test("a resend counts once the mailer took it, and only then names its sale for an access request", async () => {
+  const SALE2 = "cs_live_stores00000002";
+  sales.recordSaleStub({ sessionId: SALE2, paymentIntentId: "pi_stores2", connectedAccountId: "acct_1", eventId: EVENT, seriesId: "s1", quantity: 1, amountTotal: 1000, currency: "gbp" });
+  const at = "2026-10-24T13:00:00.000Z";
+  sales.recordResend(SALE2, { at, toHash: "hash-later", by: "0xorg", accepted: false });
+  sales.recordResend(SALE2, { at, toHash: "hash-later", by: "0xorg", accepted: false });
+  const { reportSubject } = await import("../src/lib/marketing/subject-request.js");
+  assert.deepEqual(sales.salesResentTo("hash-later"), []);
+  assert.deepEqual(reportSubject("hash-later").ticketResends, []);
+  assert.equal(sales.markResendAccepted(SALE2, at), true);
+  assert.deepEqual(sales.getSale(SALE2)!.resends!.map((r) => r.accepted), [false, true], "the newest attempt, never an older one");
+  assert.deepEqual(sales.salesResentTo("hash-later").map((s) => s.sessionId), [SALE2]);
+  assert.deepEqual(reportSubject("hash-later").ticketResends, [{ sessionId: SALE2, eventId: EVENT }]);
+  assert.equal(sales.markResendAccepted("cs_live_nosuchsale0001", at), false);
+});

@@ -301,3 +301,37 @@ test("#547: create-checkout snapshots the confirmed notice's period into the tag
   assert.ok(gate > 0 && snap > gate, "taken from the read the sale gate confirmed");
   assert.ok(meta > snap && tag > meta, "inside the metadata the integrity tag commits to");
 });
+
+test("#983: an order whose ticket an organiser resent is found under the address it went to", async () => {
+  await readyAttendeeStore();
+  const { hashEmail } = await import("../src/lib/event/claim-service.js");
+  const sales = await import("../src/lib/stripe/ticket-sales.js");
+  const deps = { stamper: writer.getAttendeeStamper, upload: async (_e: unknown, body: Uint8Array) => (await acceptingUploadChunk(_e, body)).reference.toHex() };
+  const json = canonicalOrderBox({ ...BOX, ct: "9e".repeat(73) })!;
+  const ref = await writer.orderRefOf(json);
+  held.commitHold(ref, json, { eventId: "e-resent", seriesId: "s1" });
+  held.markHeldPaid(ref, "cs_live_resentlookup01", Date.now(), { emailHash: hashEmail("typo@exampl.com") });
+  await writer.storeHeldOrder(ref, deps as never);
+  sales.recordSaleStub({ sessionId: "cs_live_resentlookup01", paymentIntentId: "pi_resentlookup", connectedAccountId: "acct_1", eventId: "e-resent", seriesId: "s1", quantity: 1, amountTotal: 1000, currency: "gbp" });
+  sales.recordSaleSlots("cs_live_resentlookup01", "0x" + "0e".repeat(32), "c", [3], ref);
+  const at = new Date().toISOString();
+  sales.recordResend("cs_live_resentlookup01", { at, toHash: hashEmail("buyer@example.net"), by: "0xorg", accepted: false });
+  sales.recordResend("cs_live_resentlookup01", { at: "2026-10-24T00:00:00.000Z", toHash: hashEmail("never-sent@example.net"), by: "0xorg", accepted: false });
+
+  const { ops } = await import("../src/routes/ops.js");
+  const opsApp = new Hono();
+  opsApp.route("/api/ops", ops);
+  const lookup = async (email: string) => {
+    const res = await opsApp.request("/api/ops/attendee-batch/lookup", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${"t".repeat(40)}` },
+      body: JSON.stringify({ email }),
+    });
+    return ((await res.json()) as { data: { orders: Array<{ root: string; resentTo: boolean }> } }).data.orders;
+  };
+  assert.deepEqual(await lookup("buyer@example.net"), [], "not until the mailer took it");
+  assert.equal(sales.markResendAccepted("cs_live_resentlookup01", at), true);
+  assert.deepEqual((await lookup("buyer@example.net")).map((o) => [o.root, o.resentTo]), [[ref, true]]);
+  assert.deepEqual((await lookup("typo@exampl.com")).map((o) => [o.root, o.resentTo]), [[ref, false]], "still under the address typed at checkout");
+  assert.deepEqual(await lookup("never-sent@example.net"), [], "a send that never went names nothing");
+});

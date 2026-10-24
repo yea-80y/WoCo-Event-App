@@ -8,8 +8,9 @@
  *
  * MUTATION: drop the row check, the void check, the cancellation or end check, or the
  * record-creator check and its "refused" test goes red; accept a QR whose hash differs,
- * a missing edition or a duplicate and "exactly the tickets" goes red; count only
- * accepted resends and "the cap counts failed sends" goes red; resolve the row on a
+ * a missing edition or a duplicate and "exactly the tickets" goes red; count failed
+ * sends against the cap and "the cap counts accepted sends" goes red; send before the
+ * attempt is recorded and "nothing is sent unrecorded" goes red; resolve the row on a
  * failed send and "a failed send resolves nothing" goes red; drop linkOnly and "link
  * only" goes red.
  */
@@ -51,6 +52,8 @@ interface World {
   suppressed: Set<string>;
   sendFails: boolean;
   feed: EventFeed | null;
+  recordFails: boolean;
+  suppressionUnreadable: boolean;
 }
 
 function world(): World {
@@ -71,6 +74,8 @@ function world(): World {
     },
     suppressed: new Set(),
     sendFails: false,
+    recordFails: false,
+    suppressionUnreadable: false,
     feed: { title: "Warehouse Party", startDate: "2026-11-01T20:00:00Z", location: "London", series: [{ seriesId: SERIES, name: "General", totalSupply: 100 }], creatorAddress: FEED_CREATOR } as unknown as EventFeed,
   };
 }
@@ -103,14 +108,24 @@ function fakes(w: World) {
     },
     hashEmail: (e) => `h(${e})`,
     isGloballySuppressed: (h) => w.suppressed.has(h),
+    suppressionUnreadable: () => w.suppressionUnreadable,
+    getSiteTheme: async (siteId) => (siteId === "site-1" ? { palette: { accent: "#ff0055" } as never, contactEmail: "hello@venue.example" } : null),
     getEvent: async () => w.feed,
     sendTicketEmail: async (opts) => {
       if (w.sendFails) throw Object.assign(new Error("MessageRejected: x@y.com"), { ledgered: true });
       sent.push(opts);
     },
     recordResend: (sid, entry) => {
-      resends.push(entry);
-      if (w.sale && w.sale.sessionId === sid) w.sale.resends = [...(w.sale.resends ?? []), entry];
+      if (w.recordFails) return false;
+      const e = { ...entry };
+      resends.push(e);
+      if (w.sale && w.sale.sessionId === sid) w.sale.resends = [...(w.sale.resends ?? []), e];
+      return true;
+    },
+    markResendAccepted: (sid, at) => {
+      const e = w.sale?.sessionId === sid ? [...(w.sale.resends ?? [])].reverse().find((r) => r.at === at && !r.accepted) : undefined;
+      if (!e) return false;
+      e.accepted = true;
       return true;
     },
     resolveTicketFailure: (id, by, sentTo) => {
@@ -240,7 +255,7 @@ test("a resend emails exactly the held tickets, and records what happened", asyn
   assert.equal(m.profileCta, true, "the corrected address is now the ticket's");
   assert.equal(m.linkOnly, false);
   assert.deepEqual(m.failureContext, { stripeSessionId: SALE, eventId: EVENT, resentBy: ORGANISER });
-  assert.deepEqual(f.resends, [{ at: new Date(NOW).toISOString(), toHash: "h(buyer@example.com)", by: ORGANISER, accepted: true }]);
+  assert.deepEqual(f.resends, [{ at: new Date(NOW).toISOString(), toHash: "h(buyer@example.com)", by: ORGANISER, accepted: true }], "recorded before, accepted after");
   assert.deepEqual(f.resolved, [{ id: "r1", by: ORGANISER, sentTo: { hash: "h(buyer@example.com)", address: "buyer@example.com" } }]);
   assert.deepEqual(f.door, [{ tickets: [{ seriesId: SERIES, edition: 1 }, { seriesId: SERIES, edition: 2 }], who: { email: "buyer@example.com" } }]);
   assert.deepEqual(f.attendees, ["h(buyer@example.com)"]);
@@ -291,7 +306,7 @@ test("the address: required and mailable, and never one that bounced or complain
   assert.equal((await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody("typo@exampl.com"))).ok, true);
 });
 
-test("a failed send resolves nothing and touches no door list - but counts against the cap", async () => {
+test("a failed send resolves nothing and touches no door list - it is kept, as not accepted", async () => {
   const w = world();
   w.sendFails = true;
   const f = fakes(w);
@@ -302,15 +317,52 @@ test("a failed send resolves nothing and touches no door list - but counts again
   assert.equal(f.door.length + f.attendees.length, 0);
 });
 
-test("the cap counts failed sends: three attempts per sale, ever", async () => {
+test("the cap counts accepted sends: a mailer failure never strands the buyer", async () => {
   const w = world();
   w.sendFails = true;
   const f = fakes(w);
-  for (let i = 0; i < RESENDS_PER_SALE; i++) await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody());
+  for (let i = 0; i < RESENDS_PER_SALE + 1; i++) await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody());
   w.sendFails = false;
-  const v = await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody());
+  assert.equal((await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody())).ok, true, "failures did not use up the cap");
+  // Three ACCEPTED sends, each to a fresh bounce, and the fourth is refused.
+  for (let i = 1; i < RESENDS_PER_SALE; i++) {
+    w.rows.push(row(`again${i}`, "Bounce/Permanent/General"));
+    assert.equal((await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody(`n${i}@example.com`))).ok, true);
+  }
+  w.rows.push(row("again-last", "Bounce/Permanent/General"));
+  const v = await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody("last@example.com"));
   assert.ok(!v.ok && v.status === 429 && v.code === "RESEND_LIMIT");
+  assert.equal(f.sent.length, RESENDS_PER_SALE);
+});
+
+test("nothing is sent unrecorded: a sale record that cannot be written refuses the resend", async () => {
+  const w = world();
+  w.recordFails = true;
+  const f = fakes(w);
+  const v = await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody());
+  assert.ok(!v.ok && v.status === 503 && v.code === "RESEND_NOT_RECORDED");
   assert.equal(f.sent.length, 0);
+});
+
+test("an unreadable suppression list is a 503, never 'that address bounced'", async () => {
+  const w = world();
+  w.suppressionUnreadable = true;
+  const f = fakes(w);
+  const v = await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody());
+  assert.ok(!v.ok && v.status === 503 && v.code === "SUPPRESSION_UNREADABLE");
+  assert.equal(f.sent.length, 0);
+});
+
+test("a sale from an organiser site resends in the site's colours, with replies to the organiser", async () => {
+  const w = world();
+  w.rows = [{ ...row("r1", "Bounce/Permanent/General"), context: { stripeSessionId: SALE, eventId: EVENT, siteId: "site-1" } }];
+  const f = fakes(w);
+  assert.equal((await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody())).ok, true);
+  assert.deepEqual(f.sent[0]!.palette, { accent: "#ff0055" });
+  assert.equal(f.sent[0]!.replyTo, "hello@venue.example");
+  const plain = fakes(world());
+  await resendTickets(plain.deps, EVENT, SALE, ORGANISER, goodBody());
+  assert.equal(plain.sent[0]!.replyTo, undefined, "no site, no reply-to");
 });
 
 test("ten resends an hour per organiser, across every sale", async () => {
@@ -367,7 +419,7 @@ test("the QR never reaches a log line, on success or on a failed send", async ()
 test("the list: one line per sale, what the buyer typed, and why a sale cannot be resent", async () => {
   const w = world();
   w.rows.push(row("r2", "Bounce/Transient/MailboxFull"));
-  w.sale!.resends = [{ at: "x", toHash: "y", by: ORGANISER, accepted: false }];
+  w.sale!.resends = [{ at: "x", toHash: "y", by: ORGANISER, accepted: false }]; // a failed send uses nothing up
   const v = await listUndelivered(fakes(w).deps, EVENT, ORGANISER);
   assert.ok(v.ok);
   assert.equal(v.data.length, 1, "two rows, one sale");
@@ -377,7 +429,7 @@ test("the list: one line per sale, what the buyer typed, and why a sale cannot b
     reason: "Bounce/Permanent/General",
     typedAddress: "typo@exampl.com",
     editions: [1, 2],
-    resendsLeft: RESENDS_PER_SALE - 1,
+    resendsLeft: RESENDS_PER_SALE,
     blocked: null,
   });
   w.void = true;

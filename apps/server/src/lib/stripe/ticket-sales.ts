@@ -282,13 +282,35 @@ export function recordAutoRefund(sessionId: string, amount: number): void {
   persist();
 }
 
-/** One organiser resend of a sale's tickets (#983). False when nothing reached disk. */
+/**
+ * One organiser resend of a sale's tickets (#983), recorded BEFORE the send as not yet
+ * accepted, so the attempt survives a crash mid-send. False when nothing reached disk.
+ */
 export function recordResend(sessionId: string, entry: NonNullable<TicketSale["resends"]>[number]): boolean {
   ensureLoaded();
   const sale = store[sessionId];
   if (!sale) return false;
   sale.resends = [...(sale.resends ?? []), entry];
   return persist();
+}
+
+/**
+ * The mailer took that resend: it now counts against the sale's cap. The newest
+ * attempt at `at` not yet accepted - with one resend of a sale in flight at a time,
+ * that is the caller's. False when nothing reached disk.
+ */
+export function markResendAccepted(sessionId: string, at: string): boolean {
+  ensureLoaded();
+  const entry = [...(store[sessionId]?.resends ?? [])].reverse().find((r) => r.at === at && !r.accepted);
+  if (!entry) return false;
+  entry.accepted = true;
+  return persist();
+}
+
+/** Sales whose tickets an organiser resent to this address (#983) - how its order is found. */
+export function salesResentTo(emailHash: string): TicketSale[] {
+  ensureLoaded();
+  return Object.values(store).filter((s) => s.resends?.some((r) => r.accepted && r.toHash === emailHash));
 }
 
 export function getSale(sessionId: string): TicketSale | undefined {

@@ -400,6 +400,12 @@ so the wrong secret reports "no data" for someone who has plenty).
     npx tsx scripts/data-subject-request.ts --email <addr> --erase              # Art. 17, all organisers
     npx tsx scripts/data-subject-request.ts --email <addr> --erase --organiser 0x…   # scoped to one controller
 
+A ticket an organiser resent (#983) went to an address the buyer gave them, not the one typed at
+checkout. That address is on the ledger row in `email-failures.json` for 90 days and, as an HMAC,
+in `ticket-sales.json` `resends[].toHash` after; the report lists those sales (`ticketResends`), and
+the ops lookup returns their orders (`resentTo: true`) - the order itself is filed under the
+address typed at checkout.
+
 It is a script, not an admin HTTP route: there is no admin identity in this system, and inventing an
 admin bearer token guarding bulk erasure would be a worse attack surface than the problem it solves.
 SSH is already the admin boundary.

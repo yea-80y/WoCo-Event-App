@@ -28,7 +28,7 @@
  * door list's line, and the attendee index.
  */
 
-import { MAILABLE_EMAIL_RE, ticketQrNamesSeat, type EventFeed } from "@woco/shared";
+import { MAILABLE_EMAIL_RE, ticketQrNamesSeat, type EventFeed, type SitePalette } from "@woco/shared";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type { EmailFailure, FailureRecipient } from "../email/failure-ledger.js";
 import type { EventKeys } from "../keyring/event-keys.js";
@@ -38,7 +38,11 @@ import { SlidingWindowLimiter } from "../http/rate-limit.js";
 import { errorClass } from "../http/error-class.js";
 import { ticketQrHash, TicketHoldUnreadableError, type TicketHold } from "./store.js";
 
-/** Resends a sale may have, ever. Each is an email to an address the organiser typed. */
+/**
+ * Accepted resends a sale may have, ever: how many addresses one buyer's ticket may be
+ * sent to. A send the mailer refused reached nobody, so it does not count - an SES blip
+ * must not strand a buyer on the night.
+ */
 export const RESENDS_PER_SALE = 3;
 
 /**
@@ -64,10 +68,15 @@ export interface ResendDeps {
   getTicketHold(sessionId: string): TicketHold | null;
   hashEmail(email: string): string;
   isGloballySuppressed(emailHash: string): boolean;
+  /** The suppression list cannot be read: every address reads as suppressed. */
+  suppressionUnreadable(): boolean;
+  /** The organiser site's palette and contact address, when the sale came from one. */
+  getSiteTheme(siteId: string): Promise<{ palette: SitePalette; contactEmail?: string } | null>;
   /** Display fields for the email; null keeps the defaults. */
   getEvent(eventId: string): Promise<EventFeed | null>;
   sendTicketEmail(opts: TicketEmailOpts): Promise<void>;
   recordResend(sessionId: string, entry: NonNullable<TicketSale["resends"]>[number]): boolean;
+  markResendAccepted(sessionId: string, at: string): boolean;
   resolveTicketFailure(id: string, by: string, sentTo: FailureRecipient): boolean;
   replaceDoorEntries(eventId: string, tickets: Array<{ seriesId: string; edition: number }>, who: { email?: string }): Promise<unknown>;
   recordAttendeeEmail(eventId: string, emailHash: string, at: string): void;
@@ -168,7 +177,7 @@ export async function listUndelivered(deps: ResendDeps, eventId: string, parent:
       reason: row.code ?? "undelivered",
       typedAddress: row.recipients.find((r) => r.address)?.address ?? null,
       editions: g.ok ? g.hold.tickets.map((t) => t.edition) : (sale?.slots ?? []).map((s) => s + 1),
-      resendsLeft: Math.max(0, RESENDS_PER_SALE - (sale?.resends?.length ?? 0)),
+      resendsLeft: sale ? Math.max(0, RESENDS_PER_SALE - acceptedResends(sale)) : 0,
       blocked: g.ok ? null : g.code,
     });
   }
@@ -221,6 +230,7 @@ export async function resendTickets(
   const to = typeof body.to === "string" ? body.to.trim() : "";
   if (to.length > 254 || !MAILABLE_EMAIL_RE.test(to)) return refuse(400, "BAD_ADDRESS", "Enter the buyer's email address.");
   const toHash = deps.hashEmail(to);
+  if (deps.suppressionUnreadable()) return refuse(503, "SUPPRESSION_UNREADABLE", "Can't check that address right now - try again shortly.");
   if (deps.isGloballySuppressed(toHash)) {
     return refuse(409, "ADDRESS_SUPPRESSED", "That address has bounced or complained before. Ask the buyer for another one.");
   }
@@ -230,7 +240,7 @@ export async function resendTickets(
     return refuse(400, "TICKETS_MISMATCH", "These are not this order's tickets. Reload and try again.");
   }
 
-  if ((sale.resends?.length ?? 0) >= RESENDS_PER_SALE) {
+  if (acceptedResends(sale) >= RESENDS_PER_SALE) {
     return refuse(429, "RESEND_LIMIT", `This order has been resent ${RESENDS_PER_SALE} times. Contact WoCo support.`);
   }
   if (inFlight.has(sessionId)) return refuse(409, "RESEND_IN_PROGRESS", "This order is being resent already.");
@@ -259,10 +269,17 @@ async function sendAndRecord(
   },
 ): Promise<{ ok: true; data: { sentTo: string; resendsLeft: number } } | Refusal> {
   const { eventId, sessionId, key, to, toHash, tickets, sale, row, hold } = a;
+  const at = new Date(deps.now()).toISOString();
+  // Recorded before the send, so a crash mid-send still leaves the attempt; a cap that
+  // lived only in memory would reset on restart.
+  if (!deps.recordResend(sessionId, { at, toHash, by: key, accepted: false })) {
+    return refuse(503, "RESEND_NOT_RECORDED", "Can't record the resend right now - nothing was sent. Try again shortly.");
+  }
   const ev = await deps.getEvent(eventId).catch(() => null);
+  const siteId = row.context?.siteId;
+  const theme = siteId ? await deps.getSiteTheme(siteId).catch(() => null) : null;
   const series = ev?.series.find((s) => s.seriesId === hold.seriesId);
   const title = ev?.title || "Your tickets";
-  const at = new Date(deps.now()).toISOString();
   let accepted = true;
   try {
     await deps.sendTicketEmail({
@@ -277,6 +294,8 @@ async function sendAndRecord(
       tickets: tickets.map(({ edition, qrContent }) => ({ edition, qrContent })),
       imageHash: ev?.imageHash || undefined,
       imageGateway: ev?.gatewayUrl || undefined,
+      palette: theme?.palette,
+      replyTo: theme?.contactEmail,
       // The organiser checked this buyer against the order: this IS the ticket's address now.
       profileCta: true,
       linkOnly: LINK_ONLY_CODES.has(row.code ?? ""),
@@ -288,9 +307,10 @@ async function sendAndRecord(
     // The class only: a provider's message can quote the address back.
     console.error(`[ticket-hold] resend of ${sessionId} failed:`, errorClass(err));
   }
-  // Counted either way: each attempt is a message to an address the organiser typed.
-  deps.recordResend(sessionId, { at, toHash, by: key, accepted });
   if (!accepted) return refuse(502, "SEND_FAILED", "The email could not be sent. Check the address and try again.");
+  // Sent: it counts against the cap now. A failed write here costs at most one more
+  // resend than the cap allows, never a lost ticket.
+  if (!deps.markResendAccepted(sessionId, at)) console.error(`[ticket-hold] resend of ${sessionId} sent but not marked accepted`);
 
   deps.resolveTicketFailure(row.id, key, { hash: toHash, address: to });
   for (const other of deps.unresolvedTicketFailures(eventId, sessionId)) {
@@ -306,8 +326,10 @@ async function sendAndRecord(
   } catch (err) {
     console.error("[ticket-hold] attendee index not updated (the resend stands):", errorClass(err));
   }
-  return { ok: true, data: { sentTo: to, resendsLeft: Math.max(0, RESENDS_PER_SALE - (sale.resends?.length ?? 0)) } };
+  return { ok: true, data: { sentTo: to, resendsLeft: Math.max(0, RESENDS_PER_SALE - acceptedResends(sale)) } };
 }
+
+const acceptedResends = (sale: TicketSale) => (sale.resends ?? []).filter((r) => r.accepted).length;
 
 function parseTickets(raw: unknown): Array<{ edition: number; qrContent: string }> | null {
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > 100) return null;
