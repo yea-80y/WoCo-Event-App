@@ -106,6 +106,12 @@ export interface TicketSale {
   partialRefund?: { amount: number; seenAt: string };
   /** The partial refund an operator has looked at. A LARGER one alarms again. */
   partialRefundAcknowledged?: { amount: number; at: string; by: string };
+  /**
+   * The organiser's resends of this sale's undelivered tickets (#983): when, to which
+   * address (hash only), by whom, and whether the mailer took it. Durable, unlike the
+   * failure ledger (90 days, 1,000 rows), so the per-sale cap outlives both.
+   */
+  resends?: Array<{ at: string; toHash: string; by: string; accepted: boolean }>;
 }
 
 let store: Record<string, TicketSale> = {};
@@ -274,6 +280,15 @@ export function recordAutoRefund(sessionId: string, amount: number): void {
   if (sale.autoRefunded !== undefined && sale.autoRefunded >= amount) return;
   sale.autoRefunded = amount;
   persist();
+}
+
+/** One organiser resend of a sale's tickets (#983). False when nothing reached disk. */
+export function recordResend(sessionId: string, entry: NonNullable<TicketSale["resends"]>[number]): boolean {
+  ensureLoaded();
+  const sale = store[sessionId];
+  if (!sale) return false;
+  sale.resends = [...(sale.resends ?? []), entry];
+  return persist();
 }
 
 export function getSale(sessionId: string): TicketSale | undefined {
