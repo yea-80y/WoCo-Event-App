@@ -62,10 +62,12 @@ test("each ticket is sealed to the organiser's key and opens only under its own 
   assert.equal(hold.orderKeyRef, KEY_REF);
   assert.deepEqual(hold.tickets.map((t) => t.edition), [1, 2]);
   for (const t of hold.tickets) {
-    const opened = await openBoxJson(ORGANISER.secretKey, t.box, ticketHoldSealContext(EVENT, SERIES, t.edition));
-    assert.deepEqual(opened, { v: 1, seriesId: SERIES, edition: t.edition, qrContent: qr(t.edition) });
+    const opened = await openBoxJson(ORGANISER.secretKey, t.box, ticketHoldSealContext(EVENT, SERIES, t.edition, sid(1)));
+    assert.deepEqual(opened, { v: 1, sessionId: sid(1), seriesId: SERIES, edition: t.edition, qrContent: qr(t.edition) });
+    assert.equal(t.qrHash, store.ticketQrHash(qr(t.edition)), "what a resend must match");
   }
-  await assert.rejects(openBoxJson(ORGANISER.secretKey, hold.tickets[0]!.box, ticketHoldSealContext(EVENT, SERIES, 2)));
+  await assert.rejects(openBoxJson(ORGANISER.secretKey, hold.tickets[0]!.box, ticketHoldSealContext(EVENT, SERIES, 2, sid(1))));
+  await assert.rejects(openBoxJson(ORGANISER.secretKey, hold.tickets[0]!.box, ticketHoldSealContext(EVENT, SERIES, 1, sid(9))), "another sale's");
   assert.ok(!readFileSync(holdFile(sid(1)), "utf-8").includes(SIG), "no QR in the clear on disk");
 });
 
@@ -115,17 +117,25 @@ test("an order key that cannot be read leaves no copy and never throws", async (
 });
 
 test("nothing outside the directory: a session id that is not one writes nothing", async () => {
+  const reads = keyReads.length;
   for (const bad of ["../escape", "cs_test_short", "cs_live_aaaaaaaaaa/../../x", ""]) {
     assert.equal(await store.holdTickets(input(bad), fetchKey), false, bad);
     assert.equal(store.getTicketHold(bad), null);
   }
+  assert.equal(keyReads.length, reads, "refused before anything is fetched or sealed");
   assert.deepEqual(readdirSync(dir).sort(), [".data"]);
+});
+
+test("the QR hash is sha256 of the exact bytes", () => {
+  assert.equal(store.ticketQrHash("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  assert.notEqual(store.ticketQrHash(qr(1)), store.ticketQrHash(`${qr(1)} `));
 });
 
 test("copies are listed by event for the sweep, and delete with any half-written file", async () => {
   await store.holdTickets({ ...input(sid(5)), eventId: "e0000000-0000-4000-8000-000000000984" }, fetchKey);
   store._dropTicketHoldCacheForTests();
   const byEvent = store.ticketHoldsByEvent();
+  assert.equal(store._ticketHoldCacheSizeForTests(), 0, "listing every copy keeps none of them in memory");
   assert.deepEqual(byEvent.get(EVENT)?.sort(), [sid(1), sid(2)]);
   assert.deepEqual(byEvent.get("e0000000-0000-4000-8000-000000000984"), [sid(5)]);
   writeFileSync(`${holdFile(sid(5))}.tmp`, "{}");

@@ -6,7 +6,11 @@
  * cannot open.
  *
  *   .data/ticket-holds/{sessionId}.json
- *     { v: 1, sessionId, eventId, seriesId, orderKeyRef, sealedAt, tickets: [{ edition, box }] }
+ *     { v: 1, sessionId, eventId, seriesId, orderKeyRef, sealedAt, tickets: [{ edition, qrHash, box }] }
+ *
+ * `qrHash` is sha256 of the QR as emailed: a resend must carry exactly those bytes,
+ * which the server can check without reading the box or asking the chain. It says
+ * nothing about the QR (the signature in it is 65 random-looking bytes).
  *
  * One write-once file per sale. Sealed to the organiser's AUTHORITATIVE order key -
  * the one sales seal to (`sellableKeys`) - never a key the event feed names: the feed
@@ -20,17 +24,18 @@
  * an operator restores it.
  */
 
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
-import type { TicketHoldPlaintext } from "@woco/shared";
+import { CHECKOUT_SESSION_RE, type TicketHoldPlaintext } from "@woco/shared";
 import { writeJsonAtomic } from "../marketing/persist.js";
 import { errorClass } from "../http/error-class.js";
 
 const DIR = join(process.cwd(), ".data", "ticket-holds");
 const TAG = "ticket-holds";
-/** A Checkout Session id - also the file name, so nothing else may reach the path. */
-const SESSION_RE = /^cs_(?:test|live)_[A-Za-z0-9]{10,200}$/;
+/** The file name, so nothing but a Checkout Session id may reach the path. */
+const SESSION_RE = CHECKOUT_SESSION_RE;
 const REF_RE = /^[0-9a-f]{64}$/;
 
 export interface TicketHold {
@@ -41,7 +46,12 @@ export interface TicketHold {
   /** The order key the boxes are sealed to. */
   orderKeyRef: string;
   sealedAt: string;
-  tickets: Array<{ edition: number; box: SealedBoxV2 }>;
+  tickets: Array<{ edition: number; qrHash: string; box: SealedBoxV2 }>;
+}
+
+/** sha256 of a QR as emailed, hex - what a resend must match. */
+export function ticketQrHash(qrContent: string): string {
+  return createHash("sha256").update(qrContent, "utf8").digest("hex");
 }
 
 export interface HoldTicketsInput {
@@ -70,7 +80,7 @@ function isTicketHold(x: unknown, sessionId: string): x is TicketHold {
   return (
     !!h && h.v === 1 && h.sessionId === sessionId && typeof h.eventId === "string" && typeof h.seriesId === "string" &&
     typeof h.orderKeyRef === "string" && Array.isArray(h.tickets) &&
-    h.tickets.every((t) => Number.isInteger(t?.edition) && t.edition >= 1 && !!t.box)
+    h.tickets.every((t) => Number.isInteger(t?.edition) && t.edition >= 1 && /^[0-9a-f]{64}$/.test(t.qrHash) && !!t.box)
   );
 }
 
@@ -79,6 +89,13 @@ export function getTicketHold(sessionId: string): TicketHold | null {
   if (!SESSION_RE.test(sessionId)) return null;
   const cached = cache.get(sessionId);
   if (cached) return cached;
+  const hold = readHold(sessionId);
+  if (hold) cache.set(sessionId, hold);
+  return hold;
+}
+
+/** From disk, never cached: the sweep reads every file and must not keep them all in memory. */
+function readHold(sessionId: string): TicketHold | null {
   let raw: string;
   try {
     raw = readFileSync(fileOf(sessionId), "utf-8");
@@ -101,7 +118,6 @@ export function getTicketHold(sessionId: string): TicketHold | null {
     throw new TicketHoldUnreadableError();
   }
   unreadable.delete(sessionId);
-  cache.set(sessionId, parsed);
   return parsed;
 }
 
@@ -126,8 +142,9 @@ export async function holdTickets(
     const { sealBoxJson, ticketHoldSealContext } = await import("@woco/shared/crypto/sealed-box");
     const tickets: TicketHold["tickets"] = [];
     for (const t of input.tickets) {
-      const plain: TicketHoldPlaintext = { v: 1, seriesId: input.seriesId, edition: t.edition, qrContent: t.qrContent };
-      tickets.push({ edition: t.edition, box: await sealBoxJson(key, plain, ticketHoldSealContext(input.eventId, input.seriesId, t.edition)) });
+      const plain: TicketHoldPlaintext = { v: 1, sessionId: input.sessionId, seriesId: input.seriesId, edition: t.edition, qrContent: t.qrContent };
+      const ctx = ticketHoldSealContext(input.eventId, input.seriesId, t.edition, input.sessionId);
+      tickets.push({ edition: t.edition, qrHash: ticketQrHash(t.qrContent), box: await sealBoxJson(key, plain, ctx) });
     }
     // Read again after the awaits: another write of this sale wins, never two.
     if (getTicketHold(input.sessionId)) return true;
@@ -182,9 +199,10 @@ export function ticketHoldsByEvent(): Map<string, string[]> {
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
     const sessionId = name.slice(0, -5);
+    if (!SESSION_RE.test(sessionId)) continue;
     let hold: TicketHold | null;
     try {
-      hold = getTicketHold(sessionId);
+      hold = cache.get(sessionId) ?? readHold(sessionId);
     } catch {
       continue;
     }
@@ -197,6 +215,10 @@ export function ticketHoldsByEvent(): Map<string, string[]> {
 /** Forget what memory holds, as a restart would: the next read goes to disk. */
 export function _dropTicketHoldCacheForTests(): void {
   cache.clear();
+}
+
+export function _ticketHoldCacheSizeForTests(): number {
+  return cache.size;
 }
 
 /** `/api/health`: red while a copy is present but unreadable. Counts since boot. */
