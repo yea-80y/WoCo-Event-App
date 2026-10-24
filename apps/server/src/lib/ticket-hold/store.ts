@@ -70,6 +70,12 @@ export class TicketHoldUnreadableError extends Error {
 }
 
 const cache = new Map<string, TicketHold>();
+/** Copies kept in memory: the oldest goes first. Disk is the store. */
+const CACHE_MAX = 1000;
+function remember(sessionId: string, hold: TicketHold): void {
+  if (!cache.has(sessionId) && cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
+  cache.set(sessionId, hold);
+}
 const unreadable = new Set<string>();
 const health = { held: 0, failed: 0, lastError: null as string | null };
 
@@ -90,7 +96,7 @@ export function getTicketHold(sessionId: string): TicketHold | null {
   const cached = cache.get(sessionId);
   if (cached) return cached;
   const hold = readHold(sessionId);
-  if (hold) cache.set(sessionId, hold);
+  if (hold) remember(sessionId, hold);
   return hold;
 }
 
@@ -158,7 +164,7 @@ export async function holdTickets(
       tickets,
     };
     if (!writeJsonAtomic(fileOf(input.sessionId), hold, TAG)) throw new Error("held tickets could not be persisted");
-    cache.set(input.sessionId, hold);
+    remember(input.sessionId, hold);
     health.held += tickets.length;
     return true;
   } catch (err) {

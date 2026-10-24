@@ -144,3 +144,12 @@ test("copies are listed by event for the sweep, and delete with any half-written
   assert.equal(existsSync(`${holdFile(sid(5))}.tmp`), false);
   assert.equal(store.getTicketHold(sid(5)), null);
 });
+
+test("memory holds at most 1000 copies, the oldest going first; disk keeps them all", async () => {
+  store._dropTicketHoldCacheForTests();
+  for (let n = 100; n < 1102; n++) {
+    assert.equal(await store.holdTickets(input(sid(n), [1]), fetchKey), true);
+  }
+  assert.equal(store._ticketHoldCacheSizeForTests(), 1000);
+  assert.ok(store.getTicketHold(sid(100)), "an evicted copy still reads from disk");
+});
