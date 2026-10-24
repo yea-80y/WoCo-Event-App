@@ -73,8 +73,8 @@ export interface ResendDeps {
   isGloballySuppressed(emailHash: string): boolean;
   /** The suppression list cannot be read: every address reads as suppressed. */
   suppressionUnreadable(): boolean;
-  /** The organiser site's palette and contact address, when the sale came from one. */
-  getSiteTheme(siteId: string): Promise<{ palette: SitePalette; contactEmail?: string } | null>;
+  /** The organiser site's palette and contact address - null unless the site is this event's organiser's. */
+  getSiteTheme(siteId: string, eventId: string): Promise<{ palette: SitePalette; contactEmail?: string } | null>;
   /** Display fields for the email; null keeps the defaults. */
   getEvent(eventId: string): Promise<EventFeed | null>;
   sendTicketEmail(opts: TicketEmailOpts): Promise<void>;
@@ -292,7 +292,7 @@ async function sendAndRecord(
   }
   const ev = await deps.getEvent(eventId).catch(() => null);
   const siteId = row.context?.siteId;
-  const theme = siteId ? await deps.getSiteTheme(siteId).catch(() => null) : null;
+  const theme = siteId ? await deps.getSiteTheme(siteId, eventId).catch(() => null) : null;
   const series = ev?.series.find((s) => s.seriesId === hold.seriesId);
   const title = ev?.title || "Your tickets";
   let accepted = true;

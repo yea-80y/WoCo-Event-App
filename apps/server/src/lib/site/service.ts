@@ -243,7 +243,7 @@ const creatorSitesMemo = createDisplayReadMemo<SiteDirectoryEntry[]>({
  */
 export async function getSiteTheme(
   siteId: string,
-): Promise<{ palette: SitePalette; brandName: string; contactEmail?: string } | null> {
+): Promise<{ palette: SitePalette; brandName: string; contactEmail?: string; ownerAddress?: string } | null> {
   try {
     // Display path: theming a ticket email. An unreadable config means the email
     // goes out with WoCo's default palette, which is the correct fallback and not
@@ -257,6 +257,9 @@ export async function getSiteTheme(
       // are redirected, so an organiser's domain reputation can never affect
       // whether attendees receive their tickets (see lib/email/client.ts).
       contactEmail: resolved.site.contact?.email,
+      // Server-stamped (the pointer's, on a client-owned site): lets a caller check
+      // the site is the organiser's before trusting a siteId it was handed.
+      ...(typeof resolved.site.ownerAddress === "string" ? { ownerAddress: resolved.site.ownerAddress.toLowerCase() } : {}),
     };
   } catch {
     return null;

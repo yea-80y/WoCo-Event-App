@@ -13,7 +13,7 @@ import { cancellationGate } from "../event/cancellations.js";
 import { registrationContractFor } from "../event/onchain-registry.js";
 import { chainEventEndMsAt } from "../event/end-date-guard.js";
 import { isGloballySuppressed, suppressionStoreHealth } from "../marketing/suppression-store.js";
-import { getSiteTheme } from "../site/service.js";
+import { organiserSiteTheme } from "./organiser-site.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
 import { replaceDoorEntries } from "../checkin/door-entries.js";
 import { recordAttendeeEmail } from "../event/attendee-index.js";
@@ -36,7 +36,7 @@ export const liveResendDeps: ResendDeps = {
   hashEmail,
   isGloballySuppressed,
   suppressionUnreadable: () => suppressionStoreHealth().unreadable,
-  getSiteTheme,
+  getSiteTheme: organiserSiteTheme,
   getEvent: (eventId) => getEvent(eventId),
   sendTicketEmail,
   recordResend,

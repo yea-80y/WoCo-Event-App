@@ -34,7 +34,8 @@ function rig(o: { contactEmail?: string; sendThrows?: boolean } = {}) {
   let now = Date.parse("2026-10-24T12:00:00Z");
   const sent: Array<{ msg: { to: string; subject: string; html: string; text: string }; context: Record<string, string> }> = [];
   const deps: NoticeDeps = {
-    getSiteTheme: async (siteId) => (siteId === "site-1" ? { ...(o.contactEmail !== undefined ? { contactEmail: o.contactEmail } : { contactEmail: "hello@venue.example" }) } : null),
+    // As the live check does: the theme only for this event's organiser's site.
+    getSiteTheme: async (siteId, eventId) => (siteId === "site-1" && eventId !== "e0000000-0000-4000-8000-00000000dead" ? { ...(o.contactEmail !== undefined ? { contactEmail: o.contactEmail } : { contactEmail: "hello@venue.example" }) } : null),
     getEventTitle: async () => "Warehouse Party",
     send: async (msg, context) => {
       if (o.sendThrows) throw new Error("SES down for buyer typo@exampl.com");
@@ -104,6 +105,13 @@ test("a send that fails is swallowed, and logs no address", async () => {
     console.error = orig;
   }
   assert.ok(lines.length > 0 && lines.every((l) => !l.includes("typo@exampl.com")));
+});
+
+test("the event is passed with the site, so the owner check can refuse another organiser's site", async () => {
+  const r = rig();
+  r.notify(row({ stripeSessionId: "cs_live_n6aaaaaaaaaa", eventId: "e0000000-0000-4000-8000-00000000dead", siteId: "site-1" }));
+  await flush();
+  assert.equal(r.sent.length, 0);
 });
 
 test("an event with no title is still named sensibly", () => {

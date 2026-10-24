@@ -116,7 +116,7 @@ function fakes(w: World) {
     hashEmail: (e) => `h(${e})`,
     isGloballySuppressed: (h) => w.suppressed.has(h),
     suppressionUnreadable: () => w.suppressionUnreadable,
-    getSiteTheme: async (siteId) => (siteId === "site-1" ? { palette: { accent: "#ff0055" } as never, contactEmail: "hello@venue.example" } : null),
+    getSiteTheme: async (siteId, eventId) => (siteId === "site-1" && eventId === EVENT ? { palette: { accent: "#ff0055" } as never, contactEmail: "hello@venue.example" } : null),
     getEvent: async () => w.feed,
     sendTicketEmail: async (opts) => {
       if (w.sendFails) throw Object.assign(new Error("MessageRejected: x@y.com"), { ledgered: true });
