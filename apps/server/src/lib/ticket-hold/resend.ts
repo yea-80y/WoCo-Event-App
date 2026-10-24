@@ -61,6 +61,9 @@ export interface ResendDeps {
   getSale(sessionId: string): TicketSale | undefined;
   isSaleVoid(sale: TicketSale): boolean;
   unresolvedTicketFailures(eventId: string, sessionId?: string): EmailFailure[];
+  unresolvedTicketEvents(): Map<string, number>;
+  /** The event's creator on the server's write-once record, or null (no record). Zero I/O. */
+  recordedCreator(eventId: string): string | null;
   cancellationGate(eventId: string): "open" | "cancelled" | "unknown";
   /** The series' onchain end, or null when it cannot be read (the resend then goes ahead). */
   eventEndMs(eventId: string, seriesId: string, onChainEventId: string): Promise<number | null>;
@@ -78,7 +81,7 @@ export interface ResendDeps {
   recordResend(sessionId: string, entry: NonNullable<TicketSale["resends"]>[number]): boolean;
   markResendAccepted(sessionId: string, at: string): boolean;
   resolveTicketFailure(id: string, by: string, sentTo: FailureRecipient): boolean;
-  replaceDoorEntries(eventId: string, tickets: Array<{ seriesId: string; edition: number }>, who: { email?: string }): Promise<unknown>;
+  replaceDoorEntries(eventId: string, tickets: Array<{ seriesId: string; edition: number }>, who: { email?: string; buyerName?: string }): Promise<unknown>;
   recordAttendeeEmail(eventId: string, emailHash: string, at: string): void;
   now(): number;
 }
@@ -211,6 +214,16 @@ export async function heldCopy(deps: ResendDeps, eventId: string, sessionId: str
 export interface ResendBody {
   to: unknown;
   tickets: unknown;
+  /** Optional, typed by the organiser: the name the door list shows for these tickets. */
+  buyerName?: unknown;
+}
+
+/** How many sales of each of this organiser's events have tickets that did not arrive - the dashboard's badge. */
+export function undeliveredSummary(deps: ResendDeps, parent: string): Array<{ eventId: string; sales: number }> {
+  const me = parent.toLowerCase();
+  return [...deps.unresolvedTicketEvents()]
+    .filter(([eventId]) => deps.recordedCreator(eventId) === me)
+    .map(([eventId, sales]) => ({ eventId, sales }));
 }
 
 /** Send a sale's held tickets to the address its buyer gave the organiser. */
@@ -235,6 +248,7 @@ export async function resendTickets(
     return refuse(409, "ADDRESS_SUPPRESSED", "That address has bounced or complained before. Ask the buyer for another one.");
   }
 
+  const buyerName = typeof body.buyerName === "string" ? body.buyerName.trim().slice(0, 100) : "";
   const tickets = parseTickets(body.tickets);
   if (!tickets || !sameTickets(tickets, hold, eventId)) {
     return refuse(400, "TICKETS_MISMATCH", "These are not this order's tickets. Reload and try again.");
@@ -248,7 +262,7 @@ export async function resendTickets(
   if (!perOrganiser.allow(key, deps.now())) return refuse(429, "RATE_LIMITED", "Too many resends - try again later.");
   inFlight.add(sessionId);
   try {
-    return await sendAndRecord(deps, { eventId, sessionId, key, to, toHash, tickets, sale, row, hold });
+    return await sendAndRecord(deps, { eventId, sessionId, key, to, toHash, buyerName, tickets, sale, row, hold });
   } finally {
     inFlight.delete(sessionId);
   }
@@ -262,13 +276,14 @@ async function sendAndRecord(
     key: string;
     to: string;
     toHash: string;
+    buyerName: string;
     tickets: Array<{ edition: number; qrContent: string }>;
     sale: TicketSale;
     row: EmailFailure;
     hold: TicketHold;
   },
 ): Promise<{ ok: true; data: { sentTo: string; resendsLeft: number } } | Refusal> {
-  const { eventId, sessionId, key, to, toHash, tickets, sale, row, hold } = a;
+  const { eventId, sessionId, key, to, toHash, buyerName, tickets, sale, row, hold } = a;
   const at = new Date(deps.now()).toISOString();
   // Recorded before the send, so a crash mid-send still leaves the attempt; a cap that
   // lived only in memory would reset on restart.
@@ -317,7 +332,10 @@ async function sendAndRecord(
     deps.resolveTicketFailure(other.id, key, { hash: toHash, address: to });
   }
   try {
-    await deps.replaceDoorEntries(eventId, tickets.map((t) => ({ seriesId: hold.seriesId, edition: t.edition })), { email: to });
+    await deps.replaceDoorEntries(eventId, tickets.map((t) => ({ seriesId: hold.seriesId, edition: t.edition })), {
+      email: to,
+      ...(buyerName ? { buyerName } : {}),
+    });
   } catch (err) {
     console.error("[ticket-hold] door list not updated (the resend stands):", errorClass(err));
   }

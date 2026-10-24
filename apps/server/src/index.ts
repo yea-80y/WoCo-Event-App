@@ -18,7 +18,8 @@ import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
 import { claims } from "./routes/claims.js";
 import { orders } from "./routes/orders.js";
-import { undeliveredRoutes } from "./routes/undelivered.js";
+import { undeliveredRoutes, undeliveredSummaryRoutes } from "./routes/undelivered.js";
+import { startUndeliveredNotices } from "./lib/ticket-hold/organiser-notice-live.js";
 import { admin } from "./routes/admin.js";
 import { ops } from "./routes/ops.js";
 import { siteRoute } from "./routes/site.js";
@@ -780,6 +781,7 @@ app.route("/api/events", events);
 app.route("/api/events", claims);
 app.route("/api/events", orders);
 app.route("/api/events", undeliveredRoutes());
+app.route("/api/undelivered", undeliveredSummaryRoutes());
 app.route("/api/events", broadcast);
 app.route("/api/events", reservations);
 app.route("/api/events", checkinOrganiser);
@@ -911,6 +913,8 @@ const sweepConsents = () => {
 };
 setTimeout(sweepConsents, 5 * 60_000).unref();
 setInterval(sweepConsents, 24 * 60 * 60 * 1000).unref();
+// #983: the organiser hears when a ticket for their event bounced, not only WoCo.
+startUndeliveredNotices();
 // #883: each event's door roster and door entries go 2 days after its onchain end.
 const sweepRosters = () => {
   sweepExpiredRosters().catch((err) => console.warn("[checkin] roster sweep failed:", (err as Error).message));

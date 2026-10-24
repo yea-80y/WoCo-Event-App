@@ -7,7 +7,8 @@ import { hashEmail } from "../event/claim-service.js";
 import { getEvent } from "../event/service.js";
 import { eventKeys } from "../keyring/event-keys.js";
 import { getSale, isSaleVoid, markResendAccepted, recordResend } from "../stripe/ticket-sales.js";
-import { resolveTicketFailure, unresolvedTicketFailures } from "../email/failure-ledger.js";
+import { resolveTicketFailure, unresolvedTicketEvents, unresolvedTicketFailures } from "../email/failure-ledger.js";
+import { getRecordedFeedSigner } from "../event/feed-signer-record.js";
 import { cancellationGate } from "../event/cancellations.js";
 import { registrationContractFor } from "../event/onchain-registry.js";
 import { chainEventEndMsAt } from "../event/end-date-guard.js";
@@ -24,6 +25,8 @@ export const liveResendDeps: ResendDeps = {
   getSale,
   isSaleVoid,
   unresolvedTicketFailures,
+  unresolvedTicketEvents,
+  recordedCreator: (eventId) => getRecordedFeedSigner(eventId)?.creatorAddress.toLowerCase() ?? null,
   cancellationGate,
   eventEndMs: async (eventId, seriesId, onChainEventId) => {
     const contract = registrationContractFor(eventId, seriesId);

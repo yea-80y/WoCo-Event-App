@@ -25,6 +25,7 @@ import { ticketQrHash, TicketHoldUnreadableError, type TicketHold } from "../src
 import {
   heldCopy,
   listUndelivered,
+  undeliveredSummary,
   resendTickets,
   RESENDS_PER_SALE,
   _resetResendLimiterForTests,
@@ -92,7 +93,7 @@ function fakes(w: World) {
   const sent: TicketEmailOpts[] = [];
   const resends: Array<NonNullable<TicketSale["resends"]>[number]> = [];
   const resolved: Array<{ id: string; by: string; sentTo: { hash: string; address?: string } }> = [];
-  const door: Array<{ tickets: Array<{ seriesId: string; edition: number }>; who: { email?: string } }> = [];
+  const door: Array<{ tickets: Array<{ seriesId: string; edition: number }>; who: { email?: string; buyerName?: string } }> = [];
   const attendees: string[] = [];
   const deps: ResendDeps = {
     eventKeys: async () => w.keys,
@@ -100,6 +101,12 @@ function fakes(w: World) {
     isSaleVoid: () => w.void,
     unresolvedTicketFailures: (eventId, sid) =>
       w.rows.filter((r) => !r.resolvedAt && r.context?.eventId === eventId && (sid === undefined || r.context?.stripeSessionId === sid)),
+    unresolvedTicketEvents: () => {
+      const m = new Map<string, Set<string>>();
+      for (const r of w.rows) if (!r.resolvedAt) m.set(r.context!.eventId!, (m.get(r.context!.eventId!) ?? new Set()).add(r.context!.stripeSessionId!));
+      return new Map([...m].map(([k, v]) => [k, v.size]));
+    },
+    recordedCreator: (eventId) => (eventId === EVENT ? ORGANISER : "0x" + "99".repeat(20)),
     cancellationGate: () => w.cancellation,
     eventEndMs: async () => w.endMs,
     getTicketHold: () => {
@@ -469,4 +476,22 @@ test("the lock is released when a send throws", async () => {
   assert.equal((await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody())).ok, false);
   w.sendFails = false;
   assert.equal((await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody())).ok, true);
+});
+
+test("step 4: the dashboard badge counts the caller's own events only", () => {
+  const w = world();
+  w.rows.push(row("r2", "Bounce/Permanent/General", "cs_live_second0000001"));
+  w.rows.push({ ...row("r3", "Bounce/Permanent/General", "cs_live_third00000001"), context: { stripeSessionId: "cs_live_third00000001", eventId: "e0000000-0000-4000-8000-000000000999" } });
+  const f = fakes(w);
+  assert.deepEqual(undeliveredSummary(f.deps, ORGANISER.toUpperCase().replace("0X", "0x")), [{ eventId: EVENT, sales: 2 }]);
+  assert.deepEqual(undeliveredSummary(f.deps, FEED_CREATOR), [], "the feed's creatorAddress sees none");
+});
+
+test("step 4: the name the organiser types goes to the door list, trimmed and bounded", async () => {
+  const f = fakes(world());
+  await resendTickets(f.deps, EVENT, SALE, ORGANISER, { ...goodBody(), buyerName: `  ${"A".repeat(150)}  ` });
+  assert.equal(f.door[0]!.who.buyerName, "A".repeat(100));
+  const plain = fakes(world());
+  await resendTickets(plain.deps, EVENT, SALE, ORGANISER, { ...goodBody(), buyerName: 42 });
+  assert.deepEqual(plain.door[0]!.who, { email: "buyer@example.com" }, "no name, no name field");
 });

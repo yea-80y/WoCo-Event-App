@@ -23,6 +23,7 @@
   import CheckinPanel from "./CheckinPanel.svelte";
   import EditEventPanel from "../events/EditEventPanel.svelte";
   import CancellationStatus from "./CancellationStatus.svelte";
+  import UndeliveredTickets from "./UndeliveredTickets.svelte";
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
   import { OpenedOrders, ORDERS_POLL_MS, createOrdersPoller } from "./live-orders.js";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
@@ -704,6 +705,8 @@
         onnotify={openCancellationNotice}
       />
     {/if}
+
+    <UndeliveredTickets {eventId} />
 
     <!-- Tab bar -->
     <div class="tab-bar">

@@ -56,6 +56,12 @@ test("only an unresolved transactional row for this event and sale opens the gat
   assert.equal(ledger.unresolvedTicketFailures(EVENT).length, 2, "both sales of this event, never the session-less row");
 });
 
+test("the badge's source: per event, how many sales have an open ticket row", () => {
+  const counts = ledger.unresolvedTicketEvents();
+  assert.equal(counts.get(EVENT), 2, "two sales of this event, the session-less row not among them");
+  assert.equal(counts.get("e0000000-0000-4000-8000-000000000999"), 1);
+});
+
 test("resolving adds the address it went to, so erasure reaches it", () => {
   const [row] = ledger.unresolvedTicketFailures(EVENT, SALE);
   assert.equal(ledger.resolveTicketFailure(row!.id, "0xorg", { hash: "hash-new", address: "buyer@example.com" }), true);
@@ -87,6 +93,9 @@ test("every resend is kept on the sale, durably, hash only", () => {
 test("all three routes need a signed session", async () => {
   const { undeliveredRoutes } = await import("../src/routes/undelivered.js");
   const app = undeliveredRoutes({} as never);
+  const { undeliveredSummaryRoutes } = await import("../src/routes/undelivered.js");
+  const summary = await undeliveredSummaryRoutes({} as never).request("/summary");
+  assert.equal(summary.status, 401, "GET /api/undelivered/summary");
   for (const [method, path] of [
     ["GET", `/${EVENT}/undelivered`],
     ["GET", `/${EVENT}/undelivered/${SALE}/copy`],
