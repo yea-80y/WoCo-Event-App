@@ -84,6 +84,12 @@ const organiserLimiter = () =>
     { limit: 30, windowMs: 24 * 60 * 60 * 1000 },
   ]);
 let perOrganiser = organiserLimiter();
+/**
+ * Sales with a resend in flight. Taken in the same synchronous step as the cap check,
+ * so two resends of one sale at once cannot both pass it; the second is refused, and
+ * once the first lands its resolved row shuts the gate.
+ */
+const inFlight = new Set<string>();
 
 export function _resetResendLimiterForTests(): void {
   perOrganiser = organiserLimiter();
@@ -227,9 +233,32 @@ export async function resendTickets(
   if ((sale.resends?.length ?? 0) >= RESENDS_PER_SALE) {
     return refuse(429, "RESEND_LIMIT", `This order has been resent ${RESENDS_PER_SALE} times. Contact WoCo support.`);
   }
+  if (inFlight.has(sessionId)) return refuse(409, "RESEND_IN_PROGRESS", "This order is being resent already.");
   const key = parent.toLowerCase();
   if (!perOrganiser.allow(key, deps.now())) return refuse(429, "RATE_LIMITED", "Too many resends - try again later.");
+  inFlight.add(sessionId);
+  try {
+    return await sendAndRecord(deps, { eventId, sessionId, key, to, toHash, tickets, sale, row, hold });
+  } finally {
+    inFlight.delete(sessionId);
+  }
+}
 
+async function sendAndRecord(
+  deps: ResendDeps,
+  a: {
+    eventId: string;
+    sessionId: string;
+    key: string;
+    to: string;
+    toHash: string;
+    tickets: Array<{ edition: number; qrContent: string }>;
+    sale: TicketSale;
+    row: EmailFailure;
+    hold: TicketHold;
+  },
+): Promise<{ ok: true; data: { sentTo: string; resendsLeft: number } } | Refusal> {
+  const { eventId, sessionId, key, to, toHash, tickets, sale, row, hold } = a;
   const ev = await deps.getEvent(eventId).catch(() => null);
   const series = ev?.series.find((s) => s.seriesId === hold.seriesId);
   const title = ev?.title || "Your tickets";

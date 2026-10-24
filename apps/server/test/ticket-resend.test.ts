@@ -385,3 +385,36 @@ test("the list: one line per sale, what the buyer typed, and why a sale cannot b
   assert.ok(blocked.ok);
   assert.equal(blocked.data[0]!.blocked, "SALE_VOID");
 });
+
+test("two resends of one sale at once: one email, the other refused - the cap cannot be raced", { timeout: 5000 }, async () => {
+  const w = world();
+  const f = fakes(w);
+  // Every send waits here until released, so a racing second send cannot strand the first.
+  const waiting: Array<() => void> = [];
+  const slowSend = f.deps.sendTicketEmail;
+  f.deps.sendTicketEmail = async (opts) => {
+    await new Promise<void>((r) => waiting.push(r));
+    return slowSend(opts);
+  };
+  const first = resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody("one@example.com"));
+  await new Promise((r) => setImmediate(r));
+  const second = resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody("two@example.com"));
+  await new Promise((r) => setImmediate(r));
+  for (const go of waiting.splice(0)) go();
+  const secondResult = await second;
+  assert.ok(!secondResult.ok && secondResult.status === 409 && secondResult.code === "RESEND_IN_PROGRESS");
+  assert.equal((await first).ok, true);
+  assert.deepEqual(f.sent.map((m) => m.to), ["one@example.com"]);
+  // Afterwards the row is resolved: the gate is shut, not the lock.
+  const third = await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody("two@example.com"));
+  assert.ok(!third.ok && third.code === "NO_UNDELIVERED");
+});
+
+test("the lock is released when a send throws", async () => {
+  const w = world();
+  w.sendFails = true;
+  const f = fakes(w);
+  assert.equal((await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody())).ok, false);
+  w.sendFails = false;
+  assert.equal((await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody())).ok, true);
+});
