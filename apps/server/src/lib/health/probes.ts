@@ -63,6 +63,7 @@ import {
   evaluateTicketMintAllowance,
   evaluateTicketMintRamp,
   evaluateTicketSponsorAuthorised,
+  evaluateTicketBearerMints,
   evaluateTicketSponsorBalance,
   type GlobalMintReading,
   type TicketMintReading,
@@ -763,11 +764,12 @@ export async function refreshTicketMinting(
   noteVerdict("ticketMinting.sponsorBalance", section.checks.sponsorBalance, log, ticketSponsorReading.detail);
   noteVerdict("ticketMinting.mintAllowance", section.checks.mintAllowance, log, ticketMintReading.detail);
   noteVerdict("ticketMinting.mintRamp", section.checks.mintRamp, log, ticketMintReading.detail);
+  noteVerdict("ticketMinting.bearerMints", section.checks.bearerMints, log, ticketMintReading.detail);
 }
 const TICKET_SPONSOR_UNCONFIGURED = "no ticket sponsor wallet configured (WOCO_SPONSOR_PRIVATE_KEY)";
 const TICKET_CONTRACT_MISCONFIGURED =
   "the events contract is misconfigured: no address, or it does not answer the events-contract ABI " +
-  "(authorisedSponsors / sponsorMintAllowance)";
+  "(authorisedSponsors / sponsorMintAllowance / bearerMintsDisabled)";
 
 // ---------------------------------------------------------------------------
 // Sections
@@ -1097,7 +1099,9 @@ export interface TicketMintingSection {
   alarmPct: number;
   /** The busiest open window of the last 7 days on this contract; null if none. */
   peak7d: { used: number; perHour: number; pct: number; windowEndedAt: string } | null;
-  checks: { sponsorAuthorised: Check; sponsorBalance: Check; mintAllowance: Check; mintRamp: Check };
+  /** Version 2's bearer-mint switch; `"n/a"` before version 2, null until read. */
+  bearerMints: "on" | "off" | "n/a" | null;
+  checks: { sponsorAuthorised: Check; sponsorBalance: Check; mintAllowance: Check; mintRamp: Check; bearerMints: Check };
   stale: boolean;
   checkedAt: string | null;
   configError?: string;
@@ -1126,6 +1130,9 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
   const mintRamp = unconfigured
     ? { ok: false as const, reason: ticketMintReading.error! }
     : evaluateTicketMintRamp({ reading: policy?.allowance ?? null, alarmPct: cfg.alarmPct, reason: ticketMintReading.error });
+  const bearerMints = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketBearerMints({ state: policy?.bearerMints ?? null, reason: ticketMintReading.error });
   const sponsorBalance =
     ticketSponsorReading.error === TICKET_SPONSOR_UNCONFIGURED
       || ticketSponsorReading.error === TICKET_CONTRACT_MISCONFIGURED
@@ -1139,7 +1146,7 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
   const reads = [ticketMintReading.at, ticketSponsorReading.at];
   const oldest = reads.some((at) => at === null) ? null : Math.min(...(reads as number[]));
   return {
-    ok: combine([sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp]),
+    ok: combine([sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp, bearerMints]),
     chainId: policy?.contract.chainId ?? activeChainIdOrNull(),
     contract: policy?.contract.address ?? null,
     version: policy?.contract.version ?? null,
@@ -1153,7 +1160,8 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
     minMintable: cfg.minMintable,
     alarmPct: cfg.alarmPct,
     peak7d: mintPeak7d(now),
-    checks: { sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp },
+    bearerMints: policy?.bearerMints ?? null,
+    checks: { sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp, bearerMints },
     stale: isStale(oldest, now, PROBE_INTERVAL_MS),
     checkedAt: oldest === null ? null : new Date(oldest).toISOString(),
     ...(cfg.configError ? { configError: cfg.configError } : {}),

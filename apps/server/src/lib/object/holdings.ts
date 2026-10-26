@@ -52,7 +52,7 @@ export async function getOnChainHolding(q: HoldingQuery): Promise<ObjectHolding>
       break;
     }
     case "ledger2": {
-      // A revoked slot's `SlotClaimed` log still names its old owner, so on
+      // A reissued slot's `SlotClaimed` log still names its old owner, so on
       // version 2 the claim logs alone would count a replaced ticket as held.
       // Keep only the slots this holder holds now.
       const { querySlotsOwnedLedger } = await import("../chain/event-contract-ledger.js");

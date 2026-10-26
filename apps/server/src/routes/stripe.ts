@@ -56,7 +56,6 @@ import { sponsorGateRefusal } from "../lib/stripe/sponsor-gate.js";
 import {
   contractKey,
   getOnChainEventAt,
-  seatsLeft,
   EventContractConfigError,
 } from "../lib/chain/event-contract.js";
 import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
@@ -1015,7 +1014,8 @@ stripe.post("/create-checkout", async (c) => {
     }
   }
 
-  if (!skipAvailability && onChain && seatsLeft(onChain) < quantity) {
+  if (!skipAvailability && onChain
+      && Number(onChain.totalSupply) - Number(onChain.nextSlot) < quantity) {
     return c.json({ ok: false, error: "Sold out" }, 409);
   }
 

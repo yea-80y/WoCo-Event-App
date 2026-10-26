@@ -1,7 +1,7 @@
 import { JsonRpcProvider, Contract, Interface, Wallet, id, isError } from "ethers";
 import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
-import type { OnChainEvent, OnChainEventRead, SlotData } from "./event-contract.js";
+import type { OnChainEvent, SlotData } from "./event-contract.js";
 
 /**
  * WoCoTicketLedger ABI — the allocation ledger with payments removed.
@@ -92,33 +92,34 @@ export const LEDGER_ABI = [
 ] as const;
 
 /**
- * What version 2 (`"ledger2"`, WoCo-Contracts `b9224a6`) adds. Everything above
- * is unchanged in it — same selectors, same `getEvent`/`getSlotData` shapes —
- * so the version-1 functions here read and register on both.
+ * What WoCoTicketLedger version 2 (`"ledger2"`) adds. Everything above is
+ * unchanged in it — same selectors, same `getEvent`/`getSlotData` meaning — so
+ * the version-1 functions here read and register on both.
  *
  * Card sales mint through `batchClaimBearer`: their burner keys are discarded,
- * and only a bearer slot can later be replaced by `reissue`. Minting them
- * through `batchClaimFor` would make every ticket unreplaceable from birth.
+ * and only a bearer slot can later be pointed at a fresh key by `reissue`.
+ * Minting them through `batchClaimFor` would make every ticket unreplaceable
+ * from birth.
  */
 const LEDGER2_READ_ABI = [
-  "function getEventAdmin(bytes32) view returns (address registrant, uint64 live, uint32 revokedCount)",
-  "function getSlotFlags(bytes32 eventId, uint256 slot) view returns (bool revoked, bool bearer)",
+  "function getRegistrant(bytes32) view returns (address)",
+  "function getSlotFlags(bytes32 eventId, uint256 slot) view returns (bool bearer, bool held)",
   "function bearerMintsDisabled() view returns (bool)",
-  "error EventNotFound()",
 ];
 
 const LEDGER2_CLAIM_ABI = [
   ...LEDGER_CLAIM_ABI,
   "function batchClaimBearer(bytes32 eventId, address[] owners, bytes32 orderRef) returns (uint256 firstSlot)",
-  "function reissue(bytes32 eventId, uint256[] slots, address[] newOwners, bytes32 orderRef) returns (uint256 firstSlot)",
-  "event SlotRevoked(bytes32 indexed eventId, uint256 indexed slot, address indexed owner, uint256 replacement)",
+  "function reissue(bytes32 eventId, uint256[] slots, address[] newOwners)",
+  "event SlotReissued(bytes32 indexed eventId, uint256 indexed slot, address indexed from, address to)",
   "error BearerMintsOff()",
   "error LengthMismatch()",
+  "error SlotsNotAscending()",
   "error SlotUnclaimed()",
-  "error SlotIsRevoked()",
   "error NotBearer()",
   "error NotSlotClaimer()",
   "error SlotHeld()",
+  "error TransferToSelf()",
 ];
 
 const LEDGER2_ADMIN_ABI = [
@@ -134,7 +135,7 @@ const LEDGER2_ADMIN_ABI = [
 
 export const LEDGER2_ABI = [
   ...LEDGER_READ_ABI,
-  ...LEDGER2_READ_ABI.filter((f) => f !== "error EventNotFound()"),
+  ...LEDGER2_READ_ABI,
   ...LEDGER2_CLAIM_ABI,
   ...LEDGER_REGISTER_ABI,
   ...LEDGER_LIFECYCLE_ABI,
@@ -382,7 +383,7 @@ export async function getOnChainEventLedger(
   onChainEventId: string,
   contractAddress: string,
   chainId: number,
-): Promise<OnChainEventRead | null> {
+): Promise<OnChainEvent | null> {
   try {
     // ethers v6 reserves `Contract.getEvent` for event-fragment lookup, so go
     // through `getFunction` to reach the view of the same name.
@@ -405,34 +406,14 @@ export async function getOnChainEventLedger(
 }
 
 /**
- * Version 2's event: `getEvent` as version 1 reads it, plus the seats in use
- * (`getEventAdmin.live`), which is NOT `nextSlot` once a reissue has revoked a
- * slot. Same `null`-means-exactly-`EventNotFound` contract as above.
+ * Version 2's one-way off switch for bearer mints and reissue. Once it is on,
+ * every card sale's `batchClaimBearer` reverts, so the checkout must read it
+ * before charging. Throws as the other reads do; the caller classifies an empty
+ * answer (`isNotThisAbi`), which is what a version-1 ledger gives.
  */
-export async function getOnChainEventLedger2(
-  onChainEventId: string,
-  contractAddress: string,
-  chainId: number,
-): Promise<OnChainEvent | null> {
-  const [base, live] = await Promise.all([
-    getOnChainEventLedger(onChainEventId, contractAddress, chainId),
-    readLive(onChainEventId, contractAddress, chainId),
-  ]);
-  if (!base || live === null) return null;
-  return { ...base, inUse: live };
-}
-
-async function readLive(onChainEventId: string, contractAddress: string, chainId: number): Promise<bigint | null> {
-  try {
-    const c = new Contract(contractAddress, LEDGER2_READ_ABI, getProvider(chainId));
-    const r = await c.getEventAdmin(onChainEventId);
-    return BigInt(r.live);
-  } catch (err) {
-    const e = err as { revert?: { name?: string } | null; data?: unknown };
-    if (e?.revert?.name === "EventNotFound") return null;
-    if (typeof e?.data === "string" && e.data.toLowerCase() === EVENT_NOT_FOUND_SELECTOR) return null;
-    throw err;
-  }
+export async function readBearerMintsDisabledLedger2(contractAddress: string, chainId: number): Promise<boolean> {
+  const c = new Contract(contractAddress, LEDGER2_READ_ABI, getProvider(chainId));
+  return Boolean(await c.bearerMintsDisabled());
 }
 
 /**

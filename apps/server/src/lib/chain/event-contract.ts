@@ -24,9 +24,9 @@ export function getChainRpcUrl(chainId: number): string {
 
 // "ledger2" (#983 step 5) is WoCoTicketLedger version 2: the same reads and
 // registration as "ledger", plus seats the registrant can change, a later
-// cutoff, and bearer mints that `reissue` can replace. Its own literal, never
-// "ledger" at a new address: card sales on it mint through `batchClaimBearer`,
-// and seats in use are not `nextSlot`, so every site must say which it means.
+// cutoff, and bearer mints that `reissue` can point at a fresh key. Its own
+// literal, never "ledger" at a new address: card sales on it must mint through
+// `batchClaimBearer`, and only it has the off switch the checkout reads.
 export type EventContractVersion = "v1" | "v2" | "ledger" | "ledger2";
 
 /** Both WoCoTicketLedger versions: same reads, same registration, same cap. */
@@ -251,30 +251,9 @@ function getV1Contract(chainId: number, address: string): Contract {
 
 export interface OnChainEvent {
   totalSupply: bigint;
-  /** Slots ever minted: the slot index range. On "ledger2" it counts revoked slots too. */
   nextSlot: bigint;
-  /**
-   * Seats in use: what supply bounds, so what "sold" and "available" are
-   * computed from. Equal to `nextSlot` on every version but "ledger2", where a
-   * reissue revokes one slot and mints another without using a seat.
-   */
-  inUse: bigint;
   organiser: string; // lowercased
   manifestRef: string; // 0x-prefixed bytes32
-}
-
-/** What a version module reads; the dispatcher adds `inUse`. */
-export type OnChainEventRead = Omit<OnChainEvent, "inUse">;
-
-const inUseIsNextSlot = (r: OnChainEventRead | null): OnChainEvent | null => (r ? { ...r, inUse: r.nextSlot } : null);
-
-/**
- * Seats the contract can still sell. The one place availability is computed,
- * so no route counts revoked slots as sold (#983: every reissue would lose a
- * seat for good, and a full event sell out early).
- */
-export function seatsLeft(e: OnChainEvent): number {
-  return Math.max(0, Number(e.totalSupply) - Number(e.inUse));
 }
 
 export interface SlotData {
@@ -331,7 +310,7 @@ export async function getSlotDataAt(
   slot: number,
 ): Promise<SlotData> {
   switch (c.version) {
-    // Version 2 keeps version 1's getSlotData shape; a revoked slot reads owner 0.
+    // Version 2 keeps version 1's getSlotData; after a reissue the owner is the new key.
     case "ledger":
     case "ledger2": {
       const { getSlotDataLedger } = await import("./event-contract-ledger.js");
@@ -413,27 +392,26 @@ export async function getOnChainEventAt(
   onChainEventId: string,
 ): Promise<OnChainEvent | null> {
   switch (c.version) {
+    // A reissue re-points a slot in place, so version 2's `getEvent` means
+    // what version 1's does: `nextSlot` is both the slot range and seats sold.
+    case "ledger":
     case "ledger2": {
-      const { getOnChainEventLedger2 } = await import("./event-contract-ledger.js");
-      return getOnChainEventLedger2(onChainEventId, c.address, c.chainId);
-    }
-    case "ledger": {
       const { getOnChainEventLedger } = await import("./event-contract-ledger.js");
-      return inUseIsNextSlot(await getOnChainEventLedger(onChainEventId, c.address, c.chainId));
+      return getOnChainEventLedger(onChainEventId, c.address, c.chainId);
     }
     case "v2": {
       const { getOnChainEventV2 } = await import("./event-contract-v2.js");
-      return inUseIsNextSlot(await getOnChainEventV2(onChainEventId, c.address, c.chainId));
+      return getOnChainEventV2(onChainEventId, c.address, c.chainId);
     }
     case "v1": {
       const result = await getV1Contract(c.chainId, c.address).events(onChainEventId);
       if (result.totalSupply === 0n) return null;
-      return inUseIsNextSlot({
+      return {
         totalSupply: result.totalSupply,
         nextSlot: result.nextSlot,
         organiser: (result.organiser as string).toLowerCase(),
         manifestRef: result.manifestRef as string,
-      });
+      };
     }
     default:
       return unhandledVersion(c.version, "getOnChainEvent");

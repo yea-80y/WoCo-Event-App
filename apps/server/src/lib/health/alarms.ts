@@ -472,6 +472,22 @@ export function evaluateTicketSponsorAuthorised(r: { authorised: boolean | null;
   return { ok: true };
 }
 
+/**
+ * Version 2's one-way bearer-mint switch (#983). Once the owner has thrown it,
+ * every card sale's mint reverts, so the checkout refuses every buyer: red until
+ * card sales mint another way. `"n/a"` before version 2.
+ */
+export function evaluateTicketBearerMints(r: { state: "on" | "off" | "n/a" | null; reason?: string | null }): Check {
+  if (r.state === null) return { ok: null, reason: r.reason || "the bearer-mint switch could not be read" };
+  if (r.state === "off") {
+    return {
+      ok: false,
+      reason: "bearer mints are switched off on the events contract (disableBearerMints) — every card checkout is refused",
+    };
+  }
+  return { ok: true };
+}
+
 /** Whether the ticket sponsor can still pay for mints on the active events chain (#706). */
 export function evaluateTicketSponsorBalance(r: { balanceWei: bigint | null; minWei: bigint; reason?: string | null }): Check {
   if (r.balanceWei === null) return { ok: null, reason: r.reason || "ticket sponsor balance could not be read" };

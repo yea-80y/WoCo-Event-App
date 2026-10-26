@@ -437,12 +437,15 @@ and the contracts repository's `deployments/*.json`.
 registrations keep minting and verifying on their recorded contract, and a record from before #563
 stays on V2, never either ledger. What it adds: the registrant can change supply and move the cutoff
 later; card sales mint **bearer** slots (`batchClaimBearer`, never `batchClaimFor`), which `reissue`
-can revoke and re-mint to a new burner without using a seat; the owner can switch bearer mints off
-for good (`disableBearerMints`) once holders keep their own keys (#298). Seats in use are
-`getEventAdmin.live`, not `nextSlot`: availability goes through `seatsLeft()`, and `nextSlot` stays
-the slot range the door and order reads walk. A revoked slot reads owner 0, so the door refuses it.
-Rollback: an older build does not know `ledger2` records - it keeps them on disk, serves none (those
-series stop selling) and raises `unreadableRecords`.
+points at a new burner IN PLACE - same slot, so same edition (slot + 1, the manifest's leaf) and no
+seat used - until a holder moves the slot (`held`); the owner can switch bearer mints off for good
+(`disableBearerMints`) once holders keep their own keys (#298). The checkout reads that switch
+before charging (`readBearerMintsOn`; `ticketMinting.checks.bearerMints` goes red when it is off).
+After a reissue the old ticket's signature no longer recovers to the slot owner, so the door refuses
+it once its pack refreshes. Raising supply does not extend the registered manifest, so it stays
+unusable until a manifest-extension rule exists; lowering works. Rollback: an older build does not
+know `ledger2` records - it keeps them on disk, serves none (those series stop selling) and raises
+`unreadableRecords`.
 
 > **Superseded (kept for the record).** Until 2026-09-24 the ledger was "written, reviewed and
 > merged, and not deployed", and `DEPLOYED_LEDGER` was empty so that selecting it early failed

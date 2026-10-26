@@ -36,8 +36,10 @@ const LEDGER = { chainId: 421614, address: "0x" + "1e".repeat(20), version: "led
 const RESETS = 1_790_000_000;
 const UNLIMITED = 0xffff_ffff;
 
+/** Fixtures here are version-1 ledgers, so `bearerMints` defaults to its "n/a". */
 function readers(policy: () => Promise<unknown>, balance: () => Promise<bigint> = async () => parseEther("1")) {
-  return { ticketMintPolicy: policy, ticketSponsorBalance: balance } as unknown as Parameters<
+  const withDefault = async () => ({ bearerMints: "n/a", ...((await policy()) as object) });
+  return { ticketMintPolicy: withDefault, ticketSponsorBalance: balance } as unknown as Parameters<
     typeof probes.refreshTicketMinting
   >[0];
 }
@@ -175,6 +177,41 @@ test("a de-authorised sponsor turns the section red even with headroom", async (
   const s = probes.ticketMintingHealth();
   assert.equal(s.checks.mintAllowance.ok, true);
   assert.equal(s.ok, false);
+});
+
+test("version 2's bearer-mint switch thrown turns the section red, whatever else reads well (#983)", async () => {
+  await probes.refreshTicketMinting(
+    readers(async () => ({
+      contract: { ...LEDGER, version: "ledger2" },
+      sponsor: "0xabc",
+      sponsorAuthorised: true,
+      allowance: { perHour: 50, mintable: 50, windowResetsAt: RESETS },
+      bearerMints: "off",
+    })),
+    silent,
+  );
+  const s = probes.ticketMintingHealth();
+  assert.equal(s.bearerMints, "off");
+  assert.equal(s.checks.bearerMints.ok, false);
+  assert.match(s.checks.bearerMints.reason ?? "", /every card checkout is refused/);
+  assert.equal(s.ok, false);
+});
+
+test("bearer mints on, and n/a before version 2, are healthy", async () => {
+  for (const state of ["on", "n/a"] as const) {
+    probes.__resetHealthProbes();
+    await probes.refreshTicketMinting(
+      readers(async () => ({
+        contract: LEDGER,
+        sponsor: "0xabc",
+        sponsorAuthorised: true,
+        allowance: { perHour: 50, mintable: 50, windowResetsAt: RESETS },
+        bearerMints: state,
+      })),
+      silent,
+    );
+    assert.equal(probes.ticketMintingHealth().checks.bearerMints.ok, true, state);
+  }
 });
 
 test("no ticket sponsor key is an ALARM", async () => {

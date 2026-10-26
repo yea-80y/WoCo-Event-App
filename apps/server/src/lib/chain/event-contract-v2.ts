@@ -1,7 +1,7 @@
 import { JsonRpcProvider, Contract, Interface, Wallet, id } from "ethers";
 import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
-import type { OnChainEventRead, SlotData } from "./event-contract.js";
+import type { OnChainEvent, SlotData } from "./event-contract.js";
 
 /**
  * WoCoEventV2 (USDC-escrow) ABI. Reader views, sponsor-write surface, and
@@ -91,7 +91,7 @@ export async function getOnChainEventV2(
   onChainEventId: string,
   contractAddress: string,
   chainId: number,
-): Promise<OnChainEventRead | null> {
+): Promise<OnChainEvent | null> {
   try {
     // ethers v6 reserves `Contract.getEvent` for event-fragment lookup, so
     // we go through `getFunction` to call the V2 view of the same name.
