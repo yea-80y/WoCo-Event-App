@@ -351,10 +351,57 @@ describe("the failure ledger (#99)", () => {
     assert.ok(!entry!.error.includes("quoted@example.com"), "but not a second copy of the address");
   });
 
-  test("a Transient bounce is neither suppressed nor ledgered", async () => {
-    await post(bounceEvent({ email: "full@example.com", kind: "transactional", bounceType: "Transient", subType: "MailboxFull" }));
-    assert.equal(ledger.listFailures().length, 0, "it may still arrive; a self-clearing alarm teaches operators to ignore alarms");
-    assert.equal(suppression.isSuppressed(hashEmail("full@example.com"), ORG), false);
+  test("#983: a full mailbox is a ticket that will not arrive - ledgered, never suppressed", async () => {
+    // SES sends a Transient bounce only after it stopped retrying, so this row
+    // is what lets the organiser resend the ticket.
+    const email = "full@example.com";
+    await post(
+      bounceEvent({
+        email,
+        kind: "transactional",
+        bounceType: "Transient",
+        subType: "MailboxFull",
+        diagnosticCode: "smtp; 552 5.2.2 mailbox full",
+        context: { stripeSessionId: "cs_test_full1", eventId: "evt-full" },
+      }),
+    );
+    const [entry] = ledger.listFailures();
+    assert.equal(entry?.code, "Bounce/Transient/MailboxFull");
+    assert.equal(entry?.kind, "transactional");
+    assert.equal(entry?.recipients[0]?.address, email, "the buyer has to be contactable");
+    assert.equal(entry?.context?.stripeSessionId, "cs_test_full1");
+    assert.equal(entry?.retryable, false, "the drain worker has no body for it; the resend is the organiser's");
+    assert.match(entry!.error, /552 5\.2\.2/);
+    assert.equal(ledger.failureHealth().ok, false);
+    assert.equal(suppression.isSuppressed(hashEmail(email), ORG), false, "a full inbox must never cost a future ticket");
+  });
+
+  test("#983: every Transient subtype that means 'not delivered' is ledgered", async () => {
+    for (const subType of ["MailboxFull", "MessageTooLarge", "ContentRejected", "AttachmentRejected"]) {
+      ledger._resetForTest();
+      await post(bounceEvent({ email: `t-${subType}@example.com`, kind: "transactional", bounceType: "Transient", subType }));
+      assert.equal(ledger.listFailures()[0]?.code, `Bounce/Transient/${subType}`, subType);
+    }
+  });
+
+  test("#983: Transient/General is NOT ledgered - AWS files out-of-office auto-replies under it", async () => {
+    // That message WAS delivered: a row would alarm on every auto-reply and open
+    // the organiser's resend for a ticket the buyer already holds.
+    await post(bounceEvent({ email: "away@example.com", kind: "transactional", bounceType: "Transient", subType: "General" }));
+    assert.equal(ledger.listFailures().length, 0);
+    assert.equal(ledger.failureHealth().ok, true);
+  });
+
+  test("Undetermined is neither suppressed nor ledgered", async () => {
+    await post(bounceEvent({ email: "unsure@example.com", kind: "transactional", bounceType: "Undetermined", subType: "Undetermined" }));
+    assert.equal(ledger.listFailures().length, 0);
+    assert.equal(suppression.isSuppressed(hashEmail("unsure@example.com"), ORG), false);
+  });
+
+  test("#983: a Transient bounce is not counted for pacing - only hard bounces pause a sender", async () => {
+    await post(bounceEvent({ email: "full2@example.com", kind: "marketing", bounceType: "Transient", subType: "MailboxFull" }));
+    assert.equal(pacing.pacingHealth().platform7d.bounces, 0);
+    assert.equal(ledger.listFailures()[0]?.recipients[0]?.address, undefined, "marketing stays hash-only");
   });
 
   /**
