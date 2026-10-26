@@ -19,7 +19,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Interface, Wallet } from "ethers";
+import { Interface, Wallet, getAddress } from "ethers";
 
 const CHAIN = 31338;
 const SPONSOR_KEY = Wallet.createRandom().privateKey;
@@ -266,8 +266,9 @@ test("the #318 resolver finds a ledger2 Registered log — absent would re-broad
 // ---------------------------------------------------------------------------
 
 test("ledger2 holdings drop a slot whose claim log names the holder but which was reissued away", async () => {
-  const holder = "0x" + "77".repeat(20);
-  const fresh = "0x" + "78".repeat(20);
+  // Lettered, and asked for checksummed: the owner compare must not depend on case.
+  const holder = "0x" + "ab".repeat(20);
+  const fresh = "0x" + "cd".repeat(20);
   const eventId = "0x" + "d1".repeat(32);
   const ev = iface.getEvent("SlotClaimed")!;
   const log = (slot: number, i: number) => {
@@ -288,7 +289,7 @@ test("ledger2 holdings drop a slot whose claim log names the holder but which wa
     return { result: iface.encodeFunctionResult("getSlotData", [owner, holder, ORDER_REF]) };
   };
   const h = await onLedger2(() =>
-    getOnChainHolding({ holder: holder as `0x${string}`, onChainEventId: eventId, chainId: CHAIN, manifestRef: MANIFEST.slice(2) as never }),
+    getOnChainHolding({ holder: getAddress(holder) as `0x${string}`, onChainEventId: eventId, chainId: CHAIN, manifestRef: MANIFEST.slice(2) as never }),
   );
   assert.deepEqual(h.slots, [3]);
   assert.equal(h.count, 1);
