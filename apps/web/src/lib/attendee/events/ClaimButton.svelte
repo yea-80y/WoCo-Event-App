@@ -10,7 +10,7 @@
   import { CheckoutError, createCheckoutSession, OrderKeyStaleError } from "../../api/stripe.js";
   import type { MarketingMode, SeriesClaimStatus } from "@woco/shared";
   import { isMarketingChanged, listKeeps, MARKETING_CURRENT_VERSION, marketingChoice, marketingWording as buildMarketingWording, shownMarketingMode } from "@woco/shared";
-  import { orderFieldRequired, orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
+  import { buyerEmailConfirmed, buyerEmailMismatch, ORDER_EMAIL_FIELD_ID, orderFieldRequired, orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
   import { buildOrderSnapshot as buildOrderSnapshotPure } from "./claim/helpers.js";
@@ -109,6 +109,10 @@
   const hasStripe = $derived(!!payment?.stripeEnabled);
   let stripeLoading = $state(false);
   let stripeEmail = $state("");
+  /** The Confirm email box beside whichever box holds the ticket address (#982). */
+  let emailConfirm = $state("");
+  /** The buyer has left the confirm box: any mismatch shows from then on. */
+  let emailConfirmSettled = $state(false);
   // eventId/seriesId are per-mount stable (component remounts per series) —
   // the init-time captures below are intentional.
   // svelte-ignore state_referenced_locally
@@ -164,6 +168,14 @@
    *  screen to type into. */
   const hasEmailField = $derived(orderFormCollectsEmail(orderFields, orderKey));
   const hasOrderForm = $derived(orderFormShown(orderFields, orderKey));
+  /** Our own email box's address, while that box is the one on screen: never with a
+   *  form field to type into, never for a signed-in buyer - the box is hidden then,
+   *  and a value left in it from before sign-in was never confirmed (#982). */
+  const inlineEmail = (link: boolean = linked): string => (!link && !hasEmailField ? stripeEmail.trim() : "");
+  /** The address the buyer typed for the ticket, as the confirm box must repeat it. */
+  const typedEmail = $derived(hasEmailField ? formData[ORDER_EMAIL_FIELD_ID] ?? "" : inlineEmail());
+  const emailConfirmed = $derived(buyerEmailConfirmed(typedEmail, emailConfirm));
+  const emailMismatch = $derived(buyerEmailMismatch(typedEmail, emailConfirm, emailConfirmSettled));
 
   /** True while we refresh availability when the form opens. */
   let prefetching = $state(false);
@@ -176,6 +188,7 @@
   let intentToCheckout = $state(eager);
 
   const formValid = $derived(() => {
+    if (!emailConfirmed) return false;
     if (!orderFields?.length) return true;
     const fieldsFilled = orderFields.every((f) =>
       !orderFieldRequired(f, { canUseAccount: linked }) || (formData[f.id] ?? "").trim().length > 0
@@ -263,7 +276,7 @@
   // The key is part of the snapshot: a box sealed to a key since replaced is stale (#186).
   const buildOrderSnapshot = (link: boolean = linked): string => buildOrderSnapshotPure(
     formData,
-    getEmailFromForm() ?? stripeEmail.trim(),
+    getEmailFromForm() ?? inlineEmail(link),
     link ? auth.parent?.toLowerCase() ?? "" : "",
   ) + `|${orderKeyFor ?? ""}`;
 
@@ -276,7 +289,7 @@
     getShouldPrefetch: () => showOrderForm && !!orderKey && formValid(),
     getSnapshot: () => buildOrderSnapshot(),
     getFormData: () => formData,
-    getEmail: () => getEmailFromForm() ?? stripeEmail.trim(),
+    getEmail: () => getEmailFromForm() ?? inlineEmail(),
     getAddress: () => (linked ? auth.parent?.toLowerCase() ?? "" : ""),
     getQuantity: () => quantity,
     getPayHoverTick: () => payHoverTick,
@@ -345,7 +358,7 @@
     error = null;
     const linkAccount = linked;
     try {
-      const email = getEmailFromForm() || stripeEmail.trim() || undefined;
+      const email = getEmailFromForm() || inlineEmail(linkAccount) || undefined;
       const address = linkAccount ? auth.parent?.toLowerCase() || undefined : undefined;
       if (!email && !address) {
         // Deployed builder sites mount no login modal, so "sign in" names an
@@ -354,6 +367,12 @@
         error = loginRequest.available && !auth.isConnected
           ? "Please enter an email address or sign in with a wallet."
           : "Please enter an email address to continue.";
+        return;
+      }
+      // The form is on screen by now (the early return above), so this is the
+      // pair the buyer sees. A typo'd address loses the ticket (#982).
+      if (!emailConfirmed) {
+        error = "The emails don't match.";
         return;
       }
 
@@ -521,6 +540,9 @@
       {formValid}
       bind:formData
       bind:stripeEmail
+      bind:emailConfirm
+      {emailMismatch}
+      onEmailConfirmBlur={() => { emailConfirmSettled = true; }}
       {marketingWording}
       {marketingTicked}
       onMarketingChange={setMarketingTicked}
@@ -540,6 +562,11 @@
       showEmailInput={!linked && !hasEmailField}
       onCheckout={handleStripeCheckout}
       onStripeEmailChange={(v) => { stripeEmail = v; }}
+      {emailConfirm}
+      {emailConfirmed}
+      {emailMismatch}
+      onEmailConfirmChange={(v) => { emailConfirm = v; }}
+      onEmailConfirmBlur={() => { emailConfirmSettled = true; }}
       {eventId}
       {organiserName}
       {marketingWording}
