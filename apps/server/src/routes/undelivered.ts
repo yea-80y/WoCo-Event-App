@@ -4,14 +4,16 @@
  *
  *   GET  /api/events/:id/undelivered
  *   GET  /api/events/:id/undelivered/:sessionId/copy
- *   POST /api/events/:id/undelivered/:sessionId/resend   { to, tickets: [{ edition, qrContent }] }
+ *   POST /api/events/:id/undelivered/:sessionId/resend   { to, tickets: [{ edition, qrContent }], buyerName? }
+ *   GET  /api/undelivered/summary                        (its own mount: one segment under
+ *                                                         /api/events would hit the event route)
  */
 
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { errorClass } from "../lib/http/error-class.js";
-import { heldCopy, listUndelivered, resendTickets, type ResendDeps, type Refusal } from "../lib/ticket-hold/resend.js";
+import { heldCopy, listUndelivered, resendTickets, undeliveredSummary, type ResendDeps, type Refusal } from "../lib/ticket-hold/resend.js";
 import { liveResendDeps } from "../lib/ticket-hold/resend-live.js";
 
 export function undeliveredRoutes(deps: ResendDeps = liveResendDeps): Hono<AppEnv> {
@@ -41,12 +43,13 @@ export function undeliveredRoutes(deps: ResendDeps = liveResendDeps): Hono<AppEn
   });
 
   r.post("/:id/undelivered/:sessionId/resend", requireAuth, async (c) => {
-    const body = await c.req.json<{ to?: unknown; tickets?: unknown }>().catch(() => null);
+    const body = await c.req.json<{ to?: unknown; tickets?: unknown; buyerName?: unknown }>().catch(() => null);
     if (!body) return c.json({ ok: false, error: "Expected a JSON body", code: "BAD_BODY" }, 400);
     try {
       const v = await resendTickets(deps, c.req.param("id"), c.req.param("sessionId"), c.get("parentAddress"), {
         to: body.to,
         tickets: body.tickets,
+        buyerName: body.buyerName,
       });
       return v.ok ? c.json(v) : fail(c, v);
     } catch (err) {
@@ -55,5 +58,12 @@ export function undeliveredRoutes(deps: ResendDeps = liveResendDeps): Hono<AppEn
     }
   });
 
+  return r;
+}
+
+/** The dashboard index's badge: the caller's events with tickets that did not arrive. */
+export function undeliveredSummaryRoutes(deps: ResendDeps = liveResendDeps): Hono<AppEnv> {
+  const r = new Hono<AppEnv>();
+  r.get("/summary", requireAuth, (c) => c.json({ ok: true, data: undeliveredSummary(deps, c.get("parentAddress")) }));
   return r;
 }

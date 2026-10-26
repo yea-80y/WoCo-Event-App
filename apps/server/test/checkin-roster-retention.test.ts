@@ -280,7 +280,15 @@ test("#983: held tickets go on the same clock, with or without a roster, and non
   assert.equal(await hold(E.HOLDS, "cs_test_sweep000001"), true);
   assert.equal(await hold(E.HOLDS, "cs_test_sweep000002"), true);
   assert.equal(await hold(E.HOLDS_RECENT, "cs_test_sweep000003"), true);
+  const ledger = await import("../src/lib/email/failure-ledger.js");
+  const ticketRow = (eventId: string, sessionId: string) =>
+    ledger.recordFailure({ kind: "transactional", recipients: ["a@b.co"], recipientHashes: ["h"], subject: "s", provider: "ses", error: "e", attempts: 1, retryable: false, context: { eventId, stripeSessionId: sessionId } });
+  ticketRow(E.HOLDS, "cs_test_sweep000001");
+  ticketRow(E.HOLDS_RECENT, "cs_test_sweep000003");
   await sweep();
+  assert.equal(ledger.unresolvedTicketFailures(E.HOLDS).length, 0, "nothing left to resend: the rows stop alarming");
+  assert.equal(ledger.listFailures({ includeResolved: true }).filter((e) => e.resolvedBy === "event-ended").length, 1, "kept, resolved");
+  assert.equal(ledger.unresolvedTicketFailures(E.HOLDS_RECENT).length, 1, "an event inside the period keeps its row");
   assert.equal(holds.getTicketHold("cs_test_sweep000001"), null, "every sale of the event");
   assert.equal(holds.getTicketHold("cs_test_sweep000002"), null);
   assert.ok(holds.getTicketHold("cs_test_sweep000003"), "inside the period");

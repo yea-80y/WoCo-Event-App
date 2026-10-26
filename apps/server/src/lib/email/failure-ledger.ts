@@ -151,6 +151,15 @@ export function redactAddresses(text: string): string {
 }
 
 let entries: EmailFailure[] = [];
+
+/** Told of each new undelivered TICKET row - a transactional row naming its sale (#983). */
+type TicketFailureListener = (entry: EmailFailure) => void;
+const ticketFailureListeners: TicketFailureListener[] = [];
+
+/** Subscribe to new undelivered-ticket rows (the organiser's notice). Listeners must not throw; fenced anyway. */
+export function onTicketFailure(listener: TicketFailureListener): void {
+  ticketFailureListeners.push(listener);
+}
 let loaded = false;
 /** Monotonic suffix so two failures inside the same millisecond cannot collide. */
 let seq = 0;
@@ -265,6 +274,15 @@ export function recordFailure(input: RecordFailureInput): EmailFailure {
   );
 
   persist();
+  if (entry.kind === "transactional" && entry.context?.stripeSessionId && entry.context.eventId) {
+    for (const listener of ticketFailureListeners) {
+      try {
+        listener(entry);
+      } catch (err) {
+        console.error("[email-failures] a ticket-failure listener threw:", err instanceof Error ? err.name : "unknown");
+      }
+    }
+  }
   return entry;
 }
 
@@ -307,6 +325,38 @@ export function unresolvedTicketFailures(eventId: string, sessionId?: string): E
       !e.resolvedAt && e.kind === "transactional" && e.context?.eventId === eventId &&
       !!e.context.stripeSessionId && (sessionId === undefined || e.context.stripeSessionId === sessionId),
   );
+}
+
+/** Every event with an unresolved undelivered-ticket row, and how many of its sales have one (#983). */
+export function unresolvedTicketEvents(): Map<string, number> {
+  ensureLoaded();
+  const sales = new Map<string, Set<string>>();
+  for (const e of entries) {
+    const eventId = e.context?.eventId;
+    const sessionId = e.context?.stripeSessionId;
+    if (e.resolvedAt || e.kind !== "transactional" || !eventId || !sessionId) continue;
+    sales.set(eventId, (sales.get(eventId) ?? new Set()).add(sessionId));
+  }
+  return new Map([...sales].map(([eventId, s]) => [eventId, s.size]));
+}
+
+/**
+ * The event is over and its held tickets are gone (#983): nothing can remedy these
+ * rows any more, so they stop alarming and stop showing on the organiser's dashboard.
+ * Kept, resolved, like every other row. One write.
+ */
+export function resolveTicketFailuresForEvent(eventId: string, by: string): number {
+  ensureLoaded();
+  const at = new Date().toISOString();
+  let n = 0;
+  for (const e of entries) {
+    if (e.resolvedAt || e.kind !== "transactional" || e.context?.eventId !== eventId || !e.context.stripeSessionId) continue;
+    e.resolvedAt = at;
+    e.resolvedBy = by;
+    n++;
+  }
+  if (n) persist();
+  return n;
 }
 
 /**
@@ -361,8 +411,18 @@ export interface FailureHealth {
   ok: boolean;
   unresolved: number;
   unresolvedTransactional: number;
+  /** Unresolved mail TO ORGANISERS about their account or event - counted, never the alarm. */
+  unresolvedOrganiserNotices: number;
   oldestUnresolved?: string;
 }
+
+/**
+ * Transactional mail to an organiser, not to a buyer: retried, failed over and kept
+ * with its address like a ticket, but its bouncing is not "somebody paid and has no
+ * ticket", which is what the alarm means (and what the uptime monitor pages on).
+ */
+const ORGANISER_NOTICE_KINDS = new Set(["undelivered-notice", "stripe-requirement-nudge"]);
+const isOrganiserNotice = (e: EmailFailure) => ORGANISER_NOTICE_KINDS.has(e.context?.kind ?? "");
 
 /**
  * For /api/health. `ok` goes false on ANY unresolved transactional failure —
@@ -371,11 +431,12 @@ export interface FailureHealth {
 export function failureHealth(): FailureHealth {
   ensureLoaded();
   const unresolved = entries.filter((e) => !e.resolvedAt);
-  const transactional = unresolved.filter((e) => e.kind === "transactional");
+  const transactional = unresolved.filter((e) => e.kind === "transactional" && !isOrganiserNotice(e));
   return {
     ok: transactional.length === 0,
     unresolved: unresolved.length,
     unresolvedTransactional: transactional.length,
+    unresolvedOrganiserNotices: unresolved.filter(isOrganiserNotice).length,
     ...(unresolved.length ? { oldestUnresolved: unresolved[unresolved.length - 1]!.ts } : {}),
   };
 }
