@@ -26,7 +26,8 @@ import { bindTicket } from "../gate/store.js";
 import { consume as consumeReservation } from "../event/reservation-store.js";
 import { captureCheckoutConsent } from "../marketing/consent-capture.js";
 import { recordAttendeeEmail } from "../event/attendee-index.js";
-import { getSiteTheme, resolveSiteEventSigner } from "../site/service.js";
+import { resolveSiteEventSigner } from "../site/service.js";
+import { organiserSiteTheme } from "../ticket-hold/organiser-site.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
 import { sealDoorEntries } from "../checkin/door-entries.js";
 import { holdTickets } from "../ticket-hold/store.js";
@@ -106,7 +107,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   captureCheckoutConsent,
   recordAttendeeEmail,
   holdTicketCopy: (input) => holdTickets(input, holdKey),
-  getSiteTheme,
+  getSiteTheme: (siteId, eventId) => organiserSiteTheme(siteId, eventId),
   sendTicketEmail,
   sealDoorEntries: (eventId, tickets, who) => sealDoorEntries(eventId, tickets, who),
   recordUndeliveredTicket: ({ to, subject, error, context }) => {

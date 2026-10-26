@@ -241,8 +241,12 @@ export interface FulfilmentDeps {
     tickets: Array<{ edition: number; qrContent: string }>;
   }): Promise<unknown>;
 
-  /** Organiser palette for the ticket email. Never rejects in production; fenced anyway. */
-  getSiteTheme(siteId: string): Promise<{ palette: SitePalette; contactEmail?: string } | null>;
+  /**
+   * Organiser palette and Reply-To for the ticket email - null unless the site is this
+   * event's organiser's: the siteId is the pointer the buyer's checkout carried. Never
+   * rejects in production; fenced anyway.
+   */
+  getSiteTheme(siteId: string, eventId: string): Promise<{ palette: SitePalette; contactEmail?: string } | null>;
   /**
    * Deliver the tickets. When this REJECTS with an error carrying
    * `ledgered: true`, the mailer has already written the failure to the
@@ -1077,7 +1081,7 @@ export async function fulfilPaidSession(
     let siteTheme: { palette: SitePalette; contactEmail?: string } | null = null;
     if (metaSiteId) {
       try {
-        siteTheme = await deps.getSiteTheme(metaSiteId);
+        siteTheme = await deps.getSiteTheme(metaSiteId, eventId);
       } catch (err) {
         // Palette is cosmetic; the default brand is the correct fallback.
         console.warn("[fulfilment] getSiteTheme threw — sending with default palette:", err);
