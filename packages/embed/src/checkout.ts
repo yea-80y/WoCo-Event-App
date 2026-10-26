@@ -11,6 +11,7 @@ import {
   orderFieldRequired,
   orderFormShown,
   resolveBuyerEmail,
+  buyerEmailConfirmed,
   ORDER_EMAIL_FIELD_ID,
   isMarketingChanged,
   type MarketingChoice,
@@ -42,6 +43,7 @@ export type BuyPanelVerdict = { ok: true; email: string } | { ok: false; error: 
  * order form's own email field when the form shows one, else the widget's box.
  * This widget has no wallet or account path, so that field is required here
  * whatever the organiser ticked - it is the only way the ticket can arrive.
+ * Its Confirm email box sits right under it, so is checked in that place (#982).
  */
 export function validateBuyPanel(i: {
   fields: readonly OrderField[] | undefined;
@@ -49,7 +51,12 @@ export function validateBuyPanel(i: {
   verifiedKey: Uint8Array | undefined;
   formData: Record<string, string>;
   inlineEmail: string;
+  emailConfirm: string;
 }): BuyPanelVerdict {
+  const unconfirmed = (typed: string): BuyPanelVerdict | null =>
+    buyerEmailConfirmed(typed, i.emailConfirm)
+      ? null
+      : { ok: false, error: i.emailConfirm.trim() ? "The emails don't match" : "Confirm your email address" };
   if (orderFormShown(i.fields, i.verifiedKey)) {
     for (const f of i.fields!) {
       const isEmail = f.id === ORDER_EMAIL_FIELD_ID;
@@ -60,10 +67,15 @@ export function validateBuyPanel(i: {
       if (isEmail && !resolveBuyerEmail(i.formData, i.fields, i.verifiedKey, "")) {
         return { ok: false, error: `Enter a valid email address in ${label}` };
       }
+      if (isEmail) {
+        const refused = unconfirmed(value);
+        if (refused) return refused;
+      }
     }
   }
   const email = resolveBuyerEmail(i.formData, i.fields, i.verifiedKey, i.inlineEmail);
-  return email ? { ok: true, email } : { ok: false, error: "Enter a valid email address" };
+  if (!email) return { ok: false, error: "Enter a valid email address" };
+  return unconfirmed(email) ?? { ok: true, email };
 }
 
 /** Quantity the picker may offer: 1..min(10, available), never below 1. */
