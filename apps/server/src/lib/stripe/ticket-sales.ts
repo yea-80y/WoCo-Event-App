@@ -106,6 +106,12 @@ export interface TicketSale {
   partialRefund?: { amount: number; seenAt: string };
   /** The partial refund an operator has looked at. A LARGER one alarms again. */
   partialRefundAcknowledged?: { amount: number; at: string; by: string };
+  /**
+   * The organiser's resends of this sale's undelivered tickets (#983): when, to which
+   * address (hash only), by whom, and whether the mailer took it. Durable, unlike the
+   * failure ledger (90 days, 1,000 rows), so the per-sale cap outlives both.
+   */
+  resends?: Array<{ at: string; toHash: string; by: string; accepted: boolean }>;
 }
 
 let store: Record<string, TicketSale> = {};
@@ -274,6 +280,37 @@ export function recordAutoRefund(sessionId: string, amount: number): void {
   if (sale.autoRefunded !== undefined && sale.autoRefunded >= amount) return;
   sale.autoRefunded = amount;
   persist();
+}
+
+/**
+ * One organiser resend of a sale's tickets (#983), recorded BEFORE the send as not yet
+ * accepted, so the attempt survives a crash mid-send. False when nothing reached disk.
+ */
+export function recordResend(sessionId: string, entry: NonNullable<TicketSale["resends"]>[number]): boolean {
+  ensureLoaded();
+  const sale = store[sessionId];
+  if (!sale) return false;
+  sale.resends = [...(sale.resends ?? []), entry];
+  return persist();
+}
+
+/**
+ * The mailer took that resend: it now counts against the sale's cap. The newest
+ * attempt at `at` not yet accepted - with one resend of a sale in flight at a time,
+ * that is the caller's. False when nothing reached disk.
+ */
+export function markResendAccepted(sessionId: string, at: string): boolean {
+  ensureLoaded();
+  const entry = [...(store[sessionId]?.resends ?? [])].reverse().find((r) => r.at === at && !r.accepted);
+  if (!entry) return false;
+  entry.accepted = true;
+  return persist();
+}
+
+/** Sales whose tickets an organiser resent to this address (#983) - how its order is found. */
+export function salesResentTo(emailHash: string): TicketSale[] {
+  ensureLoaded();
+  return Object.values(store).filter((s) => s.resends?.some((r) => r.accepted && r.toHash === emailHash));
 }
 
 export function getSale(sessionId: string): TicketSale | undefined {

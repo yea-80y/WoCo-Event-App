@@ -538,3 +538,37 @@ test("the challenge route is per-account rate limited before any work: 10 a minu
   assert.ok(route.indexOf("doorPassChallenges.allow(parent)") < route.indexOf("createDoorPassChallenge("));
   assert.match(route, /const parent = c\.get\("parentAddress"\)\.toLowerCase\(\);/);
 });
+
+// ---------------------------------------------------------------------------
+// #983: a ticket resent to another address
+// ---------------------------------------------------------------------------
+
+test("a resent ticket's line is sealed again with the new address, replacing the old one", async () => {
+  const ev = newEvent();
+  const pass = await issue(ev);
+  const t = [{ seriesId: SERIES, edition: 1 }, { seriesId: SERIES, edition: 2 }];
+  await entries.sealDoorEntries(ev, t, { email: "typo@exampl.com", buyerName: "A Buyer" });
+  const before = entries.readDoorEntriesPage(ev, pass.jti, 0);
+  assert.equal(await entries.replaceDoorEntries(ev, t, { email: "buyer@example.com" }), 2);
+  const page = entries.readDoorEntriesPage(ev, pass.jti, 0);
+  assert.equal(page.log.filter((l) => l.kind === "add").length, 2, "one line per ticket, never two");
+  for (const line of page.log) {
+    assert.ok(line.seq > before.next, "a scanner that has the old lines sees the new ones as later");
+    assert.equal((await open(ev, pass, line)).email, "buyer@example.com");
+  }
+  assert.doesNotMatch(readFileSync(file(ev), "utf8"), /buyer@example\.com/, "nothing readable at rest");
+});
+
+test("a resend never brings an erased ticket back to the door", async () => {
+  const ev = newEvent();
+  const pass = await issue(ev);
+  await entries.sealDoorEntries(ev, [{ seriesId: SERIES, edition: 1 }], { email: "a@example.com" });
+  entries.removeDoorEntries(ev, [{ seriesId: SERIES, edition: 1 }]);
+  assert.equal(await entries.replaceDoorEntries(ev, [{ seriesId: SERIES, edition: 1 }], { email: "b@example.com" }), 0);
+  assert.deepEqual(entries.readDoorEntriesPage(ev, pass.jti, 0).log.map((l) => l.kind), ["remove"]);
+});
+
+test("a resend to an event with no live door pass changes nothing and never throws", async () => {
+  const none = newEvent();
+  assert.equal(await entries.replaceDoorEntries(none, [{ seriesId: SERIES, edition: 1 }], { email: "b@example.com" }), 0);
+});

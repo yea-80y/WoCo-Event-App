@@ -82,6 +82,13 @@ if (organiser) {
   console.log("  (not searched — organiser-scoped request; the ledger is platform-level)");
 }
 
+console.log(`\nTICKETS AN ORGANISER RESENT TO THIS ADDRESS (${report.ticketResends.length})`);
+for (const r of report.ticketResends) console.log(`  ${r.sessionId}  event=${r.eventId ?? "?"}`);
+console.log(
+  "  (#983: each order is filed under the address typed at checkout - POST /api/ops/attendee-batch/lookup" +
+    " with this address returns it, marked resentTo)",
+);
+
 console.log(`\nBROADCASTS THAT MAILED THIS ADDRESS (${report.broadcasts.length})`);
 for (const b of report.broadcasts) {
   console.log(`  ${b.ts}  ${b.kind}  org=${b.org}  ${b.state}`);

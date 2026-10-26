@@ -296,6 +296,34 @@ export function bumpRetry(id: string, error: string): boolean {
   return persist();
 }
 
+/**
+ * The unresolved undelivered TICKET rows for one sale of one event (#983) - what lets
+ * its organiser open the held copy and resend it. Newest first.
+ */
+export function unresolvedTicketFailures(eventId: string, sessionId?: string): EmailFailure[] {
+  ensureLoaded();
+  return entries.filter(
+    (e) =>
+      !e.resolvedAt && e.kind === "transactional" && e.context?.eventId === eventId &&
+      !!e.context.stripeSessionId && (sessionId === undefined || e.context.stripeSessionId === sessionId),
+  );
+}
+
+/**
+ * The organiser resent this ticket (#983): resolve the row and add the address it went
+ * to as one more recipient, so an access or erasure request for that address reaches
+ * this record too (`failuresForHash`, `eraseRecipient`). One write.
+ */
+export function resolveTicketFailure(id: string, by: string, sentTo: FailureRecipient): boolean {
+  ensureLoaded();
+  const entry = entries.find((e) => e.id === id);
+  if (!entry || entry.resolvedAt || entry.kind !== "transactional") return false;
+  if (!entry.recipients.some((r) => r.hash === sentTo.hash)) entry.recipients.push({ ...sentTo });
+  entry.resolvedAt = new Date().toISOString();
+  entry.resolvedBy = by;
+  return persist();
+}
+
 /** Mark an entry handled (resent by hand, buyer contacted, address dead). */
 export function resolveFailure(id: string, by: string): boolean {
   ensureLoaded();
