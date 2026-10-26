@@ -59,6 +59,28 @@ export function orderFieldRequired(field: OrderField, opts: { canUseAccount: boo
 }
 
 /**
+ * Does the Confirm email box match the ticket address (#982)? A ticket's QR exists
+ * only in its email, so a typo loses the ticket. Trimmed and case-insensitive. A
+ * blank address is nothing to confirm: the "enter an email" checks own that case.
+ */
+export function buyerEmailConfirmed(typed: string, confirm: string): boolean {
+  const address = typed.trim().toLowerCase();
+  return !address || address === confirm.trim().toLowerCase();
+}
+
+/**
+ * Should "The emails don't match" show? While the buyer is still typing in the
+ * confirm box, only once typing more cannot make a match - never on each keystroke.
+ * Once they have left it (`settled`), on any mismatch: a correct confirm can be a
+ * prefix of a typo'd first box ("bob@gmail.comn"), the very slip this exists for.
+ */
+export function buyerEmailMismatch(typed: string, confirm: string, settled: boolean): boolean {
+  const c = confirm.trim().toLowerCase();
+  if (!c || buyerEmailConfirmed(typed, confirm)) return false;
+  return settled || !typed.trim().toLowerCase().startsWith(c);
+}
+
+/**
  * The buyer's address: the form's email field when the form collects one, else
  * the surface's own box. Null when the chosen source holds no plausible
  * address - the two are never mixed, because only one of them is on screen.
