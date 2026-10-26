@@ -228,6 +228,19 @@ export interface FulfilmentDeps {
    */
   recordAttendeeEmail(eventId: string, emailHash: string, at: string): void;
 
+  /**
+   * Seal the issued tickets' QR to the organiser's order key before their email goes
+   * (#983), so a bounce can be resent as the same ticket. Must not throw - the copy is
+   * the remedy for a bounce, never the sale; fenced anyway.
+   */
+  holdTicketCopy(input: {
+    sessionId: string;
+    eventId: string;
+    seriesId: string;
+    orderKeyRef: string;
+    tickets: Array<{ edition: number; qrContent: string }>;
+  }): Promise<unknown>;
+
   /** Organiser palette for the ticket email. Never rejects in production; fenced anyway. */
   getSiteTheme(siteId: string): Promise<{ palette: SitePalette; contactEmail?: string } | null>;
   /**
@@ -1043,6 +1056,24 @@ export async function fulfilPaidSession(
   } else if (!claimerEmail) {
     email = "no-address";
   } else {
+    // Held for the organiser BEFORE the email, so even a send that throws leaves a copy
+    // to resend from (#983). Only to the authoritative key - the one sales seal to.
+    const holdKeys = orderKeys ? sellableKeys(orderKeys) : null;
+    if (holdKeys?.ok) {
+      try {
+        await deps.holdTicketCopy({
+          sessionId: session.id,
+          eventId,
+          seriesId,
+          orderKeyRef: holdKeys.keys.orderKeyRef,
+          tickets: claimedResults,
+        });
+      } catch (err) {
+        console.error("[fulfilment] ticket hold threw (continuing to email):", err);
+      }
+    } else {
+      console.warn(`[fulfilment] ${session.id}: no order key on record - tickets emailed without a held copy`);
+    }
     let siteTheme: { palette: SitePalette; contactEmail?: string } | null = null;
     if (metaSiteId) {
       try {

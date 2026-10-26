@@ -27,6 +27,7 @@ const E = {
   OLD: ev(1), RECENT: ev(2), EDGE: ev(3), UNREG: ev(4), NOEND: ev(5), RPC: ev(6),
   TWO: ev(7), BROKEN: ev(8), BEHIND: ev(9), KEEPS_DOOR: ev(10), CHMOD: ev(11), GATE: ev(12),
   ENTRIES: ev(14), ENTRIES_ONLY: ev(15), ENTRIES_RECENT: ev(16),
+  HOLDS: ev(17), HOLDS_RECENT: ev(18),
 };
 
 /** onChainEventId → end in seconds, null (no end onchain) or "throw" (RPC down). */
@@ -46,6 +47,8 @@ const ends: Record<string, number | null | "throw"> = {
   [id(14)]: endedDaysAgo(3),
   [id(15)]: endedDaysAgo(3),
   [id(16)]: endedDaysAgo(1),
+  [id(17)]: endedDaysAgo(3),
+  [id(18)]: endedDaysAgo(1),
 };
 const reg = (n: number, chainId = CHAIN) => ({ onChainEventId: id(n), chainId, contract: LEDGER, version: "ledger" });
 const REGISTRY = {
@@ -67,6 +70,8 @@ const REGISTRY = {
   [`${E.ENTRIES}|s1`]: reg(14),
   [`${E.ENTRIES_ONLY}|s1`]: reg(15),
   [`${E.ENTRIES_RECENT}|s1`]: reg(16),
+  [`${E.HOLDS}|s1`]: reg(17),
+  [`${E.HOLDS_RECENT}|s1`]: reg(18),
 };
 
 let dir: string;
@@ -75,6 +80,7 @@ let store: typeof import("../src/lib/checkin/store.js");
 let retention: typeof import("../src/lib/checkin/roster-retention.js");
 let guard: typeof import("../src/lib/event/end-date-guard.js");
 let doorEntries: typeof import("../src/lib/checkin/door-entries.js");
+let holds: typeof import("../src/lib/ticket-hold/store.js");
 
 const reads: string[] = [];
 let gate: Promise<void> | null = null;
@@ -106,6 +112,7 @@ before(async () => {
   retention = await import("../src/lib/checkin/roster-retention.js");
   guard = await import("../src/lib/event/end-date-guard.js");
   doorEntries = await import("../src/lib/checkin/door-entries.js");
+  holds = await import("../src/lib/ticket-hold/store.js");
 });
 
 after(() => {
@@ -260,4 +267,21 @@ test("door entries go with the roster, and on their own when no roster was pushe
   assert.equal(existsSync(entriesFile(E.ENTRIES)), false, "with the roster");
   assert.equal(existsSync(entriesFile(E.ENTRIES_ONLY)), false, "no roster: still on the clock");
   assert.equal(existsSync(entriesFile(E.ENTRIES_RECENT)), true, "inside the period");
+});
+
+test("#983: held tickets go on the same clock, with or without a roster, and none sooner", async () => {
+  const { deriveXWingKeypairFromSeed } = await import("@woco/shared/crypto/xwing");
+  const key = deriveXWingKeypairFromSeed("0x" + "4d".repeat(32)).publicKey;
+  const hold = (eventId: string, sessionId: string) =>
+    holds.holdTickets(
+      { sessionId, eventId, seriesId: "s1", orderKeyRef: "ab".repeat(32), tickets: [{ edition: 1, qrContent: `woco://t/${eventId}/s1/1/0x${"cd".repeat(65)}` }] },
+      async () => key,
+    );
+  assert.equal(await hold(E.HOLDS, "cs_test_sweep000001"), true);
+  assert.equal(await hold(E.HOLDS, "cs_test_sweep000002"), true);
+  assert.equal(await hold(E.HOLDS_RECENT, "cs_test_sweep000003"), true);
+  await sweep();
+  assert.equal(holds.getTicketHold("cs_test_sweep000001"), null, "every sale of the event");
+  assert.equal(holds.getTicketHold("cs_test_sweep000002"), null);
+  assert.ok(holds.getTicketHold("cs_test_sweep000003"), "inside the period");
 });

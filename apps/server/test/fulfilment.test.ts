@@ -186,6 +186,7 @@ type Step =
   | "sendTicketEmail"
   | "sendTicketEmailLedgered"
   | "sealDoorEntries"
+  | "holdTicketCopy"
   | "recordUndeliveredTicket";
 
 interface FakeOpts {
@@ -261,6 +262,8 @@ function fakeDeps(o: FakeOpts = {}) {
   const cancellationQueue: Array<{ eventId: string; sessionId: string; paymentIntentId: string; account: string }> = [];
   /** Door entries asked for (the live door attendee list). */
   const doorEntries: Array<{ eventId: string; tickets: Array<{ seriesId: string; edition: number }>; who: { email?: string; buyerName?: string } }> = [];
+  /** Held ticket copies asked for (#983). */
+  const holds: Array<Parameters<FulfilmentDeps["holdTicketCopy"]>[0]> = [];
   let nextSlot = 0;
   let chunkIdx = 0;
   let burnerSeq = 0;
@@ -432,6 +435,12 @@ function fakeDeps(o: FakeOpts = {}) {
       }
       emails.push(opts);
     },
+    holdTicketCopy: async (input) => {
+      // Attempt recorded before the throw: a hold failure must change nothing else.
+      holds.push(input);
+      boom("holdTicketCopy");
+      return true;
+    },
     sealDoorEntries: async (eventId, tickets, who) => {
       // Attempt recorded before the throw: a door list failure must change nothing else.
       doorEntries.push({ eventId, tickets, who });
@@ -444,7 +453,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries };
+  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries, holds };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -1320,6 +1329,53 @@ test("door entries: a failure there changes no outcome, and the email still went
 });
 
 // ---------------------------------------------------------------------------
+// Held tickets (#983): the copy a bounced ticket is resent from
+// ---------------------------------------------------------------------------
+
+test("held tickets: every issued ticket, to the organiser's key on record, BEFORE the email", async () => {
+  const f = fakeDeps();
+  const outcome = await fulfilPaidSession(session(), PAID_AT, f.deps);
+  assertInvariant(outcome, session(), f);
+  assert.equal(f.holds.length, 1);
+  const h = f.holds[0]!;
+  assert.equal(h.sessionId, session().id);
+  assert.equal(h.eventId, EVENT_ID);
+  assert.equal(h.seriesId, SERIES_ID);
+  assert.equal(h.orderKeyRef, ORDER_KEY_REF, "the authoritative key, never the feed's");
+  assert.deepEqual(h.tickets.map((t) => t.edition), [1, 2]);
+  assert.deepEqual(h.tickets.map((t) => t.qrContent), f.emails[0]!.tickets.map((t) => t.qrContent), "exactly what was emailed");
+  assert.ok(f.calls.indexOf("holdTicketCopy") < f.calls.indexOf("sendTicketEmail"), "a send that throws still leaves a copy");
+});
+
+test("held tickets: a feed naming another key changes nothing - the copy follows the record", async () => {
+  const f = fakeDeps({ event: eventFeed({ encryptionKeyRef: "99".repeat(32) }) });
+  await fulfilPaidSession(session(), PAID_AT, f.deps);
+  assert.equal(f.holds[0]?.orderKeyRef, ORDER_KEY_REF);
+});
+
+test("held tickets: none with no key on record, no email to bounce, or nothing issued", async () => {
+  for (const [name, s, o] of [
+    ["legacy keys", session(), { keys: { kind: "legacy" } as const }],
+    ["keys unreadable", session(), { fail: "eventKeys" as const }],
+    ["wallet only", session({ email: null, wallet: BUYER_WALLET }), {}],
+    ["nothing issued", session(), { revertAtChunk: 0 }],
+  ] as const) {
+    const f = fakeDeps(o);
+    await fulfilPaidSession(s, PAID_AT, f.deps);
+    assert.equal(f.holds.length, 0, name);
+  }
+});
+
+test("held tickets: a failure there changes no outcome, and the email still went", async () => {
+  const ok = await fulfilPaidSession(session(), PAID_AT, fakeDeps().deps);
+  const f = fakeDeps({ fail: "holdTicketCopy" });
+  const outcome = await fulfilPaidSession(session(), PAID_AT, f.deps);
+  assertInvariant(outcome, session(), f);
+  assert.deepEqual(outcome, ok);
+  assert.equal(f.emails.length, 1);
+});
+
+// ---------------------------------------------------------------------------
 // Never rejects
 // ---------------------------------------------------------------------------
 
@@ -1330,7 +1386,7 @@ test("never rejects, whichever step throws", async () => {
     "getOrganiserByStripeAccount", "storeOrderBlob", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
     "flagPayoutRecheck", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
-    "sendTicketEmailLedgered", "recordUndeliveredTicket", "sealDoorEntries",
+    "sendTicketEmailLedgered", "recordUndeliveredTicket", "sealDoorEntries", "holdTicketCopy",
   ];
   for (const step of steps) {
     const f = fakeDeps({ fail: step, revertAtChunk: step === "createRefund" || step === "flagPayoutRecheck" ? 0 : undefined });
