@@ -262,6 +262,8 @@ function fakeDeps(o: FakeOpts = {}) {
   const cancellationQueue: Array<{ eventId: string; sessionId: string; paymentIntentId: string; account: string }> = [];
   /** Door entries asked for (the live door attendee list). */
   const doorEntries: Array<{ eventId: string; tickets: Array<{ seriesId: string; edition: number }>; who: { email?: string; buyerName?: string } }> = [];
+  /** The (site, event) each theme read was for: the live dep checks the site is the event's organiser's. */
+  const themeAsked: Array<[string, string]> = [];
   /** Held ticket copies asked for (#983). */
   const holds: Array<Parameters<FulfilmentDeps["holdTicketCopy"]>[0]> = [];
   let nextSlot = 0;
@@ -416,8 +418,9 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("recordAttendeeEmail");
       attendees.push({ eventId, emailHash, at });
     },
-    getSiteTheme: async () => {
+    getSiteTheme: async (siteId, eventId) => {
       boom("getSiteTheme");
+      themeAsked.push([siteId, eventId]);
       return {
         palette: { bg: "#000", text: "#fff", muted: "#888", accent: "#c7f23a", accentHover: "#b2d92f", border: "#333", cardBg: "#111" },
         contactEmail: "org@example.com",
@@ -453,7 +456,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries, holds };
+  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries, holds, themeAsked };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -1392,4 +1395,20 @@ test("never rejects, whichever step throws", async () => {
     const f = fakeDeps({ fail: step, revertAtChunk: step === "createRefund" || step === "flagPayoutRecheck" ? 0 : undefined });
     await assert.doesNotReject(() => fulfilPaidSession(session({ wallet: BUYER_WALLET }), PAID_AT, f.deps), step);
   }
+});
+
+test("the ticket email's palette and Reply-To are asked for with the event, so another organiser's site is refused", async () => {
+  const f = fakeDeps();
+  await fulfilPaidSession(session(), PAID_AT, f.deps);
+  assert.deepEqual(f.themeAsked, [["site-1", EVENT_ID]]);
+  const none = fakeDeps();
+  await fulfilPaidSession(session({ siteId: null }), PAID_AT, none.deps);
+  assert.deepEqual(none.themeAsked, [], "no site, no read");
+});
+
+test("the live wiring checks the site's owner against the event's creator", async () => {
+  const { readFileSync } = await import("node:fs");
+  const live = readFileSync(new URL("../src/lib/stripe/fulfilment-live.ts", import.meta.url), "utf8");
+  assert.match(live, /getSiteTheme: \(siteId, eventId\) => organiserSiteTheme\(siteId, eventId\),/);
+  assert.doesNotMatch(live, /import \{[^}]*\bgetSiteTheme\b[^}]*\} from "\.\.\/site\/service\.js"/, "never the unchecked read");
 });

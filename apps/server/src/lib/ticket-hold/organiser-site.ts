@@ -2,7 +2,8 @@
  * An organiser site's theme and contact address, for mail about one event (#983) -
  * only when the site belongs to that event's organiser. The siteId on a sale is the
  * pointer the BUYER's checkout carried: taken on trust, it would let anyone aim the
- * organiser's notice, or a resend's Reply-To, at another organiser's site.
+ * ticket email's Reply-To, the organiser's notice, or a resend at another organiser's
+ * site. Used by all three.
  */
 
 import { getRecordedFeedSigner } from "../event/feed-signer-record.js";
