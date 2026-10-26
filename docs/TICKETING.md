@@ -418,7 +418,7 @@ still reported so the UI can be exercised with the gate off.
 ## 9. Which contract
 
 > **Which contract you are on is env-selected.** Production selects `WoCoTicketLedger` on
-> Arbitrum Sepolia through `WOCO_EVENT_CHAIN_ID`, `WOCO_EVENT_VERSION_{chainId}` and - because
+> Arbitrum One (since 2026-10-19) through `WOCO_EVENT_CHAIN_ID`, `WOCO_EVENT_VERSION_{chainId}` and - because
 > `DEPLOYED_LEDGER` in `apps/server/src/lib/chain/event-contract.ts` is still an empty map -
 > `WOCO_EVENT_ADDRESS_LEDGER_{chainId}`. Unset, the server defaults to chain `84532` (Base Sepolia)
 > and version `v1` — a different contract entirely. None of these variables is in `.env.example`.
@@ -430,6 +430,19 @@ mints per hour, and has owner-authorised slot transfers (§3). The same source i
 Arbitrum One (2026-09-25); the server is not switched to it yet. Registrations made on V2 keep
 verifying through their own recorded contract (#563). Addresses: [DEPLOYMENTS.md](./DEPLOYMENTS.md)
 and the contracts repository's `deployments/*.json`.
+
+**Version 2 (`ledger2`, #983) - server support built, contract not yet deployed.** A successor
+`WoCoTicketLedger` at a new address: `WOCO_EVENT_VERSION_{chainId}=ledger2` plus
+`WOCO_EVENT_ADDRESS_LEDGER2_{chainId}`. Keep `WOCO_EVENT_ADDRESS_LEDGER_{chainId}` set - version-1
+registrations keep minting and verifying on their recorded contract, and a record from before #563
+stays on V2, never either ledger. What it adds: the registrant can change supply and move the cutoff
+later; card sales mint **bearer** slots (`batchClaimBearer`, never `batchClaimFor`), which `reissue`
+can revoke and re-mint to a new burner without using a seat; the owner can switch bearer mints off
+for good (`disableBearerMints`) once holders keep their own keys (#298). Seats in use are
+`getEventAdmin.live`, not `nextSlot`: availability goes through `seatsLeft()`, and `nextSlot` stays
+the slot range the door and order reads walk. A revoked slot reads owner 0, so the door refuses it.
+Rollback: an older build does not know `ledger2` records - it keeps them on disk, serves none (those
+series stop selling) and raises `unreadableRecords`.
 
 > **Superseded (kept for the record).** Until 2026-09-24 the ledger was "written, reviewed and
 > merged, and not deployed", and `DEPLOYED_LEDGER` was empty so that selecting it early failed

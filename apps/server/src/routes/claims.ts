@@ -3,7 +3,7 @@ import type { AppEnv } from "../types.js";
 import { cancellationGate } from "../lib/event/cancellations.js";
 import { getEvent } from "../lib/event/service.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
-import { getOnChainEventAt } from "../lib/chain/event-contract.js";
+import { getOnChainEventAt, seatsLeft } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { heldFor } from "../lib/event/reservation-store.js";
 import { eventKeys } from "../lib/keyring/event-keys.js";
@@ -65,8 +65,9 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
     const contract = registrationContractFor(eventId, seriesId);
     const onChainData = contract ? await getOnChainEventAt(contract, series.onChainEventId) : null;
     const totalSupply = onChainData ? Number(onChainData.totalSupply) : series.totalSupply;
-    const claimed = onChainData ? Number(onChainData.nextSlot) : 0;
-    const physicalAvailable = Math.max(0, totalSupply - claimed);
+    // Seats in use, not slots ever minted: a reissue (#983) revokes one and mints one.
+    const claimed = onChainData ? Number(onChainData.inUse) : 0;
+    const physicalAvailable = onChainData ? seatsLeft(onChainData) : Math.max(0, totalSupply);
     const held = heldFor(eventId, seriesId);
     // #644: a cancelled event reads as nothing available, so every buy button
     // already published — including bundles baked into organiser sites before

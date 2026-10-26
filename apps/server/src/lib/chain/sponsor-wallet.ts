@@ -17,11 +17,12 @@ import {
 } from "./event-contract-v2.js";
 import {
   LEDGER_ABI,
+  LEDGER2_ABI,
   LEDGER_UNLIMITED_MINTS,
   isNotThisAbi,
   type SponsorMintAllowance,
 } from "./event-contract-ledger.js";
-import { unhandledVersion } from "./event-contract.js";
+import { isLedgerFamily, unhandledVersion } from "./event-contract.js";
 import type { EventContractVersion, EventContractTarget } from "./event-contract.js";
 
 /**
@@ -34,6 +35,7 @@ import type { EventContractVersion, EventContractTarget } from "./event-contract
  */
 function registeredFragmentsFor(v: EventContractVersion): readonly string[] {
   switch (v) {
+    case "ledger2": return LEDGER2_ABI;
     case "ledger": return LEDGER_ABI;
     case "v2":     return V2_ABI;
     case "v1":     return REGISTER_ABI;
@@ -268,7 +270,8 @@ async function readSponsorAuthorised(target: EventContractTarget, sponsor: strin
     switch (version) {
       case "v1":
         return true; // deploy-time authorisation; nothing to read
-      case "ledger": {
+      case "ledger":
+      case "ledger2": {
         const { isSponsorAuthorisedLedger } = await import("./event-contract-ledger.js");
         return await isSponsorAuthorisedLedger(sponsor, address, chainId);
       }
@@ -372,7 +375,7 @@ export async function checkSponsorCanMint(
   reads: SponsorMintReads = liveSponsorMintReads,
 ): Promise<SponsorMintVerdict> {
   const authorised = await reads.isSponsorReady(target);
-  if (!authorised || target.version !== "ledger") return evaluateSponsorMint(authorised, null, quantity);
+  if (!authorised || !isLedgerFamily(target.version)) return evaluateSponsorMint(authorised, null, quantity);
   return evaluateSponsorMint(true, await reads.readSponsorMintAllowance(target), quantity);
 }
 
@@ -406,7 +409,7 @@ export async function readTicketMintPolicy(): Promise<TicketMintPolicy> {
   if (!process.env.WOCO_SPONSOR_PRIVATE_KEY) throw new SponsorKeyUnconfigured();
   const sponsor = getSponsorAddress();
   const sponsorAuthorised = await readSponsorAuthorised(contract, sponsor);
-  const allowance = contract.version === "ledger" ? await readSponsorMintAllowance(contract) : ("no-cap" as const);
+  const allowance = isLedgerFamily(contract.version) ? await readSponsorMintAllowance(contract) : ("no-cap" as const);
   return { contract, sponsor: sponsor.toLowerCase(), sponsorAuthorised, allowance };
 }
 
@@ -432,7 +435,7 @@ export async function logSponsorReadiness(): Promise<void> {
     if (!ready) {
       // The cap is a required argument, never defaulted: choosing it is the
       // decision that bounds a leaked key (WoCoTicketLedger.addSponsor).
-      const how = target.version === "ledger"
+      const how = isLedgerFamily(target.version)
         ? `addSponsor(${getSponsorAddress()}, <perHour>) — the cap is required; UNLIMITED_MINTS only for a sponsor the chain can check`
         : `addSponsor(${getSponsorAddress()})`;
       console.error(
@@ -441,7 +444,7 @@ export async function logSponsorReadiness(): Promise<void> {
       );
       return;
     }
-    if (target.version !== "ledger") {
+    if (!isLedgerFamily(target.version)) {
       console.log(`[sponsor] readiness OK — authorised to mint on chain ${chainId}`);
       return;
     }
@@ -494,7 +497,9 @@ export async function claimForOnChain(
   target: EventContractTarget = defaultTargetOrThrow(),
 ): Promise<number> {
   const { chainId, address, version } = target;
-  if (version === "ledger") {
+  // A single mint goes to a holder's own wallet (the shop's loyalty reward), so
+  // on version 2 it stays non-bearer: unreplaceable, as a held key should be.
+  if (isLedgerFamily(version)) {
     const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
     if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
     const { claimForLedger } = await import("./event-contract-ledger.js");
@@ -574,6 +579,14 @@ export async function batchClaimForOnChain(
   }
 
   const { chainId, address, version } = target;
+  // Card sales: burners whose keys are discarded. On version 2 they MUST be
+  // minted bearer, or no ticket could ever be replaced by `reissue` (#983).
+  if (version === "ledger2") {
+    const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+    if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+    const { batchClaimBearerLedger2 } = await import("./event-contract-ledger.js");
+    return batchClaimBearerLedger2(onChainEventId, burners, orderRefBytes32, address, pk, chainId);
+  }
   if (version === "ledger") {
     const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
     if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
@@ -664,7 +677,8 @@ async function registerOn(
 ): Promise<{ onChainEventId: string; txHash: string }> {
   const { chainId, address, version } = target;
 
-  if (version === "ledger") {
+  // Version 2 registers exactly as version 1 (same function, same `Registered`).
+  if (isLedgerFamily(version)) {
     const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
     if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
     if (!v2Params) {
