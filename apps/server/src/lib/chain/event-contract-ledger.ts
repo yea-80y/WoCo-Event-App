@@ -91,6 +91,57 @@ export const LEDGER_ABI = [
   ...LEDGER_LIFECYCLE_ABI,
 ] as const;
 
+/**
+ * What WoCoTicketLedger version 2 (`"ledger2"`) adds. Everything above is
+ * unchanged in it — same selectors, same `getEvent`/`getSlotData` meaning — so
+ * the version-1 functions here read and register on both.
+ *
+ * Card sales mint through `batchClaimBearer`: their burner keys are discarded,
+ * and only a bearer slot can later be pointed at a fresh key by `reissue`.
+ * Minting them through `batchClaimFor` would make every ticket unreplaceable
+ * from birth.
+ */
+const LEDGER2_READ_ABI = [
+  "function getRegistrant(bytes32) view returns (address)",
+  "function getSlotFlags(bytes32 eventId, uint256 slot) view returns (bool bearer, bool held)",
+  "function bearerMintsDisabled() view returns (bool)",
+];
+
+const LEDGER2_CLAIM_ABI = [
+  ...LEDGER_CLAIM_ABI,
+  "function batchClaimBearer(bytes32 eventId, address[] owners, bytes32 orderRef) returns (uint256 firstSlot)",
+  "function reissue(bytes32 eventId, uint256[] slots, address[] newOwners)",
+  "event SlotReissued(bytes32 indexed eventId, uint256 indexed slot, address indexed from, address to)",
+  "error BearerMintsOff()",
+  "error LengthMismatch()",
+  "error SlotsNotAscending()",
+  "error SlotUnclaimed()",
+  "error NotBearer()",
+  "error NotSlotClaimer()",
+  "error SlotHeld()",
+  "error TransferToSelf()",
+];
+
+const LEDGER2_ADMIN_ABI = [
+  "function setSupply(bytes32 eventId, uint64 supply)",
+  "function extendSalesEnd(bytes32 eventId, uint64 eventEndTs)",
+  "event SupplySet(bytes32 indexed eventId, uint64 previous, uint64 supply)",
+  "event SalesEndExtended(bytes32 indexed eventId, uint64 previous, uint64 eventEndTs)",
+  "event BearerMintsDisabled(address indexed by)",
+  "error NotRegistrant()",
+  "error SupplyUnchanged()",
+  "error InvalidEventEnd()",
+];
+
+export const LEDGER2_ABI = [
+  ...LEDGER_READ_ABI,
+  ...LEDGER2_READ_ABI,
+  ...LEDGER2_CLAIM_ABI,
+  ...LEDGER_REGISTER_ABI,
+  ...LEDGER_LIFECYCLE_ABI,
+  ...LEDGER2_ADMIN_ABI,
+] as const;
+
 /** Computed, never hardcoded — same error name as V2, so the same selector. */
 const EVENT_NOT_FOUND_SELECTOR = id("EventNotFound()").slice(0, 10);
 
@@ -180,7 +231,8 @@ export function isNotThisAbi(err: unknown): boolean {
   return typeof rpcMessage === "string" && /revert/i.test(rpcMessage);
 }
 
-const CLAIM_IFACE = new Interface(LEDGER_CLAIM_ABI);
+// Version 2's claim errors are a superset of version 1's, so one decoder reads both.
+const CLAIM_IFACE = new Interface(LEDGER2_CLAIM_ABI);
 
 /**
  * `MintCapExceeded(sponsor, windowResetsAt)` from a failed mint, or null.
@@ -354,10 +406,22 @@ export async function getOnChainEventLedger(
 }
 
 /**
- * The contract's registered sales end (`eventEndTs`, epoch seconds) — set once
- * at `registerEvent` and IMMUTABLE (the ledger has no setter), which is why
- * #294 exists: the feed's `endDate` can be edited, this cannot. `null` means
- * exactly `EventNotFound()`; every other failure throws.
+ * Version 2's one-way off switch for bearer mints and reissue. Once it is on,
+ * every card sale's `batchClaimBearer` reverts, so the checkout must read it
+ * before charging. Throws as the other reads do; the caller classifies an empty
+ * answer (`isNotThisAbi`), which is what a version-1 ledger gives.
+ */
+export async function readBearerMintsDisabledLedger2(contractAddress: string, chainId: number): Promise<boolean> {
+  const c = new Contract(contractAddress, LEDGER2_READ_ABI, getProvider(chainId));
+  return Boolean(await c.bearerMintsDisabled());
+}
+
+/**
+ * The contract's registered sales end (`eventEndTs`, epoch seconds) — set at
+ * `registerEvent`, and on version 1 IMMUTABLE (no setter), which is why #294
+ * exists: the feed's `endDate` can be edited, this cannot. Version 2 lets the
+ * registrant move it later (`extendSalesEnd`). `null` means exactly
+ * `EventNotFound()`; every other failure throws.
  */
 export async function getOnChainEventEndLedger(
   onChainEventId: string,
@@ -486,37 +550,65 @@ export async function batchClaimForLedger(
   sponsorPk: string,
   chainId: number,
 ): Promise<number[]> {
-  if (burners.length === 0) throw new Error("batchClaimForLedger: empty burners");
+  return mintBatchLedger("batchClaimFor", onChainEventId, burners, orderRefBytes32, contractAddress, sponsorPk, chainId);
+}
+
+/**
+ * Version 2's card-sale mint: the same batch, marked bearer, so `reissue` can
+ * replace it if its email reached a stranger. Version 1 has no such function.
+ */
+export async function batchClaimBearerLedger2(
+  onChainEventId: string,
+  burners: string[],
+  orderRefBytes32: string,
+  contractAddress: string,
+  sponsorPk: string,
+  chainId: number,
+): Promise<number[]> {
+  return mintBatchLedger("batchClaimBearer", onChainEventId, burners, orderRefBytes32, contractAddress, sponsorPk, chainId);
+}
+
+async function mintBatchLedger(
+  method: "batchClaimFor" | "batchClaimBearer",
+  onChainEventId: string,
+  burners: string[],
+  orderRefBytes32: string,
+  contractAddress: string,
+  sponsorPk: string,
+  chainId: number,
+): Promise<number[]> {
+  if (burners.length === 0) throw new Error(`${method}: empty burners`);
 
   const wallet   = new Wallet(sponsorPk, getProvider(chainId));
-  const contract = new Contract(contractAddress, LEDGER_CLAIM_ABI, wallet);
+  const abi      = method === "batchClaimBearer" ? LEDGER2_CLAIM_ABI : LEDGER_CLAIM_ABI;
+  const contract = new Contract(contractAddress, abi, wallet);
 
   console.log(
-    `[sponsor ledger] batchClaimFor eventId=${onChainEventId.slice(0, 10)}… ` +
+    `[sponsor ledger] ${method} eventId=${onChainEventId.slice(0, 10)}… ` +
     `n=${burners.length} orderRef=${orderRefBytes32.slice(0, 10)}… chain=${chainId}`,
   );
 
   let tx;
   try {
     tx = await sendSponsorTx(
-      { chainId, address: wallet.address, provider: wallet.provider!, label: "batchClaimFor" },
-      (o) => contract.batchClaimFor(onChainEventId, burners, orderRefBytes32, o),
+      { chainId, address: wallet.address, provider: wallet.provider!, label: method },
+      (o) => contract.getFunction(method)(onChainEventId, burners, orderRefBytes32, o),
     );
   } catch (err) {
     return explainMintFailure(err, wallet.address, contractAddress, chainId, burners.length);
   }
   const receipt = await tx.wait(1);
-  if (!receipt) throw new Error("No receipt from ledger batchClaimFor tx");
+  if (!receipt) throw new Error(`No receipt from ledger ${method} tx`);
 
   console.log(
-    `[sponsor ledger] batchClaimFor confirmed txHash=${receipt.hash} ` +
+    `[sponsor ledger] ${method} confirmed txHash=${receipt.hash} ` +
     `gasUsed=${receipt.gasUsed} gasPerSlot=${(Number(receipt.gasUsed) / burners.length).toFixed(0)}`,
   );
 
   const slots = parseSlotClaimedSlots(receipt.logs, burners.length);
   if (slots.length !== burners.length) {
     throw new Error(
-      `ledger batchClaimFor: expected ${burners.length} SlotClaimed events, got ${slots.length}`,
+      `ledger ${method}: expected ${burners.length} SlotClaimed events, got ${slots.length}`,
     );
   }
   return slots;

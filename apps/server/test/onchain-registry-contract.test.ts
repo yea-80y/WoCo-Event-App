@@ -179,6 +179,30 @@ test("the snapshot's resolution entries carry the contract when the record has o
   assert.equal("contract" in legacy, false, "a legacy entry does not publish a guessed contract");
 });
 
+test("THE SECOND CUTOVER: after env flips to ledger2, ledger records stay on the ledger and ledger2 records persist", async () => {
+  // #983 step 5. A version this build did not list would be an unreadable
+  // record: fails closed, and stops that series selling.
+  const LEDGER2 = "0x" + "2e".repeat(20);
+  const ledger2Target = { chainId: CHAIN, address: LEDGER2, version: "ledger2" as const };
+  const [le, ls] = ["e0000000-0000-4000-8000-000000000005", "s0000000-0000-4000-8000-000000000005"];
+  const [ne, ns] = ["e0000000-0000-4000-8000-000000000006", "s0000000-0000-4000-8000-000000000006"];
+  registry.recordOnChainEventId(le, ls, "0x" + "15".repeat(32), ledgerTarget);
+  setEnv(`WOCO_EVENT_VERSION_${CHAIN}`, "ledger2");
+  setEnv(`WOCO_EVENT_ADDRESS_LEDGER2_${CHAIN}`, LEDGER2);
+  try {
+    registry.recordOnChainEventId(ne, ns, "0x" + "16".repeat(32), ledger2Target);
+    assert.deepEqual(registry.registrationContractFor(le, ls), ledgerTarget, "a ledger record must not follow env to ledger2");
+    assert.deepEqual(registry.registrationContractFor(ne, ns), ledger2Target);
+    const [e, s] = LEGACY_KEY.split("|");
+    assert.deepEqual(registry.registrationContractFor(e, s), v2Target, "a bare record is on neither ledger");
+    const fresh = await import(`../src/lib/event/onchain-registry.js?reload2=${Date.now()}`);
+    assert.deepEqual(fresh.registrationContractFor(ne, ns), ledger2Target, "a ledger2 record read back as unreadable");
+    assert.equal(fresh.onchainRegistryHealth().unreadableRecords, 2, "only the two deliberately broken records");
+  } finally {
+    setEnv(`WOCO_EVENT_VERSION_${CHAIN}`, "v2");
+  }
+});
+
 test("a pinned record round-trips through the file", async () => {
   // A fresh module instance reads the file this one wrote.
   const fresh = await import(`../src/lib/event/onchain-registry.js?reload=${Date.now()}`);

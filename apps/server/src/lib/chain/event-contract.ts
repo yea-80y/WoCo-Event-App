@@ -22,7 +22,17 @@ export function getChainRpcUrl(chainId: number): string {
 // Default is V1 everywhere — V2 is opt-in via `WOCO_EVENT_VERSION_{chainId}=v2`
 // so the production runtime stays unchanged until explicitly flipped.
 
-export type EventContractVersion = "v1" | "v2" | "ledger";
+// "ledger2" (#983 step 5) is WoCoTicketLedger version 2: the same reads and
+// registration as "ledger", plus seats the registrant can change, a later
+// cutoff, and bearer mints that `reissue` can point at a fresh key. Its own
+// literal, never "ledger" at a new address: card sales on it must mint through
+// `batchClaimBearer`, and only it has the off switch the checkout reads.
+export type EventContractVersion = "v1" | "v2" | "ledger" | "ledger2";
+
+/** Both WoCoTicketLedger versions: same reads, same registration, same cap. */
+export function isLedgerFamily(v: EventContractVersion): v is "ledger" | "ledger2" {
+  return v === "ledger" || v === "ledger2";
+}
 
 /**
  * A MISCONFIGURATION, not a transient failure.
@@ -85,6 +95,9 @@ const DEPLOYED_V2: Record<number, string> = {
  */
 const DEPLOYED_LEDGER: Record<number, string> = {};
 
+/** WoCoTicketLedger version 2. Override via WOCO_EVENT_ADDRESS_LEDGER2_{chainId}; empty until deployed, as above. */
+const DEPLOYED_LEDGER2: Record<number, string> = {};
+
 /**
  * Chain the server uses for event registration: `WOCO_EVENT_CHAIN_ID`, REQUIRED.
  *
@@ -117,16 +130,29 @@ export function getActiveChainId(): number {
 export function getEventContractVersion(chainId: number): EventContractVersion {
   const v = process.env[`WOCO_EVENT_VERSION_${chainId}`];
   if (v === undefined || v === "") return "v1";
-  if (v === "v1" || v === "v2" || v === "ledger") return v;
+  if (v === "v1" || v === "v2" || v === "ledger" || v === "ledger2") return v;
   throw new EventContractConfigError(
     `WOCO_EVENT_VERSION_${chainId}="${v}" is not a known contract version ` +
-    `(expected "v1", "v2" or "ledger")`,
+    `(expected "v1", "v2", "ledger" or "ledger2")`,
   );
+}
+
+/** The env name that holds a version's address on a chain. */
+function addressEnvName(version: EventContractVersion, chainId: number): string {
+  switch (version) {
+    case "ledger2": return `WOCO_EVENT_ADDRESS_LEDGER2_${chainId}`;
+    case "ledger":  return `WOCO_EVENT_ADDRESS_LEDGER_${chainId}`;
+    case "v2":      return `WOCO_EVENT_ADDRESS_V2_${chainId}`;
+    case "v1":      return `WOCO_EVENT_ADDRESS_${chainId}`;
+    default:        return unhandledVersion(version, "addressEnvName");
+  }
 }
 
 export function getWoCoEventAddress(chainId: number): string | undefined {
   const version = getEventContractVersion(chainId);
   switch (version) {
+    case "ledger2":
+      return process.env[addressEnvName(version, chainId)] ?? DEPLOYED_LEDGER2[chainId];
     case "ledger":
       return process.env[`WOCO_EVENT_ADDRESS_LEDGER_${chainId}`] ?? DEPLOYED_LEDGER[chainId];
     case "v2":
@@ -193,9 +219,12 @@ export function getDefaultEventContract(chainId: number = getActiveChainId()): E
  *
  * Undefined when there is no such contract (the ledger on a chain V2 never
  * ran on) — callers refuse rather than guess.
+ *
+ * The same holds under "ledger2": an unrecorded registration is never on either
+ * ledger, so it must not follow env to the NEW one either (#983 step 5).
  */
 export function legacyEventContract(chainId: number = getActiveChainId()): EventContractTarget | undefined {
-  if (getEventContractVersion(chainId) !== "ledger") return getDefaultEventContract(chainId);
+  if (!isLedgerFamily(getEventContractVersion(chainId))) return getDefaultEventContract(chainId);
   const address = process.env[`WOCO_EVENT_ADDRESS_V2_${chainId}`] ?? DEPLOYED_V2[chainId];
   return address ? { chainId, address: address.toLowerCase(), version: "v2" } : undefined;
 }
@@ -244,7 +273,8 @@ export async function getOrganiserNonce(address: string, chainId: number): Promi
   const c = getDeployedContract(chainId);
   if (!c) throw new Error(`No WoCoEvent contract deployed on chain ${chainId}`);
   switch (c.version) {
-    case "ledger": {
+    case "ledger":
+    case "ledger2": {
       const { getRegistrantNonceLedger } = await import("./event-contract-ledger.js");
       return getRegistrantNonceLedger(address, c.address, chainId);
     }
@@ -280,7 +310,9 @@ export async function getSlotDataAt(
   slot: number,
 ): Promise<SlotData> {
   switch (c.version) {
-    case "ledger": {
+    // Version 2 keeps version 1's getSlotData; after a reissue the owner is the new key.
+    case "ledger":
+    case "ledger2": {
       const { getSlotDataLedger } = await import("./event-contract-ledger.js");
       return getSlotDataLedger(onChainEventId, slot, c.address, c.chainId);
     }
@@ -319,7 +351,8 @@ export async function getOnChainEventEndAt(
   onChainEventId: string,
 ): Promise<number | null> {
   switch (c.version) {
-    case "ledger": {
+    case "ledger":
+    case "ledger2": {
       const { getOnChainEventEndLedger } = await import("./event-contract-ledger.js");
       return getOnChainEventEndLedger(onChainEventId, c.address, c.chainId);
     }
@@ -359,7 +392,10 @@ export async function getOnChainEventAt(
   onChainEventId: string,
 ): Promise<OnChainEvent | null> {
   switch (c.version) {
-    case "ledger": {
+    // A reissue re-points a slot in place, so version 2's `getEvent` means
+    // what version 1's does: `nextSlot` is both the slot range and seats sold.
+    case "ledger":
+    case "ledger2": {
       const { getOnChainEventLedger } = await import("./event-contract-ledger.js");
       return getOnChainEventLedger(onChainEventId, c.address, c.chainId);
     }
@@ -398,7 +434,7 @@ export function assertEventContractConfig(): void {
   if (!address) {
     throw new EventContractConfigError(
       `No WoCoEvent contract address for chain ${chainId} at version "${version}". ` +
-      `Set WOCO_EVENT_ADDRESS${version === "ledger" ? "_LEDGER" : version === "v2" ? "_V2" : ""}_${chainId}, ` +
+      `Set ${addressEnvName(version, chainId)}, ` +
       `or point WOCO_EVENT_VERSION_${chainId} at a deployed version.`,
     );
   }

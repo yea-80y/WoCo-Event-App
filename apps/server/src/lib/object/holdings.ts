@@ -51,6 +51,19 @@ export async function getOnChainHolding(q: HoldingQuery): Promise<ObjectHolding>
       slots = await querySlotsOwnedLedger(q.onChainEventId, q.holder.toLowerCase(), c.address, q.chainId);
       break;
     }
+    case "ledger2": {
+      // A reissued slot's `SlotClaimed` log still names its old owner, so on
+      // version 2 the claim logs alone would count a replaced ticket as held.
+      // Keep only the slots this holder holds now.
+      const { querySlotsOwnedLedger } = await import("../chain/event-contract-ledger.js");
+      const { getSlotDataAt } = await import("../chain/event-contract.js");
+      const holder = q.holder.toLowerCase();
+      const claimed = await querySlotsOwnedLedger(q.onChainEventId, holder, c.address, q.chainId);
+      const target = { chainId: q.chainId, address: c.address.toLowerCase(), version: c.version };
+      const owners = await Promise.all(claimed.map((s) => getSlotDataAt(target, q.onChainEventId, s)));
+      slots = claimed.filter((_, i) => owners[i]!.owner === holder);
+      break;
+    }
     case "v2":
       slots = await querySlotsOwnedV2(q.onChainEventId, q.holder.toLowerCase(), c.address, q.chainId);
       break;

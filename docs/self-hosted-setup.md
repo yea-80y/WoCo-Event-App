@@ -114,7 +114,7 @@ without it the production checks above, and the refusal of unsigned Stripe webho
 | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, both webhook secrets | Card is the only live payment method. |
 | `ATTENDEE_STAMPER_PRIVATE_KEY` + an active batch | Checkout refuses (503) until a batch it owns is registered and activated (`/api/ops/attendee-batch/register`, `/activate`, bearer `OPS_TOKEN`). Never register a batch another server already uses. |
 | `WOCO_SPONSOR_PRIVATE_KEY` | Sends the mints. No entry of its own in `.env.example`. |
-| `WOCO_EVENT_CHAIN_ID`, `WOCO_EVENT_VERSION_{chainId}`, `WOCO_EVENT_ADDRESS_LEDGER_{chainId}` | No entry in `.env.example`. Unset = Base Sepolia `v1`. The ledger accepts mints only from sponsors it authorises, so you need your own deployment or an authorisation. |
+| `WOCO_EVENT_CHAIN_ID`, `WOCO_EVENT_VERSION_{chainId}`, `WOCO_EVENT_ADDRESS_LEDGER_{chainId}` (and `_LEDGER2_` for version `ledger2`) | No entry in `.env.example`. Unset = Base Sepolia `v1`. The ledger accepts mints only from sponsors it authorises, so you need your own deployment or an authorisation. |
 | `EMAIL_PROVIDER` + SES (`AWS_*`) or Resend (`RESEND_API_KEY`), `EMAIL_FROM` | Tickets are emailed. |
 | `CHECKIN_PASS_SECRET` | Door check-in. No entry in `.env.example`. |
 

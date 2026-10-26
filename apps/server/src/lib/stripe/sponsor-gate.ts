@@ -39,6 +39,14 @@ export function sponsorGateRefusal(
   if (verdict.reason === "not-authorised") {
     return { status: 503, error: UNAVAILABLE_SHORTLY, log: "sponsor not authorised" };
   }
+  // One-way on chain: no wait lifts it, so no retry promise.
+  if (verdict.reason === "bearer-mints-off") {
+    return {
+      status: 503,
+      error: "Ticketing is temporarily unavailable.",
+      log: "bearer mints switched off on the events contract (disableBearerMints): card sales cannot mint",
+    };
+  }
   if (verdict.perHour === 0) {
     return {
       status: 503,

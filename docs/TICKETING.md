@@ -418,7 +418,7 @@ still reported so the UI can be exercised with the gate off.
 ## 9. Which contract
 
 > **Which contract you are on is env-selected.** Production selects `WoCoTicketLedger` on
-> Arbitrum Sepolia through `WOCO_EVENT_CHAIN_ID`, `WOCO_EVENT_VERSION_{chainId}` and - because
+> Arbitrum One (since 2026-10-19) through `WOCO_EVENT_CHAIN_ID`, `WOCO_EVENT_VERSION_{chainId}` and - because
 > `DEPLOYED_LEDGER` in `apps/server/src/lib/chain/event-contract.ts` is still an empty map -
 > `WOCO_EVENT_ADDRESS_LEDGER_{chainId}`. Unset, the server defaults to chain `84532` (Base Sepolia)
 > and version `v1` — a different contract entirely. None of these variables is in `.env.example`.
@@ -430,6 +430,22 @@ mints per hour, and has owner-authorised slot transfers (§3). The same source i
 Arbitrum One (2026-09-25); the server is not switched to it yet. Registrations made on V2 keep
 verifying through their own recorded contract (#563). Addresses: [DEPLOYMENTS.md](./DEPLOYMENTS.md)
 and the contracts repository's `deployments/*.json`.
+
+**Version 2 (`ledger2`, #983) - server support built, contract not yet deployed.** A successor
+`WoCoTicketLedger` at a new address: `WOCO_EVENT_VERSION_{chainId}=ledger2` plus
+`WOCO_EVENT_ADDRESS_LEDGER2_{chainId}`. Keep `WOCO_EVENT_ADDRESS_LEDGER_{chainId}` set - version-1
+registrations keep minting and verifying on their recorded contract, and a record from before #563
+stays on V2, never either ledger. What it adds: the registrant can change supply and move the cutoff
+later; card sales mint **bearer** slots (`batchClaimBearer`, never `batchClaimFor`), which `reissue`
+points at a new burner IN PLACE - same slot, so same edition (slot + 1, the manifest's leaf) and no
+seat used - until a holder moves the slot (`held`); the owner can switch bearer mints off for good
+(`disableBearerMints`) once holders keep their own keys (#298). The checkout reads that switch
+before charging (`readBearerMintsOn`; `ticketMinting.checks.bearerMints` goes red when it is off).
+After a reissue the old ticket's signature no longer recovers to the slot owner, so the door refuses
+it once its pack refreshes. Raising supply does not extend the registered manifest, so it stays
+unusable until a manifest-extension rule exists; lowering works. Rollback: an older build does not
+know `ledger2` records - it keeps them on disk, serves none (those series stop selling) and raises
+`unreadableRecords`.
 
 > **Superseded (kept for the record).** Until 2026-09-24 the ledger was "written, reviewed and
 > merged, and not deployed", and `DEPLOYED_LEDGER` was empty so that selecting it early failed
