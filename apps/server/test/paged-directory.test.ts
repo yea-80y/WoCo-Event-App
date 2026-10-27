@@ -142,6 +142,21 @@ test("past one page: the newest items on page 0, the rest in ONE blob it names, 
   assert.deepEqual(ids(shown.status === "ok" ? shown.data.items : []), ids(ten));
 });
 
+test("page 0 is sized WITH the ref: across the boundary where the ref tips it over, it stays one plain JSON update under 4096 bytes", async () => {
+  // Item sizes stepped through the ~85 bytes the ref adds: some step fits four
+  // items without the ref and only three with it.
+  for (let pad = 880; pad <= 980; pad += 5) {
+    const name = newName();
+    const items = Array.from({ length: 10 }, (_, i): Item => ({ id: `e${10 - i}`, pad: "P".repeat(pad) }));
+    await paged.writePagedDirectory(directory(name), items);
+    const raw = bee.payloads(OWNER, topicHex(name)).at(-1)!;
+    const end = raw.indexOf(0);
+    assert.equal(raw[0], "{".charCodeAt(0), `pad ${pad}: plain JSON, not the gzip fallback`);
+    assert.ok(end === -1 || end <= 4096, `pad ${pad}: under 4096 bytes`);
+    assert.deepEqual(ids((await paged.readPagedDirectoryForWrite(directory(name))).items), ids(items));
+  }
+});
+
 test("THE BUG (#950): page 0's write fails after the blob uploaded - the old page 0 still reads whole, and the next write builds on it", async (t) => {
   t.mock.method(console, "log", () => {});
   const name = newName();

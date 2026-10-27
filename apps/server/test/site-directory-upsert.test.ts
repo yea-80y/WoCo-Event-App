@@ -273,7 +273,7 @@ test("an upsert clears a memoized absent: the new site shows straight away", asy
   assert.deepEqual(await service.getCreatorSites(creator), [x]);
 });
 
-test("a display read that started before an upsert's write is not memoized", async () => {
+test("a display read that started before an upsert's write is not memoized", { timeout: 20_000 }, async () => {
   const creator = newCreator();
   const a = entry("site-page0-001");
   const b = entry("site-page1-001");
