@@ -21,10 +21,12 @@
  *    restrictive answer, and the memo can only hold it for a creator with no
  *    index bee or this server knows of;
  *  - a dropped change turns `/api/health` `directoryWrites.eventIndex` red;
- *  - page 0 is written last (it commits the page count, not the contents): a
- *    page 0 claiming a missing overflow page, or overflow pages stamped by
- *    another write than page 0 (a torn write), is never rewritten from what was
- *    read.
+ *  - past one page, page 0 names one immutable overflow blob and is written
+ *    last, so it is the whole commit (#950): a refused blob writes nothing, and
+ *    a failed page 0 leaves the old one naming the old blob for the retry. An
+ *    overflow that cannot be read is waited for, never dropped. A pre-#950 page 0
+ *    claiming a missing overflow feed, or feeds stamped by another write (a
+ *    torn write), is never rewritten from what was read.
  */
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -399,21 +401,18 @@ test("every attempt fails: nothing written, one DROPPED line carrying the whole 
   assert.deepEqual((verdict.body as { red: string[] }).red, ["directoryWrites.eventIndex"]);
 });
 
-test("an overflow page that cannot be read is never dropped: the add waits for it", async (t) => {
+test("an overflow blob that cannot be read is never dropped: the add waits for it", async (t) => {
   t.mock.method(console, "warn", () => {});
   const creator = newCreator();
-  let clock = 9_000_000;
-  feeds.__feedWriteTestHooks.setClock(() => clock);
   const five = [1, 2, 3, 4, 5].map((i) => big(creator, `evt-two-pages-${i}`));
   await Promise.all(five.map((e) => events.addEventToDirectory(e)));
-  assert.equal(feeds.decodeJsonFeed<{ pages: number }>(bee.payloads(OWNER, indexTopicHex(creator)).at(-1)!)!.pages, 1);
-  clock += feeds.READ_YOUR_WRITES_MS + 1;
-  const page1 = indexTopicHex(creator, 1);
-  bee.skipTopic(OWNER, page1, true);
+  const ref = latestPage0(creator).overflow!;
+  const kept = bee.blobs.get(ref)!;
+  bee.blobs.delete(ref);
   const writesBefore = indexWrites(creator).length;
   onSleep = () => {
-    assert.equal(indexWrites(creator).length, writesBefore, "nothing written without page 1");
-    bee.skipTopic(OWNER, page1, false);
+    assert.equal(indexWrites(creator).length, writesBefore, "nothing written without the overflow");
+    bee.blobs.set(ref, kept);
   };
   await events.addEventToDirectory(entry(creator, "evt-two-pages-6"));
   assert.deepEqual(sleeps, [70_000]);
@@ -421,39 +420,44 @@ test("an overflow page that cannot be read is never dropped: the add waits for i
 });
 
 // ---------------------------------------------------------------------------
-// More than one page: page 0 commits the page count; one stamp on every page
+// More than one page: page 0 names one overflow blob and is the commit (#950)
 // ---------------------------------------------------------------------------
 
-test("growing onto page 1: a failed page-1 write leaves page 0 as it was, and the retry writes page 1 BEFORE page 0", async (t) => {
+/** The latest page 0, and every entry it commits (its own + its overflow blob's). */
+function latestPage0(creator: string): { entries: EventDirectoryEntry[]; pages: number; overflow?: string } {
+  return feeds.decodeJsonFeed<{ entries: EventDirectoryEntry[]; pages: number; overflow?: string }>(bee.payloads(OWNER, indexTopicHex(creator)).at(-1)!)!;
+}
+function committedIds(creator: string): string[] {
+  const page0 = latestPage0(creator);
+  const rest = page0.overflow ? (JSON.parse(new TextDecoder().decode(bee.blobs.get(page0.overflow)!)) as { items: EventDirectoryEntry[] }).items : [];
+  return [...page0.entries, ...rest].map((e) => e.eventId);
+}
+
+test("growing past page 0: a refused overflow upload leaves page 0 as it was; the retry uploads it, then commits page 0", async (t) => {
   t.mock.method(console, "warn", () => {});
   t.mock.method(console, "log", () => {});
   const creator = newCreator();
   const four = [1, 2, 3, 4].map((i) => big(creator, `evt-big-${i}`));
   await Promise.all(four.map((e) => events.addEventToDirectory(e))); // one round, one write
   assert.equal(indexWrites(creator).length, 1);
-  assert.equal(feeds.decodeJsonFeed<{ pages: number }>(bee.payloads(OWNER, indexTopicHex(creator))[0]!)!.pages, 0, "one page before the fifth");
-  const page1 = indexTopicHex(creator, 1);
-  bee.uploadFails(OWNER, page1, true);
+  assert.equal(latestPage0(creator).pages, 0, "one page before the fifth");
+  bee.net.bytesUploadFails = true;
   onSleep = () => {
-    assert.equal(indexWrites(creator).length, 1, "page 0 untouched: it never claims a page that failed");
-    bee.uploadFails(OWNER, page1, false);
-    bee.posted.length = 0;
+    assert.equal(indexWrites(creator).length, 1, "page 0 untouched: it never names an overflow that failed");
+    bee.net.bytesUploadFails = false;
   };
-  const fifth = big(creator, "evt-big-5");
-  await events.addEventToDirectory(fifth);
+  await events.addEventToDirectory(big(creator, "evt-big-5"));
   assert.deepEqual(sleeps, [70_000]);
 
-  const page0 = feeds.decodeJsonFeed<{ entries: EventDirectoryEntry[]; pages: number }>(bee.payloads(OWNER, indexTopicHex(creator)).at(-1)!)!;
+  const page0 = latestPage0(creator);
   assert.equal(page0.pages, 1);
-  const overflow = bee.payloads(OWNER, page1).map((p) => feeds.decodeJsonFeed<{ entries: EventDirectoryEntry[] }>(p)!.entries);
-  assert.equal(overflow.length, 1);
-  assert.deepEqual([...page0.entries, ...overflow[0]!].map((e) => e.eventId), ["evt-big-5", "evt-big-4", "evt-big-3", "evt-big-2", "evt-big-1"]);
-  const { socAddress } = await import("./helpers/fake-bee.js");
-  assert.deepEqual(bee.posted, [socAddress(OWNER, page1, 0n), socAddress(OWNER, indexTopicHex(creator), 1n)], "page 1, then page 0");
+  assert.ok(page0.overflow && bee.blobs.has(page0.overflow));
+  assert.deepEqual(committedIds(creator), ["evt-big-5", "evt-big-4", "evt-big-3", "evt-big-2", "evt-big-1"]);
+  assert.equal(bee.payloads(OWNER, indexTopicHex(creator, 1)).length, 0, "no overflow feed is written any more");
   assert.equal((await events.getCreatorEvents(creator)).length, 5);
 });
 
-test("a page 0 claiming an overflow page that is MISSING (an older writer's torn write) is never rewritten from what was read", async (t) => {
+test("a pre-#950 page 0 claiming an overflow feed that is MISSING (an older writer's torn write) is never rewritten from what was read", async (t) => {
   t.mock.method(console, "warn", () => {});
   const errors = t.mock.method(console, "error", () => {});
   const creator = newCreator();
@@ -468,41 +472,49 @@ test("a page 0 claiming an overflow page that is MISSING (an older writer's torn
   assert.ok(errors.mock.calls.some((c) => String(c.arguments[0]).includes("DROPPED")));
 });
 
-test("page 0's write fails after the overflow pages were rewritten in place (Fable's probe): the retry refuses the torn base, nothing is lost", async (t) => {
+test("THE BUG (#950): page 0's write fails after its overflow uploaded - the old page 0 still commits every event once, and the retry lands", async (t) => {
   t.mock.method(console, "warn", () => {});
   t.mock.method(console, "log", () => {});
   const errors = t.mock.method(console, "error", () => {});
   const creator = newCreator();
-  const decodePage = (p: number) => {
-    const latest = bee.payloads(OWNER, indexTopicHex(creator, p)).at(-1);
-    return latest ? feeds.decodeJsonFeed<{ entries: EventDirectoryEntry[]; pages?: number }>(latest)! : null;
-  };
   const eight = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => big(creator, `torn-e${i}`));
-  await Promise.all(eight.map((e) => events.addEventToDirectory(e))); // one write: p0 = [e8..e5] claiming 1, p1 = [e4..e1]
-  assert.equal(decodePage(0)!.pages, 1);
-  assert.deepEqual(decodePage(1)!.entries.map((e) => e.eventId), ["torn-e4", "torn-e3", "torn-e2", "torn-e1"]);
+  await Promise.all(eight.map((e) => events.addEventToDirectory(e))); // one write: page 0 = [e8..e5], overflow = [e4..e1]
+  const committed = committedIds(creator);
+  assert.deepEqual(committed, eight.map((e) => e.eventId).reverse());
 
-  // e9 shifts every page: p2 = [e1] and p1 = [e5..e2] are written, then page 0's upload fails.
+  // e9 shifts every entry: a new overflow blob is uploaded, then page 0's upload fails.
+  // Before #950 the overflow was rewritten in place, so old page 0 + new page 1 read
+  // as e1 gone and e5 twice, and every later change to the index was refused ("torn").
   bee.uploadFails(OWNER, indexTopicHex(creator, 0), true);
-  onSleep = () => bee.uploadFails(OWNER, indexTopicHex(creator, 0), false);
   const before = retry.firstWriteRetryHealth().eventIndex!;
-  const e9 = big(creator, "torn-e9");
-  // Old page 0 + new page 1 reads as [e8, e7, e6, e5, e5, e4, e3, e2]: e1 gone, e5 twice. Built on,
-  // that writes [e9..e6], [e5, e5, e4, e3], [e2] and loses e1 for good with nothing logged.
-  await assert.rejects(events.addEventToDirectory(e9), /torn/);
-  assert.equal(bee.payloads(OWNER, indexTopicHex(creator, 0)).length, 1, "page 0 never rewritten over the torn base");
-  const stored = [0, 1, 2].flatMap((p) => decodePage(p)?.entries.map((e) => e.eventId) ?? []);
-  for (const e of eight) assert.ok(stored.includes(e.eventId), `${e.eventId} is still stored`);
-  assert.ok(
-    errors.mock.calls.some((c) => String(c.arguments[0]).includes("DROPPED") && String(c.arguments[0]).includes('"torn-e9"')),
-    "the refused change is logged for replay",
-  );
-  const after_ = retry.firstWriteRetryHealth().eventIndex!;
-  assert.equal(after_.dropped, before.dropped + 1);
-  assert.equal(after_.ok, false);
+  onSleep = () => {
+    assert.equal(indexWrites(creator).length, 1, "page 0 is the commit: still the first write");
+    assert.deepEqual(committedIds(creator), committed, "every event once, none lost");
+    bee.uploadFails(OWNER, indexTopicHex(creator, 0), false);
+  };
+  await events.addEventToDirectory(big(creator, "torn-e9"));
+  assert.deepEqual(sleeps, [70_000]);
+  assert.deepEqual(committedIds(creator), ["torn-e9", ...committed]);
+  assert.ok(!errors.mock.calls.some((c) => String(c.arguments[0]).includes("DROPPED")), "nothing refused or dropped");
+  assert.equal(retry.firstWriteRetryHealth().eventIndex!.dropped, before.dropped);
+  assert.equal((await events.getCreatorEvents(creator)).length, 9);
 });
 
-test("an overflow page that does not decode is never skipped: the add refuses", async (t) => {
+test("a pre-#950 index (overflow FEEDS stamped like page 0) keeps every event and moves to a blob on its next change", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const creator = newCreator();
+  const updatedAt = "2026-10-20T00:00:00.000Z";
+  const old = [1, 2, 3].map((i) => entry(creator, `evt-legacy-${i}`));
+  await feeds.writeFeedPage(topics.topicCreatorDirectory(creator, 1), feeds.encodeJsonFeed({ v: 1, entries: [old[0]], updatedAt }));
+  await feeds.writeFeedPage(topics.topicCreatorDirectory(creator), feeds.encodeJsonFeed({ v: 1, entries: [old[2], old[1]], updatedAt, pages: 1 }));
+  assert.deepEqual((await events.getCreatorEvents(creator)).map((e) => e.eventId), ["evt-legacy-3", "evt-legacy-2", "evt-legacy-1"]);
+  const four = [4, 5, 6, 7].map((i) => big(creator, `evt-legacy-${i}`));
+  for (const e of four) await events.addEventToDirectory(e);
+  assert.ok(latestPage0(creator).overflow, "now a blob");
+  assert.deepEqual(committedIds(creator), ["evt-legacy-7", "evt-legacy-6", "evt-legacy-5", "evt-legacy-4", "evt-legacy-3", "evt-legacy-2", "evt-legacy-1"]);
+});
+
+test("a pre-#950 overflow feed that does not decode is never skipped: the add refuses", async (t) => {
   t.mock.method(console, "warn", () => {});
   t.mock.method(console, "error", () => {});
   const creator = newCreator();

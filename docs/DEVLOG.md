@@ -6,6 +6,15 @@ Entries before 2026-09-10 use the retired noun "POD" for what is now called "obj
 
 ---
 
+## 2026-10-27 - Creator directories commit in one write (#950)
+
+- The event index, site directory and object directory paged into overflow feeds rewritten in place; a write failing between them and page 0 tore the directory, and since #949 every later change for that creator was refused until repaired by hand.
+- Now page 0 holds the newest entries and names ONE immutable overflow blob, uploaded first; page 0 is the only commit. One helper (`lib/swarm/paged-feed.ts`) replaces the three copies (shop keeps its own; shops are off).
+- Old-shape directories are read as before and move to a blob on their next write. Production at build time: one (an owner test account's event index, two pages).
+- Rollback: a pre-#950 build reads a blob-carrying page 0 (`pages: 1`) as a missing overflow feed and refuses to write that directory; it never drops entries.
+
+---
+
 ## 2026-10-09 - Removing a passkey moves the account to new keys (#186)
 
 - A removed passkey kept the identity seed: it could open new orders and sign as the account. Now each removal makes a random account secret the removed passkey never sees; the content-feed signer, order key and door-pass roster key come from it. Design consult with Fable before building; the owner chose an onchain anchor over the server pointer it proposed.

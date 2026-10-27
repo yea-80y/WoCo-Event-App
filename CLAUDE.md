@@ -246,7 +246,7 @@ FEED TOPICS:
   woco/marketing/list/{ethAddress}        # Sealed contact-list pointer
   woco/site/config/{siteId}               # Site JSON (config + theme + pages)
   woco/site/{siteId}/events               # SiteEventsIndex
-  woco/site/creator/{ethAddress}[/pN]     # Creator's site directory (paged)
+  woco/site/creator/{ethAddress}          # Creator's site directory (page 0 + one overflow blob, #950)
   woco-multisite-{siteId}                 # Per-site feed → latest BZZ content hash (for ENS)
   woco/registry/verified-frontends        # [planned] content hash registry
 
