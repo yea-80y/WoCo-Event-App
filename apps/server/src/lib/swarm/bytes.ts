@@ -118,9 +118,10 @@ export async function uploadToBytes(
       { status: 413 },
     );
   }
-  await ensureEthernaToken();
-
   const toEtherna = selection?.target === "etherna";
+  // Only the Etherna branch sends the token: an upload to our bee must not fail
+  // because Etherna's SSO is down (#950 put the creator directories behind it).
+  if (toEtherna) await ensureEthernaToken();
   // Etherna selections always carry a batchId (platform or user batch, see
   // batch-router); the WoCo path falls back to the configured platform batch.
   const batchId = toEtherna ? selection!.batchId : (selection?.batchId ?? requirePostageBatch());

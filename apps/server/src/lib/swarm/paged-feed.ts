@@ -17,8 +17,9 @@ import type { DisplayRead } from "./display-read-memo.js";
  * and page 0 left a torn directory every later write had to refuse.
  *
  * The blob is stamped on the platform batch by our bee and read back from our bee
- * only: its items carry `creatorFeedSigner`, a trusted carrier, and our bee checks
- * every chunk against its address where an Etherna answer would go unchecked.
+ * only: its items carry `creatorFeedSigner`, a trusted carrier, and our bee serves
+ * only chunks it hashed on upload or checked on receipt, where an Etherna answer
+ * would go unchecked.
  *
  * A page 0 with `overflow` also says `pages: 1`. That is for a build from before
  * #950 (a rollback): it reads `pages` as a count of overflow FEEDS, finds no such

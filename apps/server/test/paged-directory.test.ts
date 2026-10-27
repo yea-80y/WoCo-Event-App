@@ -33,6 +33,7 @@ const OWNER = new Wallet(KEY).address.slice(2).toLowerCase();
 let bee: FakeBee;
 /** An Etherna gateway that answers every `/bytes` read with a forged directory. */
 let etherna: Server;
+let ethernaUrl: string;
 let ethernaReads = 0;
 let dir: string;
 let originalCwd: string;
@@ -42,15 +43,22 @@ let paged: typeof import("../src/lib/swarm/paged-feed.js");
 
 before(async () => {
   bee = await startFakeBee();
+  // Hands out a token too, so a read that does go to Etherna gets as far as its
+  // forged answer rather than failing at the token.
   etherna = createServer((req, res) => {
+    if (req.url?.startsWith("/token")) {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ access_token: "t", expires_in: 3600 }));
+    }
     ethernaReads++;
     res.writeHead(200, { "Content-Type": "application/octet-stream" }).end(JSON.stringify({ v: 1, items: [{ id: "forged", pad: "" }] }));
   });
   await new Promise<void>((r) => etherna.listen(0, "127.0.0.1", r));
+  ethernaUrl = `http://127.0.0.1:${(etherna.address() as AddressInfo).port}`;
   process.env.BEE_URL = bee.url;
   process.env.PROXY_URL = DEAD;
-  process.env.ETHERNA_GATEWAY_URL = `http://127.0.0.1:${(etherna.address() as AddressInfo).port}`;
-  process.env.ETHERNA_TOKEN_ENDPOINT = `${DEAD}/token`;
+  process.env.ETHERNA_GATEWAY_URL = ethernaUrl;
+  process.env.ETHERNA_TOKEN_ENDPOINT = `${ethernaUrl}/token`;
+  process.env.ETHERNA_API_KEY = "id.secret";
   process.env.FEED_PRIVATE_KEY = KEY;
   process.env.POSTAGE_BATCH_ID = "aa".repeat(32);
   originalCwd = process.cwd();
@@ -217,6 +225,20 @@ test("the overflow is read from our bee only, never from Etherna, whose answer n
     assert.equal(ethernaReads, 0);
   } finally {
     delete process.env.ETHERNA_ENABLED;
+  }
+});
+
+test("the overflow upload never waits on Etherna's token: written while Etherna's SSO is unreachable", async () => {
+  const name = newName();
+  process.env.ETHERNA_ENABLED = "true";
+  process.env.ETHERNA_TOKEN_ENDPOINT = `${DEAD}/token`;
+  try {
+    await paged.writePagedDirectory(directory(name), bigs(8, "e"));
+    assert.ok(latest(name).overflow);
+    assert.equal((await paged.readPagedDirectoryForWrite(directory(name))).items.length, 8);
+  } finally {
+    delete process.env.ETHERNA_ENABLED;
+    process.env.ETHERNA_TOKEN_ENDPOINT = `${ethernaUrl}/token`;
   }
 });
 
