@@ -410,12 +410,15 @@ export interface SiteDirectoryEntry {
   siteFeedSigner?: Hex0x;
 }
 
-/** On-feed envelope (mirrors EventDirectory pattern). */
+/** On-feed envelope, page 0 of a paged directory (server `swarm/paged-feed.ts`). */
 export interface SiteDirectory {
   v: 1;
   entries: SiteDirectoryEntry[];
   updatedAt: string;
+  /** 1 when `overflow` is set, else 0. Before #950: the count of overflow feeds. */
   pages?: number;
+  /** The immutable blob holding the entries after page 0's (#950). */
+  overflow?: Hex64;
 }
 
 // ---------------------------------------------------------------------------

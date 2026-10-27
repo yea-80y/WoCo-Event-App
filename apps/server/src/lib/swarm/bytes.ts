@@ -118,9 +118,10 @@ export async function uploadToBytes(
       { status: 413 },
     );
   }
-  await ensureEthernaToken();
-
   const toEtherna = selection?.target === "etherna";
+  // Only the Etherna branch sends the token: an upload to our bee must not fail
+  // because Etherna's SSO is down (#950 put the creator directories behind it).
+  if (toEtherna) await ensureEthernaToken();
   // Etherna selections always carry a batchId (platform or user batch, see
   // batch-router); the WoCo path falls back to the configured platform batch.
   const batchId = toEtherna ? selection!.batchId : (selection?.batchId ?? requirePostageBatch());
@@ -266,18 +267,23 @@ function rememberOversized(ref: string): void {
  *
  * At most `SWARM_READ_MAX_BYTES` is read from either source. Over it is a
  * `ResponseTooLargeError` (status 413), never retried.
+ *
+ * `wocoBeeOnly`: content our bee stamped that the server then trusts (#950's
+ * directory overflow). Our bee checks each chunk against its address; nothing
+ * here checks Etherna's answer against the ref.
  */
-export async function downloadFromBytes(ref: string): Promise<string> {
+export async function downloadFromBytes(ref: string, { wocoBeeOnly = false }: { wocoBeeOnly?: boolean } = {}): Promise<string> {
   const key = ref.toLowerCase().replace(/^0x/, "");
   if (oversizedRefs.has(key)) throw new ResponseTooLargeError(SWARM_READ_MAX_BYTES, "bytes download");
-  await ensureEthernaToken();
+  if (!wocoBeeOnly) await ensureEthernaToken();
+  const etherna = !wocoBeeOnly && process.env.ETHERNA_ENABLED === "true";
 
   let delay = 500;
   let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
     const transfer = new AbortController();
     const sources = [downloadFromWocoBee(ref, transfer.signal)];
-    if (process.env.ETHERNA_ENABLED === "true") sources.push(downloadFromEthernaBytes(ref, transfer.signal));
+    if (etherna) sources.push(downloadFromEthernaBytes(ref, transfer.signal));
     try {
       return await Promise.any(sources);
     } catch (err: unknown) {

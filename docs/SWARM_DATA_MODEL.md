@@ -99,6 +99,17 @@ data       {topic}/p1 … {topic}/pN
 there yet. The `_woco_mc` marker is a discriminator, and every frozen statement schema is closed
 partly to guarantee no real payload can ever carry that key.
 
+### Platform creator directories past one page (#950)
+
+The event index, site directory and object directory (`apps/server/src/lib/swarm/paged-feed.ts`)
+page differently: page 0 is the feed update and holds the newest entries; past 4096 bytes it also
+names `overflow`, ONE immutable `/bytes` blob holding the rest (`{ "v": 1, "items": [...] }`).
+The blob uploads first and page 0 last, so page 0 is the whole commit: a failed write leaves the
+old page 0 naming the old blob. Such a page 0 also says `pages: 1`, so a pre-#950 build reads a
+missing overflow feed and refuses to write instead of dropping the blob's entries. Before #950
+the overflow was `{topic}/p1 … /pN` feeds rewritten in place; a write failing between them and
+page 0 tore the directory. That shape is still read, and the next write replaces it with a blob.
+
 Statements travel as JSON because `assembleContentFeed` JSON-parses the base payload to detect
 the manifest — a non-JSON payload has no paging path at all. That is why the frozen schemas ban
 floats and `null`: a whole-number float loses its floatness across a JSON round trip and would
@@ -115,7 +126,7 @@ There are two topic schemes, for two different classes of data.
 ```
 woco/event/directory[/snapshot]      global listing (platform-signed pointer → snapshot blob)
 woco/event/{eventId}                 event details + ticket series
-woco/event/creator/{address}[/pN]    per-organiser index (never deleted from)
+woco/event/creator/{address}         per-organiser index (never deleted from; paged, #950)
 woco/profile/data/{address}          profile
 woco/profile/avatar/{address}        avatar ref — a separate feed so it updates independently
 woco/issuer/{parentAddress}          issuer-registry statement log (parent-signed)
@@ -126,7 +137,7 @@ woco/marketing/list/{address}        pointer to the organiser's sealed contact l
 woco/site/config/{siteId}            site JSON, or a platform-signed POINTER to a
                                      client-owned Site chunk (see SITE_BUILDER.md)
 woco/site/{siteId}/events            site events index
-woco/site/creator/{address}[/pN]     an organiser's site directory
+woco/site/creator/{address}          an organiser's site directory (paged, #950)
 woco-multisite-{siteId}              per-site pointer → latest content hash (for ENS)
 woco-site-{eventId}                  per-event-page pointer, owned by the organiser's
                                      feed signer (#614)

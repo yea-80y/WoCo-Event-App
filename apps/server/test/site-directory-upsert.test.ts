@@ -273,11 +273,11 @@ test("an upsert clears a memoized absent: the new site shows straight away", asy
   assert.deepEqual(await service.getCreatorSites(creator), [x]);
 });
 
-test("a display read that started before an upsert's write is not memoized", async () => {
+test("a display read that started before an upsert's write is not memoized", { timeout: 20_000 }, async () => {
   const creator = newCreator();
   const a = entry("site-page0-001");
   const b = entry("site-page1-001");
-  // A two-page directory, written directly - one stamp on both pages, as the writer does.
+  // A pre-#950 two-page directory, written directly - one stamp on both pages, as that writer did.
   const updatedAt = new Date().toISOString();
   await feeds.writeFeedPage(
     Topic.fromString(shared.siteCreatorDirectoryTopic(creator)),
@@ -324,10 +324,10 @@ test("a display read changes nothing the write relies on: past read-your-writes,
 });
 
 // ---------------------------------------------------------------------------
-// More than one page: page 0 commits the page count; one stamp on every page
+// More than one page: page 0 names one overflow blob and is the commit (#950)
 // ---------------------------------------------------------------------------
 
-test("growing onto page 1: a failed page-1 write leaves page 0 as it was; the retry writes page 1 BEFORE page 0", async (t) => {
+test("growing past page 0: a refused overflow upload leaves page 0 as it was; the retry uploads it, then commits page 0", async (t) => {
   t.mock.method(console, "warn", () => {});
   t.mock.method(console, "log", () => {});
   const creator = newCreator();
@@ -335,21 +335,40 @@ test("growing onto page 1: a failed page-1 write leaves page 0 as it was; the re
   await Promise.all(["site-big-0001", "site-big-0002", "site-big-0003", "site-big-0004"].map((id) => service.upsertCreatorSite(creator, big(id))));
   assert.equal(directoryWrites(creator).length, 1);
   assert.equal(feeds.decodeJsonFeed<{ pages: number }>(bee.payloads(OWNER, dirTopicHex(creator))[0]!)!.pages, 0, "one page before the fifth");
-  const page1 = dirTopicHex(creator, 1);
-  bee.uploadFails(OWNER, page1, true);
+  net.bytesUploadFails = true;
   onSleep = () => {
     assert.equal(directoryWrites(creator).length, 1, "page 0 untouched");
-    bee.uploadFails(OWNER, page1, false);
-    posted.length = 0;
+    net.bytesUploadFails = false;
   };
   await service.upsertCreatorSite(creator, big("site-big-0005"));
   assert.deepEqual(sleeps, [70_000]);
-  assert.deepEqual(posted, [addressFor(OWNER, page1, 0n), addressFor(OWNER, dirTopicHex(creator), 1n)], "page 1, then page 0");
-  assert.equal(feeds.decodeJsonFeed<{ pages: number }>(bee.payloads(OWNER, dirTopicHex(creator)).at(-1)!)!.pages, 1);
-  assert.equal((await service.getCreatorSites(creator)).length, 5);
+  const page0 = feeds.decodeJsonFeed<{ pages: number; overflow?: string }>(bee.payloads(OWNER, dirTopicHex(creator)).at(-1)!)!;
+  assert.equal(page0.pages, 1);
+  assert.ok(page0.overflow && bee.blobs.has(page0.overflow));
+  assert.equal(bee.payloads(OWNER, dirTopicHex(creator, 1)).length, 0, "no overflow feed is written any more");
+  assert.deepEqual(
+    (await service.getCreatorSites(creator)).map((e) => e.siteId),
+    ["site-big-0005", "site-big-0004", "site-big-0003", "site-big-0002", "site-big-0001"],
+  );
 });
 
-test("a page 0 claiming a MISSING overflow page is never rewritten from what was read", async (t) => {
+test("a display read of a directory whose overflow cannot be read is [] and never memoized, never page 0 alone", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const creator = newCreator();
+  const big = (id: string) => entry(id, { brandName: "B".repeat(850) });
+  for (const id of ["site-ovf-0001", "site-ovf-0002", "site-ovf-0003", "site-ovf-0004", "site-ovf-0005"]) {
+    await service.upsertCreatorSite(creator, big(id));
+  }
+  const ref = feeds.decodeJsonFeed<{ overflow?: string }>(bee.payloads(OWNER, dirTopicHex(creator)).at(-1)!)!.overflow!;
+  const kept = bee.blobs.get(ref)!;
+  bee.blobs.delete(ref);
+  service.invalidateCreatorSitesCache(creator);
+  assert.deepEqual(await service.getCreatorSites(creator), []);
+  bee.blobs.set(ref, kept);
+  assert.equal((await service.getCreatorSites(creator)).length, 5, "not memoized");
+});
+
+test("a pre-#950 page 0 claiming a MISSING overflow feed is never rewritten from what was read", async (t) => {
   t.mock.method(console, "warn", () => {});
   t.mock.method(console, "error", () => {});
   const creator = newCreator();
@@ -361,7 +380,7 @@ test("a page 0 claiming a MISSING overflow page is never rewritten from what was
   assert.equal(directoryWrites(creator).length, 1);
 });
 
-test("overflow pages stamped by another write than page 0 (a torn write) are never rewritten from", async (t) => {
+test("pre-#950 overflow feeds stamped by another write than page 0 (a torn write) are never rewritten from", async (t) => {
   t.mock.method(console, "warn", () => {});
   t.mock.method(console, "error", () => {});
   const creator = newCreator();

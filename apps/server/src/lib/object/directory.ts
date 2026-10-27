@@ -14,48 +14,43 @@
 import { Topic } from "@ethersphere/bee-js";
 import { objectCreatorDirectoryTopic } from "@woco/shared";
 import type { ObjectDirectory, ObjectDirectoryEntry, ObjectCategory, Hex0x } from "@woco/shared";
-import { readFeedPage, decodeJsonFeed } from "../swarm/feeds.js";
 import {
-  writePagedFeed,
-  readPagedFeedStrict,
-  readPagedFeedLenient,
+  readPagedDirectoryForDisplay,
+  readPagedDirectoryForWrite,
+  writePagedDirectory,
+  type PagedDirectory,
 } from "../swarm/paged-feed.js";
 import { createFirstWriteRetryQueue, type QueuedChange } from "../swarm/first-write-retry.js";
 
-const objectsExtract = (env: unknown) => (env as Partial<ObjectDirectory> | null)?.objects;
-const pagesExtract = (env: unknown) => (env as Partial<ObjectDirectory> | null)?.pages ?? 0;
+/** The creator's object directory as a paged directory (`swarm/paged-feed.ts`,
+ *  #950). Categories ride on page 0 beside the newest objects. */
+const objectDirectory = (ethAddress: string, categories: ObjectCategory[] = []): PagedDirectory<ObjectDirectoryEntry> => ({
+  topic: (p) => Topic.fromString(objectCreatorDirectoryTopic(ethAddress, p)),
+  envelope: ({ items, updatedAt }): Omit<ObjectDirectory, "pages"> => ({
+    v: 1,
+    owner: ethAddress.toLowerCase() as Hex0x,
+    objects: items,
+    categories,
+    updatedAt,
+  }),
+  items: (env) => (env as Partial<ObjectDirectory>).objects,
+});
+
+const categoriesOf = (head: unknown) => (head as Partial<ObjectDirectory> | null)?.categories ?? [];
 
 // ---------------------------------------------------------------------------
-// Reads (GET paths — lenient)
+// Reads (GET paths)
 // ---------------------------------------------------------------------------
 
-/** All object types a creator has issued (lenient — transient errors → []). */
-export async function getCreatorObjects(ethAddress: string): Promise<ObjectDirectoryEntry[]> {
-  return readPagedFeedLenient<ObjectDirectoryEntry>(
-    (p) => objectCreatorDirectoryTopic(ethAddress, p),
-    objectsExtract,
-    pagesExtract,
-  );
-}
-
-/** A creator's object categories (page 0 only). */
-export async function getCreatorObjectCategories(ethAddress: string): Promise<ObjectCategory[]> {
-  const page0 = await readFeedPage(Topic.fromString(objectCreatorDirectoryTopic(ethAddress, 0)));
-  if (!page0) return [];
-  return decodeJsonFeed<ObjectDirectory>(page0)?.categories ?? [];
-}
-
-/** Full directory (objects + categories) for the manager. */
+/** Full directory (objects + categories) for the manager. Throws when any of it is unreadable. */
 export async function getCreatorObjectDirectory(ethAddress: string): Promise<ObjectDirectory> {
-  const [objects, categories] = await Promise.all([
-    getCreatorObjects(ethAddress),
-    getCreatorObjectCategories(ethAddress),
-  ]);
+  const res = await readPagedDirectoryForDisplay(objectDirectory(ethAddress));
+  if (res.status === "error") throw new Error("Object directory unreadable");
   return {
     v: 1,
     owner: ethAddress.toLowerCase() as Hex0x,
-    objects,
-    categories,
+    objects: res.data.items,
+    categories: categoriesOf(res.data.head),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -77,33 +72,8 @@ interface DirectoryState {
  * and a lenient failure read as "no categories" and wrote that.
  */
 async function readStrict(ethAddress: string): Promise<DirectoryState> {
-  const { items, head } = await readPagedFeedStrict<ObjectDirectoryEntry>(
-    (p) => objectCreatorDirectoryTopic(ethAddress, p),
-    objectsExtract,
-    pagesExtract,
-  );
-  return { objects: items, categories: (head as Partial<ObjectDirectory> | null)?.categories ?? [] };
-}
-
-async function writeDirectory(
-  ethAddress: string,
-  objects: ObjectDirectoryEntry[],
-  categories: ObjectCategory[],
-): Promise<void> {
-  const owner = ethAddress.toLowerCase() as Hex0x;
-  await writePagedFeed<ObjectDirectoryEntry>(
-    objects,
-    (p) => objectCreatorDirectoryTopic(ethAddress, p),
-    ({ items, pages, updatedAt }): ObjectDirectory => ({
-      v: 1,
-      owner,
-      objects: items,
-      // Replicated on every page (tiny); readers only consult page 0.
-      categories,
-      updatedAt,
-      pages,
-    }),
-  );
+  const { items, head } = await readPagedDirectoryForWrite(objectDirectory(ethAddress));
+  return { objects: items, categories: categoriesOf(head) };
 }
 
 /**
@@ -129,7 +99,7 @@ const objectDirectoryQueue = createFirstWriteRetryQueue<DirectoryState, ObjectDi
   read: readStrict,
   write: async (creator, base, changes) => {
     const { objects, categories } = changes.reduce(applyObjectDirectoryChange, base);
-    await writeDirectory(creator, objects, categories);
+    await writePagedDirectory(objectDirectory(creator, categories), objects);
     console.log(`[objectEntry] Creator directory updated for ${creator}: ${objects.length} object type(s)`);
   },
   idOf: (change) => (change.kind === "categories" ? "categories" : `entry:${change.entry.manifestRef.toLowerCase()}`),

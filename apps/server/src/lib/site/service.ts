@@ -2,13 +2,17 @@ import { currentRing } from "../keyring/current-ring.js";
 import { Topic } from "@ethersphere/bee-js";
 import { siteCreatorDirectoryTopic, siteConfigTopic, sitePagesTopicFn, siteEventsIndexTopic, isSitePointer } from "@woco/shared";
 import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex, Page, Hex0x, VersionedFeedRead } from "@woco/shared";
-import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed, type FeedReadStrictResult } from "../swarm/feeds.js";
+import { readFeedPage, readFeedPageStrict, decodeJsonFeed, type FeedReadStrictResult } from "../swarm/feeds.js";
 import { readContentFeedJsonResult } from "../swarm/soc-upload.js";
 import { createDisplayReadMemo, type DisplayRead } from "../swarm/display-read-memo.js";
 import { createFirstWriteRetryQueue } from "../swarm/first-write-retry.js";
+import {
+  readPagedDirectoryForDisplay,
+  readPagedDirectoryForWrite,
+  writePagedDirectory,
+  type PagedDirectory,
+} from "../swarm/paged-feed.js";
 import { freshWrittenEventsIndex } from "./events-index.js";
-
-const DIR_PAGE_LIMIT = 4096;
 
 // ── Read ─────────────────────────────────────────────────────────────────────
 
@@ -311,7 +315,7 @@ export function invalidateCreatorSitesCache(ethAddress: string): void {
 /**
  * The creator's directory for DISPLAY: [] when it is absent and also when it
  * cannot be read. Never the base of a directory write: that is
- * `readCreatorSitesStrict`, which refuses instead.
+ * `readPagedDirectoryForWrite`, which refuses instead.
  */
 export async function getCreatorSites(ethAddress: string): Promise<SiteDirectoryEntry[]> {
   const key = ethAddress.toLowerCase();
@@ -319,116 +323,19 @@ export async function getCreatorSites(ethAddress: string): Promise<SiteDirectory
   return res.status === "ok" ? res.data : [];
 }
 
-/**
- * Page 0 by the display read (`forWrite: false`), so absent and unreadable stay
- * apart without the write path's side effects; overflow pages leniently, as before.
- */
 async function loadCreatorSites(ethAddress: string): Promise<DisplayRead<SiteDirectoryEntry[]>> {
-  try {
-    const page0 = await readFeedPageStrict(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)), { forWrite: false });
-    if (page0.status === "error") return { status: "error" };
-    if (page0.status === "absent") return { status: "ok", data: [] };
-    const dir = decodeJsonFeed<SiteDirectory>(page0.data);
-    if (!dir || !Array.isArray(dir.entries)) return { status: "error" };
-
-    const totalPages = dir.pages ?? 0;
-    if (totalPages === 0) return { status: "ok", data: [...dir.entries] };
-
-    const overflow = await Promise.all(
-      Array.from({ length: totalPages }, (_, i) =>
-        readFeedPage(Topic.fromString(siteCreatorDirectoryTopic(ethAddress, i + 1))),
-      ),
-    );
-    const all = [...dir.entries];
-    for (const pageData of overflow) {
-      if (!pageData) break;
-      const decoded = decodeJsonFeed<SiteDirectory>(pageData);
-      if (decoded?.entries) all.push(...decoded.entries);
-    }
-    return { status: "ok", data: all };
-  } catch {
-    return { status: "error" };
-  }
+  const res = await readPagedDirectoryForDisplay(creatorDirectory(ethAddress));
+  return res.status === "ok" ? { status: "ok", data: res.data.items } : res;
 }
 
 // ── Write ────────────────────────────────────────────────────────────────────
 
-/**
- * Overflow pages first (highest first), page 0 last: it commits the page count,
- * not the contents - see the event index's writer. One `updatedAt` on every page,
- * which `readCreatorSitesStrict` checks.
- */
-async function writeDirectoryPages(entries: SiteDirectoryEntry[], topicFn: (p: number) => string): Promise<void> {
-  const updatedAt = new Date().toISOString();
-  const pages: SiteDirectoryEntry[][] = [];
-  let current: SiteDirectoryEntry[] = [];
-
-  for (const entry of entries) {
-    current.push(entry);
-    const test: SiteDirectory = { v: 1, entries: current, updatedAt, pages: 0 };
-    if (JSON.stringify(test).length > DIR_PAGE_LIMIT) {
-      current.pop();
-      if (current.length > 0) pages.push(current);
-      current = [entry];
-    }
-  }
-  if (current.length > 0) pages.push(current);
-
-  for (let p = pages.length - 1; p >= 1; p--) {
-    const overflow: SiteDirectory = { v: 1, entries: pages[p], updatedAt };
-    await writeFeedPage(Topic.fromString(topicFn(p)), encodeJsonFeed(overflow));
-  }
-
-  const page0: SiteDirectory = {
-    v: 1,
-    entries: pages[0] ?? [],
-    updatedAt,
-    pages: pages.length - 1,
-  };
-  await writeFeedPage(Topic.fromString(topicFn(0)), encodeJsonFeed(page0));
-}
-
-/**
- * Strict read of the creator's site directory for the WRITE path. Returns
- * the full prior contents or throws on any transient read error. Bootstrap
- * (page 0 absent) returns [] — safe to write the first site.
- *
- * MUST be used in place of getCreatorSites() before any directory rewrite —
- * a [] from a transient Swarm failure would otherwise cause upsert to
- * overwrite the directory with just the new entry, wiping every other site
- * the creator owns.
- */
-async function readCreatorSitesStrict(ethAddress: string): Promise<SiteDirectoryEntry[]> {
-  const page0 = await readFeedPageStrict(Topic.fromString(siteCreatorDirectoryTopic(ethAddress)));
-  if (page0.status === "error") {
-    throw new Error(`Site directory read failed (page 0) — refusing to write: ${page0.error.message}`);
-  }
-  if (page0.status === "absent") return [];
-
-  const dir = decodeJsonFeed<SiteDirectory>(page0.data);
-  if (!dir) {
-    throw new Error("Site directory page 0 decoded to null — refusing to write");
-  }
-
-  const all = [...dir.entries];
-  const totalPages = dir.pages ?? 0;
-  for (let p = 1; p <= totalPages; p++) {
-    const overflow = await readFeedPageStrict(Topic.fromString(siteCreatorDirectoryTopic(ethAddress, p)));
-    if (overflow.status === "error") {
-      throw new Error(`Site directory read failed (overflow page ${p}) — refusing to write: ${overflow.error.message}`);
-    }
-    // Claimed by page 0, which is written last: missing is an error, never the end.
-    if (overflow.status === "absent") throw new Error(`Site directory overflow page ${p} of ${totalPages} missing — refusing to write`);
-    const decoded = decodeJsonFeed<SiteDirectory>(overflow.data);
-    if (!decoded) throw new Error(`Site directory overflow page ${p} did not decode — refusing to write`);
-    // A page stamped by another write than page 0: a write torn between them.
-    if (decoded.updatedAt !== dir.updatedAt) {
-      throw new Error(`Site directory overflow page ${p} is torn (stamped ${decoded.updatedAt}, page 0 ${dir.updatedAt}) — refusing to write`);
-    }
-    if (decoded.entries) all.push(...decoded.entries);
-  }
-  return all;
-}
+/** The creator's site directory as a paged directory (`swarm/paged-feed.ts`, #950). */
+const creatorDirectory = (ethAddress: string): PagedDirectory<SiteDirectoryEntry> => ({
+  topic: (p) => Topic.fromString(siteCreatorDirectoryTopic(ethAddress, p)),
+  envelope: ({ items, updatedAt }): SiteDirectory => ({ v: 1, entries: items, updatedAt }),
+  items: (env) => (env as Partial<SiteDirectory>).entries,
+});
 
 /**
  * Upsert a site entry into the creator's directory feed. An existing entry for
@@ -450,10 +357,10 @@ export function upsertCreatorSite(ethAddress: string, entry: SiteDirectoryEntry)
 const creatorDirectoryQueue = createFirstWriteRetryQueue<SiteDirectoryEntry[], SiteDirectoryEntry>({
   label: "[site] Creator directory",
   healthKey: "siteDirectory",
-  read: readCreatorSitesStrict,
+  read: async (creator) => (await readPagedDirectoryForWrite(creatorDirectory(creator))).items,
   write: async (creator, existing, entries) => {
     const updated = entries.reduce(applyUpsert, existing);
-    await writeDirectoryPages(updated, (p) => siteCreatorDirectoryTopic(creator, p));
+    await writePagedDirectory(creatorDirectory(creator), updated);
     invalidateCreatorSitesCache(creator);
     console.log(`[site] Creator directory updated for ${creator}: ${updated.length} site(s)`);
   },

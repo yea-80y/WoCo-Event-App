@@ -138,8 +138,10 @@ export interface ObjectDirectory {
   /** Creator-defined groupings (page 0 only). */
   categories: ObjectCategory[];
   updatedAt: string;
-  /** Number of overflow pages (1..N) beyond page 0. Page 0 only. */
+  /** 1 when `overflow` is set, else 0. Before #950: the count of overflow feeds. */
   pages?: number;
+  /** The immutable blob holding the objects after page 0's (#950). */
+  overflow?: Hex64;
 }
 
 // ---------------------------------------------------------------------------
