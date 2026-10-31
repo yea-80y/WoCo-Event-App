@@ -6,7 +6,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
 import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
-import { isOrderErased } from "../lib/attendee-batch/ledger.js";
+import { ledgerReadable } from "../lib/attendee-batch/ledger.js";
+import { erasureStarted } from "../lib/attendee-batch/order-gateway.js";
 import { getHeldOrder } from "../lib/attendee-batch/held-orders.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
@@ -35,6 +36,8 @@ function orderRefToSwarmHex(bytes32: string): string | null {
 }
 
 const orders = new Hono<AppEnv>();
+
+const ATTENDEE_LEDGER_UNAVAILABLE = "Attendee details are unavailable right now - try again shortly";
 
 type OwnedEvent = NonNullable<Awaited<ReturnType<typeof getEventForOwner>>>;
 
@@ -85,6 +88,8 @@ orders.post("/:id/orders/status", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");
   const roots = parseStatusRoots((c.get("body") as { roots?: unknown } | undefined)?.roots);
   if (!roots) return c.json({ ok: false, error: `roots must be up to ${MAX_STATUS_ROOTS} order references` }, 400);
+  // An unreadable ledger reads as "nothing erased": no answer rather than that one.
+  if (!ledgerReadable()) return c.json({ ok: false, error: ATTENDEE_LEDGER_UNAVAILABLE }, 503);
   try {
     const event = await getEventForOwner(eventId, parentAddress);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
@@ -102,6 +107,8 @@ orders.post("/:id/orders/status", requireAuth, async (c) => {
 orders.get("/:id/orders", requireAuth, async (c) => {
   const eventId = c.req.param("id");
   const parentAddress = c.get("parentAddress");
+  // As /orders/status: an unreadable ledger would serve every box, erased ones included.
+  if (!ledgerReadable()) return c.json({ ok: false, error: ATTENDEE_LEDGER_UNAVAILABLE }, 503);
 
   try {
     // 1. Load event and verify ownership
@@ -156,7 +163,8 @@ orders.get("/:id/orders", requireAuth, async (c) => {
           let encryptedOrder: SealedBoxV2 | undefined;
           // Erased on request (#546): never fetched, even though our own bee may
           // still hold it in its cache.
-          const erased = swarmHex ? isOrderErased(swarmHex) : false;
+          // The gateway's rule: erased, or an erasure has started (#965).
+          const erased = swarmHex ? erasureStarted(swarmHex) : false;
 
           // A paid order whose store is still pending is served from its hold
           // (#546): the same ciphertext, before it reaches Swarm.
