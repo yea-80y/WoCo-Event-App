@@ -55,7 +55,11 @@ const LEDGER_ABI = [
   },
 ] as const;
 
-/** Slot reads per eth_call: ~4 calls for 1,000 tickets. */
+/**
+ * Slot reads per eth_call: ~4 calls for 1,000 tickets. Every multicall passes
+ * `batchSize: 0`: viem otherwise splits at 1,024 bytes (~6 slot reads), which
+ * would be ~160 calls against a rate-limited public RPC.
+ */
 const MULTICALL_CHUNK = 250;
 /** A sealed order is at most 16 KB of JSON (MAX_ORDER_BOX_JSON). */
 const MAX_BOX_TEXT = 64 * 1024;
@@ -81,6 +85,7 @@ async function nextSlots(ledgers: OrdersSeriesLedger[]): Promise<number[]> {
     const client = await clientFor(chainId);
     // allowFailure false: a count we cannot read throws, never reads as zero sales.
     const results = await client.multicall({
+      batchSize: 0,
       allowFailure: false,
       contracts: idx.map((i) => ({
         address: ledgers[i].contract as `0x${string}`,
@@ -101,6 +106,7 @@ async function slots(ledger: OrdersSeriesLedger, from: number, to: number): Prom
     const end = Math.min(to, start + MULTICALL_CHUNK);
     // A failed call is null (read again next time); a failed batch throws.
     const results = await client.multicall({
+      batchSize: 0,
       allowFailure: true,
       contracts: Array.from({ length: end - start }, (_, k) => ({
         address: ledger.contract as `0x${string}`,
@@ -125,7 +131,7 @@ async function fetchBox(root: string): Promise<SealedBoxV2 | null> {
   const gateway = buildEnv(() => import.meta.env.VITE_GATEWAY_URL as string | undefined) || WOCO_GATEWAY_URL;
   try {
     const resp = await fetch(`${gateway}/bytes/${root}`, { cache: "no-store", signal: AbortSignal.timeout(20_000) });
-    if (!resp.ok) return null;
+    if (!resp.ok || Number(resp.headers.get("content-length")) > MAX_BOX_TEXT) return null;
     const text = await resp.text();
     if (text.length > MAX_BOX_TEXT) return null;
     const box = JSON.parse(text) as { enc?: unknown; ct?: unknown };

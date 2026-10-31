@@ -26,7 +26,7 @@
   import UndeliveredTickets from "./UndeliveredTickets.svelte";
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
   import { OpenedOrders, ORDERS_POLL_MS, createOrdersPoller } from "./live-orders.js";
-  import { BrowserOrders } from "./browser-orders.js";
+  import { BrowserOrders, OrdersStatusUnavailable } from "./browser-orders.js";
   import { canReadLedger, liveBrowserOrdersDeps } from "./browser-orders-live.js";
   import { withoutSealedOrders } from "../../api/orders-cache.js";
   import type { RequestSigningOptions } from "../../auth/request-session.js";
@@ -558,7 +558,8 @@
 
   /**
    * The orders, read by the browser. The server's full read only for a series on a
-   * ledger the browser cannot read, or when a browser read failed.
+   * ledger the browser cannot read, or when a chain or gateway read failed - never
+   * when the server's own answer failed, as its full read would fail the same way.
    */
   async function loadOrders(opts?: RequestSigningOptions): Promise<EventOrdersResponse | null> {
     try {
@@ -568,6 +569,7 @@
         return data;
       }
     } catch (err) {
+      if (err instanceof OrdersStatusUnavailable) return null;
       console.warn("[dashboard] reading orders in the browser failed; asking the server:", err);
     }
     return (await getEventOrdersSWR(eventId).refresh(opts)).data ?? null;

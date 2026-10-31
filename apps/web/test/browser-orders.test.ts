@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import type { OrdersSeriesLedger, OrdersStatus } from "@woco/shared";
-import { BrowserOrders, orderRoot, type BrowserOrdersDeps, type SlotRead } from "../src/lib/creator/dashboard/browser-orders.js";
+import { BrowserOrders, OrdersStatusUnavailable, orderRoot, type BrowserOrdersDeps, type SlotRead } from "../src/lib/creator/dashboard/browser-orders.js";
 
 const LEDGER: OrdersSeriesLedger = { chainId: 42161, contract: "0x" + "c".repeat(40), version: "ledger", onChainEventId: "0x" + "e".repeat(64) };
 const ref = (c: string) => "0x" + c.repeat(64);
@@ -86,7 +86,7 @@ test("an answer that fails shows nothing new and fetches nothing", async () => {
   w.state.slots.push(S("0x2", "b"));
   w.state.failStatus = true;
   w.log.length = 0;
-  await assert.rejects(reader.load());
+  await assert.rejects(reader.load(), OrdersStatusUnavailable, "tagged, so the dashboard does not ask the server's full read");
   assert.ok(!w.log.some((l) => l.startsWith("fetch:")));
 });
 
@@ -223,4 +223,18 @@ test("the live status call carries the poll's no-sign-in option", () => {
 test("the live count never reads an unreadable count as zero", () => {
   const next = LIVE.slice(LIVE.indexOf("async function nextSlots"), LIVE.indexOf("async function slots"));
   assert.match(next, /allowFailure: false,/);
+});
+
+test("every live multicall is one eth_call: viem's 1 KB split is off (Fable sign-off S4)", () => {
+  const calls = LIVE.match(/client\.multicall\(\{[^}]*?allowFailure/g) ?? [];
+  assert.equal(calls.length, 2);
+  for (const c of calls) assert.match(c, /batchSize: 0,/);
+});
+
+test("a failed status answer never falls back to the server's full read (Fable sign-off S5)", () => {
+  const DASH = readFileSync(new URL("../src/lib/creator/dashboard/Dashboard.svelte", import.meta.url), "utf-8");
+  const load = DASH.slice(DASH.indexOf("async function loadOrders"), DASH.indexOf("async function refreshOrders"));
+  const tagged = load.indexOf("if (err instanceof OrdersStatusUnavailable) return null;");
+  const fallback = load.indexOf("getEventOrdersSWR(eventId).refresh(opts)");
+  assert.ok(tagged > 0 && fallback > tagged);
 });

@@ -40,6 +40,17 @@ export interface BrowserOrdersDeps {
   fetchBox(root: string): Promise<SealedBoxV2 | null>;
 }
 
+/**
+ * The server could not give its answer. Its full read would fail the same way, so
+ * the caller shows nothing new instead of asking it (Fable sign-off S5).
+ */
+export class OrdersStatusUnavailable extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "the orders' status is unavailable");
+    this.name = "OrdersStatusUnavailable";
+  }
+}
+
 /** Concurrent gateway reads: the same ceiling the server used for this. */
 const BOX_CONCURRENCY = 8;
 
@@ -88,7 +99,7 @@ export class BrowserOrders {
    * nothing new is shown then.
    */
   async load(opts?: RequestSigningOptions): Promise<EventOrdersResponse | null> {
-    if (this.ledgers === null) this.remember(await this.deps.status([], opts));
+    if (this.ledgers === null) this.remember(await this.askStatus([], opts));
     if (!this.readable) return null;
 
     const series = [...this.ledgers!.entries()];
@@ -112,7 +123,7 @@ export class BrowserOrders {
     }
 
     // The erasure answer for exactly these roots, before any order is fetched or opened.
-    const status = await this.deps.status([...roots], opts);
+    const status = await this.askStatus([...roots], opts);
     this.remember(status);
     if (!this.readable) return null;
     const erased = new Set(status.erased);
@@ -126,6 +137,14 @@ export class BrowserOrders {
     });
 
     return this.build(status, erased, held);
+  }
+
+  private async askStatus(roots: string[], opts?: RequestSigningOptions): Promise<OrdersStatus> {
+    try {
+      return await this.deps.status(roots, opts);
+    } catch (err) {
+      throw new OrdersStatusUnavailable(err);
+    }
   }
 
   private remember(status: OrdersStatus): void {
