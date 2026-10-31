@@ -7,8 +7,8 @@
  *
  * MUTATION: drop the store hook, move the burn's delist after the first chunk,
  * drop the re-check after listing, list before delisting in the reconcile, let it
- * list an erased or chunkless record, skip the retry after a failure, or remove
- * the stamper gate at boot, and a case below goes red.
+ * list an erased record or one whose erasure has started, let two runs overlap,
+ * or remove the stamper gate at boot, and a case below goes red.
  */
 
 import { test, beforeEach } from "node:test";
@@ -209,6 +209,26 @@ test("hourly, and again on the next tick after a failure, which health shows", a
   assert.equal(lists, 2, "no second run inside the hour");
   await gw.tickOrderGateway(t0 + 66 * 60_000, deps);
   assert.equal(lists, 3);
+});
+
+test("a slow run is never overlapped by the next tick", async () => {
+  let lists = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const deps = {
+    list: async () => {
+      lists++;
+      await gate;
+      return new Set<string>(ledger.listOrders().map((o) => o.root));
+    },
+    add: async () => {},
+    remove: async () => {},
+  };
+  const first = gw.tickOrderGateway(Date.now(), deps);
+  await gw.tickOrderGateway(Date.now() + 5 * 60_000, deps);
+  assert.equal(lists, 1, "the second tick returned while the first was still running");
+  release();
+  await first;
 });
 
 test("the proxy client: DELETE one hash, GET the whole list, both with the secret", async () => {

@@ -125,16 +125,27 @@ export async function reconcileOrderGateway(
 
 const RECONCILE_EVERY_MS = 60 * 60 * 1000;
 let lastSuccessMs: number | null = null;
+let inFlight = false;
 
-/** Called every few minutes: reconciles an hour after the last success, so a failure is retried on the next call. */
+/**
+ * Called every few minutes: reconciles an hour after the last success, so a
+ * failure is retried on the next call. A slow run is never overlapped by the next.
+ */
 export async function tickOrderGateway(nowMs: number = Date.now(), deps: OrderGatewayDeps = liveDeps): Promise<void> {
+  if (inFlight) return;
   if (lastSuccessMs !== null && nowMs - lastSuccessMs < RECONCILE_EVERY_MS) return;
-  await reconcileOrderGateway(deps, nowMs);
-  lastSuccessMs = nowMs;
+  inFlight = true;
+  try {
+    await reconcileOrderGateway(deps, nowMs);
+    lastSuccessMs = nowMs;
+  } finally {
+    inFlight = false;
+  }
 }
 
 /** Test seam only. */
 export function _resetOrderGatewayForTests(): void {
   status = { lastRunAt: null, lastError: null, listed: 0, delisted: 0 };
   lastSuccessMs = null;
+  inFlight = false;
 }
