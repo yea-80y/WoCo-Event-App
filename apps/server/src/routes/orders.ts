@@ -1,5 +1,5 @@
-import { Hono } from "hono";
-import type { OrderEntry } from "@woco/shared";
+import { Hono, type Context, type Next } from "hono";
+import { FEATURES, type OrderEntry } from "@woco/shared";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -272,7 +272,16 @@ function isPrivateUrl(url: URL): boolean {
   return false;
 }
 
-orders.post("/:id/webhook-relay", requireAuth, async (c) => {
+/** FEATURES.webhooksAllowed. Ahead of requireAuth, so a caller learns "off" rather
+ *  than "unauthorised", and no order payload is read. */
+async function webhookGate(c: Context<AppEnv>, next: Next) {
+  if (!FEATURES.webhooksAllowed) {
+    return c.json({ ok: false, error: "Webhooks are not available" }, 403);
+  }
+  await next();
+}
+
+orders.post("/:id/webhook-relay", webhookGate, requireAuth, async (c) => {
   const eventId = c.req.param("id");
   const parentAddress = c.get("parentAddress");
   const body = c.get("body") as Record<string, unknown>;
