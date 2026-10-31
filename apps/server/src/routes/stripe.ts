@@ -1389,7 +1389,10 @@ stripe.post("/webhook", async (c) => {
       event = JSON.parse(rawBody) as import("stripe").Stripe.Event;
     }
   } catch (err) {
-    console.error("[stripe-webhook] Signature verification failed:", err);
+    // The message only: the SDK's error carries the whole request body, and
+    // this endpoint is open to anyone, so logging the object writes whatever
+    // they send (up to the 16 MiB API cap) into the journal on every refusal.
+    console.error("[stripe-webhook] Signature verification failed:", err instanceof Error ? err.message : String(err));
     return c.text("Webhook signature verification failed", 400);
   }
 

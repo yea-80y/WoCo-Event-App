@@ -11,7 +11,7 @@
  *
  * Events here are of a type the route ignores, so 200 means "verified and
  * accepted" and nothing else; every outbound request is refused and counted,
- * so a refused event provably reached no Stripe read.
+ * so the suite provably never touches the network.
  */
 
 import test from "node:test";
@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
 import https from "node:https";
+import { inspect } from "node:util";
 import { Hono } from "hono";
 
 process.chdir(mkdtempSync(join(tmpdir(), "woco-webhook-sig-")));
@@ -85,6 +86,13 @@ test("a configured secret refuses an unsigned event even outside production", as
   assert.equal(outbound, 0);
 });
 
+test("an empty signature header counts as no signature", async () => {
+  configure({ secrets: true, production: false });
+  const res = await deliver("");
+  assert.equal(res.status, 400);
+  assert.equal(await res.text(), "Webhook signature required");
+});
+
 test("an event signed with the connected-accounts secret is accepted", async () => {
   configure({ secrets: true, production: true });
   const res = await deliver(signed(CONNECTED_SECRET));
@@ -101,6 +109,7 @@ test("an event signed with any other secret is refused", async () => {
   configure({ secrets: true, production: true });
   const res = await deliver(signed("whsec_someone_else"));
   assert.equal(res.status, 400);
+  assert.equal(await res.text(), "Webhook signature verification failed");
 });
 
 test("a signature four minutes old is still inside the window", async () => {
@@ -113,6 +122,29 @@ test("a signature ten minutes old is refused as a replay", async () => {
   configure({ secrets: true, production: true });
   const res = await deliver(signed(CONNECTED_SECRET, 10 * 60));
   assert.equal(res.status, 400);
+  assert.equal(await res.text(), "Webhook signature verification failed");
+});
+
+test("a refused event's body never reaches the log", async () => {
+  configure({ secrets: true, production: true });
+  const marker = `woco-log-marker-${"x".repeat(64)}`;
+  const logged: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args.map((a) => (typeof a === "string" ? a : inspect(a))).join(" "));
+  };
+  try {
+    const res = await app.request("/api/stripe/webhook", {
+      method: "POST",
+      headers: { "content-type": "application/json", "stripe-signature": signed("whsec_someone_else") },
+      body: JSON.stringify({ id: "evt_log_1", type: marker }),
+    });
+    assert.equal(res.status, 400);
+  } finally {
+    console.error = original;
+  }
+  assert.ok(logged.length > 0, "the refusal is still logged");
+  assert.ok(!logged.some((line) => line.includes(marker)));
 });
 
 test("production with no secret refuses every event, signed or not", async () => {
