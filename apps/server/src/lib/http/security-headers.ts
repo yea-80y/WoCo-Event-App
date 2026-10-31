@@ -16,6 +16,21 @@
 import { createHash } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 
+/**
+ * `Cache-Control: no-store` on every API response that does not set its own.
+ * Nothing told a browser not to keep a copy on disk, and `/orders` carries every
+ * sealed order: an erased one could outlive its erasure in the HTTP cache, as it
+ * once did in the app's own cache (#546). Routes meant to be cached (public
+ * counts, site events) set their own header and keep it. /api only: the embed
+ * script and organiser-site assets must stay cacheable.
+ */
+export function apiNoStoreByDefault(): MiddlewareHandler {
+  return async (c, next) => {
+    await next();
+    if (!c.res.headers.has("Cache-Control")) c.res.headers.set("Cache-Control", "no-store");
+  };
+}
+
 export function securityHeaders(): MiddlewareHandler {
   return async (c, next) => {
     await next();
