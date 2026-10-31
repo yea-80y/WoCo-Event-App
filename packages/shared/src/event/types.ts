@@ -663,7 +663,10 @@ export interface OrdersStatus {
     /** By slot: refunded, charged back or partly refunded. Absent = none. */
     refund: Record<string, NonNullable<OrderEntry["refund"]>>;
   }>;
-  /** Order roots erased, or whose erasure has started: never fetched, never opened. */
+  /**
+   * Erased, or erasure started: never fetched, never opened. Every root the request
+   * asked about, answered by root, plus every record of this event the ledger holds.
+   */
   erased: string[];
   /** Paid orders not yet stored on Swarm: the sealed box itself, by root. */
   held: Array<{ root: string; encryptedOrder: SealedBoxV2 }>;
