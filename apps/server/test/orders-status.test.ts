@@ -153,3 +153,20 @@ test("as private as /orders: signed in, and the event's own organiser", async ()
   const res = await app.request("/api/events/some-event/orders/status", { method: "POST", body: "{}", headers: { "Content-Type": "application/json" } });
   assert.equal(res.status, 401);
 });
+
+test("an unreadable attendee ledger answers nothing, on /orders/status and /orders alike", () => {
+  // It would read as "nothing erased" and hand out every box (Fable sign-off S2).
+  const src = readFileSync(new URL("../src/routes/orders.ts", import.meta.url), "utf8");
+  for (const opener of ['orders.post("/:id/orders/status"', 'orders.get("/:id/orders",']) {
+    const at = src.indexOf(opener);
+    const guard = src.indexOf("if (!ledgerReadable()) return c.json({ ok: false, error: ATTENDEE_LEDGER_UNAVAILABLE }, 503);", at);
+    const firstRead = src.indexOf("await getEventForOwner(", at);
+    assert.ok(at >= 0 && guard > at && guard < firstRead, `${opener}: the guard comes before any read`);
+  }
+});
+
+test("/orders (the browser's fallback) uses the same erasure rule as the status answer", () => {
+  const src = readFileSync(new URL("../src/routes/orders.ts", import.meta.url), "utf8");
+  assert.match(src, /const erased = swarmHex \? erasureStarted\(swarmHex\) : false;/);
+  assert.doesNotMatch(src, /isOrderErased\(/);
+});
