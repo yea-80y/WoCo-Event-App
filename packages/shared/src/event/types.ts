@@ -633,3 +633,38 @@ export interface OrderEntry {
   /** #546: the attendee's record was erased on request. No order data is sent. */
   erased?: true;
 }
+
+/** The on-chain registration one series sells on: the browser reads its slots itself (#965). */
+export interface OrdersSeriesLedger {
+  chainId: number;
+  /** Lowercase 0x address. */
+  contract: string;
+  version: "v1" | "v2" | "ledger" | "ledger2";
+  /** bytes32, 0x-prefixed. */
+  onChainEventId: string;
+}
+
+/**
+ * What only the server knows about one event's orders (#965): which registration
+ * each series is on, when each slot was paid and its refund state (the Stripe sale
+ * record), which orders are erased, and the paid orders not yet on Swarm. No chain
+ * read and no Swarm read per ticket: the organiser's browser reads those itself.
+ */
+export interface OrdersStatus {
+  eventId: string;
+  eventTitle: string;
+  series: Array<{
+    seriesId: string;
+    seriesName: string;
+    /** null = never finished registering: no slots, no orders. */
+    ledger: OrdersSeriesLedger | null;
+    /** By slot (edition - 1): when the buyer paid. Absent = no sale record names it. */
+    paidAt: Record<string, string>;
+    /** By slot: refunded, charged back or partly refunded. Absent = none. */
+    refund: Record<string, NonNullable<OrderEntry["refund"]>>;
+  }>;
+  /** Order roots erased, or whose erasure has started: never fetched, never opened. */
+  erased: string[];
+  /** Paid orders not yet stored on Swarm: the sealed box itself, by root. */
+  held: Array<{ root: string; encryptedOrder: SealedBoxV2 }>;
+}

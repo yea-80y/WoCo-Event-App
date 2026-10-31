@@ -36,7 +36,7 @@ const ADD_BATCH = 1000;
  * before the burn delists and plans its first chunk, so a listing racing the
  * start of an erasure still sees it.
  */
-function erasureStarted(root: string, record: OrderRecord | null = getOrderRecord(root)): boolean {
+export function erasureStarted(root: string, record: OrderRecord | null = getOrderRecord(root)): boolean {
   return isOrderErased(root) || !!record?.erasedBy;
 }
 

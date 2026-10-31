@@ -13,6 +13,7 @@ import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { contractKey } from "../lib/chain/event-contract.js";
 import { slotPaidTimes, slotRefundStates } from "../lib/stripe/ticket-sales.js";
 import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
+import { ordersStatus } from "../lib/event/orders-status.js";
 
 /** Maximum concurrent Swarm downloads when fetching v2 order blobs */
 const V2_DOWNLOAD_CONCURRENCY = 8;
@@ -72,6 +73,25 @@ orders.get("/:id/orders/count", requireAuth, async (c) => {
   } catch (err) {
     console.error("[api] getOrderCount error:", err);
     return c.json({ ok: false, error: "Failed to count orders" }, 500);
+  }
+});
+
+// GET /api/events/:id/orders/status — authenticated, organiser-only. What only the
+// server knows about the event's orders, with no chain or Swarm read per ticket:
+// the browser reads slots and sealed orders itself (#965, lib/event/orders-status.ts).
+orders.get("/:id/orders/status", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = c.get("parentAddress");
+  try {
+    const event = await getEventForOwner(eventId, parentAddress);
+    if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+    if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
+      return c.json({ ok: false, error: "Only the event organizer can view orders" }, 403);
+    }
+    return c.json({ ok: true, data: ordersStatus({ eventId, title: event.title, series: event.series }) });
+  } catch (err) {
+    console.error("[api] getOrdersStatus error:", err);
+    return c.json({ ok: false, error: "Failed to read orders" }, 500);
   }
 });
 
