@@ -14,6 +14,7 @@
 import { DEFAULT_TTL_MIN_SECONDS } from "../health/alarms.js";
 import { attendeeLedgerStatus } from "./ledger.js";
 import { attendeeCheckoutRefusal } from "./writer.js";
+import { orderGatewayStatus } from "./order-gateway.js";
 
 function positiveInt(raw: string | undefined, fallback: number): number {
   const n = Number(raw);
@@ -23,6 +24,7 @@ function positiveInt(raw: string | undefined, fallback: number): number {
 export function attendeeBatchHealth(nowMs: number = Date.now()) {
   const ttlMinSeconds = positiveInt(process.env.POSTAGE_TTL_MIN_SECONDS, DEFAULT_TTL_MIN_SECONDS);
   const status = attendeeLedgerStatus();
+  const gateway = orderGatewayStatus();
   const refusal = attendeeCheckoutRefusal();
   const active = status.batches.find((b) => b.batchId === status.active) ?? null;
   const ttlSeconds = active?.expiresAt ? Math.round((Date.parse(active.expiresAt) - nowMs) / 1000) : null;
@@ -39,6 +41,8 @@ export function attendeeBatchHealth(nowMs: number = Date.now()) {
         ? { ok: true }
         : { ok: false, reason: freeSlots === null ? "no active batch" : `fullest bucket ${active!.fullestUsed}/${active!.capacity}` },
     burns: status.burning === 0 ? { ok: true } : { ok: false, reason: `${status.burning} unfinished - re-run the burn` },
+    // #965: an erased order may still be on our gateway's list until a reconcile succeeds.
+    gatewayList: gateway.lastError === null ? { ok: true } : { ok: false, reason: `reconcile failed: ${gateway.lastError}` },
   };
   return {
     ok: Object.values(checks).every((c) => c.ok),
@@ -51,6 +55,7 @@ export function attendeeBatchHealth(nowMs: number = Date.now()) {
     bucketFullRefusals: status.bucketFullRefusals,
     orders: status.orders,
     burning: status.burning,
+    orderGateway: gateway,
     checks,
   };
 }

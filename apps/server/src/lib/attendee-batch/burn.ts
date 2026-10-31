@@ -28,6 +28,7 @@ import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "../swarm/upload-
 import { getBatchRecord, getOrderRecord, markChunkBurned, noteErasure, planChunkBurn, type Erasure, type OrderRecord } from "./ledger.js";
 import { bucketOf, decodeTimestampNs, signStamp, type StamperKey } from "./stamp.js";
 import { getAttendeeStamper } from "./writer.js";
+import { delistOrderRoot } from "./order-gateway.js";
 import { CONTROL_JSON_MAX_BYTES, errorSnippet, readCappedJson } from "../http/read-capped.js";
 
 const BURNER_PAYLOAD = new TextEncoder().encode("woco/attendee-burn/v1");
@@ -108,9 +109,11 @@ export const liveBurnerUploader: BurnerUploader = async (burner, envelope) => {
 export interface BurnDeps {
   stamper: () => StamperKey | null;
   upload: BurnerUploader;
+  /** Stop gateway reads of the order before its chunks are burned (#965). Absent = not delisted. */
+  delist?: (root: string) => Promise<void>;
 }
 
-const liveDeps: BurnDeps = { stamper: getAttendeeStamper, upload: liveBurnerUploader };
+const liveDeps: BurnDeps = { stamper: getAttendeeStamper, upload: liveBurnerUploader, delist: delistOrderRoot };
 
 /**
  * Burn every chunk of an order. Resumable: a chunk already burned is skipped,
@@ -127,6 +130,8 @@ export async function burnOrder(root: string, deps: BurnDeps = liveDeps, erasure
   if (!batch) throw new Error(`order ${root} names an unregistered batch`);
   if (batch.owner !== key.addressHex) throw new Error("the stamper key does not own this order's batch");
   if (erasure) noteErasure(root, erasure);
+  // Before the first chunk: our gateway stops serving it now, whatever the burn's pace.
+  if (deps.delist) await deps.delist(root);
 
   const batchId = new BatchId(record.batchId);
   let latest = record;

@@ -124,7 +124,8 @@ import { sweepExpiredRosters, rosterRetentionHealth } from "./lib/checkin/roster
 import { doorEntriesHealth } from "./lib/checkin/door-entries.js";
 import { ticketHoldsHealth } from "./lib/ticket-hold/store.js";
 import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
-import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
+import { getAttendeeStamper, retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
+import { tickOrderGateway } from "./lib/attendee-batch/order-gateway.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -929,6 +930,14 @@ const sweepOrderRetention = () => {
 };
 setTimeout(sweepOrderRetention, 7 * 60_000).unref();
 setInterval(sweepOrderRetention, 24 * 60 * 60 * 1000).unref();
+// #965: our gateway serves every stored attendee order and no erased one. Only a
+// server that owns an attendee batch edits the list: a dev server's key is blank.
+const tickGateway = () => {
+  if (!getAttendeeStamper()) return;
+  tickOrderGateway().catch((err) => console.warn("[order-gateway] reconcile failed:", (err as Error).message));
+};
+setTimeout(tickGateway, 3 * 60_000).unref();
+setInterval(tickGateway, 5 * 60_000).unref();
 // #546: store paid orders whose store failed at fulfilment, and delete unpaid
 // holds past their day.
 setInterval(() => {

@@ -495,7 +495,9 @@ tagged 403 as "this chunk does not exist" — which is what took a cold credit r
 ~1.4s (#329). So a LOST whitelist entry makes real data read as absent, and an absent read is
 `clean`, which is exactly what the `scanClean`/`bandClean` erasure guards check for. Reads that
 feed a read-modify-write pass `thorough` and never trust the gate for this reason. Back up
-`whitelist.json`; never deploy an empty one over it.
+`whitelist.json`; never deploy an empty one over it. Attendee order roots are listed at store and
+delisted at erasure, and an hourly reconcile from the attendee ledger repairs both (#965,
+`lib/attendee-batch/order-gateway.ts`) - so a lost whitelist heals for orders, not for anything else.
 
 `.data/broadcast-chunks/` is the OPPOSITE case — it must NOT survive. Broadcast recipients
 are encrypted under a key held only in the running process, so a restart makes them
