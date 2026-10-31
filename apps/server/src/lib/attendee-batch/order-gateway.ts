@@ -16,7 +16,7 @@
  * on a server that owns an attendee batch: a dev server (stamper key blanked)
  * never edits the production proxy.
  */
-import { isOrderErased, listOrders } from "./ledger.js";
+import { getOrderRecord, isOrderErased, listOrders, type OrderRecord } from "./ledger.js";
 import { listWhitelist, unwhitelistHash, whitelistHashes } from "../swarm/whitelist.js";
 
 export interface OrderGatewayDeps {
@@ -32,6 +32,15 @@ const liveDeps: OrderGatewayDeps = { list: listWhitelist, add: whitelistHashes, 
 const ADD_BATCH = 1000;
 
 /**
+ * Never to be listed: erased, or an erasure has started. `erasedBy` is written
+ * before the burn delists and plans its first chunk, so a listing racing the
+ * start of an erasure still sees it.
+ */
+function erasureStarted(root: string, record: OrderRecord | null = getOrderRecord(root)): boolean {
+  return isOrderErased(root) || !!record?.erasedBy;
+}
+
+/**
  * List a freshly stored order. Never throws: the reconcile retries. An erasure
  * that ran while the listing was in flight wins: the root is delisted again.
  */
@@ -43,7 +52,7 @@ export async function listOrderRoot(root: string, deps: OrderGatewayDeps = liveD
     console.warn(`[order-gateway] could not list ${r}; the reconcile will:`, (err as Error).message);
     return;
   }
-  if (isOrderErased(r)) await delistOrderRoot(r, deps);
+  if (erasureStarted(r)) await delistOrderRoot(r, deps);
 }
 
 /** Delist an order an erasure is starting on. Never throws: the reconcile retries. */
@@ -84,19 +93,30 @@ export async function reconcileOrderGateway(
     const toList: string[] = [];
     const toDelist: string[] = [];
     for (const { root, record } of listOrders()) {
-      if (isOrderErased(root)) {
+      if (erasureStarted(root, record)) {
         if (present.has(root)) toDelist.push(root);
       } else if (record.chunks.length > 0 && !present.has(root)) {
         toList.push(root);
       }
     }
     for (const root of toDelist) await deps.remove(root);
-    for (let i = 0; i < toList.length; i += ADD_BATCH) await deps.add(toList.slice(i, i + ADD_BATCH));
-    status = { lastRunAt: at, lastError: null, listed: toList.length, delisted: toDelist.length };
-    if (toList.length || toDelist.length) {
-      console.log(`[order-gateway] listed ${toList.length}, delisted ${toDelist.length}`);
+    // The awaits above and below let an erasure start: filter each batch again,
+    // then take back any root whose erasure started while it was being listed.
+    const listed: string[] = [];
+    for (let i = 0; i < toList.length; i += ADD_BATCH) {
+      const batch = toList.slice(i, i + ADD_BATCH).filter((root) => !erasureStarted(root));
+      if (batch.length === 0) continue;
+      await deps.add(batch);
+      listed.push(...batch);
     }
-    return { listed: toList.length, delisted: toDelist.length };
+    const retaken = listed.filter((root) => erasureStarted(root));
+    for (const root of retaken) await deps.remove(root);
+    const counts = { listed: listed.length - retaken.length, delisted: toDelist.length + retaken.length };
+    status = { lastRunAt: at, lastError: null, ...counts };
+    if (counts.listed || counts.delisted) {
+      console.log(`[order-gateway] listed ${counts.listed}, delisted ${counts.delisted}`);
+    }
+    return counts;
   } catch (err) {
     status = { ...status, lastRunAt: at, lastError: (err as Error).message };
     throw err;

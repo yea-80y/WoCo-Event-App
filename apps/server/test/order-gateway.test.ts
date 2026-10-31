@@ -147,6 +147,32 @@ test("the reconcile delists erased orders first, then lists stored ones, and tou
   assert.ok(out && out.delisted >= 2 && out.listed >= 1);
 });
 
+test("an order whose erasure has started is never listed, before any chunk is planned", async () => {
+  const root = await storeOrder();
+  ledger.noteErasure(root, { by: "request" });
+  assert.equal(ledger.isOrderErased(root), false, "nothing burned yet");
+  const proxy = fakeProxy([root]);
+  await gw.reconcileOrderGateway(proxy.deps);
+  assert.equal(proxy.present.has(root), false);
+  assert.ok(!proxy.calls.some((c) => c.startsWith("add:") && c.includes(root)));
+});
+
+test("an erasure that starts while the reconcile is listing is taken back", async () => {
+  const proxy = fakeProxy();
+  await gw.reconcileOrderGateway(proxy.deps);
+  const racing = await storeOrder();
+  proxy.calls.length = 0;
+  const add = proxy.deps.add;
+  proxy.deps.add = async (hashes) => {
+    if (hashes.includes(racing)) ledger.noteErasure(racing, { by: "retention" });
+    await add(hashes);
+  };
+  const out = await gw.reconcileOrderGateway(proxy.deps);
+  assert.equal(proxy.present.has(racing), false, "listed, then delisted once the erasure was seen");
+  assert.ok(proxy.calls.indexOf(`remove:${racing}`) > proxy.calls.findIndex((c) => c.includes(racing) && c.startsWith("add:")));
+  assert.deepEqual(out, { listed: 0, delisted: 1 });
+});
+
 test("a reconcile that finds the list right changes nothing", async () => {
   const proxy = fakeProxy();
   await gw.reconcileOrderGateway(proxy.deps);
