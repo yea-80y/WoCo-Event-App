@@ -496,7 +496,9 @@ tagged 403 as "this chunk does not exist" — which is what took a cold credit r
 ~1.4s (#329). So a LOST whitelist entry makes real data read as absent, and an absent read is
 `clean`, which is exactly what the `scanClean`/`bandClean` erasure guards check for. Reads that
 feed a read-modify-write pass `thorough` and never trust the gate for this reason. Back up
-`whitelist.json`; never deploy an empty one over it.
+`whitelist.json`; never deploy an empty one over it. Attendee order roots are listed at store and
+delisted at erasure, and an hourly reconcile from the attendee ledger repairs both (#965,
+`lib/attendee-batch/order-gateway.ts`) - so a lost whitelist heals for orders, not for anything else.
 
 `.data/broadcast-chunks/` is the OPPOSITE case — it must NOT survive. Broadcast recipients
 are encrypted under a key held only in the running process, so a restart makes them
@@ -584,7 +586,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     batch must NEVER be registered again (buy a new one). Unreadable = checkout refuses until restored.
     Since #797 each record also holds the buyer's email HMAC + organiser: it is the index the ops
     lookup answers access/erasure requests from, and an EMAIL_HASH_SECRET rotation blinds it. Since #547 a
-    record also holds retainMonths, the retention sweep's only source for the period, and erasedBy + rule)
+    record also holds retainMonths, the retention sweep's only source for the period, and erasedBy + rule.
+    Since #965 the gateway reconcile lists every record not erased: a RESTORE FROM BACKUP re-lists orders
+    erased since that backup - with the server stopped, restore, then re-run those erasures (ops burn
+    route) before the first reconcile, 3 min after boot)
   event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified
     creator, pinned at create, write-once. The money path's ONLY carrier for an UNLISTED event.
     Losing it fails CLOSED: unlisted events stop selling until re-created; listed ones fall back

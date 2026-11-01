@@ -28,6 +28,7 @@ import {
 import { decodeTimestampNs, signStamp, splitPayload, stamperKeyFromHex, type StamperKey } from "./stamp.js";
 import { getHeldOrder, paidUnstored, releaseHeldOrder } from "./held-orders.js";
 import { isOrderErased } from "./ledger.js";
+import { listOrderRoot } from "./order-gateway.js";
 import { getRecordedFeedSigner } from "../event/feed-signer-record.js";
 
 /**
@@ -102,9 +103,11 @@ export const liveChunkUploader: ChunkUploader = async (envelope, body) => {
 export interface StoreAttendeeDeps {
   stamper: () => StamperKey | null;
   upload: ChunkUploader;
+  /** Make the stored order readable through our gateway (#965). Absent = not listed. */
+  list?: (root: string) => Promise<void>;
 }
 
-const liveDeps: StoreAttendeeDeps = { stamper: getAttendeeStamper, upload: liveChunkUploader };
+const liveDeps: StoreAttendeeDeps = { stamper: getAttendeeStamper, upload: liveChunkUploader, list: listOrderRoot };
 
 /**
  * Split, allocate (persisted), sign and upload one order blob. Throws on any
@@ -153,6 +156,7 @@ export async function storeAttendeePayload(
     // never reissued), so the order still stands.
     console.error(`[attendee-batch] order ${rootHex} uploaded but not marked stored:`, (err as Error).message);
   }
+  if (deps.list) await deps.list(rootHex);
   return rootHex as Hex64;
 }
 
