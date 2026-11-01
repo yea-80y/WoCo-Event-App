@@ -63,6 +63,7 @@ FEATURE FLAGS — READ BEFORE ASSUMING A RAIL IS LIVE
   shopAllowed           = false   # shops, POS, spend-permission draws (#124)
   walletLoginAllowed    = false   # MetaMask/WalletConnect login: phishable sign-to-derive seed (#186)
   accountBackupsAllowed = false   # email accounts' Protect backups; passkey accounts add passkeys (#186)
+  webhooksAllowed       = false   # dashboard order webhook: its relay was our server's one plaintext attendee path
   (also off: agentCommerceAllowed, coinbaseLoginAllowed, organiserSendingDomains)
 
 Flags gate UI AND server validation in lockstep — an old client cannot reach a disabled
