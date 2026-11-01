@@ -351,8 +351,13 @@ const fnBody = (name: string) => {
 };
 
 test("polls the cheap count, gated on a session already here, and never signs in", () => {
-  assert.match(DASH, /count: \(\) => getEventOrderCount\(id, \{ establish: false \}\)/);
-  assert.match(DASH, /getEventOrdersSWR\(eventId\)\.refresh\(\{ establish: false \}\)/);
+  // #965: the count comes from the chain once the browser knows the registrations.
+  assert.match(DASH, /count: async \(\) =>\s*\(await ordersReader\(\)\.count\(\)\.catch\(\(\) => null\)\) \?\? getEventOrderCount\(id, \{ establish: false \}\)/);
+  assert.match(DASH, /const fresh = await loadOrders\(\{ establish: false \}\);/);
+  // …and the option reaches both the browser read and the server fallback.
+  const load = fnBody("async function loadOrders");
+  assert.match(load, /await ordersReader\(\)\.load\(opts\);/);
+  assert.match(load, /return \(await getEventOrdersSWR\(eventId\)\.refresh\(opts\)\)\.data \?\? null;/);
   assert.match(DASH, /canRequest: \(\) => auth\.isConnected && auth\.hasSession/);
   assert.match(DASH, /sessionStored: async \(\) => \{\s*const parent = auth\.parent;\s*return !!parent && !!\(await getSessionDelegation\(parent\)\);/);
 });

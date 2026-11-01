@@ -26,6 +26,10 @@
   import UndeliveredTickets from "./UndeliveredTickets.svelte";
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
   import { OpenedOrders, ORDERS_POLL_MS, createOrdersPoller } from "./live-orders.js";
+  import { BrowserOrders, OrdersStatusUnavailable } from "./browser-orders.js";
+  import { canReadLedger, liveBrowserOrdersDeps } from "./browser-orders-live.js";
+  import { withoutSealedOrders } from "../../api/orders-cache.js";
+  import type { RequestSigningOptions } from "../../auth/request-session.js";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
   import { buildCsv, downloadCsv } from "../../utils/csv.js";
 
@@ -543,9 +547,37 @@
     }
   });
 
+  /** The browser reads the list itself (#965, browser-orders.ts); this page's reads are kept in memory only. */
+  let browserOrders: { eventId: string; reader: BrowserOrders } | null = null;
+  function ordersReader(): BrowserOrders {
+    if (browserOrders?.eventId !== eventId) {
+      browserOrders = { eventId, reader: new BrowserOrders(liveBrowserOrdersDeps(eventId), canReadLedger) };
+    }
+    return browserOrders.reader;
+  }
+
+  /**
+   * The orders, read by the browser. The server's full read only for a series on a
+   * ledger the browser cannot read, or when a chain or gateway read failed - never
+   * when the server's own answer failed, as its full read would fail the same way.
+   */
+  async function loadOrders(opts?: RequestSigningOptions): Promise<EventOrdersResponse | null> {
+    try {
+      const data = await ordersReader().load(opts);
+      if (data) {
+        cacheSet(cacheKey.eventOrders(eventId), withoutSealedOrders(data), TTL.EVENT_ORDERS);
+        return data;
+      }
+    } catch (err) {
+      if (err instanceof OrdersStatusUnavailable) return null;
+      console.warn("[dashboard] reading orders in the browser failed; asking the server:", err);
+    }
+    return (await getEventOrdersSWR(eventId).refresh(opts)).data ?? null;
+  }
+
   /** A poll found the count moved: read the list, show it, open only the new orders - never asking. */
   async function refreshOrders(): Promise<boolean> {
-    const fresh = (await getEventOrdersSWR(eventId).refresh({ establish: false })).data;
+    const fresh = await loadOrders({ establish: false });
     if (!fresh || !event) return false;
     showOrders(fresh);
     void decryptCurrent();
@@ -559,7 +591,9 @@
     const id = eventId;
     const poller = createOrdersPoller({
       intervalMs: ORDERS_POLL_MS,
-      count: () => getEventOrderCount(id, { establish: false }),
+      // From the chain once the browser knows the registrations; the server's count before that.
+      count: async () =>
+        (await ordersReader().count().catch(() => null)) ?? getEventOrderCount(id, { establish: false }),
       refresh: refreshOrders,
       // A session already on this device: a poll never starts a sign-in.
       canRequest: () => auth.isConnected && auth.hasSession,
@@ -662,7 +696,7 @@
         return;
       }
 
-      const freshOrders = (await ordersSWR.refresh()).data;
+      const freshOrders = await loadOrders();
 
       event = ev;
       if (freshOrders) {

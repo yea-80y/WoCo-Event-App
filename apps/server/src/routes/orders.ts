@@ -6,13 +6,15 @@ import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
 import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
-import { isOrderErased } from "../lib/attendee-batch/ledger.js";
+import { ledgerReadable } from "../lib/attendee-batch/ledger.js";
+import { erasureStarted } from "../lib/attendee-batch/order-gateway.js";
 import { getHeldOrder } from "../lib/attendee-batch/held-orders.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { contractKey } from "../lib/chain/event-contract.js";
 import { slotPaidTimes, slotRefundStates } from "../lib/stripe/ticket-sales.js";
 import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
+import { MAX_STATUS_ROOTS, ordersStatus, parseStatusRoots } from "../lib/event/orders-status.js";
 
 /** Maximum concurrent Swarm downloads when fetching v2 order blobs */
 const V2_DOWNLOAD_CONCURRENCY = 8;
@@ -34,6 +36,8 @@ function orderRefToSwarmHex(bytes32: string): string | null {
 }
 
 const orders = new Hono<AppEnv>();
+
+const ATTENDEE_LEDGER_UNAVAILABLE = "Attendee details are unavailable right now - try again shortly";
 
 type OwnedEvent = NonNullable<Awaited<ReturnType<typeof getEventForOwner>>>;
 
@@ -75,10 +79,36 @@ orders.get("/:id/orders/count", requireAuth, async (c) => {
   }
 });
 
+// POST /api/events/:id/orders/status — authenticated, organiser-only. What only the
+// server knows about the event's orders, with no chain or Swarm read per ticket:
+// the browser reads slots and sealed orders itself, and sends the order roots it
+// read so erasure is answered for each by root (#965, lib/event/orders-status.ts).
+orders.post("/:id/orders/status", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = c.get("parentAddress");
+  const roots = parseStatusRoots((c.get("body") as { roots?: unknown } | undefined)?.roots);
+  if (!roots) return c.json({ ok: false, error: `roots must be up to ${MAX_STATUS_ROOTS} order references` }, 400);
+  // An unreadable ledger reads as "nothing erased": no answer rather than that one.
+  if (!ledgerReadable()) return c.json({ ok: false, error: ATTENDEE_LEDGER_UNAVAILABLE }, 503);
+  try {
+    const event = await getEventForOwner(eventId, parentAddress);
+    if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+    if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
+      return c.json({ ok: false, error: "Only the event organizer can view orders" }, 403);
+    }
+    return c.json({ ok: true, data: ordersStatus({ eventId, title: event.title, series: event.series }, roots) });
+  } catch (err) {
+    console.error("[api] getOrdersStatus error:", err);
+    return c.json({ ok: false, error: "Failed to read orders" }, 500);
+  }
+});
+
 // GET /api/events/:id/orders — authenticated, organizer-only
 orders.get("/:id/orders", requireAuth, async (c) => {
   const eventId = c.req.param("id");
   const parentAddress = c.get("parentAddress");
+  // As /orders/status: an unreadable ledger would serve every box, erased ones included.
+  if (!ledgerReadable()) return c.json({ ok: false, error: ATTENDEE_LEDGER_UNAVAILABLE }, 503);
 
   try {
     // 1. Load event and verify ownership
@@ -133,7 +163,8 @@ orders.get("/:id/orders", requireAuth, async (c) => {
           let encryptedOrder: SealedBoxV2 | undefined;
           // Erased on request (#546): never fetched, even though our own bee may
           // still hold it in its cache.
-          const erased = swarmHex ? isOrderErased(swarmHex) : false;
+          // The gateway's rule: erased, or an erasure has started (#965).
+          const erased = swarmHex ? erasureStarted(swarmHex) : false;
 
           // A paid order whose store is still pending is served from its hold
           // (#546): the same ciphertext, before it reaches Swarm.

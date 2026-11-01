@@ -297,7 +297,9 @@ These `.data` stores MUST survive server restarts:
   legal breach**
 - `.data/marketing-consent.json` — **losing it = no evidence for any checkout opt-in or soft opt-in.
   The contacts survive in the organiser's sealed list; the proof they agreed does not**
-- `.data/marketing-lists.json`
+- `.data/marketing-lists.json` — each organiser's sealed-list ref, plus the batch it was stamped
+  on. A list whose blob can't be found is answered `sealedList: null` with a storage verdict;
+  only the organiser's "Start a new list" replaces it, nothing automatic (#1007)
 - `.data/marketing-domains.json`
 - `.data/marketing-send-log.json`
 - `.data/sender-pacing/` — **losing it forgets a stop and resets every sender's ramp**
