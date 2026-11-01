@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { EventFeed, OrderEntry, OrderField } from "@woco/shared";
+  import { FEATURES, type EventFeed, type OrderEntry, type OrderField } from "@woco/shared";
   import { cancelEvent, getEvent } from "../../api/events.js";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { getEventOrderCount, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
@@ -620,8 +620,9 @@
   });
 
   onMount(async () => {
-    // Load webhook config from localStorage
-    webhookConfig = loadWebhookConfig();
+    // Webhooks off: drop any stored config, which held the endpoint's auth header in clear.
+    if (!FEATURES.webhooksAllowed) clearWebhookConfig();
+    webhookConfig = FEATURES.webhooksAllowed ? loadWebhookConfig() : null;
     sentMap = loadSentMap();
     if (webhookConfig) {
       webhookFormUrl = webhookConfig.url;
@@ -1020,6 +1021,7 @@
     {:else}
 
     <!-- Webhook config panel -->
+    {#if FEATURES.webhooksAllowed}
     <div class="webhook-section">
       <button
         class="webhook-toggle"
@@ -1065,6 +1067,7 @@
         </div>
       {/if}
     </div>
+    {/if}
 
     <!-- ── Sales overview (organiser-only) ────────────────────────────────────
          Replaces the customer-facing "X / Y available" line on the event
@@ -1152,7 +1155,7 @@
                   Export CSV
                 </button>
               {/if}
-              {#if webhookConfig && decryptedOrders.size > 0}
+              {#if FEATURES.webhooksAllowed && webhookConfig && decryptedOrders.size > 0}
                 {@const unsent = unsentCount(seriesOrders)}
                 {#if unsent > 0}
                   <button
@@ -1186,7 +1189,7 @@
                         <th>{field.label}</th>
                       {/each}
                     {/if}
-                    <th>Webhook</th>
+                    {#if FEATURES.webhooksAllowed}<th>Webhook</th>{/if}
                   </tr>
                 </thead>
                 <tbody>
@@ -1247,6 +1250,7 @@
                           <td>{dec?.fields?.[field.id] ?? (decrypting ? "..." : "-")}</td>
                         {/each}
                       {/if}
+                      {#if FEATURES.webhooksAllowed}
                       <td class="webhook-cell">
                         {#if isSending}
                           <span class="badge badge-sending">Sending...</span>
@@ -1269,6 +1273,7 @@
                           <span class="badge badge-none">-</span>
                         {/if}
                       </td>
+                      {/if}
                     </tr>
                   {/each}
                 </tbody>
