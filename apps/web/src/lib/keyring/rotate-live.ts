@@ -11,6 +11,7 @@ import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import type { AccountChain } from "../auth/account-chain.js";
 import type { PasskeyKeys } from "./members.js";
 import type { NewKeys, PendingRotation, RotationProgress, RotationSteps } from "./rotate.js";
+import type { OrganiserKeyMove } from "../auth/co-owner-calls.js";
 
 /** What the auth store lends a removal: its state, and the steps only it can take. */
 export interface RotationHost {
@@ -21,8 +22,10 @@ export interface RotationHost {
   /** The account's CURRENT signer and secrets - the generation being left. */
   oldSigner: ContentFeedSigner;
   oldSecrets: string[];
-  /** The flip: `going` off the list and the anchor onto `ring`, in one op. */
-  flip(going: string[], ring: { prev: string | null; next: string }): Promise<{ confirmed: boolean }>;
+  /** The flip: `going` off the list and the anchor onto `ring`, in one op - with `move`, the events' key too. */
+  flip(going: string[], ring: { prev: string | null; next: string }, move: OrganiserKeyMove | null): Promise<{ confirmed: boolean }>;
+  /** Events onto the account's organiser key, in one op of their own. */
+  moveOrganiserKey(move: OrganiserKeyMove): Promise<void>;
   adopt(chain: AccountChain): Promise<void>;
   signTypedDataAsHolder(typed: unknown): Promise<string>;
   removeRecord(key: string): Promise<void>;
@@ -31,6 +34,12 @@ export interface RotationHost {
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
 const WOCO_APP_URL = import.meta.env.VITE_APP_URL ?? "https://woco.eth.limo";
+/**
+ * Where the shared ledger v2 table is empty (dev, sandbox): the ledger this build's server
+ * registers on, as `address` or `address:deployBlock` (`parseLedger2Override`).
+ */
+const LEDGER2_OVERRIDE = import.meta.env.VITE_WOCO_LEDGER2_ADDRESS as string | undefined;
+const BYTES32 = /^0x[0-9a-f]{64}$/;
 
 function bytes(hex: string): Uint8Array {
   const h = hex.startsWith("0x") ? hex.slice(2) : hex;
@@ -103,6 +112,68 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     return res.status === "found" ? res.value : null;
   }
 
+  // One thorough read of a signer's events per run: the copy and the flip's key move
+  // both need the old signer's, seconds apart. `fresh` skips it.
+  const eventsRead = new Map<string, Promise<import("@woco/shared").EventFeed[]>>();
+  function ownEventsOnce(signer: string, fresh = false) {
+    const k = signer.toLowerCase();
+    if (fresh || !eventsRead.has(k)) {
+      const p = ownEvents(signer);
+      eventsRead.set(k, p);
+      p.catch(() => eventsRead.delete(k));
+    }
+    return eventsRead.get(k)!;
+  }
+
+  /**
+   * The account's ledger2 events not yet on `key`, in the order they should move. Found
+   * from the CHAIN - registrations naming this account, by a sponsor or by itself
+   * (`ledger2-scan`) - never from the platform's index (Fable consult 2026-11-01); with
+   * `ownFeedSigners`, the ids the copy step already read from the account's own feeds
+   * are added, at no cost and with no failure of their own. Every id is re-read live and
+   * `planOrganiserKeyMoves` decides. Null with no ledger here.
+   *
+   * POLARITY. Before the flip (`strict` false) nothing here stops the removal: an
+   * unreadable chain carries what was found, or nothing - refusing would leave the
+   * removed passkey in charge of the whole account. The after-step (`strict` true)
+   * throws unless the WHOLE chain was read, so it stays pending, is retried at every
+   * open and is reported unfinished until a complete scan says nothing is due.
+   */
+  async function organiserKeyDue(
+    key: string,
+    opts: { ownFeedSigners: string[]; strict: boolean },
+  ): Promise<{ ledger: string; ids: string[] } | null> {
+    const [{ ticketLedger2Deployment, parseLedger2Override, planOrganiserKeyMoves }, { KERNEL_CHAIN_ID }] = await Promise.all([
+      import("@woco/shared/ticket/ledger2"),
+      import("@woco/shared/kernel/chain"),
+    ]);
+    const deployment = ticketLedger2Deployment(KERNEL_CHAIN_ID) ?? parseLedger2Override(LEDGER2_OVERRIDE);
+    if (!deployment) return null;
+    const { scanOwnLedger2Events } = await import("./organiser-event-scan.js");
+    const scan = await scanOwnLedger2Events(parent, deployment);
+    if (opts.strict && !scan.complete) throw new Error("Couldn't read all of your events onchain - will retry.");
+    const ids = new Set(scan.ids);
+    for (const signer of opts.ownFeedSigners) {
+      try {
+        for (const feed of await ownEventsOnce(signer)) {
+          for (const s of feed.series ?? []) {
+            const id = s.onChainEventId?.toLowerCase();
+            if (id && BYTES32.test(id)) ids.add(id);
+          }
+        }
+      } catch {
+        // The chain is the source; the feeds only add to it.
+      }
+    }
+    const { readOrganiserKeyStates } = await import("../auth/kernel-account.js");
+    const states = await readOrganiserKeyStates(deployment.address, [...ids]);
+    if (states === "error") {
+      if (opts.strict) throw new Error("Couldn't read your events onchain - will retry.");
+      return { ledger: deployment.address, ids: [] };
+    }
+    return { ledger: deployment.address, ids: planOrganiserKeyMoves(states, parent, key, Date.now() / 1000) };
+  }
+
   async function ownEvents(signer = h.oldSigner.address) {
     const [{ getEventsByCreatorResult }, { eventContentTopic }] = await Promise.all([
       import("../api/events.js"),
@@ -155,9 +226,23 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
       }
     },
     keysOf: async (secret) => {
-      const { accountKeysOf } = await import("@woco/shared/keyring/account-secret");
+      const [{ accountKeysOf }, { deriveOrganiserKey }] = await Promise.all([
+        import("@woco/shared/keyring/account-secret"),
+        import("@woco/shared/crypto/organiser-key"),
+      ]);
       const k = accountKeysOf(bytes(secret));
-      return { secret, feedSigner: k.feedSigner, orderKeyRef: k.orderKeyRef, orderPublicKey: k.orderKey.publicKey };
+      const organiser = deriveOrganiserKey(secret);
+      try {
+        return {
+          secret,
+          feedSigner: k.feedSigner,
+          orderKeyRef: k.orderKeyRef,
+          orderPublicKey: k.orderKey.publicKey,
+          organiserKey: organiser.address,
+        };
+      } finally {
+        organiser.privateKey.fill(0);
+      }
     },
     loadPending: async () => {
       const { openPendingRotation } = await import("./pending-rotation.js");
@@ -174,7 +259,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
 
     copyEvents: async (keys, progress) => {
       const { signEventFeedSoc } = await import("../api/events.js");
-      const events = await ownEvents();
+      const events = await ownEventsOnce(h.oldSigner.address, true);
       let done = 0;
       progress(0, events.length);
       for (const feed of events) {
@@ -263,7 +348,14 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
       }
     },
 
-    flip: (going, ring) => h.flip(going, ring),
+    organiserKeyMove: async (keys) => {
+      const due = await organiserKeyDue(keys.organiserKey, { ownFeedSigners: [h.oldSigner.address], strict: false });
+      if (!due || due.ids.length === 0) return null;
+      const { MAX_ORGANISER_KEY_IDS } = await import("@woco/shared/ticket/ledger2");
+      return { ledger: due.ledger, ids: due.ids.slice(0, MAX_ORGANISER_KEY_IDS), key: keys.organiserKey };
+    },
+
+    flip: (going, ring, move) => h.flip(going, ring, move),
     adopt: (chain) => h.adopt(chain),
 
     after: {
@@ -335,6 +427,17 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
       // flip already did that.
       records: async (_keys: NewKeys, { going }) => {
         for (const key of going) await h.removeRecord(key);
+      },
+      // What the flip could not carry: past one op's worth, registered between its read
+      // and its landing, or missed by a chain read that failed then. Chain only, read
+      // afresh each time, and never cleared on a partial read (`strict`).
+      organiser: async (keys: NewKeys) => {
+        const due = await organiserKeyDue(keys.organiserKey, { ownFeedSigners: [], strict: true });
+        if (!due) return;
+        const { MAX_ORGANISER_KEY_IDS } = await import("@woco/shared/ticket/ledger2");
+        for (let i = 0; i < due.ids.length; i += MAX_ORGANISER_KEY_IDS) {
+          await h.moveOrganiserKey({ ledger: due.ledger, ids: due.ids.slice(i, i + MAX_ORGANISER_KEY_IDS), key: keys.organiserKey });
+        }
       },
       social: async (keys: NewKeys) => {
         const { liveSocialDeps } = await import("../auth/upgrade-to-passkey-live.js");

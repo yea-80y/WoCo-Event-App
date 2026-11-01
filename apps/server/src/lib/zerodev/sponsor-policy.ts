@@ -44,9 +44,17 @@
  *   renew          `execute` single `weighted.renew(list)` - add or remove a co-owner
  *   ring           `execute` single `anchor.setRing(prev, ring)` - the account's key ring moves
  *                  without a list change (a passkey given the keys, #186)
+ *   organiser-key  `execute` single `ledger2.setOrganiserKey(ids, key)` - the account's events
+ *                  move to its current organiser key (`@woco/shared/ticket/ledger2`), for the
+ *                  events a removal's own op could not carry
  * The co-owners and renew shapes may END with that same `setRing` call: a removal is
- * [renew(list without it), setRing(prev, next)], so the keys it lost and its place on the
- * list change in one op or not at all. A ring is never zero, and rides on no other shape.
+ * [renew(list without it), setOrganiserKey(ids, key)?, setRing(prev, next)], so the keys
+ * it lost, the events' organiser key and its place on the list change in one op or not at
+ * all. The ring alone may carry the key move too (a removal whose passkeys another device
+ * already took off). A ring is never zero, and rides on no other shape; the key move rides
+ * only right before a ring after renew or alone, at 1..50 distinct ids, on the ledger the
+ * server registers on. An id that is not the account's reverts the op on our gas, as a
+ * stale ring does: the per-account count bounds both.
  * Both co-owner shapes carry a list only when it is 1..10 distinct keys, every weight 1,
  * threshold 1, no delay: the validator accepts an empty list or an unreachable threshold
  * and the account is then locked for good (WoCo-Contracts WeightedRootKernel.t.sol F5).
@@ -90,6 +98,7 @@ import {
 } from "@woco/shared/kernel/co-owners";
 import { FEATURES } from "@woco/shared";
 import { KEY_RING_ANCHOR_ABI, KEY_RING_ANCHOR_ADDRESS } from "@woco/shared/keyring/anchor";
+import { isValidOrganiserKeyMove, SET_ORGANISER_KEY_FN } from "@woco/shared/ticket/ledger2";
 import type { GateStatus } from "../gate/check.js";
 import { SlidingWindowLimiter } from "../http/rate-limit.js";
 import { RollingDayCount } from "./upgrade-intents.js";
@@ -103,7 +112,8 @@ export type SponsorShape =
   | "co-owners"
   | "upgrade"
   | "renew"
-  | "ring";
+  | "ring"
+  | "organiser-key";
 
 export type Classified =
   | { ok: true; shape: SponsorShape; subject: string; guardian?: string }
@@ -153,6 +163,7 @@ const CO_OWNER_ABI = parseAbi([WEIGHTED_RENEW_FN, CHANGE_ROOT_VALIDATOR_FN, UNIN
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const RING_ANCHOR = lc(KEY_RING_ANCHOR_ADDRESS);
 const RING_ABI = parseAbi(KEY_RING_ANCHOR_ABI);
+const ORGANISER_KEY_ABI = parseAbi([SET_ORGANISER_KEY_FN]);
 
 function uint(v: unknown): bigint | null {
   if (v === undefined || v === null || v === "" || v === "0x") return 0n;
@@ -346,6 +357,19 @@ function isSetRing(call: InnerCall): boolean {
   }
 }
 
+/** `ledger.setOrganiserKey(ids, key)` on a ledger the server registers on, as WoCo builds it. */
+function isOrganiserKeyMove(call: InnerCall, ledgers: ReadonlySet<string>): boolean {
+  if (!ledgers.has(call.to)) return false;
+  try {
+    const d = decodeFunctionData({ abi: ORGANISER_KEY_ABI, data: call.data });
+    if (d.functionName !== "setOrganiserKey") return false;
+    const [ids, key] = d.args as [readonly Hex[], string];
+    return isValidOrganiserKeyMove(call.to, ids, key);
+  } catch {
+    return false;
+  }
+}
+
 function recoveryTarget(call: InnerCall): string | null {
   try {
     const d = decodeFunctionData({ abi: RECOVERY_ABI, data: call.data });
@@ -356,8 +380,11 @@ function recoveryTarget(call: InnerCall): string | null {
   }
 }
 
-/** WHAT: the shape of this userOp, and whose unlock pays for it. Pure. */
-export function classifyUserOp(op: PolicyUserOp): Classified {
+/**
+ * WHAT: the shape of this userOp, and whose unlock pays for it. Pure. `ledgers`: where
+ * an organiser-key move may go (lowercase); empty = no key move is ever paid.
+ */
+export function classifyUserOp(op: PolicyUserOp, ledgers: ReadonlySet<string> = new Set()): Classified {
   if (op.factory !== null && !KERNEL_FACTORIES.has(op.factory)) return { ok: false, reason: "factory" };
   const selector = lc(op.callData.slice(0, 10));
 
@@ -387,10 +414,23 @@ export function classifyUserOp(op: PolicyUserOp): Classified {
   if (calls.some((c, i) => c.to === RING_ANCHOR && !(ringLast && i === calls.length - 1))) {
     return { ok: false, reason: "ring" };
   }
-  if (!ringLast) return classifyCalls(calls, op.sender);
-  if (calls.length === 1) return { ok: true, shape: "ring", subject: op.sender };
-  const inner = classifyCalls(calls.slice(0, -1), op.sender);
-  return inner.ok && (inner.shape === "renew" || inner.shape === "co-owners") ? inner : { ok: false, reason: "ring" };
+  const body = ringLast ? calls.slice(0, -1) : calls;
+  // The organiser-key move: right before the ring, or alone. Any other ledger call, never.
+  const moveAt = body.length - 1;
+  const moveLast = moveAt >= 0 && isOrganiserKeyMove(body[moveAt]!, ledgers);
+  if (calls.some((c, i) => ledgers.has(c.to) && !(moveLast && i === moveAt))) {
+    return { ok: false, reason: "organiser-key" };
+  }
+  const rest = moveLast ? body.slice(0, -1) : body;
+  if (!ringLast) {
+    if (!moveLast) return classifyCalls(calls, op.sender);
+    return rest.length === 0 ? { ok: true, shape: "organiser-key", subject: op.sender } : { ok: false, reason: "organiser-key" };
+  }
+  if (rest.length === 0) return { ok: true, shape: "ring", subject: op.sender };
+  const inner = classifyCalls(rest, op.sender);
+  // A key move rides only with a removal: renew. The switch adds a passkey and keeps the keys.
+  if (inner.ok && (inner.shape === "renew" || (inner.shape === "co-owners" && !moveLast))) return inner;
+  return { ok: false, reason: "ring" };
 }
 
 /** The `execute` calls of every shape but the ring's, classified. */
@@ -427,6 +467,8 @@ export interface PolicyDeps {
   isGuardian(account: string, guardian: string): Promise<boolean | null>;
   /** Spend the intent the locked account's own session asked for: true when it held one. */
   upgradeIntent: { spend(account: string): boolean };
+  /** Ledgers an organiser-key move may go to, on the Kernel chain. Absent = none. */
+  organiserKeyLedgers?(): readonly string[];
 }
 
 export type Decision =
@@ -464,7 +506,7 @@ export class SponsorPolicy {
   ) {}
 
   async decide(op: PolicyUserOp): Promise<Decision> {
-    const shape = classifyUserOp(op);
+    const shape = classifyUserOp(op, new Set((this.deps.organiserKeyLedgers?.() ?? []).map(lc)));
     if (!shape.ok) return { proceed: false, reason: shape.reason };
     const { subject } = shape;
     // Email accounts' backups are off for launch (#186): no op that ADDS one is paid.

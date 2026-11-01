@@ -43,3 +43,17 @@ test("own feeds are read thorough, and an unreadable or inconclusive one stops t
 test("the server is counted as told only when it names the ring just set", () => {
   assert.match(LIVE, /if \(res\.data\?\.ref !== ctx\.ring\) throw new Error/);
 });
+
+test("the events' key move: found from the chain, never the platform index; never blocks the flip, never clears unread", () => {
+  const due = body("async function organiserKeyDue(");
+  assert.match(due, /await scanOwnLedger2Events\(parent, deployment\)/, "the chain is the source");
+  assert.doesNotMatch(due, /getEventsByCreator/, "the platform's index is no source of the move");
+  assert.match(due, /planOrganiserKeyMoves\(states, parent, key, Date\.now\(\) \/ 1000\)/);
+  // The after-step clears only on a whole read; the flip carries what it has.
+  assert.match(due, /if \(opts\.strict && !scan\.complete\) throw/);
+  assert.match(due, /if \(states === "error"\) \{\s*if \(opts\.strict\) throw[^\n]*\n\s*return \{ ledger: deployment\.address, ids: \[\] \};/);
+  // The own-feed ids only add: an unreadable feed never stops the move.
+  assert.match(due, /\} catch \{\s*\/\/ The chain is the source; the feeds only add to it\.\s*\}/);
+  assert.match(LIVE, /organiserKeyDue\(keys\.organiserKey, \{ ownFeedSigners: \[h\.oldSigner\.address\], strict: false \}\)/, "the flip");
+  assert.match(LIVE, /organiserKeyDue\(keys\.organiserKey, \{ ownFeedSigners: \[\], strict: true \}\)/, "the after-step");
+});

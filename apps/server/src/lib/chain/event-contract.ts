@@ -1,5 +1,6 @@
 import { JsonRpcProvider, Contract } from "ethers";
 import type { PaymentChainId } from "@woco/shared";
+import { TICKET_LEDGER2_ADDRESSES } from "@woco/shared/ticket/ledger2";
 import { getRpcUrl } from "../payment/constants.js";
 
 /** RPC URLs for chains used by WoCoEvent but outside PaymentChainId (e.g. L2 testnets). */
@@ -95,8 +96,23 @@ const DEPLOYED_V2: Record<number, string> = {
  */
 const DEPLOYED_LEDGER: Record<number, string> = {};
 
-/** WoCoTicketLedger version 2. Override via WOCO_EVENT_ADDRESS_LEDGER2_{chainId}; empty until deployed, as above. */
-const DEPLOYED_LEDGER2: Record<number, string> = {};
+/**
+ * WoCoTicketLedger version 2: the SHARED constant, because an account's browser
+ * re-points its events' organiser key there itself (`@woco/shared/ticket/ledger2`).
+ * Override via WOCO_EVENT_ADDRESS_LEDGER2_{chainId} only where the constant is empty:
+ * boot refuses an override that names another ledger (`assertEventContractConfig`).
+ */
+const DEPLOYED_LEDGER2: Readonly<Record<number, string>> = TICKET_LEDGER2_ADDRESSES;
+
+/**
+ * The ledger v2 address on `chainId` whatever version env selects there, lowercase, or
+ * null when there is none: an event registered on it keeps its organiser key after a
+ * later cutover, and its account still moves that key.
+ */
+export function ledger2Address(chainId: number): string | null {
+  const a = process.env[`WOCO_EVENT_ADDRESS_LEDGER2_${chainId}`]?.trim() || DEPLOYED_LEDGER2[chainId];
+  return a ? a.toLowerCase() : null;
+}
 
 /**
  * Chain the server uses for event registration: `WOCO_EVENT_CHAIN_ID`, REQUIRED.
@@ -429,6 +445,16 @@ export async function getOnChainEventAt(
  */
 export function assertEventContractConfig(): void {
   const chainId = getActiveChainId();
+  // Browsers move organiser keys on the shared address: a server registering on
+  // another would leave every key move it sponsors pointing at the wrong ledger.
+  const shared = DEPLOYED_LEDGER2[chainId]?.toLowerCase();
+  const override = process.env[`WOCO_EVENT_ADDRESS_LEDGER2_${chainId}`]?.trim().toLowerCase();
+  if (shared && override && override !== shared) {
+    throw new EventContractConfigError(
+      `WOCO_EVENT_ADDRESS_LEDGER2_${chainId} (${override}) is not the shared ledger v2 address (${shared}). ` +
+      `Remove the override, or change TICKET_LEDGER2_ADDRESSES in @woco/shared/ticket/ledger2.`,
+    );
+  }
   const version = getEventContractVersion(chainId); // throws on an unknown value
   const address = getWoCoEventAddress(chainId);
   if (!address) {

@@ -27,6 +27,7 @@ import {
   sortCoOwners,
 } from "@woco/shared/kernel/co-owners";
 import { KEY_RING_ANCHOR_ABI, KEY_RING_ANCHOR_ADDRESS, ringRefToAnchor } from "@woco/shared/keyring/anchor";
+import { isValidOrganiserKeyMove, SET_ORGANISER_KEY_FN } from "@woco/shared/ticket/ledger2";
 
 const NO_RING = `0x${"0".repeat(64)}`;
 
@@ -138,6 +139,32 @@ export function coOwnerRingCall(d: CoOwnerEncoders, prevRef: string | null, next
       abi: d.parseAbi([...KEY_RING_ANCHOR_ABI]),
       functionName: "setRing",
       args: [anchor(prevRef), anchor(nextRef)],
+    }),
+  };
+}
+
+/**
+ * The account's events onto its organiser key (ledger2, `@woco/shared/ticket/ledger2`):
+ * `setOrganiserKey(ids, key)`. In a removal it rides just before `setRing`, so the key
+ * the removed passkey can derive stops signing for those events in the same op.
+ */
+export interface OrganiserKeyMove {
+  ledger: string;
+  ids: string[];
+  key: string;
+}
+
+export function organiserKeyMoveCall(d: CoOwnerEncoders, move: OrganiserKeyMove): CoOwnerCall {
+  if (!isValidOrganiserKeyMove(move.ledger, move.ids, move.key)) {
+    throw new CoOwnerListError("Those events can't be moved to the new key.");
+  }
+  return {
+    to: move.ledger.toLowerCase() as Hex,
+    value: 0n,
+    data: d.encodeFunctionData({
+      abi: d.parseAbi([SET_ORGANISER_KEY_FN]),
+      functionName: "setOrganiserKey",
+      args: [move.ids.map((id) => id.toLowerCase()), move.key.toLowerCase()],
     }),
   };
 }

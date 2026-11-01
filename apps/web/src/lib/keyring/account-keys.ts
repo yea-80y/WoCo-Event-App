@@ -496,10 +496,11 @@ export async function rotateOnRemovalFor(h: AccountKeysHost, going: string[], op
     chain: u.chain,
     oldSigner: deriveFeedSignerKey(currentSecretOf(u.seed, u.chain)),
     oldSecrets: allSecretsOf(u.seed, u.chain),
-    flip: async (g, ring) => {
-      await flows.removeCoOwnersWithRing(h.coOwnerHost(), g, ring);
+    flip: async (g, ring, move) => {
+      await flows.removeCoOwnersWithRing(h.coOwnerHost(), g, ring, move ?? undefined);
       return { confirmed: true };
     },
+    moveOrganiserKey: (move) => flows.moveOrganiserKey(h.coOwnerHost(), move),
     adopt: (chain) => adoptOwnRing(h, chain),
     signTypedDataAsHolder: (typed) => h.signTypedDataAsHolder(typed),
     removeRecord: (key) => h.removeRecordAfterList(u.parent, key),
