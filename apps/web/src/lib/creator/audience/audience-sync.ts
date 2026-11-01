@@ -134,9 +134,12 @@ export interface ListState {
   removed: MarketingListTombstone[];
 }
 
+/** The stored list right now. `sealedList: null` = on record but not found (`MarketingListResponse`). */
+export type StoredList = { sealedList: SealedBoxV2 | null; updatedAt: string };
+
 export interface ListSaveDeps {
-  /** The stored list right now. Null = none yet; throws when it cannot be read. */
-  readList(): Promise<{ sealedList: SealedBoxV2; updatedAt: string } | null>;
+  /** Null = none yet; throws when it cannot be read. */
+  readList(): Promise<StoredList | null>;
   openList(box: SealedBoxV2): Promise<MarketingListPayload>;
   sealList(payload: MarketingListPayload): Promise<SealedBoxV2>;
   writeList(sealed: SealedBoxV2, emails: string[], ifUpdatedAt: string | null): Promise<MarketingListMeta>;
@@ -148,13 +151,18 @@ export interface ListSaveDeps {
  * in between (`ifUpdatedAt`). So a stale tab can never bring back a contact deleted
  * elsewhere, or wipe its tombstone (Fable sign-off 2026-10-14). Throws the
  * server's LIST_CHANGED when it lost that race; the caller reloads and says so.
+ *
+ * A stored list that cannot be found is written over only with `replaceMissing`,
+ * the organiser's "Start a new list"; any other save throws LIST_MISSING.
  */
 export async function saveListChange(
   deps: ListSaveDeps,
   change: (list: ListState) => ListState,
+  { replaceMissing = false }: { replaceMissing?: boolean } = {},
 ): Promise<{ payload: MarketingListPayload; meta: MarketingListMeta }> {
   const stored = await deps.readList();
-  const base = stored ? await deps.openList(stored.sealedList) : { version: 1 as const, contacts: [] };
+  if (stored && !stored.sealedList && !replaceMissing) throw listMissingError();
+  const base = stored?.sealedList ? await deps.openList(stored.sealedList) : { version: 1 as const, contacts: [] };
   const next = change({ contacts: base.contacts, removed: normaliseRemoved(base.removed) });
   const payload = listPayload(next.contacts, next.removed);
   const meta = await deps.writeList(
@@ -267,8 +275,8 @@ export interface SyncDeps {
   /** The event's questions. Throws when unreadable. */
   getOrderFields(ev: EventDirectoryEntry): Promise<readonly OrderField[]>;
   check(emails: string[]): Promise<MarketingCheckResult>;
-  /** The stored list right now. Null = none yet; throws when it cannot be read. */
-  readList(): Promise<{ sealedList: SealedBoxV2; updatedAt: string } | null>;
+  /** Null = none yet; throws when it cannot be read. */
+  readList(): Promise<StoredList | null>;
   /** `ifUpdatedAt` = the stamp of the list this was merged onto; the server refuses if it moved since. */
   writeList(sealed: SealedBoxV2, emails: string[], ifUpdatedAt: string | null): Promise<MarketingListMeta>;
   /** Still the same signed-in organiser - never write one account's buyers into another's list. */
@@ -457,11 +465,13 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
   const mergeAndWrite = async (fail: (error: string) => SyncResult): Promise<SyncResult | typeof LIST_CHANGED> => {
     if (!deps.stillCurrent()) return fail("You switched accounts, so nothing was added.");
 
-    let stored: { sealedList: SealedBoxV2; updatedAt: string } | null;
+    let stored: StoredList | null;
     let base: MarketingListPayload;
     try {
       stored = await deps.readList();
-      base = stored ? await keys.openList(stored.sealedList) : { version: 1, contacts: [] };
+      // Buyers alone written over it would read as the whole list; the organiser decides.
+      if (stored && !stored.sealedList) return fail(LIST_MISSING_MESSAGE);
+      base = stored?.sealedList ? await keys.openList(stored.sealedList) : { version: 1, contacts: [] };
     } catch (err) {
       return fail(message(err, "Could not open your list to add new buyers."));
     }
@@ -535,6 +545,18 @@ export const LIST_CHANGED = "LIST_CHANGED";
 
 export function isListChanged(err: unknown): boolean {
   return !!err && typeof err === "object" && (err as { code?: unknown }).code === LIST_CHANGED;
+}
+
+/** The stored list is on record but could not be found: nothing is added until the organiser starts a new one. */
+export const LIST_MISSING = "LIST_MISSING";
+export const LIST_MISSING_MESSAGE = "Your saved contact list can't be found. Open Audience to start a new one.";
+
+function listMissingError(): Error {
+  return Object.assign(new Error(LIST_MISSING_MESSAGE), { code: LIST_MISSING });
+}
+
+export function isListMissing(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: unknown }).code === LIST_MISSING;
 }
 
 // ── Throttle and lock ───────────────────────────────────────────────────────

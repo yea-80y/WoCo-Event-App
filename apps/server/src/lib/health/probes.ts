@@ -556,6 +556,37 @@ async function readPlatformBatchOnChain(
   return "listed";
 }
 
+/**
+ * Is this batch still on chain, by our bee's batch store? One pass, for telling a
+ * person why stored data could not be found. "gone" needs our bee caught up with
+ * the chain and our own live batch in its store this call (a wiped or refilling
+ * store answers 404 for everything). No second pass as above: a batch that already
+ * stamped data is older than our bee's block, so only expiry takes it out.
+ */
+export async function batchOnChain(
+  batchId: string,
+  readers: Pick<HealthReaders, "beeBatch" | "chainstate"> = liveReaders,
+): Promise<"listed" | "gone" | "unknown"> {
+  try {
+    await readers.beeBatch(batchId);
+    return "listed";
+  } catch (err) {
+    if (!isNotFound(err)) return "unknown";
+  }
+  if (!POSTAGE_BATCH_ID || batchId === POSTAGE_BATCH_ID) return "unknown";
+  try {
+    const raw = await readers.chainstate();
+    const block = num(raw.block);
+    const chainTip = num(raw.chainTip);
+    const { postage: cfg } = readThresholdsFromEnv(process.env);
+    if (block === null || chainTip === null || chainTip - block > cfg.chainLagMaxBlocks) return "unknown";
+    await readers.beeBatch(POSTAGE_BATCH_ID);
+  } catch {
+    return "unknown";
+  }
+  return "gone";
+}
+
 export interface ChainCheck {
   ok: Verdict;
   /** Our bee's batch store lists the batch; null when it could not be asked. */

@@ -21,6 +21,7 @@ import {
   removedId,
   saveListChange,
   isListChanged,
+  isListMissing,
   type ListSaveDeps,
   SETTLE_MS,
   STALE_MS,
@@ -66,6 +67,8 @@ interface World {
   locked?: boolean;
   sealLocked?: boolean;
   readFails?: boolean;
+  /** The list is on record but its stored copy was not found (`sealedList: null`). */
+  missing?: boolean;
   openListFails?: boolean;
   writeFails?: boolean;
   /** The key ring moved on (a passkey removal) between taking the seal key and the upload. */
@@ -162,6 +165,7 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
     async readList() {
       w.log.push("readList");
       if (w.readFails) throw new Error("swarm read failed");
+      if (w.list && w.missing) return { sealedList: null, updatedAt: w.list.updatedAt };
       return w.list ? { sealedList: { sealed: structuredClone(w.list.payload) } as never, updatedAt: w.list.updatedAt } : null;
     },
     async writeList(sealed, emails, ifUpdatedAt) {
@@ -175,6 +179,7 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
       w.writes.push({ payload, emails });
       const updatedAt = `stamp-${++stampSeq}`;
       w.list = { payload, updatedAt };
+      w.missing = false;
       return { count: emails.length, updatedAt, swarmRef: "ab" };
     },
     stillCurrent: () => w.current !== false,
@@ -607,6 +612,54 @@ test("a screen save with no list yet says so, and an unreadable list writes noth
   const broken = world({ list: { payload: { version: 1, contacts: [] }, updatedAt: "s0" }, readFails: true });
   await assert.rejects(saveListChange(screenSave(broken), (list) => list));
   assert.equal(broken.writes.length, 0);
+});
+
+// ── A list on record that can't be found ───────────────────────────────────
+
+const lostList = () =>
+  world({ list: { payload: { version: 1, contacts: [{ email: "ada@x.com", addedAt: "2026-01-01" }] }, updatedAt: "s-lost" }, missing: true });
+
+test("a list that can't be found is never saved over by an edit - only by Start a new list, against the record it replaces", async () => {
+  const w = lostList();
+  const bo = { email: "bo@x.com", addedAt: "2026-10-14" };
+  await assert.rejects(
+    saveListChange(screenSave(w), (list) => ({ ...list, contacts: [...list.contacts, bo] })),
+    (err: unknown) => isListMissing(err),
+  );
+  assert.equal(w.writes.length, 0, "an import onto nothing would read as the whole list");
+
+  await saveListChange(screenSave(w), () => ({ contacts: [], removed: [] }), { replaceMissing: true });
+  assert.equal(w.writes.length, 1);
+  assert.deepEqual(emailsOf(w.list!.payload), []);
+  assert.ok(w.log.includes("writeList:s-lost"), "refused if anything saved since the organiser saw it missing");
+});
+
+test("the buyer check never writes over a list that can't be found, and marks nothing as covered", async () => {
+  const w = lostList();
+  const r = await sync(w);
+  assert.equal(r.status, "failed");
+  assert.match(r.error ?? "", /can't be found/);
+  assert.equal(w.writes.length, 0);
+  assert.equal(w.storage.size, 0, "no watermark: the next run reads every event");
+});
+
+test("after Start a new list, the next check reads every event again and opted-in buyers come back", async () => {
+  const w = world();
+  await sync(w);
+  w.now += SETTLE_MS + SYNC_INTERVAL_MS;
+  await sync(w);
+  w.missing = true;
+  w.now += SYNC_INTERVAL_MS;
+  await sync(w);
+  assert.equal(w.writes.length, 1, "nothing written while it can't be found");
+
+  await saveListChange(screenSave(w), () => ({ contacts: [], removed: [] }), { replaceMissing: true });
+  w.now += SYNC_INTERVAL_MS;
+  w.log.length = 0;
+  const r = await sync(w);
+  assert.ok(w.log.includes("fields:e1"), "the marks from before the loss are not trusted");
+  assert.equal(r.added, 1);
+  assert.deepEqual(emailsOf(w.list!.payload), ["ada@x.com"]);
 });
 
 // ── Never prompting ────────────────────────────────────────────────────────

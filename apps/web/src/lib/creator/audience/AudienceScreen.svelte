@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { MarketingContact, MarketingListMeta, ContactConsentState } from "@woco/shared";
+  import type { MarketingContact, MarketingListMeta, ContactConsentState, ListStorageVerdict } from "@woco/shared";
   import { contactConsentState } from "@woco/shared";
   import type { MarketingListPayload, MarketingListTombstone } from "@woco/shared";
   import UnlockPanel from "../../components/auth/UnlockPanel.svelte";
@@ -29,6 +29,7 @@
     addRemoved,
     clearRemoved,
     isListChanged,
+    isListMissing,
     normaliseRemoved,
     saveListChange,
     type ListState,
@@ -44,6 +45,9 @@
   // The list exists but the account keys are locked on this device (#746 fix 1):
   // it opens on one tap, never by itself on page open.
   let listLocked = $state(false);
+  /** On record but not found in storage. Replaced only by the organiser's "Start a new list". */
+  let listMissing = $state<{ count: number; updatedAt: string; storage: ListStorageVerdict } | null>(null);
+  let startNewError = $state<string | null>(null);
   let meta = $state<MarketingListMeta | null>(null);
   let contacts = $state<MarketingContact[]>([]);
   /** Deleted by the organiser: the automatic add of opted-in buyers never brings these back. */
@@ -133,6 +137,7 @@
     loading = true;
     loadError = null;
     listLocked = false;
+    listMissing = null;
     try {
       // Read under the list lock: a sync write landing mid-read would otherwise be
       // painted over by the older copy this read fetched.
@@ -145,6 +150,12 @@
           return false;
         }
         meta = resp.meta;
+        if (resp.sealedList === null) {
+          contacts = [];
+          removed = [];
+          listMissing = { count: resp.meta.count, updatedAt: resp.meta.updatedAt, storage: resp.storage };
+          return false;
+        }
         const keys = await getKeys();
         if (!keys) return true;
         const { openJsonWithAnyKey } = await import("../../keyring/order-keys.js");
@@ -158,6 +169,7 @@
         else loadError = "Sign in and unlock your identity to open your audience.";
         return;
       }
+      if (listMissing) return;
       await refreshConsentStates(contacts);
       // Opted-in buyers since the last check join now; the screen takes the result through onListWritten.
       void syncAudience();
@@ -182,11 +194,15 @@
    * between - so a stale tab can never bring back a deleted contact or wipe a
    * tombstone. Lost that race: the screen reloads and says so plainly.
    */
-  async function commitList(change: (list: ListState) => ListState): Promise<void> {
+  async function commitList(
+    change: (list: ListState) => ListState,
+    opts: { replaceMissing?: boolean } = {},
+  ): Promise<void> {
     const keys = await getKeys(true, true);
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
     let changedElsewhere = false;
+    let missing = false;
     try {
       await withListLock(async () => {
         const { openJsonWithAnyKey } = await import("../../keyring/order-keys.js");
@@ -202,14 +218,16 @@
               writeList: (sealed, emails, ifUpdatedAt) => uploadMarketingList(sealed, emails, { ifUpdatedAt }),
             },
             change,
+            opts,
           );
           contacts = saved.payload.contacts;
           removed = normaliseRemoved(saved.payload.removed);
           meta = saved.meta;
           listNotice = null;
         } catch (err) {
-          if (!isListChanged(err)) throw err;
-          changedElsewhere = true;
+          if (isListMissing(err)) missing = true;
+          else if (isListChanged(err)) changedElsewhere = true;
+          else throw err;
         }
       });
       if (changedElsewhere) {
@@ -217,10 +235,28 @@
         listNotice = LIST_CHANGED_NOTICE;
         throw new Error(LIST_CHANGED_NOTICE);
       }
+      // Lost from storage since the screen opened it: show that, never save over it.
+      if (missing) {
+        await load();
+        throw new Error("Your saved contact list can't be found, so nothing was saved.");
+      }
       if (contacts.length > 0 && auth.parent) markAudienceImported(auth.parent);
       await refreshConsentStates(contacts);
     } finally {
       saving = false;
+    }
+  }
+
+  /** The organiser's tap - the only write that may replace a list that can't be found. */
+  async function startNewList(): Promise<void> {
+    startNewError = null;
+    try {
+      await commitList(() => ({ contacts: [], removed: [] }), { replaceMissing: true });
+      listMissing = null;
+      // The new list's stamp makes the check read every event again: opted-in buyers come back.
+      void syncAudience({ force: true });
+    } catch (err) {
+      startNewError = err instanceof Error ? err.message : "Could not start a new list.";
     }
   }
 
@@ -328,7 +364,7 @@
       <h2>Audience</h2>
       <p class="sub">
         Your marketing list — encrypted to your identity, only you can read it.
-        {#if meta}<span class="when">Saved {new Date(meta.updatedAt).toLocaleDateString()}.</span>{/if}
+        {#if meta && !listMissing}<span class="when">Saved {new Date(meta.updatedAt).toLocaleDateString()}.</span>{/if}
       </p>
     </div>
   </header>
@@ -347,6 +383,35 @@
     </div>
   {:else if listLocked}
     <UnlockPanel subject="Contact details" action="Show contacts" />
+  {:else if listMissing}
+    {@const saved = new Date(listMissing.updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}
+    {@const list = `Your list of ${listMissing.count} ${listMissing.count === 1 ? "contact" : "contacts"}, last saved ${saved},`}
+    <div class="empty invite">
+      <h3>Your saved contacts can't be found</h3>
+      <p class="muted">
+        {#if listMissing.storage === "expired"}
+          {list} was kept on storage that has expired, so it can't be brought back.
+        {:else if listMissing.storage === "live"}
+          {list} can't be reached right now. Try again in a few minutes.
+        {:else}
+          {list} can't be found in storage. If the storage it was kept on has expired, it can't be brought back.
+        {/if}
+      </p>
+      <p class="muted">
+        Start a new list to carry on - ticket buyers who said yes at checkout are added again
+        automatically, and you can import the rest. Anyone who unsubscribed stays unsubscribed.
+      </p>
+      {#if startNewError}<p class="err">{startNewError}</p>{/if}
+      <div class="actions center">
+        {#if listMissing.storage === "live"}
+          <button class="btn-primary" disabled={saving} onclick={() => void load()}>Try again</button>
+          <button class="btn-ghost" disabled={saving} onclick={() => void startNewList()}>Start a new list</button>
+        {:else}
+          <button class="btn-primary" disabled={saving} onclick={() => void startNewList()}>Start a new list</button>
+          <button class="btn-ghost" disabled={saving} onclick={() => void load()}>Try again</button>
+        {/if}
+      </div>
+    </div>
   {:else}
     {#if listNotice}
       <p class="list-notice" role="status">{listNotice}</p>

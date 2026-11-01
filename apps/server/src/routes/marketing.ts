@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { RedundancyLevel } from "@ethersphere/bee-js";
 import { FEATURES, MAILABLE_EMAIL_RE, MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
+import type { ListStorageVerdict, MarketingListResponse } from "@woco/shared";
 import { isSealedBoxV2, type SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -37,7 +38,9 @@ import {
   MARKETING_SENDER_UNCONFIGURED_CODE,
   type SendingDomainEntry,
 } from "../lib/marketing/sending-domain-store.js";
-import { uploadToBytes, downloadFromBytes } from "../lib/swarm/bytes.js";
+import { uploadToBytes, downloadFromBytes, SwarmNotFoundError } from "../lib/swarm/bytes.js";
+import { requirePostageBatch } from "../config/swarm.js";
+import { batchOnChain } from "../lib/health/probes.js";
 import { writeFeedPage, encodeJsonFeed } from "../lib/swarm/feeds.js";
 import { topicMarketingList } from "../lib/swarm/topics.js";
 
@@ -155,7 +158,8 @@ marketing.post("/list", requireAuth, async (c) => {
       // Inside the organiser's lock, so no other write can land between this check and the one below.
       if (expected !== undefined && listMoved(org, expected)) return null;
       const emailHashes = [...new Set(emails.map(hashEmail))];
-      const swarmRef = await uploadToBytes(JSON.stringify(sealedList), undefined, {
+      const batchId = requirePostageBatch();
+      const swarmRef = await uploadToBytes(JSON.stringify(sealedList), { batchId, target: "wocoBee" }, {
         redundancyLevel: RedundancyLevel.STRONG,
       });
       const updatedAt = new Date().toISOString();
@@ -164,7 +168,7 @@ marketing.post("/list", requireAuth, async (c) => {
         topicMarketingList(org),
         encodeJsonFeed({ version: 1, swarmRef, count, updatedAt }),
       );
-      putList(org, { swarmRef, count, updatedAt, emailHashes });
+      putList(org, { swarmRef, count, updatedAt, emailHashes, batchId });
       // Pacing proof exists to exempt a contact on this list; one who left it
       // has nothing to be exempted from (#619).
       pruneProven(org, new Set(emailHashes));
@@ -204,14 +208,21 @@ marketing.get("/list", requireAuth, async (c) => {
     const entry = getList(org);
     if (!entry) return c.json({ ok: true, data: null });
 
-    const sealedList = JSON.parse(await downloadFromBytes(entry.swarmRef)) as SealedBoxV2;
-    return c.json({
-      ok: true,
-      data: {
-        meta: { count: entry.count, updatedAt: entry.updatedAt, swarmRef: entry.swarmRef },
-        sealedList,
-      },
-    });
+    const meta = { count: entry.count, updatedAt: entry.updatedAt, swarmRef: entry.swarmRef };
+    let raw: string;
+    try {
+      raw = await downloadFromBytes(entry.swarmRef);
+    } catch (err) {
+      if (!(err instanceof SwarmNotFoundError)) throw err;
+      // On record but not found. Only the organiser may replace it (MarketingListResponse).
+      const onChain = entry.batchId ? await batchOnChain(entry.batchId) : "unknown";
+      const storage: ListStorageVerdict = onChain === "gone" ? "expired" : onChain === "listed" ? "live" : "unknown";
+      console.warn(`[marketing] list ${entry.swarmRef} not found for ${org} (storage ${storage})`);
+      const data: MarketingListResponse = { meta, sealedList: null, storage };
+      return c.json({ ok: true, data });
+    }
+    const data: MarketingListResponse = { meta, sealedList: JSON.parse(raw) as SealedBoxV2 };
+    return c.json({ ok: true, data });
   } catch (err) {
     console.error("[marketing] list fetch error:", err);
     const message = err instanceof Error ? err.message : "List fetch failed";
