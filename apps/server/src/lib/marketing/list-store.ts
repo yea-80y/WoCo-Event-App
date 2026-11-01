@@ -16,6 +16,8 @@ export interface MarketingListEntry {
   count: number;
   updatedAt: string;
   emailHashes: string[];
+  /** The postage batch that stamped `swarmRef`, so a list that cannot be found can be told "expired" from "unreachable". Absent before it was recorded. */
+  batchId?: string;
 }
 
 const lists = new Map<string, MarketingListEntry>();

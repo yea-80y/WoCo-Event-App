@@ -324,6 +324,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
         const [{ getMarketingList, uploadMarketingList }, { listSealContext, sealBoxJsonCompressed }, { orderKeysOf, openJsonWithAnyKey }] =
           await Promise.all([import("../api/marketing.js"), import("@woco/shared/crypto/sealed-box"), import("./order-keys.js")]);
         const resp = await getMarketingList();
+        // None, or on record but not found: nothing to re-seal, and a lost list must not block the removal.
         if (!resp?.sealedList) return;
         const ctx = listSealContext(parent);
         const { secretKeys } = await orderKeysOf({ current: h.oldSecrets.at(-1)!, all: h.oldSecrets });
