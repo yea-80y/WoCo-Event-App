@@ -39,12 +39,12 @@ const order = (seriesId: string, edition: number, enc?: string): OrderEntry =>
 // ── OpenedOrders ────────────────────────────────────────────────────────────
 
 test("nothing shows before the keys opened anything", () => {
-  const opened = new OpenedOrders<{ n: number }>(() => ({ n: 0 }));
+  const opened = new OpenedOrders<{ n: number }>();
   assert.equal(opened.remap([order("a", 1, "e1"), order("a", 2)]).size, 0);
 });
 
 test("an opened order follows its ticket when a sale shifts the positions", () => {
-  const opened = new OpenedOrders<{ n: number }>(() => ({ n: 0 }));
+  const opened = new OpenedOrders<{ n: number }>();
   const b1 = order("b", 1, "eb1");
   opened.markOpened();
   opened.put(b1, { n: 7 });
@@ -55,7 +55,7 @@ test("an opened order follows its ticket when a sale shifts the positions", () =
 });
 
 test("only orders with a box not opened before are opened", () => {
-  const opened = new OpenedOrders<{ n: number }>(() => ({ n: 0 }));
+  const opened = new OpenedOrders<{ n: number }>();
   const a1 = order("a", 1, "e1");
   opened.markOpened();
   opened.put(a1, { n: 1 });
@@ -64,26 +64,38 @@ test("only orders with a box not opened before are opened", () => {
 });
 
 test("a re-sealed or erased order never shows an earlier opening", () => {
-  const opened = new OpenedOrders<{ n: number }>(() => ({ n: 0 }));
+  const opened = new OpenedOrders<{ n: number }>();
   opened.markOpened();
   opened.put(order("a", 1, "old"), { n: 1 });
   const resealed = order("a", 1, "new");
   assert.equal(opened.remap([resealed]).has(0), false);
   assert.deepEqual(opened.unopened([resealed]).map((t) => t.idx), [0]);
-  // Erased on request: no box at all - an empty entry, not the old details.
-  assert.deepEqual(opened.remap([order("a", 1)]).get(0), { n: 0 });
+  // Erased on request, or not fetched yet: no box at all - no entry, never the old details.
+  assert.equal(opened.remap([order("a", 1)]).has(0), false);
+});
+
+test("a row with no box gets no entry, even after opening (#965: rows arrive before boxes)", () => {
+  const opened = new OpenedOrders<{ n: number }>();
+  opened.markOpened();
+  opened.put(order("a", 1, "e1"), { n: 1 });
+  const map = opened.remap([order("a", 1, "e1"), order("a", 2)]);
+  assert.equal(map.get(0)?.n, 1);
+  assert.equal(map.has(1), false, "an entry would read as 'opened, no details' and hide the row's state");
 });
 
 test("locking again forgets everything opened", () => {
-  const opened = new OpenedOrders<{ n: number }>(() => ({ n: 0 }));
+  const opened = new OpenedOrders<{ n: number }>();
   const a1 = order("a", 1, "e1");
   opened.markOpened();
   opened.put(a1, { n: 1 });
   opened.clear();
   assert.equal(opened.remap([a1]).size, 0);
   assert.equal(opened.unopened([a1]).length, 1);
-  // Not even an empty entry for an order with no box: an entry reads as "unlocked".
   assert.equal(opened.remap([order("a", 2)]).size, 0);
+});
+
+test("the broadcast tab asks to open orders only when there are boxes to open", () => {
+  assert.match(DASH, /\{#if decryptedOrders\.size === 0 && ordersResponse && ordersResponse\.orders\.some\(\(o\) => !!o\.encryptedOrder\)\}/);
 });
 
 // ── the poller ──────────────────────────────────────────────────────────────

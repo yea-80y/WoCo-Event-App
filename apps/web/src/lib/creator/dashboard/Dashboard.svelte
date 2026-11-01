@@ -448,7 +448,7 @@
   // ---------------------------------------------------------------------------
 
   /** What this page has opened, by ticket - so a poll opens only the new orders. */
-  const opened = new OpenedOrders<DecryptedOrder>(() => ({}));
+  const opened = new OpenedOrders<DecryptedOrder>();
   let decryptChain: Promise<void> = Promise.resolve();
   /** Bumped when the keys lock: an opening run still going stops and keeps nothing. */
   let openEpoch = 0;
@@ -957,7 +957,7 @@
       {@const emailRecipients = getEmailRecipients(broadcastSeriesFilter)}
       <div class="broadcast-section">
 
-        {#if decryptedOrders.size === 0 && ordersResponse && ordersResponse.orders.length > 0}
+        {#if decryptedOrders.size === 0 && ordersResponse && ordersResponse.orders.some((o) => !!o.encryptedOrder)}
           <div class="broadcast-notice">
             Orders need to be decrypted before you can send broadcasts.
             Switch to the Orders tab to trigger decryption, then come back here.

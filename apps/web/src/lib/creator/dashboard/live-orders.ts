@@ -46,13 +46,15 @@ function boxId(order: OrderEntry): string | null {
  * What this page has already opened, keyed by ticket. An order is reused only
  * while it carries the SAME box: an erased order (no box) or a re-sealed one is
  * never shown from an earlier opening.
+ *
+ * A row with no box has nothing opened, so it gets no entry - not an empty one.
+ * Rows now arrive before their boxes (#965): an empty entry would read as "opened,
+ * no details" and hide where the row's details actually stand.
  */
 export class OpenedOrders<T> {
   private byTicket = new Map<string, { box: string; data: T }>();
-  /** Set once orders were opened with the account's keys: unsealed orders then read as empty, as before. */
+  /** Set once orders were opened with the account's keys. */
   private opened = false;
-
-  constructor(private readonly empty: () => T) {}
 
   /** The display map for `orders` (by position), from what is already open - no keys, no work. */
   remap(orders: OrderEntry[]): Map<number, T> {
@@ -60,10 +62,7 @@ export class OpenedOrders<T> {
     if (!this.opened) return out;
     orders.forEach((order, idx) => {
       const box = boxId(order);
-      if (!box) {
-        out.set(idx, this.empty());
-        return;
-      }
+      if (!box) return;
       const hit = this.byTicket.get(orderSlotKey(order));
       if (hit && hit.box === box) out.set(idx, hit.data);
     });
