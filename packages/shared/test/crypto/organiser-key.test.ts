@@ -65,6 +65,10 @@ test("a binding verifies for its parent and generation only", () => {
   assert.deepEqual(verifyOrganiserKeyBinding(binding, PARENT), { key: key.address, gen: 2 });
   assert.equal(verifyOrganiserKeyBinding(binding, OTHER_PARENT), null, "verified for another parent");
   assert.equal(verifyOrganiserKeyBinding({ ...binding, gen: 3 }, PARENT), null, "verified for another generation");
+  // The parent checked is the one asked about, for any parent.
+  const theirs = signOrganiserKeyBinding(key, OTHER_PARENT, 0);
+  assert.deepEqual(verifyOrganiserKeyBinding(theirs, OTHER_PARENT), { key: key.address, gen: 0 });
+  assert.equal(verifyOrganiserKeyBinding(theirs, PARENT), null);
 });
 
 test("a binding naming a key that did not sign it is refused", () => {
