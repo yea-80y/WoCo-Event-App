@@ -152,16 +152,24 @@ export interface ListSaveDeps {
  * elsewhere, or wipe its tombstone (Fable sign-off 2026-10-14). Throws the
  * server's LIST_CHANGED when it lost that race; the caller reloads and says so.
  *
- * A stored list that cannot be found is written over only with `replaceMissing`,
- * the organiser's "Start a new list"; any other save throws LIST_MISSING.
+ * A stored list that cannot be found is written over only by `replaceMissing`: the
+ * stamp of the missing record the organiser chose to replace ("Start a new list").
+ * Any other save throws LIST_MISSING. A replace whose record has been saved over
+ * since throws LIST_CHANGED, and one whose record opens again throws LIST_FOUND -
+ * it never wipes a list that reads (Fable review 2026-11-01).
  */
 export async function saveListChange(
   deps: ListSaveDeps,
   change: (list: ListState) => ListState,
-  { replaceMissing = false }: { replaceMissing?: boolean } = {},
+  { replaceMissing }: { replaceMissing?: string } = {},
 ): Promise<{ payload: MarketingListPayload; meta: MarketingListMeta }> {
   const stored = await deps.readList();
-  if (stored && !stored.sealedList && !replaceMissing) throw listMissingError();
+  if (replaceMissing !== undefined) {
+    if (stored?.updatedAt !== replaceMissing) throw codedError(LIST_CHANGED, LIST_CHANGED_MESSAGE);
+    if (stored.sealedList) throw codedError(LIST_FOUND, LIST_FOUND_MESSAGE);
+  } else if (stored && !stored.sealedList) {
+    throw codedError(LIST_MISSING, LIST_MISSING_MESSAGE);
+  }
   const base = stored?.sealedList ? await deps.openList(stored.sealedList) : { version: 1 as const, contacts: [] };
   const next = change({ contacts: base.contacts, removed: normaliseRemoved(base.removed) });
   const payload = listPayload(next.contacts, next.removed);
@@ -547,17 +555,25 @@ export function isListChanged(err: unknown): boolean {
   return !!err && typeof err === "object" && (err as { code?: unknown }).code === LIST_CHANGED;
 }
 
+const LIST_CHANGED_MESSAGE = "Your list changed while this was saving, so nothing was overwritten. Try again.";
+
 /** The stored list is on record but could not be found: nothing is added until the organiser starts a new one. */
 export const LIST_MISSING = "LIST_MISSING";
 export const LIST_MISSING_MESSAGE = "Your saved contact list can't be found. Open Audience to start a new one.";
 
-function listMissingError(): Error {
-  return Object.assign(new Error(LIST_MISSING_MESSAGE), { code: LIST_MISSING });
+/** "Start a new list" found the list it was replacing readable again: nothing replaced. */
+export const LIST_FOUND = "LIST_FOUND";
+const LIST_FOUND_MESSAGE = "Your saved contact list can be opened again, so nothing was replaced.";
+
+function codedError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
 }
 
-export function isListMissing(err: unknown): boolean {
-  return !!err && typeof err === "object" && (err as { code?: unknown }).code === LIST_MISSING;
-}
+const hasCode = (err: unknown, code: string): boolean =>
+  !!err && typeof err === "object" && (err as { code?: unknown }).code === code;
+
+export const isListMissing = (err: unknown): boolean => hasCode(err, LIST_MISSING);
+export const isListFound = (err: unknown): boolean => hasCode(err, LIST_FOUND);
 
 // ── Throttle and lock ───────────────────────────────────────────────────────
 

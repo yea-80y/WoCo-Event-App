@@ -557,11 +557,20 @@ async function readPlatformBatchOnChain(
 }
 
 /**
+ * How close to the chain tip our bee's batch store must be for `batchOnChain` to
+ * say "gone". Measured 7-8 blocks in steady state (2026-11-01). A batch bought
+ * within this window is not in the store yet - and data stamped on another node
+ * (an organiser's own batch) can be that young - so it bounds a false "gone" to
+ * ~2.5 min on Gnosis, where the alarm threshold (`BEE_CHAIN_LAG_MAX_BLOCKS`) would allow an hour.
+ */
+const BATCH_VERDICT_MAX_LAG_BLOCKS = 30;
+
+/**
  * Is this batch still on chain, by our bee's batch store? One pass, for telling a
- * person why stored data could not be found. "gone" needs our bee caught up with
- * the chain and our own live batch in its store this call (a wiped or refilling
- * store answers 404 for everything). No second pass as above: a batch that already
- * stamped data is older than our bee's block, so only expiry takes it out.
+ * person why stored data could not be found; it changes wording, never a write.
+ * "gone" needs our bee within `BATCH_VERDICT_MAX_LAG_BLOCKS` of the tip and our own
+ * live batch in its store this call (a wiped or refilling store answers 404 for
+ * everything).
  */
 export async function batchOnChain(
   batchId: string,
@@ -578,8 +587,7 @@ export async function batchOnChain(
     const raw = await readers.chainstate();
     const block = num(raw.block);
     const chainTip = num(raw.chainTip);
-    const { postage: cfg } = readThresholdsFromEnv(process.env);
-    if (block === null || chainTip === null || chainTip - block > cfg.chainLagMaxBlocks) return "unknown";
+    if (block === null || chainTip === null || chainTip - block > BATCH_VERDICT_MAX_LAG_BLOCKS) return "unknown";
     await readers.beeBatch(POSTAGE_BATCH_ID);
   } catch {
     return "unknown";

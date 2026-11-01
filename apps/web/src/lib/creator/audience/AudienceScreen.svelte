@@ -29,6 +29,7 @@
     addRemoved,
     clearRemoved,
     isListChanged,
+    isListFound,
     isListMissing,
     normaliseRemoved,
     saveListChange,
@@ -39,6 +40,8 @@
   /** Said once a save lost the race to another tab or device and the screen reloaded. */
   const LIST_CHANGED_NOTICE =
     "Your list was changed in another tab or on another device, so nothing was saved. We've loaded the latest version - please make your change again.";
+  const LIST_FOUND_NOTICE = "Your saved list can be opened again, so nothing was replaced.";
+  const LIST_LOST_NOTICE = "Your saved contact list can't be found, so nothing was saved.";
 
   let loading = $state(true);
   let loadError = $state<string | null>(null);
@@ -196,13 +199,12 @@
    */
   async function commitList(
     change: (list: ListState) => ListState,
-    opts: { replaceMissing?: boolean } = {},
+    opts: { replaceMissing?: string } = {},
   ): Promise<void> {
     const keys = await getKeys(true, true);
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
-    let changedElsewhere = false;
-    let missing = false;
+    let reloadNotice: string | null = null;
     try {
       await withListLock(async () => {
         const { openJsonWithAnyKey } = await import("../../keyring/order-keys.js");
@@ -225,20 +227,17 @@
           meta = saved.meta;
           listNotice = null;
         } catch (err) {
-          if (isListMissing(err)) missing = true;
-          else if (isListChanged(err)) changedElsewhere = true;
+          if (isListChanged(err)) reloadNotice = LIST_CHANGED_NOTICE;
+          else if (isListFound(err)) reloadNotice = LIST_FOUND_NOTICE;
+          else if (isListMissing(err)) reloadNotice = LIST_LOST_NOTICE;
           else throw err;
         }
       });
-      if (changedElsewhere) {
+      // Saved elsewhere, or lost or found again since the screen opened it: show the list as it is now, never save over it.
+      if (reloadNotice) {
         await load();
-        listNotice = LIST_CHANGED_NOTICE;
-        throw new Error(LIST_CHANGED_NOTICE);
-      }
-      // Lost from storage since the screen opened it: show that, never save over it.
-      if (missing) {
-        await load();
-        throw new Error("Your saved contact list can't be found, so nothing was saved.");
+        listNotice = reloadNotice;
+        throw new Error(reloadNotice);
       }
       if (contacts.length > 0 && auth.parent) markAudienceImported(auth.parent);
       await refreshConsentStates(contacts);
@@ -249,9 +248,12 @@
 
   /** The organiser's tap - the only write that may replace a list that can't be found. */
   async function startNewList(): Promise<void> {
+    const seen = listMissing;
+    if (!seen) return;
     startNewError = null;
     try {
-      await commitList(() => ({ contacts: [], removed: [] }), { replaceMissing: true });
+      // Only the record shown as missing: one that opened again or was saved since is never replaced.
+      await commitList(() => ({ contacts: [], removed: [] }), { replaceMissing: seen.updatedAt });
       listMissing = null;
       // The new list's stamp makes the check read every event again: opted-in buyers come back.
       void syncAudience({ force: true });
@@ -301,6 +303,7 @@
   onMount(() =>
     onListWritten((payload, written) => {
       if (listLocked) return;
+      listMissing = null;
       contacts = payload.contacts;
       removed = normaliseRemoved(payload.removed);
       meta = written;
@@ -392,7 +395,7 @@
         {#if listMissing.storage === "expired"}
           {list} was kept on storage that has expired, so it can't be brought back.
         {:else if listMissing.storage === "live"}
-          {list} can't be reached right now. Try again in a few minutes.
+          {list} can't be reached right now. It may come back - try again later, or start a new list if it doesn't.
         {:else}
           {list} can't be found in storage. If the storage it was kept on has expired, it can't be brought back.
         {/if}

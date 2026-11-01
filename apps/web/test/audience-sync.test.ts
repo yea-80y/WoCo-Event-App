@@ -21,6 +21,7 @@ import {
   removedId,
   saveListChange,
   isListChanged,
+  isListFound,
   isListMissing,
   type ListSaveDeps,
   SETTLE_MS,
@@ -628,10 +629,35 @@ test("a list that can't be found is never saved over by an edit - only by Start 
   );
   assert.equal(w.writes.length, 0, "an import onto nothing would read as the whole list");
 
-  await saveListChange(screenSave(w), () => ({ contacts: [], removed: [] }), { replaceMissing: true });
+  await saveListChange(screenSave(w), () => ({ contacts: [], removed: [] }), { replaceMissing: "s-lost" });
   assert.equal(w.writes.length, 1);
   assert.deepEqual(emailsOf(w.list!.payload), []);
-  assert.ok(w.log.includes("writeList:s-lost"), "refused if anything saved since the organiser saw it missing");
+  assert.ok(w.log.includes("writeList:s-lost"), "refused by the server too if anything saved since the re-read");
+});
+
+test("Start a new list never wipes the list it meant to replace once that opens again", async () => {
+  const w = lostList();
+  w.missing = false; // the chunk could be retrieved again before the tap
+  await assert.rejects(
+    saveListChange(screenSave(w), () => ({ contacts: [], removed: [] }), { replaceMissing: "s-lost" }),
+    (err: unknown) => isListFound(err),
+  );
+  assert.equal(w.writes.length, 0);
+  assert.deepEqual(emailsOf(w.list!.payload), ["ada@x.com"]);
+});
+
+test("Start a new list never wipes a list saved elsewhere since the organiser saw it missing", async () => {
+  // Another tab imported first - readable, or itself not found: either way it is not the record shown.
+  for (const missing of [false, true]) {
+    const w = lostList();
+    w.list = { payload: { version: 1, contacts: [{ email: "bo@x.com", addedAt: "2026-11-01" }] }, updatedAt: "s-other" };
+    w.missing = missing;
+    await assert.rejects(
+      saveListChange(screenSave(w), () => ({ contacts: [], removed: [] }), { replaceMissing: "s-lost" }),
+      (err: unknown) => isListChanged(err),
+    );
+    assert.equal(w.writes.length, 0);
+  }
 });
 
 test("the buyer check never writes over a list that can't be found, and marks nothing as covered", async () => {
@@ -653,7 +679,7 @@ test("after Start a new list, the next check reads every event again and opted-i
   await sync(w);
   assert.equal(w.writes.length, 1, "nothing written while it can't be found");
 
-  await saveListChange(screenSave(w), () => ({ contacts: [], removed: [] }), { replaceMissing: true });
+  await saveListChange(screenSave(w), () => ({ contacts: [], removed: [] }), { replaceMissing: w.list!.updatedAt });
   w.now += SYNC_INTERVAL_MS;
   w.log.length = 0;
   const r = await sync(w);

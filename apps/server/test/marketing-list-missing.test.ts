@@ -62,7 +62,9 @@ const server: Server = createServer((req, res) => {
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
-let chainLag = 0;
+/** Steady state measured on our bee, 2026-11-01. */
+const NORMAL_LAG = 7;
+let chainLag = NORMAL_LAG;
 let coreListed = true;
 
 const HOST = "test.woco.local";
@@ -122,11 +124,17 @@ test("a batch our bee lists is on chain; one it does not, with our own batch lis
 });
 
 test("'gone' needs our bee caught up and our own batch in its store; otherwise it cannot tell", async () => {
-  chainLag = 100_000;
   try {
-    assert.equal(await batchOnChain(DEAD_BATCH), "unknown", "a bee far behind the chain");
+    chainLag = 30;
+    assert.equal(await batchOnChain(DEAD_BATCH), "gone", "within ~2.5 min of the tip");
+    chainLag = 31;
+    assert.equal(
+      await batchOnChain(DEAD_BATCH),
+      "unknown",
+      "further behind, a batch bought since may not be in the store yet - the hour the alarm allows is far too loose",
+    );
   } finally {
-    chainLag = 0;
+    chainLag = NORMAL_LAG;
   }
   coreListed = false;
   try {
