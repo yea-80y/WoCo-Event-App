@@ -352,12 +352,13 @@ const fnBody = (name: string) => {
 
 test("polls the cheap count, gated on a session already here, and never signs in", () => {
   // #965: the count comes from the chain once the browser knows the registrations.
-  assert.match(DASH, /count: async \(\) =>\s*\(await ordersReader\(\)\.count\(\)\.catch\(\(\) => null\)\) \?\? getEventOrderCount\(id, \{ establish: false \}\)/);
+  assert.match(DASH, /count: async \(\) =>\s*\(await ordersReader\(\)\.reader\.count\(\)\.catch\(\(\) => null\)\) \?\? getEventOrderCount\(id, \{ establish: false \}\)/);
   assert.match(DASH, /const fresh = await loadOrders\(\{ establish: false \}\);/);
   // …and the option reaches both the browser read and the server fallback.
-  const load = fnBody("async function loadOrders");
-  assert.match(load, /await ordersReader\(\)\.load\(opts\);/);
-  assert.match(load, /return \(await getEventOrdersSWR\(eventId\)\.refresh\(opts\)\)\.data \?\? null;/);
+  assert.match(DASH, /return \(ordersLoad \?\?= readOrders\(opts\)\.finally/);
+  const load = fnBody("async function readOrders");
+  assert.match(load, /await reader\.loadRows\(opts\);/);
+  assert.match(load, /const data = \(await getEventOrdersSWR\(eventId\)\.refresh\(opts\)\)\.data \?\? null;/);
   assert.match(DASH, /canRequest: \(\) => auth\.isConnected && auth\.hasSession/);
   assert.match(DASH, /sessionStored: async \(\) => \{\s*const parent = auth\.parent;\s*return !!parent && !!\(await getSessionDelegation\(parent\)\);/);
 });
@@ -411,9 +412,27 @@ test("locking again clears what was opened", () => {
   assert.match(DASH, /opened\.clear\(\);\s*decryptedOrders = new Map\(\);\s*ordersLocked = true;/);
 });
 
-test("polling starts from the server's list, never from the cached paint", () => {
+test("polling starts from a real read (or its failure, to retry it), never from the cached paint", () => {
   assert.match(DASH, /showOrders\(freshOrders\);\s*ordersFromServer = true;/);
-  assert.match(DASH, /const liveReady = \$derived\(ordersFromServer && !error && !!event\)/);
+  assert.match(DASH, /const liveReady = \$derived\(\(ordersFromServer \|\| ordersReadError !== null\) && !error && !!event\)/);
   const cachedPaint = DASH.slice(DASH.indexOf("showOrders(ordersSWR.cached)"), DASH.indexOf("// ── Step 2"));
-  assert.doesNotMatch(cachedPaint, /ordersFromServer = true/);
+  assert.doesNotMatch(cachedPaint, /ordersFromServer = true|ordersReadError =/);
+  // After a failed first read no count can match, so the first check reads again.
+  assert.match(DASH, /poller\.start\(untrack\(\(\) => \(ordersReadError !== null \? -1 :/);
+});
+
+test("opening runs in steps, giving the page a turn, and a relock mid-run keeps nothing", () => {
+  const body = fnBody("async function decryptOnce");
+  assert.match(body, /const epoch = openEpoch;/);
+  assert.match(body, /todo\.slice\(i, i \+ OPEN_CHUNK\)/);
+  assert.match(body, /await new Promise\(\(resolve\) => setTimeout\(resolve, 0\)\);/);
+  const guard = body.indexOf("if (epoch !== openEpoch) return;");
+  assert.ok(guard > 0 && guard < body.indexOf("opened.put("), "the lock check comes before anything opened is kept");
+  assert.match(DASH, /openEpoch\+\+;\s*opened\.clear\(\);/);
+});
+
+test("rows show where their details stand, never the ticket's single-use key", () => {
+  assert.match(DASH, /\{:else if dec\}\s*\{order\.claimerAddress\.slice\(0, 6\)\}/);
+  assert.match(DASH, /<span class="claim-type">\{detailLabel\(order\)\}<\/span>/);
+  assert.doesNotMatch(DASH, /orders\.indexOf\(order\)/, "no per-row scan of the whole list");
 });

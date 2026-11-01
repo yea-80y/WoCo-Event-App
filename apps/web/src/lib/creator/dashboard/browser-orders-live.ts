@@ -15,6 +15,7 @@ import { authPost } from "../../api/client.js";
 import { buildEnv } from "../../build-env.js";
 import { WOCO_GATEWAY_URL } from "../../swarm/gateways.js";
 import type { BrowserOrdersDeps, SlotRead } from "./browser-orders.js";
+import type { FetchResult, GatewayBudget } from "./detail-queue.js";
 
 const LEDGER_CHAINS: Record<number, { chain: Chain; rpc: string }> = {
   42161: { chain: arbitrum, rpc: "https://arb1.arbitrum.io/rpc" },
@@ -127,17 +128,65 @@ async function slots(ledger: OrdersSeriesLedger, from: number, to: number): Prom
   return out;
 }
 
-async function fetchBox(root: string): Promise<SealedBoxV2 | null> {
+/** Whole seconds, or an HTTP date; null when absent or unreadable. */
+function retryAfterMs(headers: Headers, now: number): number | null {
+  const raw = headers.get("retry-after");
+  if (!raw) return null;
+  const secs = Number(raw);
+  if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
+  const at = Date.parse(raw);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
+/**
+ * The draft RateLimit headers (`RateLimit-Limit/-Remaining/-Reset`, reset in
+ * seconds). Readable on the gateway's own origin only: cross-origin, a header the
+ * gateway does not list in Access-Control-Expose-Headers reads as absent.
+ */
+export function readBudget(headers: Headers): GatewayBudget | undefined {
+  const limit = Number(headers.get("ratelimit-limit") ?? NaN);
+  const remaining = Number(headers.get("ratelimit-remaining") ?? NaN);
+  const reset = Number(headers.get("ratelimit-reset") ?? NaN);
+  if (![limit, remaining, reset].every((n) => Number.isFinite(n) && n >= 0) || limit === 0) return undefined;
+  return { limit, remaining, resetMs: reset * 1000 };
+}
+
+/**
+ * One sealed order from our gateway, and why not when it is not there. A 403 is
+ * retried, never final: the erasure answer already said this root is not erased,
+ * so a refusal is the gateway's list lagging the store, which the server's
+ * reconcile repairs (order-gateway.ts).
+ */
+export async function fetchOrderBox(root: string): Promise<FetchResult> {
   const gateway = buildEnv(() => import.meta.env.VITE_GATEWAY_URL as string | undefined) || WOCO_GATEWAY_URL;
+  let resp: Response;
   try {
-    const resp = await fetch(`${gateway}/bytes/${root}`, { cache: "no-store", signal: AbortSignal.timeout(20_000) });
-    if (!resp.ok || Number(resp.headers.get("content-length")) > MAX_BOX_TEXT) return null;
-    const text = await resp.text();
-    if (text.length > MAX_BOX_TEXT) return null;
-    const box = JSON.parse(text) as { enc?: unknown; ct?: unknown };
-    return typeof box.enc === "string" && typeof box.ct === "string" ? (box as unknown as SealedBoxV2) : null;
+    resp = await fetch(`${gateway}/bytes/${root}`, { cache: "no-store", signal: AbortSignal.timeout(20_000) });
   } catch {
-    return null;
+    return { kind: "unavailable" };
+  }
+  const budget = readBudget(resp.headers);
+  if (resp.status === 429) {
+    const wait = retryAfterMs(resp.headers, Date.now()) ?? budget?.resetMs;
+    return { kind: "limited", ...(wait !== undefined ? { retryAfterMs: wait } : {}), budget };
+  }
+  if (resp.status === 404) return { kind: "missing", budget };
+  if (!resp.ok) return { kind: "unavailable", budget };
+  if (Number(resp.headers.get("content-length")) > MAX_BOX_TEXT) return { kind: "unreadable", budget };
+  let text: string;
+  try {
+    text = await resp.text();
+  } catch {
+    return { kind: "unavailable", budget };
+  }
+  try {
+    if (text.length > MAX_BOX_TEXT) return { kind: "unreadable", budget };
+    const box = JSON.parse(text) as { enc?: unknown; ct?: unknown };
+    return typeof box.enc === "string" && typeof box.ct === "string"
+      ? { kind: "ok", box: box as unknown as SealedBoxV2, budget }
+      : { kind: "unreadable", budget };
+  } catch {
+    return { kind: "unreadable", budget };
   }
 }
 
@@ -150,6 +199,5 @@ export function liveBrowserOrdersDeps(eventId: string): BrowserOrdersDeps {
     },
     nextSlots,
     slots,
-    fetchBox,
   };
 }
