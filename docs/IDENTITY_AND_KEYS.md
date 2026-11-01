@@ -189,6 +189,7 @@ them, and no auth path knows about them: §3a.)
 |---|---|---|---|
 | Issuing | secp256k1 | `HKDF(sha256, seed, salt="", info="woco/issuing/v1/"+gen, 48)` → scalar | `packages/shared/src/crypto/issuing.ts` |
 | Content-feed signer | secp256k1 | `HKDF(sha256, seed, salt="", info="woco/feed-signer/v1", 48)` → scalar (§5) | `packages/shared/src/crypto/feed-signer.ts` |
+| Organiser key (ledger2) | secp256k1 | `HKDF(sha256, S_g, salt="", info="woco/organiser-key/v1", 48)` → scalar, from the CURRENT account secret | `packages/shared/src/crypto/organiser-key.ts` |
 | Encryption (#642) | X-Wing (ML-KEM-768 + X25519) | `X-Wing.keygen(HKDF(sha256, seed, salt="", info="woco/encryption/xwing/v1", 32))` | `packages/shared/src/crypto/xwing.ts` |
 | Encryption, classical (credits rail only) | X25519 | `HKDF(sha256, seed, salt="", info="woco/encryption/v1", 32)` | `packages/shared/src/crypto/keys.ts` |
 
@@ -751,6 +752,7 @@ the screen in `creator/gate/UpgradeToPasskey.svelte`.
 | Session key | Every authenticated API request (EIP-191 canonical challenge) | Anything durable |
 | Content-feed signer | The user's content chunks (profile, event, site, likes, follows) | Credentials |
 | Issuing key | `woco.manifest.v2`, `woco.cert.v1`, the issuer binding | Individual editions |
+| Organiser key | A ledger2 event's terms as EIP-712 (`SetSupply`, `ExtendSalesEnd`, `CancelEvent`, `Reseat`), and its own binding to the parent. Not the issuing key (S_0, which a removed passkey keeps) and not the feed signer (cached, so it proves no unlock) | Feeds, manifests, requests |
 | Holder identity (ed25519) | Cert possession challenges, credit statements — **both out of launch scope**, and it is derived on demand from the seed rather than held (§3a) | Tickets. Editions. Manifests. Anything on a live path |
 | **Ticket burner (secp256k1)** | **The ticket.** One per-purchase key signs one canonical message, then is discarded. Its address is the on-chain `slotOwner` — the verifier's trust root | Anything else, ever |
 | Platform feed key | More than its name suggests: the directory pointer, the **site events index** (a deliberate trust carrier — see below), the creator site directory, the issuer-registry log relay, recovery status, the marketing-list pointer, shop config, the passport collection, **and any event or site feed whose client sent no feed signer** | Producing a signature for a key it does not hold — it cannot forge a user's signed object |
