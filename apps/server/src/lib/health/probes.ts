@@ -573,7 +573,7 @@ export async function batchOnChain(
   } catch (err) {
     if (!isNotFound(err)) return "unknown";
   }
-  if (!POSTAGE_BATCH_ID || batchId === POSTAGE_BATCH_ID) return "unknown";
+  if (!POSTAGE_BATCH_ID) return "unknown";
   try {
     const raw = await readers.chainstate();
     const block = num(raw.block);

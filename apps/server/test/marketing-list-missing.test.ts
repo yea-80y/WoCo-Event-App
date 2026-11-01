@@ -139,7 +139,14 @@ test("'gone' needs our bee caught up and our own batch in its store; otherwise i
 
 test("a store that fails to answer is 'unknown', never 'gone'", async () => {
   const fail = Object.assign(new Error("bee batch → HTTP 503"), { status: 503 });
-  const readers = { beeBatch: async () => { throw fail; }, chainstate: async () => ({ block: 1, chainTip: 1 }) };
+  // Only the asked batch fails: our own is listed and the chain is caught up, so nothing else says "unknown".
+  const readers = {
+    beeBatch: async (id: string) => {
+      if (id === DEAD_BATCH) throw fail;
+      return { batchID: id };
+    },
+    chainstate: async () => ({ block: 1, chainTip: 1 }),
+  };
   assert.equal(await batchOnChain(DEAD_BATCH, readers), "unknown");
 });
 
