@@ -9,7 +9,7 @@ import { FEATURES, FEED_FAMILY_STORES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
 import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
-import { securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
+import { apiNoStoreByDefault, securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
 import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS, corsOrigin } from "./lib/http/cors.js";
 import { buildFramePage } from "./lib/embed/frame-page.js";
 import { revokeSession, revokeAllSessions, revocationHealth, RevocationStoreUnavailableError } from "./lib/auth/revocation.js";
@@ -279,6 +279,7 @@ app.use("/api/*", apiBodyLimit());
 // organiser-site assets through this origin, where nosniff would turn a
 // mistyped content-type into a dead asset. See lib/http/security-headers.ts.
 app.use("/api/*", securityHeaders());
+app.use("/api/*", apiNoStoreByDefault());
 app.use("/embed/*", securityHeaders());
 // Ticket pages carry a working ticket in their URL, so they must never hand it
 // to another site in a Referer header. Every /t response is our own HTML, PNG or
