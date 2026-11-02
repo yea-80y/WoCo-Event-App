@@ -73,6 +73,7 @@ import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
+import { missingWebhookSecrets, stripeKeyMode } from "./lib/stripe/key-mode.js";
 import { ticketSalesHealth } from "./lib/stripe/ticket-sales.js";
 import { onStripeVerified } from "./lib/stripe/accounts.js";
 import { cancellationsStoreHealth } from "./lib/event/cancellations.js";
@@ -225,14 +226,16 @@ if (process.env.NODE_ENV === "production" && !process.env.PAYMENT_QUOTE_SECRET) 
 // Two distinct secrets: one for the platform endpoint (account.updated etc.)
 // and one for the connect-account endpoint (checkout.session.completed).
 // Only enforced when Stripe is actually configured — deployments that don't
-// take card payments can omit STRIPE_SECRET_KEY entirely.
-if (process.env.NODE_ENV === "production" && process.env.STRIPE_SECRET_KEY) {
-  const missing: string[] = [];
-  if (!process.env.STRIPE_WEBHOOK_SECRET) missing.push("STRIPE_WEBHOOK_SECRET");
-  if (!process.env.STRIPE_WEBHOOK_SECRET_PLATFORM) missing.push("STRIPE_WEBHOOK_SECRET_PLATFORM");
+// take card payments can omit STRIPE_SECRET_KEY entirely. Owed in production OR
+// with a live key, so losing NODE_ENV cannot let a live server boot without them (#1000).
+{
+  const missing = missingWebhookSecrets(process.env);
+  if (process.env.STRIPE_SECRET_KEY && stripeKeyMode(process.env.STRIPE_SECRET_KEY) === "unknown") {
+    console.warn("[startup] STRIPE_SECRET_KEY is neither a live nor a test sk_/rk_ key: the webhook's mode check is off");
+  }
   if (missing.length > 0) {
     console.error(
-      `\n[startup] FATAL: Stripe webhook secret(s) missing in production: ${missing.join(", ")}.\n` +
+      `\n[startup] FATAL: Stripe webhook secret(s) missing for a live or production server: ${missing.join(", ")}.\n` +
       "  Without these, Stripe webhook signature verification fails and paid\n" +
       "  buyers receive no ticket. Pull both from the Stripe dashboard:\n" +
       "    - STRIPE_WEBHOOK_SECRET           → 'Connected and v2 accounts' endpoint\n" +

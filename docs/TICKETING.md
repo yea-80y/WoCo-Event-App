@@ -162,6 +162,13 @@ Two more properties of that path:
 - **Any failure after the charge triggers an automatic refund.** Refunds Stripe refuses to create
   land in `.data/pending-refunds.json` and raise a `/api/health` alarm, because the alternative
   is a buyer charged with no ticket and no alarm.
+- **A mint that may have been sent is read from the chain before it is refunded (#994).** A
+  failure before the raw send (estimate, a contract refusal) refunds at once. After it (a send
+  timeout, "already known", an RPC blip while waiting) the server reads the receipt and the
+  `SlotClaimed` logs of the sale's own burners for up to 10 minutes and delivers the tickets if
+  the mint landed (`lib/chain/mint-resolve.ts`). Only a mint still unknown at the bound is
+  refunded, logged as `[mint-unresolved]` with its hash and burners: a slot that lands after its
+  burner key is gone cannot be signed, and version 1 of the ledger has no `reissue`.
 
 `registerEvent` is **not idempotent** — it derives the event id from a sponsor-nonce counter, not
 from the manifest — so registering the same series twice creates two events. That is why

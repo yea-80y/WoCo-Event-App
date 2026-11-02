@@ -1,6 +1,7 @@
-import { JsonRpcProvider, Contract, Interface, Wallet, id, isError } from "ethers";
+import { JsonRpcProvider, Contract, Interface, Transaction, Wallet, id, isError } from "ethers";
 import { getChainRpcUrl } from "./event-contract.js";
-import { sendSponsorTx } from "./sponsor-nonce.js";
+import { isNonceError, sendSponsorTx } from "./sponsor-nonce.js";
+import { broadcastMint, MintUnresolvedError, resolveMint, type MintResolveIo } from "./mint-resolve.js";
 import type { OnChainEvent, SlotData } from "./event-contract.js";
 
 /**
@@ -593,7 +594,8 @@ async function mintBatchLedger(
 ): Promise<number[]> {
   if (burners.length === 0) throw new Error(`${method}: empty burners`);
 
-  const wallet   = new Wallet(sponsorPk, getProvider(chainId));
+  const provider = getProvider(chainId);
+  const wallet   = new Wallet(sponsorPk, provider);
   const abi      = method === "batchClaimBearer" ? LEDGER2_CLAIM_ABI : LEDGER_CLAIM_ABI;
   const contract = new Contract(contractAddress, abi, wallet);
 
@@ -602,30 +604,59 @@ async function mintBatchLedger(
     `n=${burners.length} orderRef=${orderRefBytes32.slice(0, 10)}… chain=${chainId}`,
   );
 
-  let tx;
+  // #994: signed here and sent raw, so the hash is known before broadcast and a
+  // failure is placed by phase (see lib/chain/mint-resolve.ts).
+  const sent = await broadcastMint({
+    queue: (send) => sendSponsorTx({ chainId, address: wallet.address, provider, label: method }, send),
+    prepare: async (o) => {
+      // Estimate first, so a contract refusal is what a failure reports (explainMintFailure).
+      const req = await contract.getFunction(method).populateTransaction(onChainEventId, burners, orderRefBytes32, o);
+      const populated = await wallet.populateTransaction(req);
+      const fromBlock = await provider.getBlockNumber();
+      const signed = await wallet.signTransaction(populated);
+      return { signed, hash: Transaction.from(signed).hash!, fromBlock };
+    },
+    sendRaw: (signed) => provider.send("eth_sendRawTransaction", [signed]),
+    isRefusal: (err) => isNonceError(err) || isError(err, "INSUFFICIENT_FUNDS"),
+  });
+  if (sent.kind === "refused") {
+    return explainMintFailure(sent.err, wallet.address, contractAddress, chainId, burners.length);
+  }
+  if (sent.kind === "ambiguous") {
+    console.warn(`[sponsor ledger] ${method} send of ${sent.hash} failed after broadcast began - reading the chain:`, sent.err);
+  }
+
+  const attempt = { hash: sent.hash, contract: contractAddress, eventId: onChainEventId, owners: burners, fromBlock: sent.fromBlock };
+  let outcome;
   try {
-    tx = await sendSponsorTx(
-      { chainId, address: wallet.address, provider: wallet.provider!, label: method },
-      (o) => contract.getFunction(method)(onChainEventId, burners, orderRefBytes32, o),
-    );
+    outcome = await resolveMint(attempt, liveMintIo(provider));
   } catch (err) {
-    return explainMintFailure(err, wallet.address, contractAddress, chainId, burners.length);
+    if (err instanceof MintUnresolvedError) {
+      // Refunded by the caller. If this transaction lands later its slots are
+      // burned: the hash and owners here are how to find them.
+      console.error(
+        `[mint-unresolved] ${method} event=${onChainEventId} contract=${contractAddress} chain=${chainId} ` +
+        `hash=${sent.hash} fromBlock=${sent.fromBlock} owners=${burners.join(",")}`,
+      );
+    }
+    throw err;
   }
-  const receipt = await tx.wait(1);
-  if (!receipt) throw new Error(`No receipt from ledger ${method} tx`);
+  if (outcome.kind === "not-minted") throw new Error(`ledger ${method} did not mint: ${outcome.why}`);
 
-  console.log(
-    `[sponsor ledger] ${method} confirmed txHash=${receipt.hash} ` +
-    `gasUsed=${receipt.gasUsed} gasPerSlot=${(Number(receipt.gasUsed) / burners.length).toFixed(0)}`,
-  );
+  console.log(`[sponsor ledger] ${method} confirmed txHash=${sent.hash} slots=${outcome.slots[0]}..${outcome.slots[outcome.slots.length - 1]}`);
+  return outcome.slots;
+}
 
-  const slots = parseSlotClaimedSlots(receipt.logs, burners.length);
-  if (slots.length !== burners.length) {
-    throw new Error(
-      `ledger ${method}: expected ${burners.length} SlotClaimed events, got ${slots.length}`,
-    );
-  }
-  return slots;
+function liveMintIo(provider: JsonRpcProvider): MintResolveIo {
+  return {
+    async getReceipt(hash) {
+      const r = await provider.getTransactionReceipt(hash);
+      return r ? { status: r.status, logs: r.logs } : null;
+    },
+    getLogs: (filter) => provider.getLogs(filter),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now(),
+  };
 }
 
 /**
