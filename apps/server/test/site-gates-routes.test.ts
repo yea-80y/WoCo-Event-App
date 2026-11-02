@@ -232,39 +232,26 @@ const deployWith = async (who: Wallet, body: (siteId: string) => unknown, publis
 };
 const SHAPED = { runtimeVersion: 1, objects: ["AAAA", "AAAA"] };
 
-test("client publish switched off: a collection is ignored and the deploy builds the old way", async () => {
-  delete process.env.SITE_CLIENT_PUBLISH;
-  const { code } = await deployWith(await organiser(), (id) => withCollection(id, { junk: true }));
-  assert.notEqual(code, "COLLECTION_MISMATCH");
-  assert.notEqual(code, "RUNTIME_RELEASE_UNAVAILABLE");
+test("a deploy without a browser build is told to update the app (400), for every account", async () => {
+  for (const who of [await organiser(), await organiser()]) {
+    const r = await deployWith(who, (id) => ({ apiUrl: PUBLIC_BASE, site: { siteId: id } }));
+    assert.deepEqual(r, { status: 400, code: "CLIENT_BUILD_REQUIRED" });
+  }
 });
 
-test("client publish on for an account: malformed collections and a missing site are refused (400)", async () => {
+test("malformed collections and a missing or foreign site are refused (400)", async () => {
   const who = await organiser();
-  process.env.SITE_CLIENT_PUBLISH = `0x${"99".repeat(20)},${who.address.toLowerCase()}`;
-  try {
-    for (const bad of [{ junk: true }, { runtimeVersion: 1, objects: [] }, { runtimeVersion: 0, objects: ["AAAA"] }]) {
-      assert.deepEqual(await deployWith(who, (id) => withCollection(id, bad)), { status: 400, code: "COLLECTION_MISMATCH" }, JSON.stringify(bad));
-    }
-    // The old path falls back to the published config; a browser build must say what it rendered.
-    assert.deepEqual(await deployWith(who, (id) => withCollection(id, SHAPED, null), true), { status: 400, code: "COLLECTION_MISMATCH" });
-    assert.deepEqual(await deployWith(who, (id) => withCollection(id, SHAPED, { siteId: "site-someone-else" }), true), { status: 400, code: "COLLECTION_MISMATCH" });
-    // Another account is still on the old path.
-    const { code } = await deployWith(await organiser(), (id) => withCollection(id, { junk: true }));
-    assert.notEqual(code, "COLLECTION_MISMATCH");
-  } finally {
-    delete process.env.SITE_CLIENT_PUBLISH;
+  for (const bad of [{ junk: true }, { runtimeVersion: 1, objects: [] }, { runtimeVersion: 0, objects: ["AAAA"] }, null]) {
+    assert.deepEqual(await deployWith(who, (id) => withCollection(id, bad)), { status: 400, code: "COLLECTION_MISMATCH" }, JSON.stringify(bad));
   }
+  // A browser build must say what it rendered: never the published config instead.
+  assert.deepEqual(await deployWith(who, (id) => withCollection(id, SHAPED, null), true), { status: 400, code: "COLLECTION_MISMATCH" });
+  assert.deepEqual(await deployWith(who, (id) => withCollection(id, SHAPED, { siteId: "site-someone-else" }), true), { status: 400, code: "COLLECTION_MISMATCH" });
 });
 
-test("client publish with no release to build on: a retryable 503, never a fallback build", async () => {
-  process.env.SITE_CLIENT_PUBLISH = "all";
-  try {
-    // The fake bee has no release feed ("no update found").
-    assert.deepEqual(await deployWith(await organiser(), (id) => withCollection(id, SHAPED)), { status: 503, code: "RUNTIME_RELEASE_UNAVAILABLE" });
-  } finally {
-    delete process.env.SITE_CLIENT_PUBLISH;
-  }
+test("no release to build on: a retryable 503", async () => {
+  // The fake bee has no release feed ("no update found").
+  assert.deepEqual(await deployWith(await organiser(), (id) => withCollection(id, SHAPED)), { status: 503, code: "RUNTIME_RELEASE_UNAVAILABLE" });
 });
 
 test("event-page deploy refuses a malformed eventId (400)", async () => {

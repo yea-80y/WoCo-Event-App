@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { buildClientSiteCollection } from "../src/lib/api/site-collection.js";
-import { rebuildOnServer, storedSomethingElse } from "../src/lib/api/site-deploy-verdict.js";
+import { rebuildForNewRuntime, storedSomethingElse } from "../src/lib/api/site-deploy-verdict.js";
 import { buildSiteCollection, siteRenderUrls } from "@woco/shared/site/collection";
 
 const fx = JSON.parse(readFileSync(new URL("../../../packages/shared/test/fixtures/site-runtime-release-v1.json", import.meta.url), "utf8"));
@@ -65,10 +65,12 @@ test("no kit, the wrong store's kit, or a kit that does not hash: null, and the 
   }
 });
 
-test("only the build refusals fall back to the server's build", () => {
-  for (const code of ["COLLECTION_MISMATCH", "RUNTIME_RELEASE_CHANGED", "RUNTIME_RELEASE_UNAVAILABLE"]) assert.equal(rebuildOnServer({ ok: false, code }), true, code);
-  for (const code of ["BATCH_PURCHASE_REQUIRED", "STRIPE_VERIFICATION_REQUIRED", "FREE_HOSTING_QUOTA_EXCEEDED", undefined]) assert.equal(rebuildOnServer({ ok: false, code }), false, String(code));
-  assert.equal(rebuildOnServer({ ok: true }), false);
+test("only a newer runtime release earns a rebuild; every other refusal stands (no server build since slice 4)", () => {
+  assert.equal(rebuildForNewRuntime({ ok: false, code: "RUNTIME_RELEASE_CHANGED" }), true);
+  for (const code of ["COLLECTION_MISMATCH", "RUNTIME_RELEASE_UNAVAILABLE", "CLIENT_BUILD_REQUIRED", "BATCH_PURCHASE_REQUIRED", undefined]) {
+    assert.equal(rebuildForNewRuntime({ ok: false, code }), false, String(code));
+  }
+  assert.equal(rebuildForNewRuntime({ ok: true }), false);
 });
 
 test("a client build stored at another root is caught before any pointer is signed", () => {

@@ -54,15 +54,6 @@ const kit = () => ({ version: 1, store: "woco" as const, release: fx.release, ro
 const clientBuild = (s = site, u = urls) => shared.buildSiteCollection({ site: s, urls: u, template: fx.template, release: fx.release, releaseRootNode: rootNode });
 const b64 = (c: { objects: { data: Uint8Array }[] }) => c.objects.map((o) => Buffer.from(o.data).toString("base64"));
 
-test("the switch: unset is off, 'all' is everyone, else a list of accounts", () => {
-  const a = "0x" + "12".repeat(20);
-  assert.equal(mod.clientPublishAllowed(a, undefined), false);
-  assert.equal(mod.clientPublishAllowed(a, ""), false);
-  assert.equal(mod.clientPublishAllowed(a, "all"), true);
-  assert.equal(mod.clientPublishAllowed(a, ` 0x${"34".repeat(20)} , ${a.toUpperCase().replace("0X", "0x")} `), true);
-  assert.equal(mod.clientPublishAllowed(a, `0x${"34".repeat(20)}`), false);
-});
-
 test("the deploy body's collection is decoded within bounds", () => {
   const good = { runtimeVersion: 1, objects: b64(clientBuild()) };
   assert.equal(mod.decodeClientCollection(good)!.objects.length, 6);
