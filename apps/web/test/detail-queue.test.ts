@@ -21,6 +21,7 @@ import {
   COVERAGE_STALE_MS,
   DetailQueue,
   HEADROOM_MIN,
+  LIMITED_MIN_MS,
   MISSING_RECHECK_MS,
   SELF_CAP_PER_MINUTE,
   type Coverage,
@@ -207,6 +208,17 @@ test("a 429 with Retry-After pauses everything for exactly that long, and the ro
   assert.equal(h.calls.length, CONCURRENCY);
   await h.c.advance(1);
   assert.equal(h.calls[CONCURRENCY], "r1");
+});
+
+test("a 429 saying 'retry now' still pauses at least a second (Fable sign-off S1)", async () => {
+  const h = harness();
+  h.q.cover(cov(1, 0, ["a"]));
+  await flush();
+  await h.answer("a", { kind: "limited", retryAfterMs: 0 });
+  await h.c.advance(LIMITED_MIN_MS - 1);
+  assert.equal(h.calls.length, 1, "no tight loop against a refusing gateway");
+  await h.c.advance(1);
+  assert.equal(h.calls.length, 2);
 });
 
 test("a bare 429 backs off from 5 s, doubling", async () => {

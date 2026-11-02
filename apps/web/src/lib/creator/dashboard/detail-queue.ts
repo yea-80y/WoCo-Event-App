@@ -68,6 +68,8 @@ export const COVERAGE_REFRESH_MS = 60_000;
 export const COVERAGE_STALE_MS = 90_000;
 /** One more look at a 404 for a sale this recent: storing can lag the sale. */
 export const MISSING_RECHECK_MS = 60_000;
+/** A 429 never pauses for less: "Retry-After: 0" from a refusing gateway would otherwise be a tight loop. */
+export const LIMITED_MIN_MS = 1_000;
 const LIMITED_FIRST_MS = 5_000;
 const LIMITED_MAX_MS = 60_000;
 const UNAVAILABLE_FIRST_MS = 5_000;
@@ -275,7 +277,7 @@ export class DetailQueue {
         break;
       case "limited": {
         this.limitedStreak++;
-        const wait = r.retryAfterMs ?? this.backoff(LIMITED_FIRST_MS, LIMITED_MAX_MS, this.limitedStreak);
+        const wait = Math.max(LIMITED_MIN_MS, r.retryAfterMs ?? this.backoff(LIMITED_FIRST_MS, LIMITED_MAX_MS, this.limitedStreak));
         this.pausedUntil = Math.max(this.pausedUntil, now + wait);
         this.requeue(root, e, true);
         break;

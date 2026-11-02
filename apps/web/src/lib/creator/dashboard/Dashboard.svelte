@@ -462,6 +462,8 @@
    */
   function showOrders(fresh: EventOrdersResponse): void {
     ordersResponse = fresh;
+    // An order erased (or re-sealed) since: what was opened from its old box goes now.
+    opened.prune(fresh.orders);
     decryptedOrders = opened.remap(fresh.orders);
   }
 
@@ -479,12 +481,22 @@
   }
 
   async function decryptOnce(prompt: boolean): Promise<void> {
-    if (!ordersResponse) return;
+    // Left the page: nothing is opened for a dashboard no longer on screen.
+    if (destroyed || !ordersResponse) return;
     const hasEncryptedOrders = ordersResponse.orders.some((o) => !!o.encryptedOrder);
     if (!hasEncryptedOrders) return;
 
     decrypting = true;
+    try {
+      await openOrders(prompt);
+    } finally {
+      // Every way out - a lock, a failure, leaving the page - stops showing "Opening...".
+      decrypting = false;
+    }
+  }
 
+  async function openOrders(prompt: boolean): Promise<void> {
+    if (!ordersResponse) return;
     if (!auth.seedAddress) {
       decryptError = "Not logged in. Cannot decrypt orders.";
       decrypting = false;
@@ -523,38 +535,32 @@
     const epoch = openEpoch;
     opened.markOpened();
 
-    const todo = opened.unopened(ordersResponse.orders);
-    let failCount = 0;
-    for (let i = 0; i < todo.length; i += OPEN_CHUNK) {
+    for (;;) {
+      // Each step from the rows on screen NOW, so an order erased mid-run is never
+      // opened; one that would not open is recorded and not retried with this box.
+      const batch = ordersResponse ? opened.unopened(ordersResponse.orders).slice(0, OPEN_CHUNK) : [];
+      if (batch.length === 0) break;
       const results = await Promise.allSettled(
-        todo.slice(i, i + OPEN_CHUNK).map(async ({ order }) => {
-          if (!order.encryptedOrder) return null;
+        batch.map(async ({ order }) => {
           // Bound to THIS event and the SLOT's series (the server sets
           // `order.seriesId` from the slot) — never the payload's own seriesId, so
           // an order lifted from another series fails to open instead of showing.
-          const decrypted = await openJsonWithAnyKey<DecryptedOrder>(
-            secretKeys,
-            order.encryptedOrder,
-            orderSealContext(eventId, order.seriesId),
-          );
-          return { order, decrypted };
+          return openJsonWithAnyKey<DecryptedOrder>(secretKeys, order.encryptedOrder, orderSealContext(eventId, order.seriesId));
         }),
       );
-      // Locked while this step ran: keep nothing it opened.
-      if (epoch !== openEpoch) return;
-      for (const r of results) {
-        if (r.status === "rejected") failCount++;
-        else if (r.value) opened.put(r.value.order, r.value.decrypted);
-      }
+      // Locked, or left, while this step ran: keep nothing it opened.
+      if (epoch !== openEpoch || destroyed) return;
+      results.forEach((r, k) => {
+        if (r.status === "fulfilled") opened.put(batch[k].order, r.value);
+        else opened.fail(batch[k].order);
+      });
       // The list on screen now - a poll may have replaced it while this ran.
       if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
       await new Promise((resolve) => setTimeout(resolve, 0));
-      if (epoch !== openEpoch) return;
+      if (epoch !== openEpoch || destroyed) return;
     }
     if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
-    decryptError = failCount > 0 ? `Failed to decrypt ${failCount} order(s)` : null;
-
-    decrypting = false;
+    decryptError = opened.failures > 0 ? `Failed to decrypt ${opened.failures} order(s)` : null;
   }
 
   // Unlocked - by the panel's tap or elsewhere this app open: show the details.
@@ -598,16 +604,27 @@
     }
     return browserOrders;
   }
-  $effect(() => () => browserOrders?.queue.stop());
+  /**
+   * The page is gone. A read, a poll or a batch of boxes still in flight can land
+   * after this; none of them may start opening orders (Fable sign-off M1).
+   */
+  let destroyed = false;
+  $effect(() => () => {
+    destroyed = true;
+    openEpoch++;
+    browserOrders?.queue.stop();
+    if (rebuildTimer !== null) clearTimeout(rebuildTimer);
+    rebuildTimer = null;
+  });
 
   /** Boxes arrive one by one: show them in batches, not one repaint per order. */
   let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   function scheduleRebuild(): void {
-    if (rebuildTimer !== null) return;
+    if (rebuildTimer !== null || destroyed) return;
     rebuildTimer = setTimeout(() => {
       rebuildTimer = null;
       detailTick++;
-      if (ordersSource !== "browser" || !browserOrders || !ordersResponse) return;
+      if (destroyed || ordersSource !== "browser" || !browserOrders || !ordersResponse) return;
       const { reader, queue } = browserOrders;
       showOrders(reader.build((root) => queue.box(root)));
       void decryptCurrent();
@@ -659,8 +676,11 @@
   /** A poll found the count moved: read the list, show it, open only the new orders - never asking. */
   async function refreshOrders(): Promise<boolean> {
     const fresh = await loadOrders({ establish: false });
-    if (!fresh || !event) return false;
+    if (destroyed || !fresh || !event) return false;
     showOrders(fresh);
+    // A real list is on screen now - also after a failed first read - so polling stays on
+    // once that read's error clears (Fable sign-off M2).
+    ordersFromServer = true;
     void decryptCurrent();
     return true;
   }
