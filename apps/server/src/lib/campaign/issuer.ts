@@ -426,8 +426,44 @@ async function finishConfirmation(record: ReferralConfirmationV1, deps: IssuerDe
   // A confirmed referral is a first meaningful action for both parties.
   void issueBadge(record.referee, deps);
   void issueBadge(record.referrer, deps);
+  // The Network badge has two orders to catch: C confirmed after B (look up at
+  // B's confirmation) and C confirmed BEFORE B (B's confirmation lands now: look
+  // down at the referees B already has).
   void issueNetworkBadge(record, deps);
+  void issueNetworkBadgeFromIndex(record, deps);
   return indexed;
+}
+
+/**
+ * The other order (Fable sign-off 2026-11-02): every account gets an invite link
+ * at signup, but its own confirmation lands only when its Stripe verification
+ * does. So B can invite C, C can confirm first (B's confirmation absent, no
+ * badge), and B's confirmation landing later looked only UP. Here `record` is
+ * B's confirmation: if B's referrer index already lists anyone other than A, A
+ * gets the badge.
+ *
+ * A dirty scan is fine: the index only grows, and this is a trigger for a
+ * write-once badge, not a write decision over the index.
+ */
+async function issueNetworkBadgeFromIndex(record: ReferralConfirmationV1, deps: IssuerDeps): Promise<void> {
+  try {
+    const top = campaignAccountSubject(record.referrer);
+    const middle = campaignAccountSubject(record.referee);
+    const read = await deps.readBanded(
+      getCampaignIssuerOwnerHex(),
+      (band) => referrerIndexTopic(middle, band),
+      "campaignIssuer",
+    );
+    if (read.status !== "found") return;
+    const index = parseJson(read.bytes);
+    if (!validateReferrerIndexV1(index)) return;
+    // The same loop guard as above, from this side: A referred B and B referred
+    // A puts A in B's index, and that alone is not a second step.
+    if (!index.subjects.some((s) => s !== top)) return;
+    await issueBadge(record.referrer, deps, "network");
+  } catch (err) {
+    console.warn(`[campaign] network badge index check failed for ${record.referee}:`, err);
+  }
 }
 
 /**
@@ -649,8 +685,9 @@ export async function issueBadge(
       return;
     }
     if (slot.status === "found") {
-      if (!validateBadgeV1(parseJson(slot.bytes))) {
-        console.error(`[campaign] foreign bytes at the badge slot for ${addr} — not overwriting`);
+      const existing = parseJson(slot.bytes);
+      if (!validateBadgeV1(existing) || !badgeMatches(existing, subject, kind)) {
+        console.error(`[campaign] foreign bytes at the ${kind} badge slot for ${addr} — not overwriting`);
       }
       return;
     }

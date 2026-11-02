@@ -252,7 +252,7 @@ test("confirmation: exactly {confirmedAt, format, referee, refereeFeed, referrer
 test("badge: exactly {badge, epoch, format, subject, value}", () => {
   const ok = { format: "woco.badge.v1", subject: S_REFEREE, badge: "joined", epoch: 0, value: true };
   assert.equal(validateBadgeV1(ok), true);
-  assert.equal(validateBadgeV1({ ...ok, value: false }), true); // revocation
+  assert.equal(validateBadgeV1({ ...ok, value: false }), true); // schema-valid; readers show only `true`
   assert.equal(validateBadgeV1({ ...ok, epoch: 7 }), true);
   assert.equal(validateBadgeV1({ ...ok, badge: "network" }), true);
   assert.equal(validateBadgeV1({ ...ok, badge: "early" }), false);

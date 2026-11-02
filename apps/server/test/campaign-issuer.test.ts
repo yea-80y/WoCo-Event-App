@@ -572,6 +572,51 @@ test("no Network badge without a confirmed step above B, a readable one, or when
   }
 });
 
+test("C confirmed before B: B's confirmation landing, with B's index already holding C, badges A", async () => {
+  // Here the confirmation being written is B's (REFEREE, referred by REFERRER =
+  // A). B invited C before finishing Stripe, so C's confirmation is already in
+  // B's referrer index. Nothing above B is read: the badge comes from below.
+  const NETWORK_A = badgeTopic(S_R, "network");
+  const bIndex = (subjects: Hex0x[]): Partial<IssuerDeps> => ({
+    readBanded: async (_owner, topicForBand) =>
+      topicForBand(0) === referrerIndexTopic(S_E, 0)
+        ? { status: "found", bytes: enc({ format: REFERRER_INDEX_FORMAT, subjects }), version: subjects.length - 1, scanClean: false, band: 0 }
+        : { status: "absent", band: 0 },
+  });
+
+  {
+    const { deps, writes } = recorder(bIndex([campaignAccountSubject(OTHER)]));
+    assert.equal((await issuer.confirmReferral(ARGS, deps)).status, "confirmed");
+    await settle();
+    await settle();
+    const network = writes.filter((w) => w.topic === NETWORK_A);
+    assert.equal(network.length, 1, "a dirty index scan is still a trigger");
+    assert.deepEqual(dec(network[0]!.bytes), {
+      format: BADGE_FORMAT, subject: S_R, badge: "network", epoch: issuer.currentEpoch(), value: true,
+    });
+  }
+
+  for (const [why, over] of [
+    // A referred B and B referred A: A in B's index is not a second step.
+    ["B's index holds only A", bIndex([S_R])],
+    ["B has no referees", {}],
+    ["B's index unreadable", { readBanded: async () => ({ status: "unavailable", reason: "probe", band: 0 }) }],
+    ["foreign bytes at B's index", {
+      readBanded: async (_owner: string, topicForBand: (band: number) => string) =>
+        topicForBand(0) === referrerIndexTopic(S_E, 0)
+          ? { status: "found", bytes: enc({ hello: "world" }), version: 0, scanClean: true, band: 0 }
+          : { status: "absent", band: 0 },
+    }],
+  ] as const) {
+    issuer.__resetIssuer({ configured: true });
+    const { deps, writes } = recorder(over as Partial<IssuerDeps>);
+    assert.equal((await issuer.confirmReferral(ARGS, deps)).status, "confirmed", why);
+    await settle();
+    await settle();
+    assert.equal(writes.some((w) => w.topic === NETWORK_A), false, `${why}: no Network badge for A`);
+  }
+});
+
 test("a Network check that throws never unmakes the confirmation", async () => {
   const { deps } = recorder({
     readVersion0: async (_owner, topic) => {
@@ -744,8 +789,10 @@ test("the referee's statement is read as `referral`; everything the issuer wrote
     // every badge read is (badges are permanent).
     "v0 badge campaignIssuer",
     "v0 badge campaignIssuer",
-    // The Network check: the referrer's own confirmation, in the issuer's space.
+    // The Network checks: up at the referrer's own confirmation, and down at the
+    // referee's referrer index - both in the issuer's space.
     "v0 referrer's confirmation campaignIssuer",
+    "banded index campaignIssuer",
     "v0 confirmation campaignIssuer",
     "v0 badge campaignIssuer",
   ]);
