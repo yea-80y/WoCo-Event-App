@@ -9,6 +9,7 @@ import { eventKeys, type EventKeys } from "../lib/keyring/event-keys.js";
 import { sellableKeys } from "../lib/keyring/sale-keys.js";
 import { noticeRefusal, organiserNoticeVerdict } from "../lib/legal/notice-gate.js";
 import { getOnChainEventAt } from "../lib/chain/event-contract.js";
+import { ledger2SaleStatus, noteChainCancelled } from "../lib/event/ledger2-sale-status.js";
 import { saleContractFor } from "../lib/event/onchain-registry.js";
 import {
   reserve,
@@ -166,8 +167,18 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
     // Fail closed on ANY chain problem: EventNotFound returns null, a
     // transport failure throws — both mean "cannot verify seats exist",
     // and a hold must never be granted against seats we can't count.
-    const onChainData = await getOnChainEventAt(contract, onChainEventId).catch(() => null);
+    // On ledger2 the organiser can cancel through any relay: read it with the supply,
+    // in the same round trip. A status that did not answer fails open (the server's
+    // cancellation record above is the closed gate); a cancellation holds nothing.
+    const [onChainData, status] = await Promise.all([
+      getOnChainEventAt(contract, onChainEventId).catch(() => null),
+      ledger2SaleStatus(contract, onChainEventId).catch(() => null),
+    ]);
     if (!onChainData) return 0;
+    if (status?.cancelled) {
+      noteChainCancelled(eventId, onChainEventId);
+      return 0;
+    }
     return Math.max(0, Number(onChainData.totalSupply) - Number(onChainData.nextSlot));
   };
 
