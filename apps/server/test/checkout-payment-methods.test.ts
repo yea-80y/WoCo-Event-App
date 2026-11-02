@@ -55,7 +55,7 @@ test("every Checkout Session created in the server pins the payment methods", ()
   for (const { file, args } of calls) {
     assert.match(
       args,
-      /payment_method_types:\s*CHECKOUT_PAYMENT_METHOD_TYPES\b/,
+      /\ballowed_payment_method_types:\s*CHECKOUT_PAYMENT_METHOD_TYPES\b/,
       `${file.slice(SRC.length)} creates a Checkout Session without CHECKOUT_PAYMENT_METHOD_TYPES`,
     );
   }

@@ -1198,7 +1198,7 @@ stripe.post("/create-checkout", async (c) => {
     const session = await s.checkout.sessions.create(
       {
         mode: "payment",
-        payment_method_types: CHECKOUT_PAYMENT_METHOD_TYPES,
+        allowed_payment_method_types: CHECKOUT_PAYMENT_METHOD_TYPES,
         ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
         line_items: [
           {
