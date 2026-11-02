@@ -460,7 +460,32 @@ block (Arbitrum's own block number, not the L1 one), merge; (2) deploy the front
 main; (3) only then set `WOCO_EVENT_VERSION_42161=ledger2` on the server. A frontend without the
 entry finds no ledger, so its removals move no event keys and count that work done. The server
 refuses `ledger2` on any chain but the Kernel chain (42161): an event's organiser is the account's
-Kernel, which exists only there.
+Kernel, which exists only there. Before (3), set `LEDGER2_RELAY_PRIVATE_KEY` on the server and fund
+it: from the moment a ledger2 is configured, `/api/health` `ledger2Relay` is red without it.
+
+**Organiser changes on ledger2 (step 1 of the go-live).** The organiser holds an event's terms: its
+ORGANISER KEY signs (`@woco/shared/ticket/ledger2-terms`, the ledger's own EIP-712 types) and WoCo's
+relay key submits, paying the gas; it holds no role on the ledger, every signed path ignores
+`msg.sender`. The browser reads every value it signs over from the chain and checks each digest
+against the ledger's `*Digest` view before signing. One save is ONE Multicall3 transaction: seat
+moves first and all-or-nothing, then terms writes, each allowed to fail alone (a terms write bumps
+`termsNonces`, which every seat move commits to). The server pays only for its own ledger2
+registrations of the signed-in organiser, recovers every signature locally first, simulates the
+whole batch, and holds one relay per on-chain event at a time (`lib/event/ledger2-relay.ts`).
+- Capacity: down to sold + held (a cut under live baskets is refused with the time they lapse), up
+  to the registered supply. The feed's `totalSupply` stays the registered number.
+- Sales end: the chain cutoff moves first, then the feed's `endDate` (`update-meta`). The end memo
+  is 60 s on ledger2 and dropped when our relay extends it (#995); create-checkout and reserve read
+  `getEventStatus` fresh there.
+- Cancel: `POST /:id/cancel` takes the signed cancels, checks them BEFORE it writes the record,
+  records (money stops, refunds start), then relays. A chain or relay failure leaves the record
+  standing and the dashboard offers "Finish cancelling". A chain cancellation the server has not
+  recorded refuses sales and turns `ledger2Relay` red until the organiser confirms it.
+- "Cancel" on a change still saving is a revoke at the SAME nonce; whichever lands first wins and
+  the browser reads the chain to say which. A revoke refused for a moved nonce (`nonce_moved`)
+  means the change landed or was replaced.
+- A batch that reverts on chain publishes its signatures; a request may carry "abort" revokes, sent
+  only then, so a dependent seat rearrangement cannot be landed part-way (audit 1156 L-1).
 
 > **Superseded (kept for the record).** Until 2026-09-24 the ledger was "written, reviewed and
 > merged, and not deployed", and `DEPLOYED_LEDGER` was empty so that selecting it early failed
