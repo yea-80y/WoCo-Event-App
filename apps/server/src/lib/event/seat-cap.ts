@@ -24,6 +24,17 @@
  * It would also need awaits inside the cap-check-to-insert stretch, which is
  * what keeps that stretch atomic. An organiser who inflates their own declared
  * supply only loosens the cap on their own event.
+ *
+ * ONE EXCEPTION: A LEDGER2 CUT. On ledger2 the organiser can lower a series' supply
+ * on chain after registration, and the feed keeps the registered number (the
+ * manifest commits exactly that many editions). Sized from 1000 after a cut to 40,
+ * one network could hold 30 of the 40. So the series being reserved counts at no
+ * more than its live supply, from the chain read `reserve` already makes for
+ * availability (Fable design consult for the ledger2 relay, 2026-11-02): no extra
+ * I/O, and that read is awaited BEFORE the synchronous cap-check-to-insert stretch,
+ * so the stretch stays atomic. Other series still count at their declared number;
+ * a hold in one of them is sized as if the cut had not happened, still under the
+ * ceiling, while a hold in the cut series always meets its live number.
  */
 
 import { RESERVATION_MAX_QTY } from "./reservation-store.js";
@@ -82,4 +93,44 @@ export function declaredSupplyOf(series: readonly { totalSupply?: number }[]): n
     if (Number.isFinite(n) && n > 0) total += n;
   }
   return total;
+}
+
+/**
+ * The supply one reserve's cap is sized from: the declared sum, with `seriesId`
+ * counted at no more than `live`. It only ever tightens: a live number above the
+ * declared one, or one that is not a finite non-negative number, changes nothing.
+ */
+export function capSupplyOf(
+  series: readonly { seriesId?: string; totalSupply?: number }[],
+  seriesId: string,
+  live: number | null,
+): number {
+  // NaN fails `>= 0`; Infinity loses the `min` below.
+  const usable = live !== null && live >= 0;
+  let total = 0;
+  for (const s of series) {
+    let n = Number(s?.totalSupply);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    if (usable && s?.seriesId === seriesId) n = Math.min(n, live);
+    total += n;
+  }
+  return total;
+}
+
+/**
+ * The cap for one reserve. The availability read reports the series' live supply
+ * through `sawLiveSupply`; `cap` is synchronous by type so `reserve` evaluates it
+ * after that read, inside its atomic stretch. Before any read it is the declared cap.
+ */
+export function seatCapForReserve(
+  series: readonly { seriesId?: string; totalSupply?: number }[],
+  seriesId: string,
+): { sawLiveSupply(n: number): void; cap(): number } {
+  let live: number | null = null;
+  return {
+    sawLiveSupply(n) {
+      live = n;
+    },
+    cap: () => perIpSeatCapForEvent(capSupplyOf(series, seriesId, live)),
+  };
 }

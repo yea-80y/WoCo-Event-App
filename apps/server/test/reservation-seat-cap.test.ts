@@ -240,3 +240,49 @@ test("concurrent reserves on DIFFERENT series of one event cannot exceed the cap
   assert.equal(granted, 1, "exactly one of two racing 6-seat holds may win under a cap of 10");
   assert.ok(store.heldSeatsByIp(IP, EVENT_A) <= 10, "the cap must never be breached by a race");
 });
+
+// ---------------------------------------------------------------------------
+// A ledger2 supply cut
+// ---------------------------------------------------------------------------
+
+test("a cut series counts at its live supply; the other series keep their declared number", () => {
+  const series = [
+    { seriesId: "ga", totalSupply: 1000 },
+    { seriesId: "vip", totalSupply: 100 },
+  ];
+  assert.equal(cap.capSupplyOf([series[0]!], "ga", 40), 40);
+  assert.equal(cap.perIpSeatCapForEvent(cap.capSupplyOf([series[0]!], "ga", 40)), store.RESERVATION_MAX_QTY);
+  assert.equal(cap.capSupplyOf(series, "ga", 40), 140);
+  assert.equal(cap.capSupplyOf(series, "vip", 40), 1040);
+});
+
+test("the live supply only ever tightens the cap", () => {
+  const series = [{ seriesId: "ga", totalSupply: 1000 }];
+  // Above the declared number (the feed is the registered count), unread, or junk:
+  // the declared number stands, so no read can loosen the cap.
+  for (const live of [5000, null, Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    assert.equal(cap.capSupplyOf(series, "ga", live), 1000, String(live));
+  }
+  // A malformed series still contributes nothing, as in declaredSupplyOf.
+  assert.equal(cap.capSupplyOf([{ seriesId: "ga", totalSupply: -5 }, {}], "ga", 40), 0);
+});
+
+test("1000 cut to 40: one network holds 10 of the 40, not 30", async () => {
+  const EVENT_A = freshEvent();
+  const [GA] = freshSeries();
+  const series = [{ seriesId: GA, totalSupply: 1000 }];
+  // As the route does: a fresh cap per request, told the live supply by the
+  // availability read. The store must size the cap AFTER that read - sized
+  // before it, every request here would get the declared 30.
+  const reserveOne = (qty: number, clientKey: string) => {
+    const seatCap = cap.seatCapForReserve(series, GA);
+    const liveRead = async () => {
+      seatCap.sawLiveSupply(40);
+      return 40;
+    };
+    return store.reserve(EVENT_A, GA, qty, liveRead, seatCap.cap, undefined, clientKey, IP);
+  };
+  assert.ok((await reserveOne(10, "buyer-1")).ok);
+  const over = await reserveOne(1, "buyer-2");
+  assert.equal(over.ok ? null : over.error, "IpCapExceeded");
+});

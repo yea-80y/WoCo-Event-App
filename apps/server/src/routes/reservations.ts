@@ -18,7 +18,7 @@ import {
   RESERVATION_MAX_QTY,
   heldFor,
 } from "../lib/event/reservation-store.js";
-import { perIpSeatCapForEvent, declaredSupplyOf } from "../lib/event/seat-cap.js";
+import { seatCapForReserve } from "../lib/event/seat-cap.js";
 import { clientIp } from "../lib/http/client-ip.js";
 
 const reservations = new Hono<AppEnv>();
@@ -161,6 +161,12 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   }
   const contract = sale.contract;
 
+  // How many seats one network may hold unpaid at THIS event (#223), sized from
+  // the declared supply on the event record already loaded above, with this series
+  // at no more than the live supply the read below sees (a ledger2 cut). The store
+  // evaluates it after that read, synchronously - see the invariant note at the check.
+  const seatCap = seatCapForReserve(event.series, seriesId);
+
   // Closure that the reservation store uses to ask "what is available right
   // now?" — the contract is the only supply ledger.
   const availableSupplier = async (): Promise<number> => {
@@ -175,6 +181,7 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
       ledger2SaleStatus(contract, onChainEventId).catch(() => null),
     ]);
     if (!onChainData) return 0;
+    seatCap.sawLiveSupply(Number(onChainData.totalSupply));
     if (status?.cancelled) {
       noteChainCancelled(eventId, onChainEventId);
       return 0;
@@ -182,18 +189,12 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
     return Math.max(0, Number(onChainData.totalSupply) - Number(onChainData.nextSlot));
   };
 
-  // How many seats one network may hold unpaid at THIS event (#223). Sized from
-  // declared supply on the event record already loaded above, so it costs no
-  // extra I/O, and computed here rather than in the store so the cap check stays
-  // synchronous — see the invariant note at the check.
-  const perIpSeatCap = perIpSeatCapForEvent(declaredSupplyOf(event.series));
-
   const result = await reserve(
     eventId,
     seriesId,
     quantity,
     availableSupplier,
-    perIpSeatCap,
+    seatCap.cap,
     replaceReservationId,
     clientKey,
     ip,
