@@ -19,6 +19,7 @@ import { cancellationGate, reopenRefundRow } from "../lib/event/cancellations.js
 import { kickCancellationRefunds } from "../lib/stripe/cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "../lib/stripe/cancellation-refunds-live.js";
 import { getStripe } from "../lib/stripe/client.js";
+import { stripeKeyMode } from "../lib/stripe/key-mode.js";
 import {
   getStripeAccount,
   setStripeAccount,
@@ -1334,7 +1335,10 @@ stripe.get("/checkout-status", async (c) => {
  *
  * Stripe sends events here. Once a signing secret is configured, every event
  * must carry a valid signature. Unsigned events are accepted only when no
- * secret is set AND the server is not in production (local dev and tests).
+ * secret is set, the server is not in production, AND its Stripe key is a
+ * test-mode key (local dev and tests): a positive dev marker, not merely the
+ * absence of a production one (#1000). An event whose livemode disagrees with
+ * the key's mode is refused.
  */
 stripe.post("/webhook", async (c) => {
   const rawBody = await c.req.text();
@@ -1376,16 +1380,16 @@ stripe.post("/webhook", async (c) => {
       }
       if (!verified) throw lastErr ?? new Error("No matching signing secret");
       event = verified;
-    } else if (process.env.NODE_ENV === "production") {
+    } else if (process.env.NODE_ENV === "production" || stripeKeyMode(process.env.STRIPE_SECRET_KEY) !== "test") {
       // SECURITY: Without signature verification, anyone who can reach this
       // endpoint can forge a checkout.session.completed event with arbitrary
-      // metadata and claim free tickets. Always reject unsigned webhooks in
-      // production — set STRIPE_WEBHOOK_SECRET in apps/server/.env.
-      console.error("[stripe-webhook] REJECTED: no webhook signing secret set in production");
+      // metadata and claim free tickets. A live (or unrecognised) key never
+      // takes an unsigned event, even if NODE_ENV was lost (#1000).
+      console.error("[stripe-webhook] REJECTED: no webhook signing secret set, and this is not a test-mode dev server");
       return c.text("Webhook signature required", 400);
     } else {
       // Dev/test only — accept unsigned events
-      console.warn("[stripe-webhook] Accepting unsigned webhook (dev mode — set STRIPE_WEBHOOK_SECRET to enforce)");
+      console.warn("[stripe-webhook] Accepting unsigned webhook (dev mode, test key — set STRIPE_WEBHOOK_SECRET to enforce)");
       event = JSON.parse(rawBody) as import("stripe").Stripe.Event;
     }
   } catch (err) {
@@ -1394,6 +1398,17 @@ stripe.post("/webhook", async (c) => {
     // they send (up to the 16 MiB API cap) into the journal on every refusal.
     console.error("[stripe-webhook] Signature verification failed:", err instanceof Error ? err.message : String(err));
     return c.text("Webhook signature verification failed", 400);
+  }
+
+  // Belt-and-braces (#1000): a test event cannot verify against live secrets,
+  // but a test secret pasted into a live env would let one through. Only a key
+  // whose mode is known is enforced: unknown must never refuse production.
+  const keyMode = stripeKeyMode(process.env.STRIPE_SECRET_KEY);
+  if (keyMode !== "unknown" && typeof event.livemode === "boolean" && event.livemode !== (keyMode === "live")) {
+    console.error(
+      `[stripe-webhook] REJECTED: ${event.livemode ? "live" : "test"}-mode event ${event.id} (${event.type}) for a ${keyMode}-mode key`,
+    );
+    return c.text("Webhook mode does not match this server", 400);
   }
 
   switch (event.type as string) {
