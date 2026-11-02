@@ -191,13 +191,13 @@ type FeedLookup =
   | { status: "absent" }
   | { status: "error"; error: Error };
 
-function errorStatus(err: unknown): number | undefined {
+export function errorStatus(err: unknown): number | undefined {
   const e = err as { status?: number; response?: { status?: number } } | undefined;
   return e?.status ?? e?.response?.status;
 }
 
 /** Bee's JSON error message from a bee-js response error, or "". */
-function beeErrorMessage(err: unknown): string {
+export function beeErrorMessage(err: unknown): string {
   const body = (err as { responseBody?: unknown } | undefined)?.responseBody;
   let text = "";
   if (typeof body === "string") text = body;

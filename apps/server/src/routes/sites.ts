@@ -11,6 +11,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { cancellationGate } from "../lib/event/cancellations.js";
 import { getEvent, getCreatorEvents } from "../lib/event/service.js";
 import { getCreatorSites, upsertCreatorSite, resolveSiteConfig, resolveSiteConfigOrNull } from "../lib/site/service.js";
+import { siteRuntimeReleases } from "../lib/site/runtime-release.js";
 import {
   escapeHtmlAttribute as escHtml,
   injectBeforeHeadClose,
@@ -582,6 +583,21 @@ sitesRouter.get("/mine", requireAuth, async (c) => {
 function malformedId(c: Context, name: "siteId" | "eventId") {
   return c.json({ ok: false, error: `${name} is malformed` }, 400);
 }
+
+// GET /api/sites/runtime - the latest site runtime release (#1032), for the builder.
+// Registered before "/:id", or "runtime" would match as a siteId.
+sitesRouter.get("/runtime", async (c) => {
+  // From memory once one is held (the background refresh keeps it current); only a
+  // cold process reads here.
+  const release = siteRuntimeReleases.peek() ?? (await siteRuntimeReleases.get());
+  if (!release) {
+    const { lastError } = siteRuntimeReleases.health();
+    return lastError
+      ? c.json({ ok: false, error: "The site runtime release could not be read" }, 503)
+      : c.json({ ok: false, error: "No site runtime release has been published yet" }, 404);
+  }
+  return c.json({ ok: true, data: release });
+});
 
 sitesRouter.get("/:id", async (c) => {
   const siteId = c.req.param("id");

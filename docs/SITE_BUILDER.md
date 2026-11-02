@@ -201,6 +201,17 @@ SEO metadata (`siteDescription`, `og:*`, `twitter:card`, with `ogImage` set to t
 ref) is injected at **deploy** time; `MultiSiteApp` then updates the meta description per page at
 runtime. Not injected yet: `<title>` and a canonical (#70) - see SEO_PLAN.md.
 
+### Runtime releases (#1032, in progress)
+
+Today every deploy copies the whole runtime (~9 MB) into the site. The replacement: the runtime is
+published ONCE per release (`node scripts/publish-site-runtime.cjs`, real repo, clean main) to our
+bee on the core batch and to the Etherna platform batch, and a signed descriptor
+(`packages/shared/src/site/runtime-release.ts`) is written to the `woco-site-runtime-v1` feed under
+the frontend deploy key. Sites will link the release's shared directories into their own manifest
+(~20 KB per publish) and pin the release they linked; the feed is discovery only. The server reads
+the latest descriptor (`GET /api/sites/runtime`, `/api/health` `siteRuntime`). Not used by
+publishing yet (slice 3). Design, measurements and slice plan: #1032.
+
 ---
 
 ## 7. Related
