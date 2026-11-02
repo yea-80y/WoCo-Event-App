@@ -22,9 +22,12 @@ test("rowDetail: opened beats everything but erasure", () => {
   assert.equal(rowDetail(NONE, true, undefined, false), "details");
 });
 
-test("rowDetail: a box on the row is loading while opening, else could not be opened", () => {
+test("rowDetail: a box on the row is loading while opening, locked while the keys are, else could not be opened", () => {
   assert.equal(rowDetail(BOX, false, undefined, true), "loading");
+  assert.equal(rowDetail(BOX, false, undefined, false, true), "locked");
   assert.equal(rowDetail(BOX, false, undefined, false), "unopened");
+  assert.equal(listGate(["locked", "details"]).kind, "gaps");
+  assert.match((listGate(["locked"]) as { why: string }).why, /^1 locked - unlock to include them$/);
 });
 
 test("rowDetail: a row without its box follows the queue", () => {
@@ -81,8 +84,10 @@ test("CSV: no export while loading; a confirm naming the shortfall on gaps; a De
 
 test("Broadcast: no send while loading; the confirm says who will not receive it", () => {
   const send = body(DASH, "async function handleSendBroadcast(");
-  const gate = send.indexOf('if (gate.kind === "loading") {');
+  // A resume re-sends to recipients the server holds: only a NEW send waits.
+  const gate = send.indexOf('if (!resumeOf && gate.kind === "loading") {');
   assert.ok(gate > 0 && gate < send.indexOf("startBroadcast("), "checked before anything is sent");
+  assert.match(send, /!resumeOf && gate\.kind === "gaps"\s*\?/);
   assert.match(send, /tickets are missing \(\$\{gate\.why\}\), so those ticket holders will NOT receive this\./);
   assert.match(send, /\$\{crossingWarning\}\$\{gapWarning\}`\)\)/);
   assert.match(DASH, /\|\| broadcastGate\.kind === "loading"/);
@@ -100,4 +105,8 @@ test("Door list: waits while loading, and goes out with gaps only on a second ta
     assert.ok(decrypt > 0 && gate > decrypt && push > gate, `${fn}: open first, then the gate, then the push`);
   }
   assert.match(DASH, /rosterGate=\{listGate\(rowDetailsOf\(ordersResponse\.orders\)\)\}/);
+});
+
+test("a locked row reads as locked in every gate, not as 'could not be opened'", () => {
+  assert.match(DASH, /rowDetail\(o, decryptedOrders\.has\(position\.get\(o\) \?\? -1\), detailState\(o\), decrypting, ordersLocked\)/);
 });

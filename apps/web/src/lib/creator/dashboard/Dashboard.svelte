@@ -221,7 +221,7 @@
     void detailTick;
     if (!ordersResponse) return [];
     const position = new Map(ordersResponse.orders.map((o, i) => [o, i]));
-    return rows.map((o) => rowDetail(o, decryptedOrders.has(position.get(o) ?? -1), detailState(o), decrypting));
+    return rows.map((o) => rowDetail(o, decryptedOrders.has(position.get(o) ?? -1), detailState(o), decrypting, ordersLocked));
   }
 
   /** The orders a whole-list action covers: one series, or all. */
@@ -405,7 +405,8 @@
 
     // Recipients come from opened orders: never send to part of the room without saying so.
     const gate = listGate(rowDetailsOf(ordersIn(broadcastSeriesFilter)));
-    if (gate.kind === "loading") {
+    // A resume re-sends to recipients the server already holds: nothing here to wait for.
+    if (!resumeOf && gate.kind === "loading") {
       broadcastError = `Attendee details are still loading (${gate.done} of ${gate.total}). Send once they have all arrived.`;
       return;
     }
@@ -445,7 +446,7 @@
       ? "\n\nThis is a service notice, so it will also reach ticket-holders who unsubscribed from your marketing. It cannot reach addresses that bounced or reported spam."
       : "";
     const gapWarning =
-      gate.kind === "gaps"
+      !resumeOf && gate.kind === "gaps"
         ? `\n\nDetails for ${shortfall(gate)} tickets are missing (${gate.why}), so those ticket holders will NOT receive this.`
         : "";
     if (!confirm(`${verb} — ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""} (${seriesLabel})?${crossingWarning}${gapWarning}`)) {

@@ -18,7 +18,7 @@
 import type { OrderEntry } from "@woco/shared";
 import type { DetailState } from "./detail-queue.js";
 
-export type RowDetail = "details" | "erased" | "loading" | "not-found" | "unavailable" | "unreadable" | "unopened";
+export type RowDetail = "details" | "erased" | "loading" | "locked" | "not-found" | "unavailable" | "unreadable" | "unopened";
 
 /** Where one row's attendee details stand. */
 export function rowDetail(
@@ -26,11 +26,12 @@ export function rowDetail(
   opened: boolean,
   queueState: DetailState | undefined,
   opening: boolean,
+  locked = false,
 ): RowDetail {
   if (order.erased) return "erased";
   if (opened) return "details";
-  // The box is here: it is being opened, or it would not open (or the keys are locked).
-  if (order.encryptedOrder) return opening ? "loading" : "unopened";
+  // The box is here: being opened, waiting for the keys, or it would not open.
+  if (order.encryptedOrder) return opening ? "loading" : locked ? "locked" : "unopened";
   switch (queueState) {
     case "queued":
     case "fetching":
@@ -52,6 +53,7 @@ export type ListGate =
   | { kind: "gaps"; missing: number; total: number; why: string };
 
 const WHY: Array<[Exclude<RowDetail, "details" | "erased" | "loading">, string]> = [
+  ["locked", "locked - unlock to include them"],
   ["not-found", "not found"],
   ["unavailable", "unavailable right now"],
   ["unreadable", "unreadable"],
@@ -80,6 +82,7 @@ export const DETAIL_CSV: Record<RowDetail, string> = {
   details: "",
   erased: "Erased on request",
   loading: "Still loading",
+  locked: "Locked",
   "not-found": "Not found",
   unavailable: "Unavailable",
   unreadable: "Unreadable",
