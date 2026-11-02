@@ -33,6 +33,15 @@ function read(rel: string): string {
 
 const profile = read("../src/lib/components/profile/ProfilePage.svelte");
 const builder = read("../src/lib/creator/builder/MultiSiteBuilder.svelte");
+const helper = readFileSync(
+  fileURLToPath(new URL("../src/lib/sub-ens/name-check.svelte.ts", import.meta.url)),
+  "utf-8",
+);
+
+test("the shared check calls a name verified on 'owned', and nothing else", () => {
+  // Both screens' gates trust `verified`; widening it re-opens the bug on both.
+  assert.match(helper, /get verified\(\) \{\s*return state === "owned";\s*\}/);
+});
 
 function pickers(text: string): string[] {
   const tags = [...text.matchAll(/<SubENSPicker\b[\s\S]*?\/>/g)].map((m) => m[0]);
@@ -51,9 +60,13 @@ function claimedLabelOf(tag: string): string {
 // Profile page
 // ---------------------------------------------------------------------------
 
-test("profile: nameVerified means the chain check said 'owned', and nothing else", () => {
+test("profile: nameVerified is the shared chain check of the profile's own label", () => {
   // The picker gate below trusts this name; re-pointing it would re-open the bug.
-  assert.match(profile, /const nameVerified = \$derived\(nameCheck === "owned"\);/);
+  assert.match(
+    profile,
+    /const nameCheck = createNameCheck\(\(\) => \(\{ label: profile\?\.subEnsLabel, owner: viewAddress \}\)\);/,
+  );
+  assert.match(profile, /const nameVerified = \$derived\(nameCheck\.verified\);/);
 });
 
 test("profile: every SubENSPicker gets the label only once it is verified", () => {
@@ -76,8 +89,12 @@ test("profile: the discard offer is only made for a name the chain said was ours
 // Site builder
 // ---------------------------------------------------------------------------
 
-test("builder: siteNameVerified means the chain check said 'owned', and nothing else", () => {
-  assert.match(builder, /const siteNameVerified = \$derived\(siteNameCheck === 'owned'\);/);
+test("builder: siteNameVerified is the shared chain check of the site's label for this account", () => {
+  assert.match(
+    builder,
+    /const siteNameCheck = createNameCheck\(\(\) => \(\{ label: site\.subEnsLabel, owner: auth\.parent \}\)\);/,
+  );
+  assert.match(builder, /const siteNameVerified = \$derived\(siteNameCheck\.verified\);/);
 });
 
 test("builder: every SubENSPicker gets the site's label only once it is verified", () => {

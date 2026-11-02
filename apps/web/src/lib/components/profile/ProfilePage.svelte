@@ -16,7 +16,8 @@
   import { authGet } from "../../api/client.js";
   import { authKindLabel, authKindColor } from "../../auth/kind-label.js";
   import { rememberLabel } from "../../profile/label-cache.js";
-  import { checkName, paintName, rememberOwner, type NameCheck } from "../../sub-ens/verify-name.js";
+  import { rememberOwner } from "../../sub-ens/verify-name.js";
+  import { createNameCheck } from "../../sub-ens/name-check.svelte.js";
   import { subEnsErrorFrom, subEnsErrorDetail, formatRetryAt } from "../../sub-ens/errors.js";
   import { canOpenRename, type ProfileNameStatus } from "../../sub-ens/rename.js";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
@@ -55,19 +56,8 @@
   // not exempted: seeing your own unowned name disappear is the correct signal.
   // The Profile domain card reads this too: handed the raw label, the picker said
   // "is yours" about a name from the registry retired on 2026-10-23.
-  let nameCheck = $state<"none" | "checking" | NameCheck>("none");
-  let nameCheckAttempt = $state(0);
-  const nameVerified = $derived(nameCheck === "owned");
-  $effect(() => {
-    const label = profile?.subEnsLabel;
-    const owner = viewAddress;
-    void nameCheckAttempt;
-    if (!label || !owner) { nameCheck = "none"; return; }
-    let live = true;
-    nameCheck = paintName(label, owner);
-    void checkName(label, owner).then((result) => { if (live) nameCheck = result; });
-    return () => { live = false; };
-  });
+  const nameCheck = createNameCheck(() => ({ label: profile?.subEnsLabel, owner: viewAddress }));
+  const nameVerified = $derived(nameCheck.verified);
   const isOwner = $derived(
     auth.isConnected && !!viewAddress && auth.parent?.toLowerCase() === viewAddress,
   );
@@ -845,15 +835,15 @@
             Claim a free, permanent <code>.woco.eth</code> domain for your profile.
             It's how people find you.
           </p>
-          {#if nameCheck === "checking"}
+          {#if nameCheck.state === "checking"}
             <p class="ens-bind-warning">Checking your domain…</p>
-          {:else if nameCheck === "unknown"}
+          {:else if nameCheck.state === "unknown"}
             <p class="ens-bind-warning">
               Couldn't check your domain just now.
-              <button class="ens-discard-btn" onclick={() => nameCheckAttempt++}>Try again</button>
+              <button class="ens-discard-btn" onclick={() => nameCheck.retry()}>Try again</button>
             </p>
           {:else}
-            {#if nameCheck === "not-owned" && profile?.subEnsLabel}
+            {#if nameCheck.state === "not-owned" && profile?.subEnsLabel}
               <p class="ens-bind-warning">
                 <code>{subEnsName(profile.subEnsLabel)}</code> isn't registered to this account, so your profile doesn't show it.
               </p>

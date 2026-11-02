@@ -29,7 +29,8 @@
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import { getOwnedSubEns } from "../../api/sub-ens.js";
-  import { checkName, paintName, rememberOwner, type NameCheck } from "../../sub-ens/verify-name.js";
+  import { rememberOwner } from "../../sub-ens/verify-name.js";
+  import { createNameCheck } from "../../sub-ens/name-check.svelte.js";
   import { describeSubEnsError, subEnsErrorDetail, subEnsErrorFrom } from "../../sub-ens/errors.js";
   import { ApiError } from "../../api/errors.js";
 
@@ -157,19 +158,8 @@
   // The site config is client-signed and outlives a registry change, so its label is
   // a claim: the Domain tab says "is yours" and Publish asks for the holder key only
   // once the chain agrees (same rule as the profile card, 2026-11-02).
-  let siteNameCheck = $state<'none' | 'checking' | NameCheck>('none');
-  let siteNameCheckAttempt = $state(0);
-  const siteNameVerified = $derived(siteNameCheck === 'owned');
-  $effect(() => {
-    const label = site.subEnsLabel;
-    const owner = auth.parent?.toLowerCase();
-    void siteNameCheckAttempt;
-    if (!label || !owner) { siteNameCheck = 'none'; return; }
-    let live = true;
-    siteNameCheck = paintName(label, owner);
-    void checkName(label, owner).then((result) => { if (live) siteNameCheck = result; });
-    return () => { live = false; };
-  });
+  const siteNameCheck = createNameCheck(() => ({ label: site.subEnsLabel, owner: auth.parent }));
+  const siteNameVerified = $derived(siteNameCheck.verified);
 
   /** A name this publish will point at the site, asked for at the tap (a wallet signs
    *  with the button, as before). */
@@ -975,7 +965,7 @@
           <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(feedHash)} title="Copy feed hash">Copy</button>
           <span class="feed-hint">← stable · use this for a .eth domain you own</span>
         </div>
-        {#if publishState === 'done' && (!site.subEnsLabel || siteNameCheck === 'not-owned')}
+        {#if publishState === 'done' && (!site.subEnsLabel || siteNameCheck.state === 'not-owned')}
           <div class="deploy-row">
             <span class="deploy-label">Share</span>
             <button class="deploy-copy" onclick={() => { tab = 'domain'; }}>Get a free .woco.eth domain</button>
@@ -1058,15 +1048,15 @@
           onshopchange={(id) => { siteShopId = id; }}
         />
       {:else if tab === 'domain'}
-        {#if siteNameCheck === 'checking'}
+        {#if siteNameCheck.state === 'checking'}
           <div class="subens-notice">Checking this site's domain…</div>
-        {:else if siteNameCheck === 'unknown'}
+        {:else if siteNameCheck.state === 'unknown'}
           <div class="subens-notice">
             Couldn't check this site's domain just now.
-            <button class="subens-notice-btn" onclick={() => siteNameCheckAttempt++}>Try again</button>
+            <button class="subens-notice-btn" onclick={() => siteNameCheck.retry()}>Try again</button>
           </div>
         {:else}
-          {#if siteNameCheck === 'not-owned' && site.subEnsLabel}
+          {#if siteNameCheck.state === 'not-owned' && site.subEnsLabel}
             <div class="subens-notice subens-notice--warn">
               <code>{subEnsName(site.subEnsLabel)}</code> isn't registered to this account, so publishing won't point it here.
               <button class="subens-notice-btn" onclick={() => { site.subEnsLabel = undefined; }}>Remove it from this site</button>
