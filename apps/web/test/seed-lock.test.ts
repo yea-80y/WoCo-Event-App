@@ -487,7 +487,11 @@ test("Dashboard: the unlock decrypts once, and a relock hides the details again"
   assert.match(dash, /if \(auth\.hasIdentitySeed && ordersLocked && !decrypting\) void decryptCurrent\(\);/);
   assert.match(dash, /<UnlockPanel subject="Attendee details" action="Show attendees" \/>/);
   // Also mid-run (#965 opens in steps): the run in progress is told to stop and keep nothing.
-  assert.match(dash, /if \(auth\.kind === "passkey" && !auth\.hasIdentitySeed && \(decryptedOrders\.size > 0 \|\| decrypting\)\) \{\s*endOpening\(\);\s*ordersLocked = true;/);
+  // …and a keyed worker whose every open failed (Fable sign-off S3).
+  assert.match(
+    dash,
+    /if \(auth\.kind === "passkey" && !auth\.hasIdentitySeed && \(decryptedOrders\.size > 0 \|\| decrypting \|\| keyedAccount !== null\)\) \{\s*endOpening\(\);\s*ordersLocked = true;/,
+  );
   const end = dash.slice(dash.indexOf("function endOpening(): void {"), dash.indexOf("function endOpening(): void {") + 300);
   assert.match(end, /openEpoch\+\+;\s*keyedAccount = null;\s*opener\?\.lock\(\);\s*opened\.clear\(\);\s*decryptedOrders = new Map\(\);/);
 });

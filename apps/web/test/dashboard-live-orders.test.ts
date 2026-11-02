@@ -465,11 +465,18 @@ test("opening runs in steps from the rows on screen, gives the page a turn, and 
   const body = fnBody("async function openOrders");
   assert.match(body, /const epoch = openEpoch;/);
   // Each step from the live rows: an order erased mid-run is never opened (Fable sign-off S2).
-  assert.match(body, /const batch = ordersResponse \? opened\.unopened\(ordersResponse\.orders\)\.slice\(0, OPEN_CHUNK\) : \[\];/);
+  assert.match(
+    body,
+    /const batch = ordersResponse \? opened\.unopened\(ordersResponse\.orders\)\.slice\(0, useWorker \? OPEN_BATCH : OPEN_CHUNK\) : \[\];/,
+  );
   assert.match(body, /else opened\.fail\(batch\[k\]\.order\);/, "a box that would not open is not retried every run (S6)");
+  assert.match(body, /else opened\.fail\(order\);/, "nor one the worker did not open or answer for");
   assert.match(body, /await new Promise\(\(resolve\) => setTimeout\(resolve, 0\)\);/);
-  const guard = body.indexOf("if (epoch !== openEpoch || destroyed) return;");
-  assert.ok(guard > 0 && guard < body.indexOf("opened.put("), "the lock check comes before anything opened is kept");
+  // Both paths check the lock before keeping anything they opened.
+  const worker = body.indexOf('if (out.kind === "locked" || epoch !== openEpoch || destroyed) return;');
+  assert.ok(worker > 0 && worker < body.indexOf("opened.put(order,"), "worker path: lock check first");
+  const page = body.indexOf("if (epoch !== openEpoch || destroyed) return;\n      results.forEach(");
+  assert.ok(page > 0 && page < body.indexOf("opened.put(batch[k].order"), "page path: lock check first");
   assert.match(DASH, /openEpoch\+\+;\s*keyedAccount = null;\s*opener\?\.lock\(\);\s*opened\.clear\(\);/);
 });
 

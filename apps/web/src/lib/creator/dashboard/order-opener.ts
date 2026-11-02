@@ -27,6 +27,13 @@ export type OpenOutcome =
   /** No worker: open on the page. */
   | { kind: "unavailable" };
 
+/**
+ * A batch the worker has not answered in this long means it is stuck: treat it as
+ * gone and open on the page. A batch is ~50 boxes at a few ms each, so this is
+ * minutes of headroom even on a slow phone.
+ */
+export const OPEN_TIMEOUT_MS = 60_000;
+
 export class OrderOpener {
   private port: OpenerPort | null = null;
   private keyedEpoch: number | null = null;
@@ -34,7 +41,10 @@ export class OrderOpener {
   private nextReq = 0;
   private readonly waiting = new Map<number, (o: OpenOutcome) => void>();
 
-  constructor(private readonly spawn: () => OpenerPort) {}
+  constructor(
+    private readonly spawn: () => OpenerPort,
+    private readonly timeoutMs: number = OPEN_TIMEOUT_MS,
+  ) {}
 
   /** The worker holds keys for this epoch. */
   keyedFor(epoch: number): boolean {
@@ -70,7 +80,14 @@ export class OrderOpener {
     if (!this.port || this.keyedEpoch !== epoch) return Promise.resolve({ kind: "locked" });
     const req = ++this.nextReq;
     return new Promise((resolve) => {
-      this.waiting.set(req, resolve);
+      const timer = setTimeout(() => {
+        // Stuck: never block every later run on it (Fable sign-off S5).
+        if (this.waiting.has(req)) this.fail();
+      }, this.timeoutMs);
+      this.waiting.set(req, (o) => {
+        clearTimeout(timer);
+        resolve(o);
+      });
       this.port!.postMessage({ type: "open", req, epoch, eventId, jobs });
     });
   }

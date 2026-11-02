@@ -189,6 +189,25 @@ test("page: a worker that fails to start answers unavailable, never hangs", asyn
   assert.deepEqual(await opener.open(1, "e", []), { kind: "unavailable" });
 });
 
+test("page: a worker that stops answering is given up on, so the page opens the rest (Fable sign-off S5)", async () => {
+  const f = fakePort({ hold: true });
+  const opener = new OrderOpener(() => f.port, 20);
+  opener.unlock(1, [new Uint8Array(1)]);
+  assert.deepEqual(await opener.open(1, "e", [{ id: 0, seriesId: "s", box: "a" }]), { kind: "unavailable" });
+  assert.equal(f.terminated(), 1);
+  assert.deepEqual(await opener.open(1, "e", []), { kind: "unavailable" }, "and stays given up on");
+});
+
+test("page: an answer in time clears its timer (no late give-up)", async () => {
+  const f = fakePort();
+  const opener = new OrderOpener(() => f.port, 50);
+  opener.unlock(1, [new Uint8Array(1)]);
+  assert.equal((await opener.open(1, "e", [{ id: 0, seriesId: "s", box: "a" }])).kind, "opened");
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(f.terminated(), 0);
+  assert.equal((await opener.open(1, "e", [{ id: 0, seriesId: "s", box: "b" }])).kind, "opened");
+});
+
 test("page: a worker that cannot even be constructed answers unavailable", async () => {
   const opener = new OrderOpener(() => {
     throw new Error("refused");
@@ -202,15 +221,20 @@ const WORKER = readFileSync(new URL("../src/lib/creator/dashboard/order-opener.w
 
 test("Dashboard: opens in the worker, falls back to the page, and a relock stops and terminates it", () => {
   const body = DASH.slice(DASH.indexOf("async function decryptOnce"), DASH.indexOf("// Unlocked - by the panel's tap"));
-  assert.match(body, /if \(out\.kind === "unavailable"\) break;/);
-  assert.match(body, /if \(out\.kind === "locked" \|\| epoch !== openEpoch\) return;/);
-  assert.match(body, /if \(epoch !== openEpoch\) return;\s*keyedAccount = auth\.seedAddress;\s*worker\.unlock\(epoch, keys\);/, "never keys a worker after a lock");
+  assert.match(body, /if \(out\.kind === "unavailable"\) \{\s*\/\/[^\n]*\n\s*useWorker = false;\s*continue;/);
+  assert.match(body, /if \(out\.kind === "locked" \|\| epoch !== openEpoch \|\| destroyed\) return;/);
+  assert.match(
+    body,
+    /if \(epoch !== openEpoch \|\| destroyed \|\| auth\.seedAddress !== account\) return;\s*keyedAccount = account;\s*worker\.unlock\(epoch, keys\);/,
+    "never keys a worker after a lock, after leaving, or for an account that changed mid-derivation (S4)",
+  );
   assert.match(DASH, /openEpoch\+\+;\s*keyedAccount = null;\s*opener\?\.lock\(\);/);
-  assert.match(DASH, /\$effect\(\(\) => \(\) => opener\?\.lock\(\)\);/, "leaving the page ends the worker");
+  assert.match(DASH, /\$effect\(\(\) => \(\) => endOpening\(\)\);/, "leaving the page ends the worker and every run (M1)");
 });
 
 test("Dashboard: the worker's keys belong to one signed-in account (security review 2026-11-01)", () => {
-  assert.match(DASH, /keyedAccount = auth\.seedAddress;\s*worker\.unlock\(epoch, keys\);/, "the owner is recorded at hand-over");
+  assert.match(DASH, /ordersLocked = false;\s*\/\/[^\n]*\n\s*const account = auth\.seedAddress;/, "captured beside the secrets");
+  assert.match(DASH, /keyedAccount = account;\s*worker\.unlock\(epoch, keys\);/, "the owner is recorded at hand-over");
   assert.match(
     DASH,
     /const account = auth\.isConnected \? auth\.seedAddress : null;\s*if \(keyedAccount !== null && account !== keyedAccount\) endOpening\(\);/,
