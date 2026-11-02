@@ -1332,14 +1332,18 @@ export async function setCoOwners(
   signers: readonly string[],
   /** The account's key ring moving in the SAME op (#186): last call, `prev` = what the anchor holds now. */
   ring?: { prev: string | null; next: string },
+  /** A removal's events onto the new organiser key: just before the ring, renew only. */
+  move?: import("./co-owner-calls.js").OrganiserKeyMove,
 ): Promise<{ txHash: string; blockNumber?: bigint; confirmed: boolean }> {
   const [{ encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters }, calls] = await Promise.all([
     import("viem"),
     import("./co-owner-calls.js"),
   ]);
   const d = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as unknown as import("./co-owner-calls.js").CoOwnerEncoders;
+  if (move && (root !== "weighted" || !ring)) throw new Error("An organiser key moves only with a removal.");
   const op = [
     ...(root === "weighted" ? [calls.coOwnerRenewCall(d, signers)] : calls.coOwnerSwitchCalls(d, builtKernel.address, signers)),
+    ...(move ? [calls.organiserKeyMoveCall(d, move)] : []),
     ...(ring ? [calls.coOwnerRingCall(d, ring.prev, ring.next)] : []),
   ];
   const { txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
@@ -1375,15 +1379,69 @@ export async function setCoOwners(
 export async function setKeyRingAlone(
   builtKernel: BuiltKernel,
   ring: { prev: string | null; next: string },
+  /** A removal whose passkeys are already off the list: its events' key move rides here. */
+  move?: import("./co-owner-calls.js").OrganiserKeyMove,
 ): Promise<{ txHash: string; confirmed: boolean }> {
   const [{ encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters }, calls] = await Promise.all([
     import("viem"),
     import("./co-owner-calls.js"),
   ]);
   const d = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as unknown as import("./co-owner-calls.js").CoOwnerEncoders;
-  const c = calls.coOwnerRingCall(d, ring.prev, ring.next);
-  const { txHash } = await sendSudoUserOp(builtKernel.kernelClient, { calls: [{ to: c.to as Address, data: c.data as Hex, value: 0n }] });
+  const op = [...(move ? [calls.organiserKeyMoveCall(d, move)] : []), calls.coOwnerRingCall(d, ring.prev, ring.next)];
+  const { txHash } = await sendSudoUserOp(builtKernel.kernelClient, {
+    calls: op.map((c) => ({ to: c.to as Address, data: c.data as Hex, value: 0n })),
+  });
   return { txHash, confirmed: (await readRingAnchor(builtKernel.address)) === ring.next };
+}
+
+/** Events a removal's own op could not carry, onto the account's organiser key: one op. */
+export async function setOrganiserKeyAlone(
+  builtKernel: BuiltKernel,
+  move: import("./co-owner-calls.js").OrganiserKeyMove,
+): Promise<{ txHash: string }> {
+  const [{ encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters }, calls] = await Promise.all([
+    import("viem"),
+    import("./co-owner-calls.js"),
+  ]);
+  const d = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as unknown as import("./co-owner-calls.js").CoOwnerEncoders;
+  const c = calls.organiserKeyMoveCall(d, move);
+  const { txHash } = await sendSudoUserOp(builtKernel.kernelClient, { calls: [{ to: c.to as Address, data: c.data as Hex, value: 0n }] });
+  return { txHash };
+}
+
+/** One event's state as an organiser-key move needs it. */
+export type OrganiserKeyState = import("@woco/shared/ticket/ledger2").OrganiserKeyEventState;
+
+/**
+ * Each id's organiser, organiser key and status on the ledger, read here rather than
+ * asked of the server: ids the ledger does not know (another ledger's) are left out;
+ * "error" when any read failed otherwise, never taken for "not there".
+ */
+export async function readOrganiserKeyStates(ledger: string, ids: readonly string[]): Promise<OrganiserKeyState[] | "error"> {
+  if (ids.length === 0) return [];
+  try {
+    const [d, { LEDGER2_ORGANISER_KEY_READ_ABI, organiserKeyStatesFrom }, { parseAbi, BaseError }] = await Promise.all([
+      coOwnerReadDeps(),
+      import("@woco/shared/ticket/ledger2"),
+      import("viem"),
+    ]);
+    const abi = parseAbi(LEDGER2_ORGANISER_KEY_READ_ABI);
+    const address = ledger as Address;
+    const res = await d.publicClient.multicall({
+      contracts: ids.flatMap((id) => [
+        { address, abi, functionName: "getEvent", args: [id as Hex] },
+        { address, abi, functionName: "getEventStatus", args: [id as Hex] },
+        { address, abi, functionName: "getOrganiserKey", args: [id as Hex] },
+      ]),
+      allowFailure: true,
+    });
+    const notFound = (e: unknown) =>
+      e instanceof BaseError && !!e.walk((x) => (x as { data?: { errorName?: string } }).data?.errorName === "EventNotFound");
+    return organiserKeyStatesFrom(ids, res as readonly import("@woco/shared/ticket/ledger2").MulticallResult[], notFound);
+  } catch (e) {
+    console.warn("[kernel] readOrganiserKeyStates failed:", e);
+    return "error";
+  }
 }
 
 export interface RecoverAccountArgs {

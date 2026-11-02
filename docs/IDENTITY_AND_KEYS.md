@@ -189,6 +189,7 @@ them, and no auth path knows about them: §3a.)
 |---|---|---|---|
 | Issuing | secp256k1 | `HKDF(sha256, seed, salt="", info="woco/issuing/v1/"+gen, 48)` → scalar | `packages/shared/src/crypto/issuing.ts` |
 | Content-feed signer | secp256k1 | `HKDF(sha256, seed, salt="", info="woco/feed-signer/v1", 48)` → scalar (§5) | `packages/shared/src/crypto/feed-signer.ts` |
+| Organiser key (ledger2) | secp256k1 | `HKDF(sha256, S_g, salt="", info="woco/organiser-key/v1", 48)` → scalar, from the CURRENT account secret | `packages/shared/src/crypto/organiser-key.ts` |
 | Encryption (#642) | X-Wing (ML-KEM-768 + X25519) | `X-Wing.keygen(HKDF(sha256, seed, salt="", info="woco/encryption/xwing/v1", 32))` | `packages/shared/src/crypto/xwing.ts` |
 | Encryption, classical (credits rail only) | X25519 | `HKDF(sha256, seed, salt="", info="woco/encryption/v1", 32)` | `packages/shared/src/crypto/keys.ts` |
 
@@ -688,6 +689,16 @@ this device adopts -> server told, sites and event pages redeployed and their Wo
 re-made. A failure before the flip changes nothing; after it, the rest resumes at the next unlock.
 This device's own passkey leaving needs no new keys.
 
+**The organiser key moves with the ring** (ledger2 only): the same op re-points each event's
+`organiserKey` to the new generation's key, so the removed passkey cannot change terms afterwards. The
+events come from the CHAIN, never the platform's index: `Registered` logs naming this account as
+organiser, registered by any address ever added as a sponsor or by the account itself
+(`@woco/shared/ticket/ledger2-scan`, paged from the deploy block to one head). Each id is re-read
+live and moved only if it still names an older key (not-ended first, then by sales). Before the flip
+an unreadable chain never blocks the removal - leaving the removed passkey in charge would be worse.
+What one op could not carry, or a failed read missed, is the `organiser` after-step: it runs only on
+a complete scan, else stays pending and is retried at every unlock.
+
 **The server follows the anchor** (`lib/keyring/current-ring.ts`, `event-keys.ts`): events are read
 from the ring's signer and sold under its order key whatever a feed says; a box declares the key it
 was sealed to and a stale one is refused `ORDER_KEY_STALE`, naming the current key (the page re-seals
@@ -751,6 +762,7 @@ the screen in `creator/gate/UpgradeToPasskey.svelte`.
 | Session key | Every authenticated API request (EIP-191 canonical challenge) | Anything durable |
 | Content-feed signer | The user's content chunks (profile, event, site, likes, follows) | Credentials |
 | Issuing key | `woco.manifest.v2`, `woco.cert.v1`, the issuer binding | Individual editions |
+| Organiser key | A ledger2 event's terms as EIP-712 (`SetSupply`, `ExtendSalesEnd`, `CancelEvent`, `RevokeSignatures`, `Reseat`, `ReseatBearer`), and its own binding to the parent. Not the issuing key (S_0, which a removed passkey keeps) and not the feed signer (cached, so it proves no unlock) | Feeds, manifests, requests |
 | Holder identity (ed25519) | Cert possession challenges, credit statements — **both out of launch scope**, and it is derived on demand from the seed rather than held (§3a) | Tickets. Editions. Manifests. Anything on a live path |
 | **Ticket burner (secp256k1)** | **The ticket.** One per-purchase key signs one canonical message, then is discarded. Its address is the on-chain `slotOwner` — the verifier's trust root | Anything else, ever |
 | Platform feed key | More than its name suggests: the directory pointer, the **site events index** (a deliberate trust carrier — see below), the creator site directory, the issuer-registry log relay, recovery status, the marketing-list pointer, shop config, the passport collection, **and any event or site feed whose client sent no feed signer** | Producing a signature for a key it does not hold — it cannot forge a user's signed object |
