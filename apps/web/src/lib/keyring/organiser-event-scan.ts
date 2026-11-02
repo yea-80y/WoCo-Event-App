@@ -79,7 +79,12 @@ export async function organiserEventScanIO(ledger: string, clients: readonly Sca
   };
 }
 
-/** The head every page of one scan stops at, from the first endpoint that answers. */
+/**
+ * The head every page of one scan stops at, from the first endpoint that answers. Not
+ * the lowest head of all of them (offered 2026-11-02, to save a retry): an endpoint hours
+ * behind would end the scan before the flip, and events registered since would be missed
+ * by a scan that reads as complete. A lagging endpoint is skipped per page instead.
+ */
 async function headOf(clients: readonly ScanClient[]): Promise<number> {
   let lastErr: unknown;
   for (const c of clients) {

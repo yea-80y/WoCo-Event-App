@@ -386,6 +386,9 @@ let movingKeys: Promise<void> | null = null;
 const organiserKeysMark = (seedAddr: string) => `woco:keyring:organiser-keys:${seedAddr}`;
 
 async function moveKeysLeftBehind(h: AccountKeysHost, seedAddr: string): Promise<void> {
+  // This passkey's own enrolment, fired at the same unlock, may be moving the anchor:
+  // two ops at once and one is refused. The ring is read after it.
+  if (enrolling) await enrolling.catch(() => {});
   const gen = h.lockGen();
   const u = h.unlocked();
   const ring = u?.chain?.ringRef;
@@ -411,14 +414,17 @@ async function moveKeysLeftBehind(h: AccountKeysHost, seedAddr: string): Promise
     const key = derived.address.toLowerCase();
     derived.privateKey.fill(0);
     const due = await organiserKeysDue(u.parent, key, deployment, { strict: true });
+    // Before each op and the mark, from the CHAIN: another passkey may have removed one
+    // and moved the account on while the scan ran. Its events then name the NEWER key, and
+    // moving them "back" to this ring's key would hand them to the passkey just removed
+    // (Fable re-check 2026-11-02). Signed out, or another account in: not this Kernel.
+    const stillHere = async () =>
+      gen === h.lockGen() && h.unlocked()?.parent === u.parent && (await readAnchor(h, u.parent, { fresh: true })) === ring;
     for (let i = 0; i < due.ids.length; i += MAX_ORGANISER_KEY_IDS) {
-      // Signed out, or another account in, meanwhile: its Kernel is not this account's.
-      if (gen !== h.lockGen() || h.unlocked()?.parent !== u.parent) return;
+      if (!(await stillHere())) return;
       await flows.moveOrganiserKey(h.coOwnerHost(), { ledger: due.ledger, ids: due.ids.slice(i, i + MAX_ORGANISER_KEY_IDS), key });
     }
-    if (gen === h.lockGen() && h.unlocked()?.chain?.ringRef === ring) {
-      globalThis.localStorage?.setItem(organiserKeysMark(seedAddr), ring);
-    }
+    if (await stillHere()) globalThis.localStorage?.setItem(organiserKeysMark(seedAddr), ring);
   } catch (e) {
     console.warn("[auth] events not yet moved to your account's current key (retried at the next unlock):", e);
   }

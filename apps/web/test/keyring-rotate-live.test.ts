@@ -71,5 +71,11 @@ test("events left on an old key are moved from ANY passkey at its unlock, once p
   const moves = fn.indexOf("flows.moveOrganiserKey(");
   const mark = fn.indexOf("setItem(organiserKeysMark(seedAddr), ring)");
   assert.ok(moves > 0 && mark > moves, "marked before the moves landed");
+  // The chain's anchor, re-read before each op and the mark: a removal elsewhere mid-scan
+  // must never see its events moved back to the key the removed passkey holds.
+  assert.match(fn, /\(await readAnchor\(h, u\.parent, \{ fresh: true \}\)\) === ring/);
+  assert.match(fn, /if \(!\(await stillHere\(\)\)\) return;\s*await flows\.moveOrganiserKey\(/);
+  assert.match(fn, /if \(await stillHere\(\)\) globalThis\.localStorage\?\.setItem\(organiserKeysMark\(seedAddr\), ring\)/);
+  assert.ok(fn.indexOf("if (enrolling) await enrolling") < fn.indexOf("const ring = "), "the ring is read before this passkey's enrolment lands");
   assert.match(KEYS, /if \(movingKeys\) await movingKeys\.catch\(\(\) => \{\}\);/, "a removal waits for a catch-up op");
 });
