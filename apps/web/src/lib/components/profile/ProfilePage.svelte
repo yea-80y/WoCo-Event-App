@@ -16,7 +16,7 @@
   import { authGet } from "../../api/client.js";
   import { authKindLabel, authKindColor } from "../../auth/kind-label.js";
   import { rememberLabel } from "../../profile/label-cache.js";
-  import { cachedVerdict, checkName, rememberOwner, verdictAllows, type NameCheck } from "../../sub-ens/verify-name.js";
+  import { checkName, paintName, rememberOwner, type NameCheck } from "../../sub-ens/verify-name.js";
   import { subEnsErrorFrom, subEnsErrorDetail, formatRetryAt } from "../../sub-ens/errors.js";
   import { canOpenRename, type ProfileNameStatus } from "../../sub-ens/rename.js";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
@@ -64,8 +64,7 @@
     void nameCheckAttempt;
     if (!label || !owner) { nameCheck = "none"; return; }
     let live = true;
-    const cached = cachedVerdict(label);
-    nameCheck = cached ? (verdictAllows(cached, owner) ? "owned" : "not-owned") : "checking";
+    nameCheck = paintName(label, owner);
     void checkName(label, owner).then((result) => { if (live) nameCheck = result; });
     return () => { live = false; };
   });

@@ -121,7 +121,7 @@ class MemoryStorage {
 const storage = new MemoryStorage();
 (globalThis as unknown as { localStorage: MemoryStorage }).localStorage = storage;
 
-const { refreshVerdict, verifyName, checkName, cachedVerdict } = await import(
+const { refreshVerdict, verifyName, checkName, paintName, cachedVerdict } = await import(
   "../src/lib/sub-ens/verify-name.js"
 );
 const { cacheSet } = await import("../src/lib/cache/cache.js");
@@ -245,6 +245,20 @@ test("checkName: the chain's owner decides 'owned' vs 'not-owned'", async () => 
   assert.equal(await checkName("punkpub", OWNER, answers(OWNER)), "owned");
   storage.clear();
   assert.equal(await checkName("punkpub", OWNER, answers(OTHER)), "not-owned");
+});
+
+test("paintName: nothing remembered paints 'checking' - never the feed's own claim", () => {
+  storage.clear();
+  assert.equal(paintName("1ntl", OWNER), "checking");
+});
+
+test("paintName: a remembered verdict paints at once, fresh or stale", () => {
+  storage.clear();
+  seed("punkpub", OWNER, STALE);
+  assert.equal(paintName("punkpub", OWNER), "owned");
+  assert.equal(paintName("punkpub", OTHER), "not-owned", "someone else's name");
+  seed("finaltest", null, 0);
+  assert.equal(paintName("finaltest", OWNER), "not-owned", "a remembered absence");
 });
 
 test("checkName: a failing read falls back to the remembered verdict, either way", async () => {

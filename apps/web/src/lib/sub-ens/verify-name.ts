@@ -110,6 +110,15 @@ export async function refreshVerdict(
  */
 export type NameCheck = "owned" | "not-owned" | "unknown";
 
+/** What to paint before {@link checkName} answers: the remembered verdict, or
+ *  "checking" when this device has none. Never the feed's own claim. */
+export function paintName(label: string, expected: string | null | undefined): NameCheck | "checking" {
+  if (!label || !expected) return "not-owned";
+  const cached = cachedVerdict(label);
+  if (!cached) return "checking";
+  return verdictAllows(cached, expected) ? "owned" : "not-owned";
+}
+
 /** {@link verifyName} with failure kept apart from a "no". */
 export async function checkName(
   label: string,
