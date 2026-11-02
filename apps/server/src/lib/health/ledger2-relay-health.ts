@@ -83,7 +83,7 @@ export interface Ledger2RelaySection {
 export function ledger2RelayHealth(now: number = Date.now()): Ledger2RelaySection {
   const { ledger2Relay: cfg } = readThresholdsFromEnv(process.env);
   const t = target();
-  const unrecorded = chainCancelledUnrecorded((eventId) => cancellationGate(eventId) === "open");
+  const unrecorded = chainCancelledUnrecorded(cancellationGate);
   const chainCancelled: Check = unrecorded.length === 0
     ? { ok: true }
     : { ok: false, reason: "an event is cancelled on chain but still on sale in the server's record - the organiser confirms it from the dashboard" };

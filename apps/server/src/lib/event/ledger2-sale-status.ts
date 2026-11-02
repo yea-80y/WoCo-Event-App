@@ -41,13 +41,16 @@ export function noteChainCancelled(eventId: string, onChainEventId: string, now:
   );
 }
 
-/** Those still open in the server's record (a confirmed cancellation clears its entry). */
+/**
+ * Those the server's record has not confirmed. Only a CONFIRMED cancellation clears an
+ * entry: while the record is unreadable ("unknown") nothing is known to be resolved.
+ */
 export function chainCancelledUnrecorded(
-  isOpen: (eventId: string) => boolean,
+  gateOf: (eventId: string) => "open" | "cancelled" | "unknown",
 ): Array<{ eventId: string; onChainEventId: string; seenAt: string }> {
   const out: Array<{ eventId: string; onChainEventId: string; seenAt: string }> = [];
   for (const [k, v] of noted) {
-    if (!isOpen(v.eventId)) {
+    if (gateOf(v.eventId) === "cancelled") {
       noted.delete(k);
       continue;
     }

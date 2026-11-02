@@ -65,12 +65,10 @@ test("a chain cancellation the server has not recorded is listed until it is", (
   noteChainCancelled("evt-1", ID);
   noteChainCancelled("evt-1", ID);
   noteChainCancelled("evt-2", `0x${"0b".repeat(32)}`);
-  let open = new Set(["evt-1", "evt-2"]);
-  assert.equal(chainCancelledUnrecorded((e) => open.has(e)).length, 2, "noted once each");
-  open = new Set(["evt-2"]);
-  assert.deepEqual(chainCancelledUnrecorded((e) => open.has(e)).map((x) => x.eventId), ["evt-2"]);
-  open = new Set(["evt-1", "evt-2"]);
-  assert.equal(chainCancelledUnrecorded((e) => open.has(e)).length, 1, "a confirmed one leaves for good");
+  assert.equal(chainCancelledUnrecorded(() => "open").length, 2, "noted once each");
+  assert.equal(chainCancelledUnrecorded(() => "unknown").length, 2, "an unreadable record resolves nothing");
+  assert.deepEqual(chainCancelledUnrecorded((e) => (e === "evt-1" ? "cancelled" : "open")).map((x) => x.eventId), ["evt-2"]);
+  assert.equal(chainCancelledUnrecorded(() => "open").length, 1, "a confirmed one leaves for good");
 });
 
 test("the relay key must be a key of its own", () => {

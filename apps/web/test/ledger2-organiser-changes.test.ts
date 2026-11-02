@@ -163,6 +163,17 @@ test("saving: a request with no verdict is retried, then the answer is read from
   assert.deepEqual(phases.map((p) => p.phase), ["saving", "saved"]);
 });
 
+test("saving: a relay that stays unavailable is given up after a few tries, not an hour", async () => {
+  const f = fake();
+  f.relay = async () => {
+    throw codeErr("relay_unavailable");
+  };
+  const { done, phases } = await start(f);
+  await done;
+  assert.equal(f.relayed.length, 8);
+  assert.equal(phases.at(-1)!.phase, "failed");
+});
+
 test("saving: a refusal is final; the chain decides whether it had saved anyway", async () => {
   const f = fake();
   f.relay = async () => {

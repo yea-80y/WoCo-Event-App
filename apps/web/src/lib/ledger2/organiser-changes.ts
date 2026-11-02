@@ -228,6 +228,11 @@ export type ChangePhase =
 const BACKOFF = [2_000, 5_000, 10_000, 20_000];
 /** Stop retrying this long before the signature's deadline. */
 const STOP_BEFORE_DEADLINE_SECS = 6 * 60;
+/**
+ * And after this many tries (a few minutes): a relay that stays unavailable is not
+ * worth an hour of "Saving...". The signature then lapses unused within the hour.
+ */
+const MAX_ATTEMPTS = 8;
 /** How long to watch the chain for a change whose receipt we did not get. */
 const CONFIRM_WATCH_MS = 120_000;
 
@@ -271,7 +276,7 @@ export class Ledger2Change {
       } catch (err) {
         this.sending = null;
         if (this.cancelRequested) return;
-        if (!isTransient(err) || chainNow() >= deadline - STOP_BEFORE_DEADLINE_SECS) {
+        if (!isTransient(err) || attempt + 1 >= MAX_ATTEMPTS || chainNow() >= deadline - STOP_BEFORE_DEADLINE_SECS) {
           await this.finishFromChain(err);
           return;
         }
