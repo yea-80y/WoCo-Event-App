@@ -14,13 +14,10 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { APP_POLICY } from "../vite-plugins/csp.ts";
+import { readSdk } from "./sdk-source.ts";
 
-const constants = readFileSync(
-  new URL("../node_modules/@toruslabs/constants/dist/lib.esm/constants.js", import.meta.url),
-  "utf8",
-);
+const constants = readSdk("@toruslabs/constants/dist/lib.esm/constants.js");
 const production = (map: string): string => {
   const block = constants.slice(constants.indexOf(`const ${map} = {`));
   const m = block.match(/\[BUILD_ENV\.PRODUCTION\]: "([^"]+)"/);
@@ -57,10 +54,7 @@ test("the sign-in frame, the modal's assets and the captcha it mounts in our doc
   for (const d of ["script-src", "frame-src", "style-src", "connect-src"]) {
     assert.ok(allows(d, "https://hcaptcha.com") && allows(d, "https://*.hcaptcha.com"), `hcaptcha in ${d}`);
   }
-  const login = readFileSync(
-    new URL("../node_modules/@web3auth/modal/dist/lib.esm/packages/modal/src/ui/containers/Login/Login.js", import.meta.url),
-    "utf8",
-  );
+  const login = readSdk("@web3auth/modal/dist/lib.esm/packages/modal/src/ui/containers/Login/Login.js");
   assert.ok(login.includes("jsx(HCaptcha, {"), "v11's login screen mounts hCaptcha in our document");
 });
 

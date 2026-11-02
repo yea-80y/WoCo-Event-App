@@ -12,10 +12,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readSdk } from "./sdk-source.ts";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
-const sdkCss = read("../node_modules/@web3auth/modal/dist/lib.esm/packages/modal/src/ui/css/index.css.js");
-const loginModal = read("../node_modules/@web3auth/modal/dist/lib.esm/packages/modal/src/ui/loginModal.js");
+const sdkCss = readSdk("@web3auth/modal/dist/lib.esm/packages/modal/src/ui/css/index.css.js");
+const loginModal = readSdk("@web3auth/modal/dist/lib.esm/packages/modal/src/ui/loginModal.js");
 const appCss = read("../src/app.css");
 
 const GREYS = ["50", "100", "200", "300", "400", "500", "600", "700", "800", "900"].map((n) => `--app-gray-${n}`);
@@ -71,7 +72,7 @@ test("the font: the SDK's container font and its sans variable both lose to ours
 });
 
 test("brand marks in colour: the SDK shows its colour image on hover only, and our rule shows it always (owner 2026-10-22)", () => {
-  const list = read("../node_modules/@web3auth/modal/dist/lib.esm/packages/modal/src/ui/components/SocialLoginList/SocialLoginList.js").replace(/\s+/g, " ");
+  const list = readSdk("@web3auth/modal/dist/lib.esm/packages/modal/src/ui/components/SocialLoginList/SocialLoginList.js").replace(/\s+/g, " ");
   // Apple, GitHub and X have no colour mark: both images are the white one.
   assert.match(list, /const hoverId = method === AUTH_CONNECTION\.APPLE \|\| method === AUTH_CONNECTION\.GITHUB \|\| method === AUTH_CONNECTION\.TWITTER \? imageId : `login-\$\{method\}-active`;/);
   assert.match(list, /id: "active-login-img", src: `https:\/\/images\.web3auth\.io\/\$\{hoverId\}\$\{extension\}`, alt: "active-login-img", className: "wta:hidden wta:size-5 wta:object-contain wta:group-hover:block"/);
@@ -100,5 +101,5 @@ test("the accent is ours too: CSS maps the SDK's primary scale onto our accent t
   }
   assert.match(ours.body, /--app-on-primary: var\(--accent-ink\);/);
   // Only the paid theme option paints these inline (loginModal.js), and we never pass it.
-  assert.match(read("../node_modules/@web3auth/modal/dist/lib.esm/packages/modal/src/ui/loginModal.js"), /applyWhiteLabelTheme\(Color, rootElement, this\.uiConfig\.theme\);/);
+  assert.match(readSdk("@web3auth/modal/dist/lib.esm/packages/modal/src/ui/loginModal.js"), /applyWhiteLabelTheme\(Color, rootElement, this\.uiConfig\.theme\);/);
 });
