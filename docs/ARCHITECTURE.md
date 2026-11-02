@@ -322,7 +322,7 @@ is operationally load-bearing:
 | `marketing-suppression.json` | Unsubscribes. Losing it means emailing people who opted out — a legal breach, not a bug. |
 | `kernel-deployed.json` | Which Kernels have been seen with an on-chain owner, which owner, at which block and on which chain. Losing it reopens a window where a lagging RPC replica can roll an owner back to a retired key. |
 | `pending-refunds.json` | Refunds Stripe refused to create. Losing it means a buyer charged with no ticket, no refund and no alarm. |
-| `profile-names.json` | Which sub-ENS name is an account's *profile* name, plus its rename clock. A registry says who **holds** a name, never what it is **for**. Fails open by design. |
+| `profile-names.json` | Which sub-ENS name is an account's *profile* name, plus its rename clock. A registry says who **holds** a name, never what it is **for**. Kept per registry, so a registry change starts clean. Fails open by design. |
 | `revoked-sessions.json` | Session revocation. Losing it un-revokes. |
 | `event-feed-signers.json` | eventId → the organiser's feed signer, pinned at create (#670). The money path's only carrier for an unlisted event. Fails closed. |
 | `ticket-sales.json` | Each sale's payment intent and minted slots. Refunds and chargebacks void tickets through it; losing it lets refunded tickets in at the door again. |

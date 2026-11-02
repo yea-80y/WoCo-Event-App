@@ -121,7 +121,7 @@ class MemoryStorage {
 const storage = new MemoryStorage();
 (globalThis as unknown as { localStorage: MemoryStorage }).localStorage = storage;
 
-const { refreshVerdict, verifyName, cachedVerdict } = await import(
+const { refreshVerdict, verifyName, checkName, paintName, cachedVerdict } = await import(
   "../src/lib/sub-ens/verify-name.js"
 );
 const { cacheSet } = await import("../src/lib/cache/cache.js");
@@ -213,4 +213,59 @@ test("a FRESH cached verdict is answered without a read at all", async () => {
   };
   assert.equal(await verifyName("punkpub", OWNER, counted), true);
   assert.equal(calls, 0, "a fresh verdict must not spend a request");
+});
+
+// ---------------------------------------------------------------------------
+// checkName — the owner's settings card needs "no" and "nobody answered" apart
+// ---------------------------------------------------------------------------
+//
+// 2026-11-02: the Profile domain card said "1ntl.woco.eth is yours" for a name
+// that exists only on the registry retired at the 10-23 reset. The card now
+// shows the picker's claimed view on "owned" only, the claim form on
+// "not-owned", and neither on "unknown" — offering the claim form during an
+// outage would invite someone who does hold a name to mint a second one.
+
+test("checkName: a name from a retired registry is 'not-owned', not 'unknown'", async () => {
+  storage.clear();
+  assert.equal(await checkName("1ntl", OWNER, answers(null)), "not-owned");
+});
+
+test("checkName: no verdict and a failing read is 'unknown', never 'not-owned'", async () => {
+  storage.clear();
+  assert.equal(await checkName("punkpub", OWNER, throws), "unknown");
+  assert.equal(
+    await checkName("punkpub", OWNER, async () => ({ ok: false, error: "rpc down" })),
+    "unknown",
+    "an error envelope is a failure too",
+  );
+});
+
+test("checkName: the chain's owner decides 'owned' vs 'not-owned'", async () => {
+  storage.clear();
+  assert.equal(await checkName("punkpub", OWNER, answers(OWNER)), "owned");
+  storage.clear();
+  assert.equal(await checkName("punkpub", OWNER, answers(OTHER)), "not-owned");
+});
+
+test("paintName: nothing remembered paints 'checking' - never the feed's own claim", () => {
+  storage.clear();
+  assert.equal(paintName("1ntl", OWNER), "checking");
+});
+
+test("paintName: a remembered verdict paints at once, fresh or stale", () => {
+  storage.clear();
+  seed("punkpub", OWNER, STALE);
+  assert.equal(paintName("punkpub", OWNER), "owned");
+  assert.equal(paintName("punkpub", OTHER), "not-owned", "someone else's name");
+  seed("finaltest", null, 0);
+  assert.equal(paintName("finaltest", OWNER), "not-owned", "a remembered absence");
+});
+
+test("checkName: a failing read falls back to the remembered verdict, either way", async () => {
+  storage.clear();
+  seed("punkpub", OWNER, STALE);
+  assert.equal(await checkName("punkpub", OWNER, throws), "owned");
+  storage.clear();
+  seed("finaltest", null, STALE);
+  assert.equal(await checkName("finaltest", OWNER, throws), "not-owned");
 });
