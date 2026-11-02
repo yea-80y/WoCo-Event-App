@@ -19,7 +19,7 @@
   import { rememberOwner } from "../../sub-ens/verify-name.js";
   import { createNameCheck } from "../../sub-ens/name-check.svelte.js";
   import { subEnsErrorFrom, subEnsErrorDetail, formatRetryAt } from "../../sub-ens/errors.js";
-  import { canOpenRename, type ProfileNameStatus } from "../../sub-ens/rename.js";
+  import { canMintProfileName, canOpenRename, type ProfileNameStatus } from "../../sub-ens/rename.js";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
   import { subEnsName } from "@woco/shared";
   import UserAvatar from "./UserAvatar.svelte";
@@ -280,7 +280,9 @@
    * server refuses the bind for real, and a flaky GET must not lock anyone out
    * of their own name.
    */
-  async function guardRename(): Promise<boolean> {
+  // `label` is set when the claim form is about to mint it (`onbeforemint`):
+  // re-binding the current profile name is not a change, so only that is let past.
+  async function guardRename(label?: string): Promise<boolean> {
     renameBlocked = '';
     let status: ProfileNameStatus | null = null;
     try {
@@ -289,7 +291,7 @@
     } catch (err) {
       console.warn("[profile] name-status failed — opening the picker anyway:", err);
     }
-    const gate = canOpenRename(status);
+    const gate = label === undefined ? canOpenRename(status) : canMintProfileName(status, label);
     if (gate.open) return true;
     renameBlocked = gate.retryAt
       ? `You can change your profile domain again ${formatRetryAt(gate.retryAt)}.`
@@ -852,7 +854,8 @@
               claimedLabel={nameVerified ? profile?.subEnsLabel : undefined}
               onclaim={handleSubEnsClaim}
               singleName={true}
-              onbeforerename={guardRename}
+              onbeforerename={() => guardRename()}
+              onbeforemint={guardRename}
             />
           {/if}
           {#if renameBlocked}
