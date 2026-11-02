@@ -44,10 +44,33 @@ test("a valid descriptor is held and reported", async () => {
 test("a malformed or failed read keeps the release held, and says so", async () => {
   const { cache } = scripted([ok(release(3)), ok({ ...release(4), commit: "nope" }), { status: "error", error: new Error("502") }, { status: "absent" }]);
   await cache.get(0);
-  for (const expect of [/malformed/, /read failed: 502/, /absent, keeping/]) {
+  for (const expect of [/malformed/, /^read failed$/, /absent, keeping/]) {
     assert.equal((await cache.get(0))?.version, 3);
     assert.match(cache.health().lastError ?? "", expect);
   }
+});
+
+test("health is public: a read failure reports a fixed reason, never the error text", async () => {
+  const secretish = new Error("connect ECONNREFUSED http://bee-node:1633/feeds/abc");
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const { cache } = scripted([{ status: "error", error: secretish }]);
+    await cache.get(0);
+    assert.equal(cache.health().lastError, "read failed");
+    assert.ok(!JSON.stringify(cache.health()).includes("bee-node"));
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test("peek answers from memory without reading", async () => {
+  const { cache, calls } = scripted([ok(release(2))]);
+  assert.equal(cache.peek(), null);
+  assert.equal(calls(), 0);
+  await cache.get(0);
+  assert.equal(cache.peek()?.version, 2);
+  assert.equal(calls(), 1);
 });
 
 test("a lower version is a lagging replica, never a rollback; a higher one replaces", async () => {

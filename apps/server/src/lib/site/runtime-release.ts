@@ -1,14 +1,19 @@
 /**
  * The latest site runtime release (#1032), read from its signed feed.
  *
- * Discovery only: the builder offers "runtime update" from it, and (slice 3) the
- * server's publish admission takes its allowed addresses from it. The feed is
- * signed by the frontend deploy key; bee checks the SOC signature against the
- * owner we ask for, so a descriptor read here is ours by construction.
+ * Discovery only: the builder offers "runtime update" from it. The feed is signed
+ * by the frontend deploy key. Bee's `/feeds` read only parses the SOC; what makes
+ * the answer the owner's is bee's ingress rule (every stored or retrieved chunk is
+ * checked against its address, and a SOC's address binds the owner we ask for).
+ * Enough for discovery from our own bee. Slice 3, where this becomes the publish
+ * admission set, must verify the SOC itself (exact-index `downloadPayload({index})`
+ * recovers the signer) and keep a version high-water mark that survives restarts:
+ * bee's lookup is a lower bound.
  *
  * Kept in memory and refreshed in the background. A failed or malformed read
  * keeps the last good release; a lower version than the one held is a lagging
- * replica, never a rollback, and is ignored.
+ * replica, never a rollback, and is ignored. `/api/health` is public, so health
+ * carries fixed reasons only; the error itself goes to the log.
  */
 
 import { Topic, type Bee } from "@ethersphere/bee-js";
@@ -19,6 +24,7 @@ import {
   type SiteRuntimeRelease,
 } from "@woco/shared";
 import { beeErrorMessage, errorStatus } from "../swarm/feeds.js";
+import { withTimeout } from "../swarm/upload-queue.js";
 import { getBee } from "../../config/swarm.js";
 
 export type RuntimeFeedRead =
@@ -54,7 +60,8 @@ export function createSiteRuntimeReleaseCache(read: () => Promise<RuntimeFeedRea
       return;
     }
     if (res.status === "error") {
-      lastError = `read failed: ${res.error.message}`;
+      console.warn("[site-runtime] release feed read failed:", res.error.message);
+      lastError = "read failed";
       return;
     }
     let parsed: SiteRuntimeRelease | null = null;
@@ -76,6 +83,10 @@ export function createSiteRuntimeReleaseCache(read: () => Promise<RuntimeFeedRea
   }
 
   return {
+    /** The release held, without reading (a request never waits on a refresh once one is held). */
+    peek(): SiteRuntimeRelease | null {
+      return release;
+    },
     /** Refresh when older than `maxAgeMs` (one read at a time), then answer from memory. */
     async get(maxAgeMs = SITE_RUNTIME_REFRESH_MS): Promise<SiteRuntimeRelease | null> {
       if (checkedAt === null || now() - checkedAt >= maxAgeMs) {
@@ -103,8 +114,7 @@ export function beeRuntimeFeedRead(bee: () => Bee): () => Promise<RuntimeFeedRea
   return async () => {
     try {
       const reader = bee().makeFeedReader(Topic.fromString(SITE_RUNTIME_FEED_TOPIC), SITE_RUNTIME_RELEASE_OWNER.slice(2));
-      const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("feed read timed out")), READ_TIMEOUT_MS).unref());
-      const res = await Promise.race([reader.downloadPayload(), timeout]);
+      const res = await withTimeout(reader.downloadPayload(), READ_TIMEOUT_MS, "site runtime release feed");
       return { status: "ok", payload: res.payload.toUint8Array() };
     } catch (err) {
       // Bee's own wording, read the way lookupFeed reads it (lib/swarm/feeds.ts).

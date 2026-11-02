@@ -587,7 +587,9 @@ function malformedId(c: Context, name: "siteId" | "eventId") {
 // GET /api/sites/runtime - the latest site runtime release (#1032), for the builder.
 // Registered before "/:id", or "runtime" would match as a siteId.
 sitesRouter.get("/runtime", async (c) => {
-  const release = await siteRuntimeReleases.get();
+  // From memory once one is held (the background refresh keeps it current); only a
+  // cold process reads here.
+  const release = siteRuntimeReleases.peek() ?? (await siteRuntimeReleases.get());
   if (!release) {
     const { lastError } = siteRuntimeReleases.health();
     return lastError

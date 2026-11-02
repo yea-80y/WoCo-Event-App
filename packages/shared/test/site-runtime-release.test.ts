@@ -17,7 +17,7 @@ const good = () => ({
   roots: {
     woco: {
       root: H("1"), indexDocument: "multi-site.html", edges: { "assets/": H("2"), "icons/": H("3") },
-      files: { "logo.png": { ref: H("6"), contentType: "image/png" }, "vite.svg": { ref: H("7"), contentType: "image/svg+xml" } },
+      files: { "logo.png": { ref: H("6"), contentType: "image/png" }, "app.webmanifest.json": { ref: H("7"), contentType: "application/json" } },
     },
     etherna: { root: H("4"), indexDocument: "multi-site.html", edges: { "assets/": H("5") }, files: {} },
   },
@@ -61,6 +61,9 @@ test("shared files: plain names, data refs, never HTML, never the per-site docum
   for (const files of [
     { "logo.png": { ref: H("6"), contentType: "text/html; charset=utf-8" } },
     { "x.svg": { ref: H("6"), contentType: "application/xhtml+xml" } },
+    { "vite.svg": { ref: H("6"), contentType: "image/svg+xml" } },
+    { "feed.xml": { ref: H("6"), contentType: "application/xml" } },
+    { "x.bin": { ref: H("6"), contentType: "application/octet-stream" } },
     { "multi-site.html": { ref: H("6"), contentType: "image/png" } },
     { "manifest.json": { ref: H("6"), contentType: "application/json" } },
     { "dir/logo.png": { ref: H("6"), contentType: "image/png" } },

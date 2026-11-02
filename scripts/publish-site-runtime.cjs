@@ -53,6 +53,17 @@ const readEnv = (file, pick) => Object.fromEntries(
 );
 const hex = (u8) => Buffer.from(u8).toString('hex');
 
+/** How far past bee's lookup the walk to a free feed index goes before refusing. */
+const FORWARD_WALK = 8;
+const CORE_MIN_TTL_SECONDS = 3 * 86_400;
+const Binary = require(require.resolve('cafe-utility', { paths: [path.dirname(require.resolve('@ethersphere/bee-js'))] })).Binary;
+
+/** Where feed update `index` lives: keccak256(keccak256(topic || uint64be(index)) || owner), hex. */
+function feedUpdateAddress(topic, index, ownerHex) {
+  const id = Binary.keccak256(Binary.concatBytes(topic.toUint8Array(), Binary.numberToUint64(BigInt(index), 'BE')));
+  return Binary.uint8ArrayToHex(Binary.keccak256(Binary.concatBytes(id, Binary.hexToUint8Array(ownerHex))));
+}
+
 async function main() {
   // 1. Where and what we build from.
   if (git('rev-parse', '--git-dir') !== git('rev-parse', '--git-common-dir')) die('this is a linked worktree; run in the real repo');
@@ -88,32 +99,81 @@ async function main() {
   })(DIST);
   const dist = { files: files.length, bytes: files.reduce((a, f) => a + fs.statSync(f).size, 0) };
   console.log(`Runtime: ${dist.files} files, ${(dist.bytes / 1e6).toFixed(1)} MB`);
+  // Every subdirectory becomes a linked edge, served under each site's root on our
+  // origin: nothing in one may open as a document (a plugin dropping an index.html
+  // or an .svg into assets/ would put script on that origin).
+  const documents = files.map((f) => path.relative(DIST, f)).filter((f) => f.includes(path.sep) && /\.(x?html?|svg|xml)$/i.test(f));
+  if (documents.length) die(`linked directories would carry document types: ${documents.slice(0, 5).join(', ')}`);
 
   // 3. The core batch must take ~2,000 chunks without a bucket overwriting anything.
   const stamps = await (await fetch(`${GATEWAY}/stamps`)).json();
   const core = (stamps.stamps || []).find((s) => String(s.batchID).toLowerCase() === coreBatch);
   if (!core || !core.usable) die(`core batch ${coreBatch.slice(0, 8)} is not usable on our bee`);
+  if (!(core.batchTTL >= CORE_MIN_TTL_SECONDS)) die(`core batch expires in ${(Number(core.batchTTL) / 86_400).toFixed(1)} days - top it up before publishing a release onto it`);
   const cap = 2 ** (core.depth - core.bucketDepth);
   if (core.utilization >= (cap * 3) / 4) {
     die(`core batch's fullest bucket is ${core.utilization}/${cap}: a mutable batch overwrites its oldest chunk when a bucket fills - top it up (deeper) first`);
   }
 
-  // 4. The next version and feed index.
+  // 4. The next version and feed index. Bee's lookup is a LOWER bound (and a 404 is
+  // "never written" only when bee says exactly that), the last publish's state is a
+  // floor, and the target slot is then read by EXACT index - which checks the
+  // owner's signature - walking past taken slots, all before anything is uploaded.
   const topic = Topic.fromString(shared.SITE_RUNTIME_FEED_TOPIC);
-  const feedUrl = `${GATEWAY}/feeds/${owner.slice(2)}/${topic.toHex()}`;
+  const ownerHex = owner.slice(2);
+  const feedUrl = `${GATEWAY}/feeds/${ownerHex}/${topic.toHex()}`;
   const latest = await fetch(feedUrl);
   let version = 1;
-  let nextIndex = 0n;
+  let lookupIdx = 0n;
   if (latest.status === 200) {
     const prev = shared.parseSiteRuntimeRelease(JSON.parse(Buffer.from(await latest.arrayBuffer()).toString('utf8')));
     if (!prev) die('the latest release descriptor on the feed does not parse - fix that before publishing over it');
     version = prev.version + 1;
     const next = latest.headers.get('swarm-feed-index-next');
     if (!next || !/^[0-9a-f]+$/i.test(next)) die('the feed read gave no swarm-feed-index-next');
-    nextIndex = BigInt(`0x${next}`);
-  } else if (latest.status !== 404) {
+    lookupIdx = BigInt(`0x${next}`);
+  } else if (latest.status === 404) {
+    const message = String((await latest.json().catch(() => ({}))).message ?? '');
+    if (message !== 'no update found') die(`bee's feed lookup answered 404 "${message}", which does not prove the feed is empty`);
+  } else {
     die(`could not read the release feed (HTTP ${latest.status}) - never guess the next version`);
   }
+  const state = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, 'utf8')) : null;
+  if (state) {
+    version = Math.max(version, Number(state.version) + 1);
+    if (BigInt(state.feedIndex) + 1n > lookupIdx) lookupIdx = BigInt(state.feedIndex) + 1n;
+  }
+
+  const reachable = Array.from({ length: FORWARD_WALK + 1 }, (_, k) => lookupIdx + BigInt(k));
+  const wlWindow = await fetch(`${GATEWAY}/admin/whitelist`, {
+    method: 'POST', headers: { ...uploadHeaders, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hashes: reachable.map((i) => feedUpdateAddress(topic, i, ownerHex)) }),
+  });
+  if (wlWindow.status !== 200) die(`could not whitelist feed updates ${lookupIdx}-${lookupIdx + BigInt(FORWARD_WALK)} on the gateway (HTTP ${wlWindow.status})`);
+  const bee = new Bee(GATEWAY, { headers: uploadHeaders });
+  const reader = bee.makeFeedReader(topic, ownerHex);
+  const readAt = async (i) => {
+    try {
+      return Buffer.from((await reader.downloadPayload({ index: Number(i) })).payload.toUint8Array());
+    } catch (e) {
+      if (e?.status === 404) return null;
+      throw e;
+    }
+  };
+  let nextIndex = null;
+  for (const i of reachable.slice(0, FORWARD_WALK)) {
+    let held;
+    try {
+      held = await readAt(i);
+    } catch (e) {
+      die(`cannot tell whether feed index ${i} is taken (${e?.message ?? e}) - nothing was uploaded, re-run`);
+    }
+    if (held === null) { nextIndex = i; break; }
+    // A taken slot is a release bee's lookup did not report: publish above it.
+    const seen = shared.parseSiteRuntimeRelease(JSON.parse(held.toString('utf8')));
+    if (seen) version = Math.max(version, seen.version + 1);
+  }
+  if (nextIndex === null) die(`more than ${FORWARD_WALK} feed updates past ${lookupIdx}: refusing to guess where to write`);
   console.log(`Next release: v${version} at feed index ${nextIndex}`);
 
   if (DRY_RUN) {
@@ -197,6 +257,10 @@ async function main() {
         if (PER_SITE.has(name)) continue;
         const contentType = fork.node.metadata?.['Content-Type'];
         if (!contentType) die(`shared file "${name}" has no Content-Type`);
+        if (!shared.isSiteRuntimeFileType(contentType)) {
+          console.log(`  not offering ${name} to sites (${contentType})`);
+          continue;
+        }
         filesOut[name] = { ref: hex(child.targetAddress), contentType };
       }
     }
@@ -220,26 +284,17 @@ async function main() {
   const payload = Buffer.from(JSON.stringify(descriptor), 'utf8');
   if (payload.length > 4096) die(`descriptor is ${payload.length} bytes; a feed update holds 4096`);
 
-  // 8. Whitelist the update's address first (the app deploy's rule), then write it.
-  const Binary = require(require.resolve('cafe-utility', { paths: [path.dirname(require.resolve('@ethersphere/bee-js'))] })).Binary;
-  const updateId = Binary.keccak256(Binary.concatBytes(topic.toUint8Array(), Binary.numberToUint64(nextIndex, 'BE')));
-  const updateAddress = Binary.uint8ArrayToHex(Binary.keccak256(Binary.concatBytes(updateId, Binary.hexToUint8Array(owner.slice(2)))));
-  const wl = await fetch(`${GATEWAY}/admin/whitelist`, {
-    method: 'POST', headers: { ...uploadHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ hash: updateAddress }),
-  });
-  if (wl.status !== 200) die(`could not whitelist the feed update: HTTP ${wl.status}`);
-  const bee = new Bee(GATEWAY, { headers: uploadHeaders });
+  // 8. Write it at the free index found (already whitelisted with its window).
   await bee.makeFeedWriter(topic, signer).uploadPayload(coreBatch, payload, { index: Number(nextIndex) });
 
-  // 9. Read it back: the feed's latest must be exactly what we wrote. The proxy
-  // caches a non-seeded feed read for up to 60 s, so allow ~90 s.
-  let readBack = false;
-  for (let i = 0; i < 30 && !readBack; i++) {
-    const r = await fetch(feedUrl);
-    if (r.status === 200 && Buffer.compare(Buffer.from(await r.arrayBuffer()), payload) === 0) readBack = true;
-    else await new Promise((res) => setTimeout(res, 3000));
+  // 9. Read it back by EXACT index (full retrieval, signature checked): a SOC at a
+  // taken index keeps its first bytes, so only a byte-equal read proves ours landed.
+  let back = null;
+  for (let i = 0; i < 5 && !(back && Buffer.compare(back, payload) === 0); i++) {
+    back = await readAt(nextIndex).catch(() => null);
+    if (!(back && Buffer.compare(back, payload) === 0)) await new Promise((res) => setTimeout(res, 2000));
   }
-  if (!readBack) die(`wrote v${version} but the feed does not read it back yet - check before publishing again`);
+  if (!back || Buffer.compare(back, payload) !== 0) die(`wrote v${version} at index ${nextIndex} but it does not read back as written - check before publishing again`);
 
   fs.writeFileSync(STATE, JSON.stringify({ ...descriptor, feedIndex: String(nextIndex) }, null, 2) + '\n');
   console.log(`\nPublished site runtime v${version}`);

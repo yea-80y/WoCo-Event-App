@@ -56,9 +56,18 @@ const COMMIT = /^[0-9a-f]{40}$/;
 const EDGE = /^[\x21-\x2e\x30-\x7e][\x21-\x7e]{0,28}\/$/;
 /** A top-level shared file: a plain name, no directories. */
 const FILE = /^[\w-][\w.-]{0,63}$/;
-/** A content type as a manifest carries it, e.g. "image/png" or "text/html; charset=utf-8". */
-const CONTENT_TYPE = /^[a-z]+\/[\w.+-]+(; ?charset=[\w-]+)?$/i;
+/**
+ * The only types a shared file may carry: what a page loads as a subresource and
+ * never opens as a document. No HTML, no SVG, no XML - each can run script when
+ * opened directly, and a site root serves these on our gateway's origin.
+ */
+const SHARED_FILE_TYPE =
+  /^(image\/(png|jpeg|webp|gif|avif|x-icon|vnd\.microsoft\.icon)|font\/[\w.+-]+|text\/css|(application|text)\/javascript|application\/(json|manifest\+json))(; ?charset=[\w-]+)?$/i;
 const MAX_EDGES = 32;
+
+export function isSiteRuntimeFileType(contentType: string): boolean {
+  return SHARED_FILE_TYPE.test(contentType);
+}
 
 function parseRoot(v: unknown): SiteRuntimeRoot | null {
   if (!v || typeof v !== "object") return null;
@@ -81,7 +90,7 @@ function parseRoot(v: unknown): SiteRuntimeRoot | null {
     const file = f as { ref?: unknown; contentType?: unknown } | null;
     if (!FILE.test(name) || name === r.indexDocument || name === "manifest.json") return null;
     if (!file || typeof file.ref !== "string" || !HEX64.test(file.ref)) return null;
-    if (typeof file.contentType !== "string" || !CONTENT_TYPE.test(file.contentType) || /html/i.test(file.contentType)) return null;
+    if (typeof file.contentType !== "string" || !isSiteRuntimeFileType(file.contentType)) return null;
     files[name] = { ref: file.ref, contentType: file.contentType };
   }
   return { root: r.root, edges, files, indexDocument: r.indexDocument };
