@@ -17,6 +17,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readSdk } from "./sdk-source.ts";
 
 const mod = await import("@web3auth/modal");
 const { adaptWeb3AuthSdk, normalizeEmailLoginParams, EMAIL_PASSWORDLESS } = await import("../src/lib/auth/web3auth-sdk-adapter.ts");
@@ -115,7 +116,7 @@ test("WoCo's own email button (the adapter's connectTo) reaches the REAL SDK the
   }
 });
 
-const src = (rel: string) => readFileSync(new URL(`../node_modules/${rel}`, import.meta.url), "utf8").replace(/\s+/g, " ");
+const src = (rel: string) => readSdk(rel).replace(/\s+/g, " ");
 const ui = "@web3auth/modal/dist/lib.esm/packages/modal/src";
 
 test("SDK: why - the modal's email box lets iOS capitalise, and the address goes on as typed", () => {

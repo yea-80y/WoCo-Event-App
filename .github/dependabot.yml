@@ -29,6 +29,10 @@ updates:
       # golden vectors in apps/web/test/identity-seed.test.ts.
       - dependency-name: "@noble/*"
         update-types: [version-update:semver-major]
+      # Node's types must match the Node we run (.nvmrc, the server Dockerfile):
+      # newer types offer APIs the runtime lacks. Move the major with the runtime.
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
 
   # The Docker base image. This is the watcher that would have caught
   # node:20-alpine going end-of-life on 2026-04-30.

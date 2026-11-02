@@ -25,7 +25,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readSdk } from "./sdk-source.ts";
 
 const mod = await import("@web3auth/modal");
 const { web3AuthOptionsFor, WEB3AUTH_SESSION_SECONDS, WEB3AUTH_LOOK, WEB3AUTH_PAID_WHITELABEL_KEYS } = await import("../src/lib/auth/web3auth-config.ts");
@@ -89,7 +89,7 @@ test("SDK: uxMode is transport - the Auth constructor's key inputs are the same 
   assert.ok(social.indexOf("authConnectionId: providerConfig.authConnectionId") < social.indexOf("verifierWindow.redirect("));
 });
 
-const src = (rel: string) => readFileSync(new URL(`../node_modules/${rel}`, import.meta.url), "utf8");
+const src = (rel: string) => readSdk(rel);
 const connector = src("@web3auth/no-modal/dist/lib.esm/connectors/auth-connector/authConnector.js");
 const flat = (s: string) => s.replace(/\s+/g, " ");
 

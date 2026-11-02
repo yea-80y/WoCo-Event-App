@@ -10,7 +10,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readSdk } from "./sdk-source.ts";
 
 const mod = await import("@web3auth/modal");
 const { tapConnectorStartErrors, CONNECTOR_INIT_FAILED_LOG } = await import("../src/lib/auth/web3auth-start-errors.ts");
@@ -66,13 +66,13 @@ test("the off switch puts the logger back exactly, and a tap under another layer
 });
 
 test("SDK: a connector that fails to start is only LOGGED with these words - no event reaches the page", () => {
-  const m = readFileSync(new URL("../node_modules/@web3auth/modal/dist/lib.esm/packages/modal/src/modalManager.js", import.meta.url), "utf8");
+  const m = readSdk("@web3auth/modal/dist/lib.esm/packages/modal/src/modalManager.js");
   const flat = m.replace(/\s+/g, " ");
   assert.match(flat, /\} catch \(error\) \{ log\.error\(error, "error while initializing connector ", connectorName\); \}/);
   assert.equal(CONNECTOR_INIT_FAILED_LOG, "error while initializing connector");
   // ...and it is the PUBLIC logger: the package exports it.
   assert.equal(typeof mod.log.error, "function");
-  const auth = readFileSync(new URL("../node_modules/@web3auth/auth/dist/lib.esm/core/auth.js", import.meta.url), "utf8").replace(/\s+/g, " ");
+  const auth = readSdk("@web3auth/auth/dist/lib.esm/core/auth.js").replace(/\s+/g, " ");
   // The silent exits of the nonce branch this recovers.
   assert.match(auth, /await this\.postLoginInitiatedMessage\(JSON\.parse\(params\.loginParams\), params\.nonce\);/);
   assert.match(auth, /this\.clearState\(\); throw LoginError\.userNotLoggedIn\(\);/);
