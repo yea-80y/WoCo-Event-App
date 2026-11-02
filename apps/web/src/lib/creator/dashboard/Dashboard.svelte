@@ -30,6 +30,7 @@
   import { canReadLedger, fetchOrderBox, liveBrowserOrdersDeps } from "./browser-orders-live.js";
   import { DetailQueue, type DetailState } from "./detail-queue.js";
   import { OrderOpener, type OpenerPort } from "./order-opener.js";
+  import { DETAIL_CSV, listGate, rowDetail, shortfall, type RowDetail } from "./list-completeness.js";
   import { withoutSealedOrders } from "../../api/orders-cache.js";
   import type { RequestSigningOptions } from "../../auth/request-session.js";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
@@ -212,10 +213,38 @@
     return map;
   }
 
+  /**
+   * Each row's details standing (list-completeness.ts), for actions on the whole
+   * list. Reads `detailTick` and the opened map, so a gate re-renders as details land.
+   */
+  function rowDetailsOf(rows: OrderEntry[]): RowDetail[] {
+    void detailTick;
+    if (!ordersResponse) return [];
+    const position = new Map(ordersResponse.orders.map((o, i) => [o, i]));
+    return rows.map((o) => rowDetail(o, decryptedOrders.has(position.get(o) ?? -1), detailState(o), decrypting, ordersLocked));
+  }
+
+  /** The orders a whole-list action covers: one series, or all. */
+  function ordersIn(seriesFilter: string): OrderEntry[] {
+    const all = ordersResponse?.orders ?? [];
+    return seriesFilter === "all" ? all : all.filter((o) => o.seriesId === seriesFilter);
+  }
+
   function downloadCSV(seriesName: string, seriesOrders: OrderEntry[], fields: OrderField[]) {
-    const headers = ["Edition", "Claimer", "Email", "Paid via", "Refund", "Claimed At", ...fields.map((f) => f.label)];
+    const details = rowDetailsOf(seriesOrders);
+    const gate = listGate(details);
+    if (gate.kind === "loading") return;
+    if (
+      gate.kind === "gaps" &&
+      !confirm(
+        `Details for ${shortfall(gate)} tickets are not in this export (${gate.why}). Their rows are marked in the Details column. Export anyway?`,
+      )
+    ) {
+      return;
+    }
+    const headers = ["Edition", "Claimer", "Email", "Paid via", "Refund", "Claimed At", "Details", ...fields.map((f) => f.label)];
     const position = new Map(ordersResponse!.orders.map((o, i) => [o, i]));
-    const rows = seriesOrders.map((order) => {
+    const rows = seriesOrders.map((order, i) => {
       const dec = decryptedOrders.get(position.get(order) ?? -1);
       return [
         String(order.edition),
@@ -234,6 +263,7 @@
               ? "Part refunded"
               : "",
         order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "",
+        DETAIL_CSV[details[i]],
         ...fields.map((f) => dec?.fields?.[f.id] ?? ""),
       ];
     });
@@ -373,6 +403,13 @@
       return;
     }
 
+    // Recipients come from opened orders: never send to part of the room without saying so.
+    const gate = listGate(rowDetailsOf(ordersIn(broadcastSeriesFilter)));
+    // A resume re-sends to recipients the server already holds: nothing here to wait for.
+    if (!resumeOf && gate.kind === "loading") {
+      broadcastError = `Attendee details are still loading (${gate.done} of ${gate.total}). Send once they have all arrived.`;
+      return;
+    }
     const recipients = getEmailRecipients(broadcastSeriesFilter);
     if (recipients.length === 0) {
       broadcastError = "No email recipients found. Only attendees who claimed with an email can receive broadcasts.";
@@ -408,7 +445,11 @@
     const crossingWarning = broadcastServiceType && !resumeOf
       ? "\n\nThis is a service notice, so it will also reach ticket-holders who unsubscribed from your marketing. It cannot reach addresses that bounced or reported spam."
       : "";
-    if (!confirm(`${verb} — ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""} (${seriesLabel})?${crossingWarning}`)) {
+    const gapWarning =
+      !resumeOf && gate.kind === "gaps"
+        ? `\n\nDetails for ${shortfall(gate)} tickets are missing (${gate.why}), so those ticket holders will NOT receive this.`
+        : "";
+    if (!confirm(`${verb} — ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""} (${seriesLabel})?${crossingWarning}${gapWarning}`)) {
       return;
     }
 
@@ -1058,11 +1099,13 @@
         orders={ordersResponse.orders}
         {decryptedOrders}
         {decrypting}
+        rosterGate={listGate(rowDetailsOf(ordersResponse.orders))}
         onEnsureDecrypted={() => decryptCurrent(true)}
       />
     {:else if activeTab === "broadcast"}
       <!-- Broadcast tab -->
       {@const emailRecipients = getEmailRecipients(broadcastSeriesFilter)}
+      {@const broadcastGate = listGate(rowDetailsOf(ordersIn(broadcastSeriesFilter)))}
       <div class="broadcast-section">
 
         {#if decryptedOrders.size === 0 && ordersResponse && ordersResponse.orders.some((o) => !!o.encryptedOrder)}
@@ -1242,6 +1285,7 @@
             <button
               class="btn-broadcast"
               disabled={broadcastSending
+                || broadcastGate.kind === "loading"
                 || emailRecipients.length === 0
                 || !broadcastBody.trim()
                 || (!broadcastServiceType && !broadcastSubject.trim())}
@@ -1249,12 +1293,20 @@
             >
               {#if broadcastSending}
                 Starting…
+              {:else if broadcastGate.kind === "loading"}
+                Loading attendee details ({broadcastGate.done} of {broadcastGate.total})…
               {:else}
                 Send to {emailRecipients.length} recipient{emailRecipients.length !== 1 ? "s" : ""}
               {/if}
             </button>
             <span class="broadcast-rate-hint">Max 5 broadcasts per hour</span>
           </div>
+          {#if broadcastGate.kind === "gaps"}
+            <p class="warning">
+              Details for {shortfall(broadcastGate)} tickets are missing ({broadcastGate.why}). Those ticket holders
+              won't receive this.
+            </p>
+          {/if}
 
         {/if}
       </div>
@@ -1405,11 +1457,13 @@
                 {seriesOrders.length} / {series.totalSupply} sold · {remaining} remaining
               </span>
               {#if event.orderFields && decryptedOrders.size > 0}
+                {@const csvGate = listGate(rowDetailsOf(seriesOrders))}
                 <button
                   class="csv-btn"
+                  disabled={csvGate.kind === "loading"}
                   onclick={() => downloadCSV(series.name, seriesOrders, event!.orderFields!)}
                 >
-                  Export CSV
+                  {csvGate.kind === "loading" ? `Export CSV (details ${csvGate.done} of ${csvGate.total})` : "Export CSV"}
                 </button>
               {/if}
               {#if FEATURES.webhooksAllowed && webhookConfig && decryptedOrders.size > 0}
