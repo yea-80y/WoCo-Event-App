@@ -10,12 +10,13 @@
 import type { Chain } from "viem";
 import { arbitrum, arbitrumSepolia } from "viem/chains";
 import type { OrdersSeriesLedger, OrdersStatus } from "@woco/shared";
-import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import { authPost } from "../../api/client.js";
 import { buildEnv } from "../../build-env.js";
 import { WOCO_GATEWAY_URL } from "../../swarm/gateways.js";
 import type { BrowserOrdersDeps, SlotRead } from "./browser-orders.js";
-import type { FetchResult, GatewayBudget } from "./detail-queue.js";
+import type { DetailQueueDeps, FetchResult } from "./detail-queue.js";
+import { gatewayOrderFetcher, readBudget, retryAfterMs } from "./gateway-fetcher.js";
+import { MAX_BOX_BYTES, boxFromBytes } from "./order-box.js";
 
 const LEDGER_CHAINS: Record<number, { chain: Chain; rpc: string }> = {
   42161: { chain: arbitrum, rpc: "https://arb1.arbitrum.io/rpc" },
@@ -62,8 +63,6 @@ const LEDGER_ABI = [
  * would be ~160 calls against a rate-limited public RPC.
  */
 const MULTICALL_CHUNK = 250;
-/** A sealed order is at most 16 KB of JSON (MAX_ORDER_BOX_JSON). */
-const MAX_BOX_TEXT = 64 * 1024;
 
 const clients = new Map<number, Promise<import("viem").PublicClient>>();
 function clientFor(chainId: number): Promise<import("viem").PublicClient> {
@@ -139,37 +138,13 @@ async function slots(ledger: OrdersSeriesLedger, from: number, to: number): Prom
   return chunks.flat();
 }
 
-/** Whole seconds, or an HTTP date; null when absent or unreadable. */
-function retryAfterMs(headers: Headers, now: number): number | null {
-  const raw = headers.get("retry-after");
-  if (!raw) return null;
-  const secs = Number(raw);
-  if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
-  const at = Date.parse(raw);
-  return Number.isNaN(at) ? null : Math.max(0, at - now);
-}
-
-/**
- * The draft RateLimit headers (`RateLimit-Limit/-Remaining/-Reset`, reset in
- * seconds). Readable on the gateway's own origin only: cross-origin, a header the
- * gateway does not list in Access-Control-Expose-Headers reads as absent.
- */
-export function readBudget(headers: Headers): GatewayBudget | undefined {
-  const limit = Number(headers.get("ratelimit-limit") ?? NaN);
-  const remaining = Number(headers.get("ratelimit-remaining") ?? NaN);
-  const reset = Number(headers.get("ratelimit-reset") ?? NaN);
-  if (![limit, remaining, reset].every((n) => Number.isFinite(n) && n >= 0) || limit === 0) return undefined;
-  return { limit, remaining, resetMs: reset * 1000 };
-}
-
 /**
  * One sealed order from our gateway, and why not when it is not there. A 403 is
  * retried, never final: the erasure answer already said this root is not erased,
  * so a refusal is the gateway's list lagging the store, which the server's
  * reconcile repairs (order-gateway.ts).
  */
-export async function fetchOrderBox(root: string): Promise<FetchResult> {
-  const gateway = buildEnv(() => import.meta.env.VITE_GATEWAY_URL as string | undefined) || WOCO_GATEWAY_URL;
+export async function fetchOrderBox(root: string, gateway: string = gatewayBase()): Promise<FetchResult> {
   let resp: Response;
   try {
     resp = await fetch(`${gateway}/bytes/${root}`, { cache: "no-store", signal: AbortSignal.timeout(20_000) });
@@ -183,22 +158,25 @@ export async function fetchOrderBox(root: string): Promise<FetchResult> {
   }
   if (resp.status === 404) return { kind: "missing", budget };
   if (!resp.ok) return { kind: "unavailable", budget };
-  if (Number(resp.headers.get("content-length")) > MAX_BOX_TEXT) return { kind: "unreadable", budget };
-  let text: string;
+  if (Number(resp.headers.get("content-length")) > MAX_BOX_BYTES) return { kind: "unreadable", budget };
+  let bytes: Uint8Array;
   try {
-    text = await resp.text();
+    bytes = new Uint8Array(await resp.arrayBuffer());
   } catch {
     return { kind: "unavailable", budget };
   }
-  try {
-    if (text.length > MAX_BOX_TEXT) return { kind: "unreadable", budget };
-    const box = JSON.parse(text) as { enc?: unknown; ct?: unknown };
-    return typeof box.enc === "string" && typeof box.ct === "string"
-      ? { kind: "ok", box: box as unknown as SealedBoxV2, budget }
-      : { kind: "unreadable", budget };
-  } catch {
-    return { kind: "unreadable", budget };
-  }
+  // The exact bytes must hash to the root they were asked for (order-box.ts).
+  return { ...boxFromBytes(root, bytes), budget };
+}
+
+function gatewayBase(): string {
+  return buildEnv(() => import.meta.env.VITE_GATEWAY_URL as string | undefined) || WOCO_GATEWAY_URL;
+}
+
+/** The queue's reads from our gateway: bundles where it has them, one at a time where not (gateway-fetcher.ts). */
+export function liveGatewayFetcher(): Pick<DetailQueueDeps, "fetchBatch" | "maxBatch"> {
+  const gateway = gatewayBase();
+  return gatewayOrderFetcher({ gateway, fetchImpl: (input, init) => fetch(input, init), fetchOne: (root) => fetchOrderBox(root, gateway) });
 }
 
 export function liveBrowserOrdersDeps(eventId: string): BrowserOrdersDeps {
