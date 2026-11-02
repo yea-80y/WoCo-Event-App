@@ -4,3 +4,4 @@ export * from "./templates.js";
 export * from "./safe-href.js";
 export * from "./runtime-release.js";
 export * from "./render.js";
+export * from "./event-page.js";

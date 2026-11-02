@@ -15,14 +15,16 @@ import {
   buildSiteCollection,
   sameSiteObjects,
   SITE_HTML_MAX_BYTES,
-  SITE_INDEX_DOCUMENT,
   type SiteCollection,
   type SiteRenderUrls,
 } from "@woco/shared/site/collection";
 import { mantarayNodeAddress, resolveMantarayPath } from "@woco/shared/swarm/mantaray";
 import { bytesTreeRoot } from "@woco/shared/swarm/bytes-tree";
-import type { Site, SiteRuntimeRelease, SiteRuntimeRoot, SiteRuntimeStore } from "@woco/shared";
+import { SITE_RUNTIME_INDEX_DOCUMENT } from "@woco/shared";
+import type { Site, SiteRuntimeLine, SiteRuntimeRelease, SiteRuntimeRoot, SiteRuntimeStore } from "@woco/shared";
+import type { Context } from "hono";
 import { BEE_URL } from "../../config/swarm.js";
+import { siteRuntimeReleases } from "./runtime-release.js";
 import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { CONTROL_JSON_MAX_BYTES, errorSnippet, readCapped, readCappedJson } from "../http/read-capped.js";
@@ -30,6 +32,8 @@ import { CONTROL_JSON_MAX_BYTES, errorSnippet, readCapped, readCappedJson } from
 /** Everything a build needs from one store's copy of a release. */
 export interface SiteRuntimeKit {
   version: number;
+  /** Which runtime: websites ("site") or single-event pages ("eventPage"). */
+  line: SiteRuntimeLine;
   store: SiteRuntimeStore;
   release: SiteRuntimeRoot;
   rootNode: Uint8Array;
@@ -63,8 +67,8 @@ export const liveKitReads = {
     if (!r.ok) throw new Error(`release node ${store} ${r.status}`);
     return readCapped(r, NODE_MAX_BYTES, "release manifest node");
   },
-  async template(wocoRoot: string): Promise<Uint8Array> {
-    const r = await fetch(`${BEE_URL}/bzz/${wocoRoot}/multi-site.html`, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
+  async template(wocoRoot: string, indexDocument: string): Promise<Uint8Array> {
+    const r = await fetch(`${BEE_URL}/bzz/${wocoRoot}/${indexDocument}`, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
     if (!r.ok) throw new Error(`release template ${r.status}`);
     return readCapped(r, TEMPLATE_MAX_BYTES, "release template");
   },
@@ -82,19 +86,21 @@ export const liveKitReads = {
 export function createSiteRuntimeKits(reads: typeof liveKitReads = liveKitReads) {
   const cache = new Map<string, Promise<SiteRuntimeKit>>();
   return {
-    kit(release: SiteRuntimeRelease, store: SiteRuntimeStore): Promise<SiteRuntimeKit> {
-      const root = release.roots[store];
-      if (!root) return Promise.reject(new Error(`release v${release.version} has no ${store} root`));
-      const key = `${store}:${root.root}`;
+    kit(release: SiteRuntimeRelease, line: SiteRuntimeLine, store: SiteRuntimeStore): Promise<SiteRuntimeKit> {
+      const lineRelease = release.runtimes[line];
+      const root = lineRelease.roots[store];
+      if (!root) return Promise.reject(new Error(`release v${release.version} has no ${line} ${store} root`));
+      const index = SITE_RUNTIME_INDEX_DOCUMENT[line];
+      const key = `${line}:${store}:${root.root}`;
       let p = cache.get(key);
       if (!p) {
         p = (async () => {
-          const [rootNode, templateBytes] = await Promise.all([reads.node(store, root.root), reads.template(release.roots.woco.root)]);
-          if (mantarayNodeAddress(rootNode) !== root.root) throw new Error(`release ${store} root node does not match its address`);
-          const entry = await resolveMantarayPath(rootNode, SITE_INDEX_DOCUMENT, (a) => reads.node(store, a));
-          if (bytesTreeRoot(templateBytes) !== entry) throw new Error(`release ${store} template does not match its root`);
+          const [rootNode, templateBytes] = await Promise.all([reads.node(store, root.root), reads.template(lineRelease.roots.woco.root, index)]);
+          if (mantarayNodeAddress(rootNode) !== root.root) throw new Error(`release ${line} ${store} root node does not match its address`);
+          const entry = await resolveMantarayPath(rootNode, index, (a) => reads.node(store, a));
+          if (bytesTreeRoot(templateBytes) !== entry) throw new Error(`release ${line} ${store} template does not match its root`);
           const template = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(templateBytes);
-          return { version: release.version, store, release: root, rootNode, template };
+          return { version: release.version, line, store, release: root, rootNode, template };
         })();
         // A failed load is retried on the next publish, never cached.
         p.catch(() => cache.delete(key));
@@ -106,6 +112,37 @@ export function createSiteRuntimeKits(reads: typeof liveKitReads = liveKitReads)
 }
 
 export const siteRuntimeKits = createSiteRuntimeKits();
+
+/**
+ * GET .../runtime/kit/:store - what a browser needs to build a page of `line` on
+ * the current release: the store's release root node and the template. Nothing
+ * here is trusted by a deploy, which rebuilds from its own copy; the browser
+ * checks the node against the descriptor's root itself. Public, a minute's cache.
+ */
+export async function serveRuntimeKit(c: Context, line: SiteRuntimeLine): Promise<Response> {
+  const store = c.req.param("store");
+  if (store !== "woco" && store !== "etherna") return c.json({ ok: false, error: "unknown store" }, 400);
+  const release = siteRuntimeReleases.peek() ?? (await siteRuntimeReleases.get());
+  if (!release) return c.json({ ok: false, error: "No site runtime release is available", code: "RUNTIME_RELEASE_UNAVAILABLE" }, 503);
+  try {
+    const kit = await siteRuntimeKits.kit(release, line, store);
+    c.header("Cache-Control", "public, max-age=60");
+    return c.json({
+      ok: true,
+      data: {
+        version: kit.version,
+        line,
+        store,
+        release: kit.release,
+        rootNode: Buffer.from(kit.rootNode).toString("base64"),
+        template: kit.template,
+      },
+    });
+  } catch (e) {
+    console.warn(`[runtime/kit] ${line} ${store}: ${e instanceof Error ? e.message : String(e)}`);
+    return c.json({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }, 503);
+  }
+}
 
 /** The deploy body's `collection`, decoded and bounded. Null when malformed. */
 export function decodeClientCollection(raw: unknown): { runtimeVersion: number; objects: Uint8Array[] } | null {

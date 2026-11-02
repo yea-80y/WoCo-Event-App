@@ -16,6 +16,7 @@ import type { SiteRuntimeStore } from "@woco/shared";
 import {
   admitClientCollection,
   decodeClientCollection,
+  serveRuntimeKit,
   siteRuntimeKits,
   storeForTarget,
   uploadSiteObjects,
@@ -76,7 +77,7 @@ const CLIENT_BUILD_REQUIRED_MESSAGE = "This version of the app can no longer pub
 async function liveRuntimeKit(store: SiteRuntimeStore): Promise<SiteRuntimeKit | null> {
   const release = await siteRuntimeReleases.get();
   if (!release) return null;
-  return siteRuntimeKits.kit(release, store).catch((e: unknown) => {
+  return siteRuntimeKits.kit(release, "site", store).catch((e: unknown) => {
     console.warn(`[sites/deploy] site runtime kit unavailable: ${e instanceof Error ? e.message : String(e)}`);
     return null;
   });
@@ -579,29 +580,7 @@ sitesRouter.get("/runtime", async (c) => {
 // current release (#1032 slice 3): the store's release root node and the template.
 // Nothing here is trusted by the deploy, which rebuilds from its own copy; the
 // client checks the node against the descriptor's root itself.
-sitesRouter.get("/runtime/kit/:store", async (c) => {
-  const store = c.req.param("store");
-  if (store !== "woco" && store !== "etherna") return c.json({ ok: false, error: "unknown store" }, 400);
-  const release = siteRuntimeReleases.peek() ?? (await siteRuntimeReleases.get());
-  if (!release) return c.json({ ok: false, error: "No site runtime release is available", code: "RUNTIME_RELEASE_UNAVAILABLE" }, 503);
-  try {
-    const kit = await siteRuntimeKits.kit(release, store);
-    c.header("Cache-Control", "public, max-age=60");
-    return c.json({
-      ok: true,
-      data: {
-        version: kit.version,
-        store,
-        release: kit.release,
-        rootNode: Buffer.from(kit.rootNode).toString("base64"),
-        template: kit.template,
-      },
-    });
-  } catch (e) {
-    console.warn(`[sites/runtime/kit] ${store}: ${e instanceof Error ? e.message : String(e)}`);
-    return c.json({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }, 503);
-  }
-});
+sitesRouter.get("/runtime/kit/:store", (c) => serveRuntimeKit(c, "site"));
 
 sitesRouter.get("/:id", async (c) => {
   const siteId = c.req.param("id");
