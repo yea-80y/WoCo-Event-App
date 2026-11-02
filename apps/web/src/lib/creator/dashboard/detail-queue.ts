@@ -17,10 +17,11 @@
  *
  * PACING. At most CONCURRENCY at once. A gateway limits requests per connection,
  * and the rest of the app (and anyone else on the same connection, e.g. venue
- * staff) shares that allowance. Where the RateLimit headers are readable - same
- * origin only, as our gateway does not expose them cross-origin - the queue stops
- * with headroom left and resumes at the reset. Where they are not, it keeps to
- * SELF_CAP_PER_MINUTE. A 429 pauses everything.
+ * staff) shares that allowance. Where the RateLimit headers are readable - our
+ * gateway exposes them cross-origin since the bundle change, so this is the live
+ * rule there - the queue stops with headroom left and resumes at the reset. Where
+ * they are not (another gateway), it keeps to SELF_CAP_PER_MINUTE, or
+ * BATCH_SELF_CAP_PER_MINUTE for bundles. A 429 pauses everything.
  *
  * NOTHING IS DROPPED SILENTLY. Every root ends ready, missing (404: its storage
  * expired or the chunk was evicted) or unreadable, or keeps retrying - and says
@@ -84,8 +85,7 @@ export const SELF_CAP_PER_MINUTE = 600;
 export const BATCH_SELF_CAP_PER_MINUTE = 90;
 /** Retries that fall due together go out as one bundle, not one request each. */
 export const RETRY_COALESCE_MS = 100;
-/** With a readable budget: stop while this much is left (the larger of the two). */
-export const HEADROOM_MIN = 100;
+/** With a readable budget: stop while less than this share of the allowance is left. */
 export const HEADROOM_SHARE = 0.25;
 export const COVERAGE_REFRESH_MS = 60_000;
 export const COVERAGE_STALE_MS = 90_000;
@@ -261,7 +261,8 @@ export class DetailQueue {
       return;
     }
     while (this.pending.length > 0) {
-      const size = Math.max(1, Math.floor(this.deps.maxBatch()));
+      // `|| 1`: a batch size that is not a number must never stall or spin this loop.
+      const size = Math.max(1, Math.floor(this.deps.maxBatch()) || 1);
       if (this.inFlight >= (size > 1 ? BATCH_CONCURRENCY : CONCURRENCY)) break;
       const gate = this.nextIssueAt(now, size > 1);
       if (gate > now) {
@@ -309,7 +310,10 @@ export class DetailQueue {
         // Each root by the same rules as ever; one the answer left out is retried. Roots that go
         // back to the front go together afterwards, keeping the bundle's order.
         const front: Array<{ root: string; e: Entry }> = [];
-        for (const { root, e } of live) this.settleRoot(root, e, r.items.get(root) ?? { kind: "unavailable" }, now, front);
+        // One jitter for the whole bundle: its roots that must retry fall due together and
+        // go out again as one bundle, not a scatter of small ones.
+        const jitter = this.deps.random();
+        for (const { root, e } of live) this.settleRoot(root, e, r.items.get(root) ?? { kind: "unavailable" }, now, front, jitter);
         this.requeueFront(front);
         break;
       }
@@ -336,7 +340,14 @@ export class DetailQueue {
   }
 
   /** One root's answer. A root that must go back to the front is added to `front`, for the caller to requeue in order. */
-  private settleRoot(root: string, e: Entry, r: FetchResult, now: number, front: Array<{ root: string; e: Entry }>): void {
+  private settleRoot(
+    root: string,
+    e: Entry,
+    r: FetchResult,
+    now: number,
+    front: Array<{ root: string; e: Entry }>,
+    jitter: number,
+  ): void {
     const c = this.coverage!;
     switch (r.kind) {
       case "ok":
@@ -366,7 +377,7 @@ export class DetailQueue {
         break;
       case "unavailable":
         e.failures++;
-        this.retryLater(root, e, this.backoff(UNAVAILABLE_FIRST_MS, UNAVAILABLE_MAX_MS, e.failures));
+        this.retryLater(root, e, this.backoff(UNAVAILABLE_FIRST_MS, UNAVAILABLE_MAX_MS, e.failures, jitter));
         break;
       case "unreadable":
         this.setState(e, "unreadable");
@@ -397,7 +408,10 @@ export class DetailQueue {
 
   private noteBudget(b: GatewayBudget, now: number): void {
     this.budgetSeen = true;
-    const floor = Math.max(HEADROOM_MIN, Math.ceil(b.limit * HEADROOM_SHARE));
+    // A quarter of whatever allowance the gateway names: 250 of the general 1,000/min the
+    // rest of the app shares, 30 of the bundle limiter's 120/min. (A fixed floor of 100
+    // stopped bundles after 20 a minute - Fable sign-off 2026-11-02 S1.)
+    const floor = Math.ceil(b.limit * HEADROOM_SHARE);
     if (b.remaining < floor) this.pausedUntil = Math.max(this.pausedUntil, now + b.resetMs);
   }
 
@@ -421,9 +435,9 @@ export class DetailQueue {
   }
 
   /** first, doubling per failure, capped; then up to a quarter less, so tabs do not retry in step. */
-  private backoff(first: number, max: number, n: number): number {
+  private backoff(first: number, max: number, n: number, jitter: number = this.deps.random()): number {
     const base = Math.min(max, first * 2 ** Math.min(n - 1, 20));
-    return Math.round(base * (1 - 0.25 * this.deps.random()));
+    return Math.round(base * (1 - 0.25 * jitter));
   }
 
   private wakeAt(t: number, now: number): void {

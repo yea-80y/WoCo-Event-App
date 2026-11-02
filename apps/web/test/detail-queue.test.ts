@@ -20,7 +20,6 @@ import {
   COVERAGE_REFRESH_MS,
   COVERAGE_STALE_MS,
   DetailQueue,
-  HEADROOM_MIN,
   LIMITED_MIN_MS,
   MISSING_RECHECK_MS,
   RETRY_COALESCE_MS,
@@ -259,12 +258,16 @@ test("a budget running low pauses until the reset, leaving headroom", async () =
   assert.equal(h.calls.length, CONCURRENCY + 1);
 });
 
-test("a small budget keeps the minimum headroom", async () => {
+test("a small dedicated allowance (the bundle limiter's 120) keeps a quarter, not a fixed 100 (Fable sign-off S1)", async () => {
   const h = harness();
-  h.q.cover(cov(1, 0, roots(CONCURRENCY + 1)));
+  h.q.cover(cov(1, 0, roots(CONCURRENCY + 2)));
   await flush();
-  await h.answer("r0", { kind: "ok", box: box("0"), budget: { limit: 200, remaining: HEADROOM_MIN - 1, resetMs: 5_000 } });
-  assert.equal(h.calls.length, CONCURRENCY);
+  await h.answer("r0", { kind: "ok", box: box("0"), budget: { limit: 120, remaining: 30, resetMs: 5_000 } });
+  assert.equal(h.calls.length, CONCURRENCY + 1, "30 of 120 left: still going (a fixed 100 would have stopped at the 21st)");
+  await h.answer("r1", { kind: "ok", box: box("1"), budget: { limit: 120, remaining: 29, resetMs: 5_000 } });
+  assert.equal(h.calls.length, CONCURRENCY + 1, "below a quarter: paused until the reset");
+  await h.c.advance(5_000);
+  assert.equal(h.calls.length, CONCURRENCY + 2);
 });
 
 test("with no readable budget it keeps to the self cap per minute", async () => {
@@ -398,7 +401,7 @@ test("stop() ends everything: no fetch, no timer, no late commit", async () => {
 // ── bundles (our gateway's POST /bytes-bundle) ─────────────────────────────
 
 /** A queue over a gateway with bundles: each request waits until the test replies to it by index. */
-function bundleHarness(size = 100) {
+function bundleHarness(size: number = 100, random: () => number = () => 0) {
   const c = clock();
   const sent: string[][] = [];
   const replies: Array<(r: BatchResult) => void> = [];
@@ -407,7 +410,7 @@ function bundleHarness(size = 100) {
   const q = new DetailQueue({
     maxBatch: () => max,
     fetchBatch: (roots) => {
-      assert.ok(roots.length <= max, "never more than maxBatch");
+      assert.ok(roots.length <= (Number.isFinite(max) ? max : 1), "never more than maxBatch (1 when it is not a number)");
       sent.push([...roots]);
       if (auto) return Promise.resolve(auto(roots));
       return new Promise((res) => replies.push(res));
@@ -415,7 +418,7 @@ function bundleHarness(size = 100) {
     now: c.now,
     setTimer: c.setTimer,
     clearTimer: c.clearTimer,
-    random: () => 0,
+    random,
     wantCoverage: () => {},
     onChange: () => {},
   });
@@ -529,6 +532,24 @@ test("retries due together share one bundle", async () => {
   await h.reply(0, itemsOf([["a", { kind: "unavailable" }], ["b", { kind: "unavailable" }], ["c", { kind: "ok", box: box("c") }]]));
   await h.c.advance(5_000 + RETRY_COALESCE_MS);
   assert.deepEqual(h.sent[1], ["a", "b"], "one bundle, not one request each");
+});
+
+test("a bundle's retries share one jitter, so they fall due together and go as one bundle", async () => {
+  const draws = [0.9, 0.1, 0.5, 0.3];
+  const h = bundleHarness(100, () => draws.shift() ?? 0);
+  h.q.cover(cov(1, 0, ["a", "b", "c"]));
+  await flush();
+  await h.reply(0, itemsOf([["a", { kind: "unavailable" }], ["b", { kind: "unavailable" }], ["c", { kind: "unavailable" }]]));
+  // One draw (0.9) for the bundle: 5 s x (1 - 0.225) = 3,875 ms for all three.
+  await h.c.advance(3_875 + RETRY_COALESCE_MS);
+  assert.deepEqual(h.sent[1], ["a", "b", "c"]);
+});
+
+test("a batch size that is not a number still sends one root at a time, never spins", async () => {
+  const h = bundleHarness(Number.NaN);
+  h.q.cover(cov(1, 0, ["a", "b"]));
+  await flush();
+  assert.deepEqual(h.sent, [["a"], ["b"]]);
 });
 
 test("with no readable budget, the self cap counts bundles", async () => {
