@@ -36,6 +36,10 @@ export interface StoredUpload {
    *  the shared platform batch). ONLY these bytes count against the free quota —
    *  event pages are always free and user-batch deploys are already paid for. */
   freeHosted?: boolean;
+  /** Roots this upload LINKS but does not own (#1032: the site runtime release a
+   *  browser-built site links). A re-stamp walking `ref` stops at these: they are
+   *  the platform's storage, not the owner's. */
+  links?: string[];
 }
 
 interface OwnerLedger {
