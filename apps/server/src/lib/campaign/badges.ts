@@ -21,8 +21,8 @@ export { currentEpoch };
  * Issue the Joined badge for `address`, once ever.
  *
  * Fire-and-forget safe: `issueBadge` dedupes against an in-flight set, refuses
- * to write over a badge that already exists — including a revoked one — and
- * never throws. A failed attempt retries on the user's next qualifying action.
+ * to write over a badge that already exists (badges are permanent), and never
+ * throws. A failed attempt retries on the user's next qualifying action.
  */
 export async function issueJoinedBadge(address: string): Promise<void> {
   await issueBadge(address);
