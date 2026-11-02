@@ -44,30 +44,34 @@ test("an unreadable record store is 'try again', not 'recreate your event'", () 
 // The route, pinned at source: running it means uploading a page to Etherna.
 // ---------------------------------------------------------------------------
 
-const route = readFileSync(new URL("../src/routes/site.ts", import.meta.url), "utf-8")
+const file = readFileSync(new URL("../src/routes/site.ts", import.meta.url), "utf-8")
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .split("\n")
   .filter((l) => !l.trimStart().startsWith("//"))
   .join("\n");
+/** The deploy route itself (the page-config route above it also gates). */
+const route = file.slice(file.indexOf('site.post("/deploy"'));
 
 test("the page deploy never signs a feed with the platform key", () => {
   for (const gone of ["getPlatformSigner", "getPlatformOwner", "writeEthernaFeedUpdate", "makeFeedWriter", "uploadReference"]) {
-    assert.ok(!route.includes(gone), `site.ts must not use ${gone}`);
+    assert.ok(!file.includes(gone), `site.ts must not use ${gone}`);
   }
 });
 
 test("the creator gate runs before anything is uploaded", () => {
-  const gate = route.indexOf("eventPageDeployGate(eventId, parentAddress)");
-  const upload = route.indexOf("uploadCollectionToEtherna(");
+  const gate = route.indexOf("pageGate(eventId, parentAddress)");
+  const upload = route.indexOf("uploadSiteObjects(");
   assert.ok(gate > 0 && upload > 0 && gate < upload);
+  // The gate the route calls is the creator gate unless a test swaps it.
+  assert.match(file, /let pageGate = eventPageDeployGate;/);
 });
 
 test("the page feed is prepared only for a signing client, owned by the pinned signer", () => {
   assert.match(route, /const pagePrep = body\.clientFeed === true\s*\?\s*await prepareEthernaFeedIndex\(/);
   assert.match(route, /: null;/);
-  assert.match(route, /if \(body\.clientFeed === true && pagePrep\) \{\s*const prep = \{ \.\.\.pagePrep, chunkBytes: await fetchEthernaRootChunk\(contentHash\) \};/);
+  assert.match(route, /if \(body\.clientFeed === true && pagePrep\) \{/);
   assert.match(route, /ownerHex: gate\.signer\.replace/);
-  assert.match(route, /owner: gate\.signer,/);
+  assert.match(route, /pageFeed = \{ owner: gate\.signer, nextIndex: /);
   // Declared empty; the only assignment of a manifest is the client-owned branch.
   assert.match(route, /let feedManifestHash = "";/);
   assert.equal(route.match(/^\s+feedManifestHash = /gm)?.length, 1);
@@ -76,12 +80,15 @@ test("the page feed is prepared only for a signing client, owned by the pinned s
 test("the page feed's index is resolved before the page is uploaded, once (#943)", () => {
   // After the upload, a refusal there cost the whole upload - and the retry did it again.
   const resolve = route.indexOf("await prepareEthernaFeedIndex(");
-  const upload = route.indexOf("uploadCollectionToEtherna(");
+  const upload = route.indexOf("uploadSiteObjects(");
   assert.ok(resolve > 0 && upload > resolve);
   assert.equal(route.match(/prepareEthernaFeed(Index|Update)\(/g)?.length, 1, "no second resolution after the upload");
 });
 
-test("the carrier baked into the page comes from the same record", () => {
-  assert.match(route, /const eventSigner = gate\.signer;/);
-  assert.ok(!route.includes("getCreatorEvents"));
+test("the carrier baked into the page comes from the same record, never the request", () => {
+  assert.match(route, /pageConfig\(apiUrl, eventId, gate\.signer\)/);
+  assert.ok(!file.includes("getCreatorEvents"));
+  // The deploy reads nothing of the event: the head comes from the browser, format-checked.
+  assert.ok(!route.includes("getEvent("), "the deploy route must not read the event");
+  assert.match(route, /const head = parseEventPageHead\(body\.head\);/);
 });

@@ -68,6 +68,12 @@ test("the deploy body's collection is decoded within bounds", () => {
   }
 });
 
+test("an event page is only ever admitted against the event-page line's kit", () => {
+  const received = { runtimeVersion: 1, objects: [] as Uint8Array[] };
+  const config = { apiUrl: "https://events-api.woco-net.com", gatewayUrl: "https://gateway.etherna.io", contentGatewayUrl: "https://gateway.woco-net.com", eventId: "evt_line_00001", eventSigner: "0x" + "5e".repeat(20) };
+  assert.throws(() => mod.admitClientEventPage({ kit: kit(), config, head: { title: "Gig" }, received }), /eventPage line/);
+});
+
 test("admission: identical rebuild admitted; any difference refused", () => {
   const received = mod.decodeClientCollection({ runtimeVersion: 1, objects: b64(clientBuild()) })!;
   const ok = mod.admitClientCollection({ kit: kit(), site, urls, received });

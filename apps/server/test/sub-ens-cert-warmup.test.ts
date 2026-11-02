@@ -530,9 +530,10 @@ test("round trip: the real gateway handler's answer to that query is what releas
 test("Etherna site uploads are non-deferred", () => {
   // Deferred, Etherna's node pushes a 5 MB site out in the background: 326 s to
   // open from a second node, against 171 s non-deferred (2026-09-21, #613).
-  const src = sourceOf("../src/lib/etherna/upload.ts");
-  const start = src.indexOf("export async function uploadCollectionToEtherna");
-  assert.ok(start > 0, "uploadCollectionToEtherna not found");
+  // Since #1032 every site and event page goes up as browser-built objects.
+  const src = sourceOf("../src/lib/site/collection-publish.ts");
+  const start = src.indexOf("export async function uploadSiteObjects");
+  assert.ok(start > 0, "uploadSiteObjects not found");
   const next = src.indexOf("\nexport ", start + 10);
   const body = src.slice(start, next > 0 ? next : undefined);
   assert.match(body, /"Swarm-Deferred-Upload":\s*"false"/);
@@ -541,7 +542,9 @@ test("Etherna site uploads are non-deferred", () => {
 test("an event-page deploy whitelists its page and feed on our gateway", () => {
   // Without it our gateway refuses the organiser's own page (403), exactly as a
   // site deploy would have been refused before sites.ts whitelisted its hashes.
-  const src = sourceOf("../src/routes/site.ts");
+  // The deploy route only: the page-config route above it answers too.
+  const file = sourceOf("../src/routes/site.ts");
+  const src = file.slice(file.indexOf('site.post("/deploy"'));
   const call = /whitelistHashes\(\s*\[\s*contentHash,\s*feedManifestHash\s*\]/.exec(src);
   assert.ok(call, "the deploy must whitelist contentHash and feedManifestHash");
   const ret = src.search(/return c\.json\(\{\s*ok: true,/);

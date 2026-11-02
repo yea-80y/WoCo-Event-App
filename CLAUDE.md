@@ -476,10 +476,11 @@ BUILD / DEPLOY:
 - Server start script is `npm run start` (`node --import tsx src/index.ts`), NOT `node dist/index.js`
 - Hono default 404 returns plain text "404 Not Found" — `authPost`'s `resp.json()` throws
   "Unexpected non-whitespace character at position 4". Consider a global 404 JSON handler
-- `build:multisite` → dist-multisite/ (NOT `build:site` → dist-site/). Websites no longer bake
-  it on the server (#1032): a runtime change ships as a RELEASE (`node scripts/publish-site-runtime.cjs`,
-  real repo, clean main), and a site picks it up when its organiser re-publishes (My Sites says
-  "Update ready"). Single-event pages still bake dist-site on the server (#1032 slice 5)
+- `build:multisite` → dist-multisite/ (websites), `build:site` → dist-site/ (single-event pages).
+  Neither is baked on the server any more (#1032): ONE release carries both
+  (`node scripts/publish-site-runtime.cjs`, real repo, clean main), the browser builds each page on
+  it and the server admits only an identical rebuild. A page picks a runtime change up when its
+  organiser re-publishes (My Sites says "Update ready" for websites)
 - `GET /api/sites/mine` must be registered BEFORE `/:id` in Hono or "mine" matches as a siteId
 - Creator directory upsert is fire-and-forget on both publish and deploy — non-fatal
 - `contracts/` is a NESTED git repo (Foundry project, branch `master`) — commit there

@@ -35,6 +35,12 @@ import { enableFeature } from "./helpers/features.js";
 /** Site runtime release v1 as bee encoded it (#1032): what every site deploy links. */
 const RELEASE = JSON.parse(readFileSync(new URL("../../../packages/shared/test/fixtures/site-runtime-release-v1.json", import.meta.url), "utf8"));
 const RELEASE_ROOT_NODE = Binary.hexToUint8Array(RELEASE.rootNode);
+/** Release v2's event-page line as bee encoded it: what every event page links. */
+const PAGE_RELEASE = JSON.parse(readFileSync(new URL("../../../packages/shared/test/fixtures/site-runtime-release-v2-event-page.json", import.meta.url), "utf8"));
+/** The signer the creator gate pins for the test's events (no event-feed-signers record here). */
+const PAGE_SIGNER = "0x" + "5e".repeat(20);
+/** eventIds the injected gate lets through; anything else is refused as the real gate would. */
+const PAGE_CREATORS = new Map<string, string>();
 
 enableFeature("walletLoginAllowed");
 
@@ -248,7 +254,22 @@ before(async () => {
     rootNode: RELEASE_ROOT_NODE,
     template: RELEASE.template,
   }));
-  const { siteRoute } = await import("../src/routes/site.js");
+  const siteMod = await import("../src/routes/site.js");
+  const { siteRoute } = siteMod;
+  siteMod.__siteDeployTestHooks.setRuntimeKit(async () => ({
+    version: 2,
+    line: "eventPage",
+    store: "etherna",
+    release: PAGE_RELEASE.release,
+    rootNode: Binary.hexToUint8Array(PAGE_RELEASE.rootNode),
+    template: PAGE_RELEASE.template,
+  }));
+  siteMod.__siteDeployTestHooks.setGate((eventId, parentAddress) => {
+    const creator = PAGE_CREATORS.get(eventId);
+    if (!creator) return { ok: false, status: 404, error: "Event not found" };
+    if (creator !== parentAddress.toLowerCase()) return { ok: false, status: 403, error: "Only the event's creator can publish its page" };
+    return { ok: true, signer: PAGE_SIGNER };
+  });
   app = new Hono();
   app.route("/api/sites", sites.sitesRouter);
   app.route("/api/site", siteRoute);
@@ -275,7 +296,7 @@ async function organiser() {
 
 type Reply = { status: number; retryAfter: string | null; json: { ok: boolean; error?: string; code?: string; retryAfterMs?: number; data?: Record<string, unknown> } };
 
-async function call(parent: Wallet, path: string, payload: unknown): Promise<Reply> {
+async function call(parent: Wallet, path: string, payload: unknown, method: "POST" | "GET" = "POST"): Promise<Reply> {
   const session = Wallet.createRandom();
   const nonce = randomUUID();
   const message = {
@@ -295,12 +316,12 @@ async function call(parent: Wallet, path: string, payload: unknown): Promise<Rep
     shared.SESSION_TYPES as unknown as Parameters<typeof TypedDataEncoder.hash>[1],
     message,
   );
-  const body = JSON.stringify(payload);
+  const body = method === "GET" ? "" : JSON.stringify(payload);
   const ts = String(Date.now());
   const reqNonce = randomUUID();
-  const challenge = ["woco-session-v1", "POST", path, ts, reqNonce, sha256Hex(body)].join("\n");
+  const challenge = ["woco-session-v1", method, path, ts, reqNonce, sha256Hex(body)].join("\n");
   const resp = await app.request(path, {
-    method: "POST",
+    method,
     headers: {
       "Content-Type": "application/json",
       "X-Session-Address": session.address,
@@ -309,7 +330,7 @@ async function call(parent: Wallet, path: string, payload: unknown): Promise<Rep
       "X-Session-Nonce": reqNonce,
       "X-Session-Timestamp": ts,
     },
-    body,
+    ...(method === "GET" ? {} : { body }),
   });
   return { status: resp.status, retryAfter: resp.headers.get("retry-after"), json: (await resp.json()) as Reply["json"] };
 }
@@ -610,6 +631,101 @@ test("deploy: a build that differs from the server's rebuild is refused before a
 });
 
 // ---------------------------------------------------------------------------
+// Event pages, browser-built (#1032 slice 5)
+// ---------------------------------------------------------------------------
+
+/** An event the injected gate knows, created by `who`. */
+function eventOf(who: Wallet): string {
+  const eventId = `evt-${randomUUID().slice(0, 12)}`;
+  PAGE_CREATORS.set(eventId, who.address.toLowerCase());
+  return eventId;
+}
+
+/** What the builder does: read the page config, build on the event-page kit, send. */
+async function pageDeployBody(who: Wallet, eventId: string, head?: { title: string; imageHash?: string }) {
+  const cfg = await call(who, `/api/site/${eventId}/page-config`, null, "GET");
+  assert.equal(cfg.status, 200, JSON.stringify(cfg.json));
+  const { config, head: suggested } = cfg.json.data as { config: Record<string, string>; head: { title: string; imageHash?: string } };
+  const { buildEventPageCollection } = await import("@woco/shared/site/collection");
+  const usedHead = head ?? suggested;
+  const built = buildEventPageCollection({
+    config: config as never,
+    head: usedHead,
+    template: PAGE_RELEASE.template,
+    release: PAGE_RELEASE.release,
+    releaseRootNode: Binary.hexToUint8Array(PAGE_RELEASE.rootNode),
+  });
+  const objects = built.objects.map((o) => Buffer.from(o.data).toString("base64"));
+  return { config, suggested, root: built.root, rootNode: built.rootNode, body: { eventId, apiUrl: PUBLIC_BASE, gatewayUrl: ETHERNA_URL, clientFeed: true, head: usedHead, collection: { runtimeVersion: 2, objects } } };
+}
+
+test("event page: page-config names the server's own carrier; the browser's build is stored and its root signed by the browser", async () => {
+  const who = await organiser();
+  const eventId = eventOf(who);
+  const d = await pageDeployBody(who, eventId, { title: "Friday Gig", imageHash: "ab".repeat(32) });
+  assert.deepEqual(Object.keys(d.config), ["apiUrl", "gatewayUrl", "contentGatewayUrl", "eventId", "eventSigner"]);
+  assert.equal(d.config.eventSigner, PAGE_SIGNER);
+  assert.equal(d.config.eventId, eventId);
+  assert.deepEqual(d.suggested, { title: "Event" }, "no event to read here: WoCo's fallback, shaped to pass the head parser");
+
+  const r = await call(who, "/api/site/deploy", d.body);
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(r.json.data!.contentHash, d.root);
+  assert.equal(r.json.data!.runtimeVersion, 2);
+  assert.deepEqual(r.json.data!.pageFeed, { owner: PAGE_SIGNER, nextIndex: 0 }, "no payload from the server: the browser signs its own root node");
+  assert.equal(Buffer.compare(Buffer.from(contents.get(d.root)!.subarray(8)), Buffer.from(d.rootNode)), 0, "the stored root is the built one");
+  const forks = parseMantarayNode(d.rootNode).forks.map((f) => f.prefix);
+  assert.deepEqual(forks, ["/", "assets/", "icons/", "logo.png", "manifest.json", "site.html"]);
+  const ledger = JSON.parse(readFileSync(join(dir, ".data", "storage-ledger.json"), "utf8")) as Record<string, { uploads: Array<Record<string, unknown>> }>;
+  const rec = Object.values(ledger).flatMap((o) => o.uploads).find((u) => u.ref === d.root);
+  assert.deepEqual([rec?.kind, rec?.links], ["event-site-deploy", [PAGE_RELEASE.release.root]]);
+  await settle();
+});
+
+test("event page: an app without a browser build is told to update; a bad head is refused; nothing uploaded", async () => {
+  const who = await organiser();
+  const eventId = eventOf(who);
+  const before = contents.size;
+  const old = await call(who, "/api/site/deploy", { eventId, apiUrl: PUBLIC_BASE, clientFeed: true });
+  assert.deepEqual([old.status, old.json.code], [400, "CLIENT_BUILD_REQUIRED"]);
+  assert.match(String(old.json.error), /reload the page/);
+  const d = await pageDeployBody(who, eventId);
+  for (const head of [undefined, { title: "" }, { title: "Gig", imageHash: "AB".repeat(32) }, { title: "Gig", extra: 1 }]) {
+    const r = await call(who, "/api/site/deploy", { ...d.body, head });
+    assert.deepEqual([r.status, r.json.code], [400, "COLLECTION_MISMATCH"], JSON.stringify(head));
+  }
+  assert.equal(contents.size, before, "nothing stored");
+});
+
+test("event page: a head that is not the one rendered, or a tampered page, is refused before any upload", async () => {
+  const who = await organiser();
+  const eventId = eventOf(who);
+  const before = contents.size;
+  const d = await pageDeployBody(who, eventId, { title: "Friday Gig" });
+  const lie = await call(who, "/api/site/deploy", { ...d.body, head: { title: "Saturday Gig" } });
+  assert.deepEqual([lie.status, lie.json.code], [409, "COLLECTION_MISMATCH"]);
+  const objects = [...d.body.collection.objects];
+  const html = Buffer.from(objects[0]!, "base64");
+  html[html.length - 2] ^= 1;
+  objects[0] = html.toString("base64");
+  const tampered = await call(who, "/api/site/deploy", { ...d.body, collection: { runtimeVersion: 2, objects } });
+  assert.deepEqual([tampered.status, tampered.json.code], [409, "COLLECTION_MISMATCH"]);
+  const stale = await call(who, "/api/site/deploy", { ...d.body, collection: { ...d.body.collection, runtimeVersion: 1 } });
+  assert.deepEqual([stale.status, stale.json.code], [409, "RUNTIME_RELEASE_CHANGED"]);
+  assert.equal(contents.size, before, "nothing stored");
+});
+
+test("event page: only the creator gets the page config or publishes the page", async () => {
+  const creator = await organiser();
+  const stranger = await organiser();
+  const eventId = eventOf(creator);
+  const d = await pageDeployBody(creator, eventId);
+  assert.equal((await call(stranger, `/api/site/${eventId}/page-config`, null, "GET")).status, 403);
+  assert.equal((await call(stranger, "/api/site/deploy", d.body)).status, 403);
+  assert.equal((await call(creator, `/api/site/evt-unknown-0001/page-config`, null, "GET")).status, 404);
+});
+
+// ---------------------------------------------------------------------------
 // The order, pinned at source for the branches a fake cannot reach offline
 // (client-owned pointers need the organiser's own site SOC on the network).
 // ---------------------------------------------------------------------------
@@ -638,10 +754,11 @@ test("every pointer branch of the site deploy resolves its index once, before th
 test("the deploy lock is taken only after ownership is settled, so a non-owner can never hold it", () => {
   for (const [file, route, ownerCheck] of [
     ["../src/routes/sites.ts", 'sitesRouter.post("/:id/deploy"', 'error: "Not the site owner"'],
-    ["../src/routes/site.ts", "beginDeploy(`event-page:", "eventPageDeployGate(eventId, parentAddress)"],
+    // pageGate is eventPageDeployGate unless a test swaps it (event-page-deploy-gate.test.ts pins that).
+    ["../src/routes/site.ts", 'site.post("/deploy"', "pageGate(eventId, parentAddress)"],
   ] as const) {
     const s = src(file);
-    const body = file.endsWith("sites.ts") ? s.slice(s.indexOf(route)) : s;
+    const body = s.slice(s.indexOf(route));
     const check = body.indexOf(ownerCheck);
     const lock = body.indexOf("beginDeploy(");
     assert.ok(check > 0 && lock > check, `${file}: beginDeploy after the ownership check`);

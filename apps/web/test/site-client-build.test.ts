@@ -7,9 +7,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildClientSiteCollection } from "../src/lib/api/site-collection.js";
+import { buildClientEventPageCollection, buildClientSiteCollection } from "../src/lib/api/site-collection.js";
 import { rebuildForNewRuntime, storedSomethingElse } from "../src/lib/api/site-deploy-verdict.js";
-import { buildSiteCollection, siteRenderUrls } from "@woco/shared/site/collection";
+import { buildEventPageCollection, buildSiteCollection, siteRenderUrls } from "@woco/shared/site/collection";
 
 const fx = JSON.parse(readFileSync(new URL("../../../packages/shared/test/fixtures/site-runtime-release-v1.json", import.meta.url), "utf8"));
 const kit = { version: 1, store: "woco", release: fx.release, rootNode: Buffer.from(fx.rootNode, "hex").toString("base64"), template: fx.template };
@@ -89,4 +89,43 @@ test("a client build stored at another root is caught before any pointer is sign
   assert.equal(storedSomethingElse({ ok: true, data: { builtBy: "client", contentHash: "cd".repeat(32) } }, root), true);
   assert.equal(storedSomethingElse({ ok: true, data: { builtBy: "client", contentHash: root } }, undefined), true);
   assert.equal(storedSomethingElse({ ok: true, data: { builtBy: "server", contentHash: "cd".repeat(32) } }, root), false);
+});
+
+// --- Event pages (#1032 slice 5) ---------------------------------------------
+
+const pageFx = JSON.parse(readFileSync(new URL("../../../packages/shared/test/fixtures/site-runtime-release-v2-event-page.json", import.meta.url), "utf8"));
+const pageKit = { version: 2, line: "eventPage", store: "etherna", release: pageFx.release, rootNode: Buffer.from(pageFx.rootNode, "hex").toString("base64"), template: pageFx.template };
+const pageConfig = {
+  apiUrl: "https://events-api.woco-net.com",
+  gatewayUrl: "https://gateway.etherna.io",
+  contentGatewayUrl: "https://gateway.woco-net.com",
+  eventId: "evt_client_0001",
+  eventSigner: "0x" + "5e".repeat(20),
+};
+
+test("an event page is built on the event-page kit, uncached, exactly as the server rebuilds it", async () => {
+  serve(() => ({ ok: true, data: pageKit }));
+  const head = { title: "Friday Gig", imageHash: "ab".repeat(32) };
+  const r = await buildClientEventPageCollection({ apiUrl: "https://events-api.woco-net.com/", config: pageConfig, head });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(asked[0], "https://events-api.woco-net.com/api/site/runtime/kit/etherna", "the event-page line, on Etherna");
+  assert.equal(cacheModes[0], "no-store");
+  const server = buildEventPageCollection({ config: pageConfig, head, template: pageFx.template, release: pageFx.release, releaseRootNode: Buffer.from(pageFx.rootNode, "hex") });
+  assert.equal(r.built.root, server.root);
+  assert.deepEqual(r.built.body.objects, server.objects.map((o) => Buffer.from(o.data).toString("base64")));
+  assert.equal(Buffer.compare(Buffer.from(r.built.rootNode), Buffer.from(server.rootNode)), 0, "the feed update signs this browser's own root node");
+  assert.equal(r.built.body.runtimeVersion, 2);
+});
+
+test("an event page with no kit, or a website kit offered for it, is not built", async () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    serve(() => ({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }));
+    assert.deepEqual(await buildClientEventPageCollection({ apiUrl: "https://events-api.woco-net.com", config: pageConfig, head: { title: "Gig" } }), { ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" });
+    serve(() => ({ ok: true, data: { ...kit, store: "etherna" } }));
+    assert.equal((await buildClientEventPageCollection({ apiUrl: "https://events-api.woco-net.com", config: pageConfig, head: { title: "Gig" } })).ok, false);
+  } finally {
+    console.warn = warn;
+  }
 });

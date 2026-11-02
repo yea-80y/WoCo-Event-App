@@ -77,6 +77,7 @@ export function withEventPageHead(
   const share = image === "./logo.png" ? `${DEFAULT_APP_URL}/logo.png` : image;
   const title = escapeHtmlAttribute(event?.title?.trim() ?? "");
   const lines = [
+    `  <link rel="manifest" href="./manifest.json">`,
     `  <link rel="icon" href="${image}">`,
     `  <link rel="apple-touch-icon" href="${image}">`,
     `  <meta property="og:type" content="website">`,
@@ -94,4 +95,28 @@ export function withEventPageHead(
 export function renderEventPageHtml(input: { template: string; config: EventPageConfig; head: EventPageHead | null }): string {
   const withConfig = injectBeforeHeadClose(input.template, `  ${siteConfigScript(input.config)}`);
   return withEventPageHead(withConfig, input.head, input.config.contentGatewayUrl);
+}
+
+/** WoCo's own colours (apps/web/public/manifest.json): a page's install surface. */
+const EVENT_PAGE_THEME = "#0B0B09";
+
+/**
+ * The PWA web manifest an event page carries as `manifest.json`, rendered per page
+ * like a website's (#1032 slice 5): the release's own manifest.json is the APP's
+ * and is never linked from a page. Icons are the runtime's (released under icons/).
+ */
+export function eventPagePwaManifest(head: EventPageHead | null): Record<string, unknown> {
+  const name = head?.title?.trim() || "Event";
+  return {
+    name,
+    short_name: name,
+    start_url: `./${EVENT_PAGE_INDEX_DOCUMENT}`,
+    display: "standalone",
+    background_color: EVENT_PAGE_THEME,
+    theme_color: EVENT_PAGE_THEME,
+    icons: [
+      { src: "./icons/icon-192.png", sizes: "192x192", type: "image/png" },
+      { src: "./icons/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+  };
 }
