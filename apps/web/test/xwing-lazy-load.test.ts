@@ -21,6 +21,9 @@ const ALLOWED_STATIC_IMPORTERS = new Set([
   // Linking another device (#746 step 4). Every importer uses `await import()`,
   // pinned by the last test below.
   "lib/auth/pairing-channel.ts",
+  // The dashboard's order-opening worker (#965): its own bundle, started only by
+  // `new Worker(new URL(...))` when orders are opened - never imported, pinned below.
+  "lib/creator/dashboard/order-opener.worker.ts",
 ]);
 
 function files(dir: string, out: string[] = []): string[] {
@@ -48,6 +51,15 @@ test("the allowlisted importer is itself only loaded lazily by the app shell", (
   const store = readFileSync(join(SRC, "lib/auth/auth-store.svelte.ts"), "utf8");
   assert.doesNotMatch(store, /^\s*import\s[^;]*from\s+["']\.\/recovery-escrow\.js["']/m);
   assert.match(store, /await import\("\.\/recovery-escrow\.js"\)/);
+});
+
+test("the order-opening worker is never imported, only started as a worker", () => {
+  const imported = /^\s*import\s[^;]*from\s+["'][^"']*order-opener\.worker(\.js|\.ts)?["']|import\(\s*["'][^"']*order-opener\.worker/m;
+  const offenders = files(SRC)
+    .map((f) => ({ rel: f.slice(SRC.length + 1), text: readFileSync(f, "utf8") }))
+    .filter((f) => imported.test(f.text))
+    .map((f) => f.rel);
+  assert.deepEqual(offenders, []);
 });
 
 test("the pairing channel is only ever loaded with a dynamic import", () => {

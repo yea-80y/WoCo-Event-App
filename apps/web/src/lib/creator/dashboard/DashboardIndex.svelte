@@ -7,6 +7,7 @@
   import { isPastEvent } from "../../utils/events.js";
   import { onMount, onDestroy } from "svelte";
   import StripeConnect from "./StripeConnect.svelte";
+  import { undeliveredSummary } from "../../api/undelivered.js";
 
   type Tab = "upcoming" | "past";
   let tab = $state<Tab>("upcoming");
@@ -16,6 +17,8 @@
   let loading = $state(true);
   let loadFailed = $state(false);
   let now = $state(Date.now());
+  /** eventId -> sales whose ticket email did not arrive (#983). */
+  let undelivered = $state<Record<string, number>>({});
   let clockTimer: ReturnType<typeof setInterval>;
 
   const upcoming = $derived(
@@ -120,6 +123,8 @@
     // tell an organiser their events are gone.
     loadFailed = !fresh.ok && allEvents.length === 0;
     loading = false;
+    const summary = await undeliveredSummary().catch(() => null);
+    if (summary?.ok && summary.data) undelivered = Object.fromEntries(summary.data.map((s) => [s.eventId, s.sales]));
   });
 
   onDestroy(() => clearInterval(clockTimer));
@@ -165,7 +170,7 @@
           {#each upcoming as ev}
             <button class="event-row" onclick={() => navigate(`/event/${ev.eventId}/dashboard`)}>
               <div class="event-info">
-                <span class="event-title">{ev.title}{#if ev.cancelledAt}<span class="cancelled-tag">Cancelled</span>{/if}</span>
+                <span class="event-title">{ev.title}{#if ev.cancelledAt}<span class="cancelled-tag">Cancelled</span>{/if}{#if undelivered[ev.eventId]}<span class="undelivered-tag">{undelivered[ev.eventId] === 1 ? "1 ticket didn't arrive" : `${undelivered[ev.eventId]} tickets didn't arrive`}</span>{/if}</span>
                 <span class="event-meta">
                   {new Date(ev.startDate).toLocaleDateString()} &middot;
                   {ev.totalTickets} ticket{ev.totalTickets !== 1 ? "s" : ""}
@@ -186,7 +191,7 @@
           {#each past as ev}
             <button class="event-row event-row--past" onclick={() => navigate(`/event/${ev.eventId}/dashboard`)}>
               <div class="event-info">
-                <span class="event-title">{ev.title}{#if ev.cancelledAt}<span class="cancelled-tag">Cancelled</span>{/if}</span>
+                <span class="event-title">{ev.title}{#if ev.cancelledAt}<span class="cancelled-tag">Cancelled</span>{/if}{#if undelivered[ev.eventId]}<span class="undelivered-tag">{undelivered[ev.eventId] === 1 ? "1 ticket didn't arrive" : `${undelivered[ev.eventId]} tickets didn't arrive`}</span>{/if}</span>
                 <span class="event-meta">
                   {new Date(ev.startDate).toLocaleDateString()} &middot;
                   {ev.totalTickets} ticket{ev.totalTickets !== 1 ? "s" : ""}
@@ -385,6 +390,19 @@
     font-size: 0.9375rem;
     font-weight: 500;
     color: var(--text);
+  }
+
+  .undelivered-tag {
+    margin-left: 0.5rem;
+    padding: 0.05rem 0.4rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: var(--warning);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    vertical-align: middle;
   }
 
   .cancelled-tag {

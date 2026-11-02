@@ -12,9 +12,10 @@
  *   - On Swarm: every chunk's slot is burned (`burnOrder`), resumable.
  *
  * Either way the order's tickets leave the door: their sealed door entries are deleted
- * and a removal reaches every online scanner (`removeDoorEntries`). The sale record is
- * how an order root finds its tickets; none (a sale never recorded) leaves the door copy
- * to the roster sweep, 2 days after the event.
+ * and a removal reaches every online scanner (`removeDoorEntries`), and the sale's held
+ * tickets (#983) are deleted. The sale record is how an order root finds its tickets;
+ * none (a sale never recorded) leaves both copies to the roster sweep, 2 days after
+ * the event.
  *
  * Synchronous from the in-flight check to the tombstone, so no store can start
  * between. Throws on anything else; the caller reports it.
@@ -27,6 +28,7 @@ import { getOrderRecord, recordErasedBeforeStore, type Erasure, type OrderRecord
 import { isStoreInFlight } from "./writer.js";
 import { getSale, saleSessionsByOrderRef } from "../stripe/ticket-sales.js";
 import { removeDoorEntries } from "../checkin/door-entries.js";
+import { deleteTicketHold } from "../ticket-hold/store.js";
 
 export type EraseOutcome =
   | { kind: "in-flight" }
@@ -68,6 +70,13 @@ export async function eraseOrder(rawRoot: string, erasure: Erasure, burnDeps?: B
 function forgetAtTheDoor(root: string): void {
   try {
     const sessionId = saleSessionsByOrderRef().get(root);
+    if (sessionId) {
+      try {
+        deleteTicketHold(sessionId);
+      } catch (err) {
+        console.error("[erase] the held ticket copy could not be deleted:", err);
+      }
+    }
     const sale = sessionId ? getSale(sessionId) : undefined;
     if (!sale?.eventId || !sale.seriesId || sale.slots.length === 0) {
       if (!sale) console.warn(`[erase] no sale record for ${root.slice(0, 10)}… - its door copy goes with the roster sweep`);

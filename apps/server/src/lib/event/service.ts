@@ -24,8 +24,6 @@ import { acceptEventFeed, getRecordedFeedSigner, recordEventFeedSigner } from ".
 import { assertCurrentKeys, eventKeys, feedSignerFor, withAuthoritativeOrderKey } from "../keyring/event-keys.js";
 import { cardFromFeed, getEventsSnapshot, scheduleSnapshotRebuild } from "./directory-snapshot.js";
 import {
-  readFeedPage,
-  readFeedPageStrict,
   readFeedPageWithRetry,
   writeFeedPage,
   encodeJsonFeed,
@@ -37,6 +35,12 @@ import {
 } from "../swarm/topics.js";
 import { createFirstWriteRetryQueue } from "../swarm/first-write-retry.js";
 import { createDisplayReadMemo, type DisplayRead } from "../swarm/display-read-memo.js";
+import {
+  readPagedDirectoryForDisplay,
+  readPagedDirectoryForWrite,
+  writePagedDirectory,
+  type PagedDirectory,
+} from "../swarm/paged-feed.js";
 
 /**
  * Batch routing for a LEGACY (platform-signed) event detail feed restamp —
@@ -1267,18 +1271,6 @@ export function primeEventCache(eventId: string, feed: EventFeed): void {
   });
 }
 
-interface EventDirectory {
-  v: 1;
-  entries: EventDirectoryEntry[];
-  updatedAt: string;
-  /** Number of overflow pages (0 = all entries fit on page 0) */
-  pages?: number;
-}
-
-/** Max JSON bytes per directory page (must fit in a single 4096-byte Bee chunk).
- *  Retained for the per-creator index writer (the global directory retired in #37). */
-const DIR_PAGE_LIMIT = 4096;
-
 export async function listEvents(): Promise<EventDirectoryEntry[]> {
   // #37: the global directory is now the immutable chain-log snapshot — a read is
   // 1 pointer-feed read + 1 blob fetch (SWR-cached in getEventsSnapshot), regardless
@@ -1295,7 +1287,7 @@ export async function listEvents(): Promise<EventDirectoryEntry[]> {
 
 export { addToEventDirectory as addEventToDirectory };
 
-/** Strip empty/default fields to keep directory entries small (must fit in 4096-byte Bee chunk). */
+/** Strip empty/default fields to keep directory entries small (more fit on page 0). */
 function compactEntry(e: EventDirectoryEntry): EventDirectoryEntry {
   const compact: Record<string, unknown> = {
     eventId: e.eventId,
@@ -1333,112 +1325,16 @@ export async function isOrganiserTrusted(creatorAddress: string): Promise<boolea
 }
 
 /**
- * Write a directory (page 0 + overflow pages) to paginated feeds.
- * Each page stays within DIR_PAGE_LIMIT so bee-js uses the direct SOC path.
- *
- * Page 0 LAST. It alone says how many overflow pages there are, so writing it last
- * commits the page COUNT: a failed overflow write (a page's first write probes its
- * never-written index 0, which bee's skip list can refuse, #942) can no longer
- * leave page 0 claiming a page never written. The CONTENTS are not atomic: when
- * page 0's write fails, the overflow pages already rewritten in place sit under
- * the old page 0, and entries that moved between pages read as one lost and one
- * twice. Every page of one write carries the same `updatedAt`, and
- * `readDirectoryStrict` refuses pages that disagree rather than build on them.
- * Overflow pages go highest first, so the likeliest failure - the new last page -
- * touches nothing that is read.
+ * A creator's index as a paged directory (`swarm/paged-feed.ts`, #950): page 0
+ * holds the newest entries, one immutable blob the rest, and page 0 is the commit.
+ * Read strictly before every write - an entry a failed read missed would be
+ * deleted by the rewrite - and for display through `creatorEventsMemo`.
  */
-async function writeDirectoryPages(
-  allEntries: EventDirectoryEntry[],
-  updatedAt: string,
-  topicFn: (page: number) => import("@ethersphere/bee-js").Topic,
-): Promise<void> {
-  const compact = allEntries.map(compactEntry);
-
-  // Split entries across pages that fit within 4096 bytes each
-  const pages: EventDirectoryEntry[][] = [];
-  let current: EventDirectoryEntry[] = [];
-  for (const entry of compact) {
-    current.push(entry);
-    const testDir: EventDirectory = {
-      v: 1,
-      entries: current,
-      updatedAt,
-      ...(pages.length > 0 ? {} : { pages: pages.length }),
-    };
-    if (JSON.stringify(testDir).length > DIR_PAGE_LIMIT) {
-      current.pop();
-      if (current.length > 0) pages.push(current);
-      current = [entry];
-    }
-  }
-  if (current.length > 0) pages.push(current);
-
-  for (let p = pages.length - 1; p >= 1; p--) {
-    const overflow: EventDirectory = { v: 1, entries: pages[p], updatedAt };
-    await writeFeedPage(topicFn(p), encodeJsonFeed(overflow));
-  }
-
-  // Page 0 last: it commits the page count, not the contents (see above).
-  const page0: EventDirectory = {
-    v: 1,
-    entries: pages[0] ?? [],
-    updatedAt,
-    pages: pages.length - 1, // number of OVERFLOW pages
-  };
-  await writeFeedPage(topicFn(0), encodeJsonFeed(page0));
-}
-
-/**
- * Strict directory read for the WRITE path. Returns the full prior contents
- * of a paged directory feed, OR throws if any page read failed transiently.
- * Bootstrap (status === "absent" on page 0) returns [] — safe to write the
- * first entry of a brand-new directory.
- *
- * MUST be used in place of the cached / null-on-error readers when the result
- * will be used as the basis for a directory rewrite. A transient Swarm read
- * failure that returned [] would otherwise cause the rewrite to overwrite
- * the directory with just the new entry, erasing every other organiser's
- * data. Better to abort the upsert (fire-and-forget caller logs a warning)
- * than to corrupt the directory irreversibly.
- */
-async function readDirectoryStrict(
-  topicFn: (page: number) => import("@ethersphere/bee-js").Topic,
-): Promise<EventDirectoryEntry[]> {
-  const page0 = await readFeedPageStrict(topicFn(0));
-  if (page0.status === "error") {
-    throw new Error(`Directory read failed (page 0) — refusing to write: ${page0.error.message}`);
-  }
-  if (page0.status === "absent") return [];
-
-  const dir = decodeJsonFeed<EventDirectory>(page0.data);
-  if (!dir) {
-    throw new Error("Directory page 0 decoded to null — refusing to write");
-  }
-
-  const all = [...dir.entries];
-  const totalPages = dir.pages ?? 0;
-  for (let p = 1; p <= totalPages; p++) {
-    const overflow = await readFeedPageStrict(topicFn(p));
-    if (overflow.status === "error") {
-      throw new Error(`Directory read failed (overflow page ${p}) — refusing to write: ${overflow.error.message}`);
-    }
-    // Page 0 is written last, so it claims only pages that were written: a claimed
-    // page that is missing is not the end of the list, and rebuilding from what was
-    // read would drop it and every page after it.
-    if (overflow.status === "absent") throw new Error(`Directory overflow page ${p} of ${totalPages} missing — refusing to write`);
-    const decoded = decodeJsonFeed<EventDirectory>(overflow.data);
-    if (!decoded) throw new Error(`Directory overflow page ${p} did not decode — refusing to write`);
-    // One write stamps one `updatedAt` on every page. Another one here is a write
-    // that failed between its overflow pages and page 0 (see writeDirectoryPages):
-    // the pages no longer hold each entry once, and a rewrite from them would lose
-    // one for good while reporting success.
-    if (decoded.updatedAt !== dir.updatedAt) {
-      throw new Error(`Directory overflow page ${p} is torn (stamped ${decoded.updatedAt}, page 0 ${dir.updatedAt}) — refusing to write`);
-    }
-    if (decoded.entries) all.push(...decoded.entries);
-  }
-  return all;
-}
+const creatorIndex = (creator: string): PagedDirectory<EventDirectoryEntry> => ({
+  topic: (p) => topicCreatorDirectory(creator, p),
+  envelope: ({ items, updatedAt }) => ({ v: 1, entries: items, updatedAt }),
+  items: (env) => (env as { entries?: EventDirectoryEntry[] }).entries,
+});
 
 /**
  * Add an event to its creator's per-creator index (organiser dashboard view).
@@ -1490,11 +1386,11 @@ function applyCreatorIndexChange(entries: EventDirectoryEntry[], change: Creator
 const creatorIndexQueue = createFirstWriteRetryQueue<EventDirectoryEntry[], CreatorIndexChange>({
   label: "[event] Creator index",
   healthKey: "eventIndex",
-  read: (creator) => readDirectoryStrict((p) => topicCreatorDirectory(creator, p)),
+  read: async (creator) => (await readPagedDirectoryForWrite(creatorIndex(creator))).items,
   write: async (creator, existing, changes) => {
     const updated = changes.reduce(applyCreatorIndexChange, existing);
     if (updated === existing) return;
-    await writeDirectoryPages(updated, new Date().toISOString(), (p) => topicCreatorDirectory(creator, p));
+    await writePagedDirectory(creatorIndex(creator), updated.map(compactEntry));
     invalidateCreatorEventsCache(creator);
     console.log(`[event] Creator index updated for ${creator}: ${updated.length} events`);
   },
@@ -1534,7 +1430,8 @@ export function invalidateCreatorEventsCache(ethAddress: string): void {
  * carrier), so the memoized absent can only keep a door shut for its 60 s, never
  * open one - and it is only memoized when bee says the feed was never written and
  * this server has no newer write of it (`readFeedPageStrict`, `forWrite: false`).
- * Never the base of an index write: that is `readDirectoryStrict`.
+ * An overflow that cannot be read is an error too, never page 0 alone.
+ * Never the base of an index write: that is `readPagedDirectoryForWrite`.
  */
 export async function getCreatorEvents(ethAddress: string): Promise<EventDirectoryEntry[]> {
   const key = ethAddress.toLowerCase();
@@ -1542,27 +1439,8 @@ export async function getCreatorEvents(ethAddress: string): Promise<EventDirecto
   return res.status === "ok" ? res.data : [];
 }
 
-/** Page 0 by the display read, so absent and unreadable stay apart; overflow pages leniently, as before. */
 async function loadCreatorEvents(creator: string): Promise<DisplayRead<EventDirectoryEntry[]>> {
-  const page0 = await readFeedPageStrict(topicCreatorDirectory(creator), { forWrite: false });
-  if (page0.status === "error") return { status: "error" };
-  if (page0.status === "absent") return { status: "ok", data: [] };
-  const dir = decodeJsonFeed<EventDirectory>(page0.data);
-  if (!dir || !Array.isArray(dir.entries)) return { status: "error" };
-
-  const totalPages = dir.pages ?? 0;
-  if (totalPages === 0) return { status: "ok", data: [...dir.entries] };
-
-  // Read overflow pages in parallel — Swarm reads are the bottleneck here.
-  const overflow = await Promise.all(
-    Array.from({ length: totalPages }, (_, i) => readFeedPage(topicCreatorDirectory(creator, i + 1))),
-  );
-  const all = [...dir.entries];
-  for (const pageData of overflow) {
-    if (!pageData) break; // matches prior defensive behaviour
-    const decoded = decodeJsonFeed<EventDirectory>(pageData);
-    if (decoded?.entries) all.push(...decoded.entries);
-  }
-  return { status: "ok", data: all };
+  const res = await readPagedDirectoryForDisplay(creatorIndex(creator));
+  return res.status === "ok" ? { status: "ok", data: res.data.items } : res;
 }
 

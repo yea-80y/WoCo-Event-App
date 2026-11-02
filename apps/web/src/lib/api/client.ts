@@ -235,8 +235,9 @@ export async function authPost<T>(
   path: string,
   body: Record<string, unknown>,
   baseUrl?: string,
+  opts: RequestSigningOptions = {},
 ): Promise<ApiResponse<T>> {
-  return authFetch<T>("POST", path, JSON.stringify(body), baseUrl);
+  return authFetch<T>("POST", path, JSON.stringify(body), baseUrl, opts);
 }
 
 /** Authenticated GET request. `opts.establish: false` for a background read that must never sign in. */

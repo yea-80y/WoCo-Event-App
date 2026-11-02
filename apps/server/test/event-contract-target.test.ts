@@ -43,7 +43,9 @@ const CLEAN = {
   [`WOCO_EVENT_ADDRESS_${CHAIN}`]: undefined,
   [`WOCO_EVENT_ADDRESS_V2_${CHAIN}`]: undefined,
   [`WOCO_EVENT_ADDRESS_LEDGER_${CHAIN}`]: undefined,
+  [`WOCO_EVENT_ADDRESS_LEDGER2_${CHAIN}`]: undefined,
 };
+const LEDGER2 = "0x" + "2e".repeat(20);
 
 test("the default contract is the env-selected one, version and all", () => {
   withEnv({ ...CLEAN, [`WOCO_EVENT_VERSION_${CHAIN}`]: "v2" }, () => {
@@ -68,6 +70,39 @@ test("after the flip to the ledger, an unrecorded registration stays on V2 — n
     assert.deepEqual(t, { chainId: CHAIN, address: V2_DEPLOYED, version: "v2" });
     assert.notEqual(t?.address, LEDGER);
   });
+});
+
+test("after the flip to ledger2, an unrecorded registration still stays on V2 — never either ledger", () => {
+  // #983 step 5: the same trap one cutover later. A bare record was written
+  // before contracts were recorded, so it is on neither ledger.
+  withEnv(
+    {
+      ...CLEAN,
+      [`WOCO_EVENT_VERSION_${CHAIN}`]: "ledger2",
+      [`WOCO_EVENT_ADDRESS_LEDGER_${CHAIN}`]: LEDGER,
+      [`WOCO_EVENT_ADDRESS_LEDGER2_${CHAIN}`]: LEDGER2,
+    },
+    () => {
+      assert.deepEqual(getDefaultEventContract(CHAIN), { chainId: CHAIN, address: LEDGER2, version: "ledger2" });
+      const t = legacyEventContract(CHAIN);
+      assert.deepEqual(t, { chainId: CHAIN, address: V2_DEPLOYED, version: "v2" });
+    },
+  );
+});
+
+test("ledger2 on a chain V2 never ran on has no legacy contract either", () => {
+  const ARB_ONE = 42161;
+  withEnv(
+    {
+      [`WOCO_EVENT_VERSION_${ARB_ONE}`]: "ledger2",
+      [`WOCO_EVENT_ADDRESS_LEDGER_${ARB_ONE}`]: LEDGER,
+      [`WOCO_EVENT_ADDRESS_LEDGER2_${ARB_ONE}`]: LEDGER2,
+      [`WOCO_EVENT_ADDRESS_V2_${ARB_ONE}`]: undefined,
+    },
+    () => {
+      assert.equal(legacyEventContract(ARB_ONE), undefined);
+    },
+  );
 });
 
 test("the V2 override is honoured for the legacy rule, as it is everywhere else", () => {

@@ -22,6 +22,7 @@
   import { issueDoorPass, pushCheckinRoster, getCheckinStatus, requestDoorPassChallenge, type CheckinStatus } from "../../api/checkin.js";
   import { issueDoorPassWithProof } from "./door-pass-issue.js";
   import { buildRosterEntries } from "./door-roster.js";
+  import { shortfall, type ListGate } from "./list-completeness.js";
   import { DOOR_PASS_FORMAT, parseStoredDoorPass, storedPassStale, type StoredDoorPass } from "./door-pass-stored.js";
   import { encryptRoster } from "../../scanner/roster-crypto.js";
   import { doorPassSecretB64url } from "../../scanner/door-pass-key.js";
@@ -40,10 +41,12 @@
     orders: OrderEntry[];
     decryptedOrders: Map<number, DecryptedOrder>;
     decrypting: boolean;
+    /** Whether every attendee's details are in (list-completeness.ts). */
+    rosterGate: ListGate;
     onEnsureDecrypted: () => Promise<void>;
   }
 
-  let { eventId, event, orders, decryptedOrders, decrypting, onEnsureDecrypted }: Props = $props();
+  let { eventId, event, orders, decryptedOrders, decrypting, rosterGate, onEnsureDecrypted }: Props = $props();
 
   const SCANNER_ORIGIN =
     import.meta.env.VITE_SCANNER_URL ||
@@ -60,6 +63,8 @@
   let copied = $state(false);
   let confirmRegen = $state(false);
   let confirmSwitch = $state(false);
+  // Some attendees' details are missing: the next tap goes ahead without their names.
+  let confirmGaps = $state(false);
   let mode = $state<DoorMode>("single");
   let status = $state<CheckinStatus | null>(null);
 
@@ -100,6 +105,24 @@
     } catch {
       // Not fatal — counts just don't show.
     }
+  }
+
+  /**
+   * The door list goes out complete, or after the organiser has seen how many names
+   * it lacks. Scanning never depends on it (a ticket verifies on chain), so a gap
+   * loses name lookup at the door, not entry - but a list that silently misses
+   * people reads as "not on the list". Call after the orders are opened.
+   */
+  function rosterReady(): boolean {
+    if (rosterGate.kind === "loading") {
+      workError = `Attendee details are still loading (${rosterGate.done} of ${rosterGate.total}). Try again once they have all arrived.`;
+      return false;
+    }
+    if (rosterGate.kind === "gaps" && !confirmGaps) {
+      confirmGaps = true;
+      return false;
+    }
+    return true;
   }
 
   /** Name, email and ticket only (door-roster.ts): the other order answers never reach the door. */
@@ -148,6 +171,7 @@
     try {
       await auth.ensureOrganiserUnlock();
       if (needsDecrypt) await onEnsureDecrypted();
+      if (!rosterReady()) return;
       const keys = await currentKeys();
       const parent = auth.parent?.toLowerCase();
       if (!parent) throw new Error("Sign in again, then try again.");
@@ -160,6 +184,7 @@
       const roster = await encryptRoster(doorRoster(), passSecret);
       await pushCheckinRoster(eventId, roster);
 
+      confirmGaps = false;
       stored = { v: DOOR_PASS_FORMAT, token: issued.token, exp: issued.exp, mode: issued.mode, gen: keys.gen, rosterPushedAt: new Date().toISOString() };
       passUrl = buildDoorPassUrl(SCANNER_ORIGIN, issued.token, passSecret);
       passStale = null;
@@ -179,6 +204,7 @@
     try {
       await auth.ensureOrganiserUnlock();
       if (needsDecrypt) await onEnsureDecrypted();
+      if (!rosterReady()) return;
       const keys = await currentKeys();
       const stale = storedPassStale(stored, keys.gen);
       if (stale) {
@@ -188,6 +214,7 @@
       }
       const roster = await encryptRoster(doorRoster(), doorPassSecretB64url(keys.current, eventId, stored.token));
       await pushCheckinRoster(eventId, roster);
+      confirmGaps = false;
       stored = { ...stored, rosterPushedAt: new Date().toISOString() };
       localStorage.setItem(storageKey, JSON.stringify(stored));
     } catch (err) {
@@ -235,6 +262,17 @@
   }
 </script>
 
+{#snippet rosterNotice()}
+  {#if rosterGate.kind === "loading"}
+    <p class="hint">Loading attendee details ({rosterGate.done} of {rosterGate.total}) - the door list waits for them.</p>
+  {:else if confirmGaps && rosterGate.kind === "gaps"}
+    <p class="hint caution">
+      Names for {shortfall(rosterGate)} tickets aren't in this list ({rosterGate.why}). Their tickets still scan at the
+      door - only their names won't show.
+    </p>
+  {/if}
+{/snippet}
+
 <div class="checkin-panel">
   {#if status && status.checkedIn > 0}
     <div class="live-counts">
@@ -276,8 +314,9 @@
       {#if needsDecrypt}
         <p class="hint">Your order data will be decrypted first — this may ask for your signature.</p>
       {/if}
-      <button class="primary" onclick={() => void generatePass(mode)} disabled={working || decrypting}>
-        {working ? "Setting up…" : "Generate door pass"}
+      {@render rosterNotice()}
+      <button class="primary" onclick={() => void generatePass(mode)} disabled={working || decrypting || rosterGate.kind === "loading"}>
+        {working ? "Setting up…" : confirmGaps && rosterGate.kind === "gaps" ? "Tap again - generate without them" : "Generate door pass"}
       </button>
     </div>
   {:else}
@@ -300,13 +339,14 @@
       {:else if !passUrl}
         <button onclick={() => void showPass(true)} disabled={working}>Show door pass</button>
       {/if}
+      {@render rosterNotice()}
       <div class="pass-actions">
         {#if passUrl}
           <button onclick={() => void copyLink()}>{copied ? "Copied ✓" : "Copy pass link"}</button>
         {/if}
         {#if !passStale}
-          <button onclick={() => void refreshRoster()} disabled={working || decrypting}>
-            {working ? "Working…" : "Re-push attendee list"}
+          <button onclick={() => void refreshRoster()} disabled={working || decrypting || rosterGate.kind === "loading"}>
+            {working ? "Working…" : confirmGaps && rosterGate.kind === "gaps" ? "Tap again - re-push without them" : "Re-push attendee list"}
           </button>
         {/if}
         <button onclick={switchTap} disabled={working}>

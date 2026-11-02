@@ -51,15 +51,19 @@ test("every save is an operation on the list as stored now, inside the list lock
   assert.match(commit, /await withListLock\(async \(\) => \{[\s\S]*?const saved = await saveListChange\(/);
   assert.match(commit, /const resp = await getMarketingList\(\);/, "re-read inside the lock");
   assert.match(commit, /writeList: \(sealed, emails, ifUpdatedAt\) => uploadMarketingList\(sealed, emails, \{ ifUpdatedAt \}\),/);
-  assert.match(commit, /\s+change,\s+\);/, "the screen's edit is passed as an operation");
+  assert.match(commit, /\s+change,\s+opts,\s+\);/, "the screen's edit is passed as an operation");
   assert.doesNotMatch(commit, /change\(\{ contacts, removed \}\)/, "never applied to this tab's own copy");
   assert.match(fn(SCREEN, "async function handleSave"), /commitList\(\(list\) => \(\{ \.\.\.list, contacts:/);
 });
 
 test("a save that lost the race reloads the screen and says so plainly", () => {
   const commit = fn(SCREEN, "async function commitList");
-  assert.match(commit, /if \(!isListChanged\(err\)\) throw err;\s*changedElsewhere = true;/);
-  assert.match(commit, /if \(changedElsewhere\) \{\s*await load\(\);\s*listNotice = LIST_CHANGED_NOTICE;/);
+  assert.match(
+    commit,
+    /if \(isListChanged\(err\)\) reloadNotice = LIST_CHANGED_NOTICE;\s*else if \(isListFound\(err\)\) reloadNotice = LIST_FOUND_NOTICE;\s*else if \(isListMissing\(err\)\) reloadNotice = LIST_LOST_NOTICE;\s*else throw err;/,
+    "saved elsewhere, found again or lost since it was opened: never saved over",
+  );
+  assert.match(commit, /if \(reloadNotice\) \{\s*await load\(\);\s*listNotice = reloadNotice;\s*throw new Error\(reloadNotice\);/);
   assert.match(SCREEN, /"Your list was changed in another tab or on another device, so nothing was saved\. We've loaded the latest version - please make your change again\."/);
   assert.match(SCREEN, /\{#if listNotice\}\s*<p class="list-notice" role="status">\{listNotice\}<\/p>/);
 });
@@ -68,7 +72,7 @@ test("the screen opens the tombstones, reads under the lock, starts a sync, and 
   const load = fn(SCREEN, "async function load");
   assert.match(load, /await withListLock\(async \(\) => \{[\s\S]*?removed = normaliseRemoved\(payload\.removed\);/);
   assert.match(load, /void syncAudience\(\);/);
-  assert.match(SCREEN, /onListWritten\(\(payload, written\) => \{\s*if \(listLocked\) return;\s*contacts = payload\.contacts;\s*removed = normaliseRemoved\(payload\.removed\);/);
+  assert.match(SCREEN, /onListWritten\(\(payload, written\) => \{\s*if \(listLocked\) return;\s*listMissing = null;\s*contacts = payload\.contacts;\s*removed = normaliseRemoved\(payload\.removed\);/);
 });
 
 test("a background run never prompts: open keys as held, seal only on a confirmed generation, an existing session only", () => {
@@ -140,4 +144,23 @@ test("the status copy: what happens, who stays out, one button - spaced hyphen, 
   assert.match(markup, /onclick=\{checkNow\}/);
   assert.doesNotMatch(markup, /[–—]/);
   assert.doesNotMatch(markup, /consent|lawful|GDPR|PECR/i, "no legal jargon");
+});
+
+test("a list that can't be found: shown as such, never checked onto, replaced only by Start a new list", () => {
+  const load = fn(SCREEN, "async function load");
+  assert.match(load, /if \(resp\.sealedList === null\) \{/);
+  const stop = load.indexOf("if (listMissing) return;");
+  assert.ok(stop > 0 && stop < load.indexOf("syncAudience("), "no buyer check onto a list that can't be found");
+  assert.equal(SCREEN.match(/replaceMissing: /g)?.length, 1, "one write may replace it");
+  assert.match(
+    fn(SCREEN, "async function startNewList"),
+    /commitList\(\(\) => \(\{ contacts: \[\], removed: \[\] \}\), \{ replaceMissing: seen\.updatedAt \}\)/,
+    "and only the record the organiser was shown",
+  );
+  assert.match(SCREEN, /onListWritten\(\(payload, written\) => \{\s*if \(listLocked\) return;\s*listMissing = null;/, "a newer list landing clears the panel");
+  const markup = read("lib/creator/audience/AudienceScreen.svelte");
+  const panel = markup.slice(markup.indexOf("{:else if listMissing}"), markup.indexOf("{#if listNotice}"));
+  assert.ok(panel.length > 0);
+  assert.match(panel, /onclick=\{\(\) => void startNewList\(\)\}/);
+  assert.doesNotMatch(panel, /[–—]/);
 });

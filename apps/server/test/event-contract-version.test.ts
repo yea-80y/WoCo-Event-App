@@ -29,6 +29,7 @@ import { deriveEventId } from "../src/lib/event/onchain-registry.js";
 const CHAIN = 421614;
 const VERSION_KEY = `WOCO_EVENT_VERSION_${CHAIN}`;
 const LEDGER_ADDR_KEY = `WOCO_EVENT_ADDRESS_LEDGER_${CHAIN}`;
+const LEDGER2_ADDR_KEY = `WOCO_EVENT_ADDRESS_LEDGER2_${CHAIN}`;
 const V2_ADDR_KEY = `WOCO_EVENT_ADDRESS_V2_${CHAIN}`;
 
 function withEnv(vars: Record<string, string | undefined>, fn: () => void): void {
@@ -58,7 +59,7 @@ test("unset version defaults to v1 — an absent config may have a default", () 
 });
 
 test("each known version round-trips", () => {
-  for (const v of ["v1", "v2", "ledger"] as const) {
+  for (const v of ["v1", "v2", "ledger", "ledger2"] as const) {
     withEnv({ [VERSION_KEY]: v }, () => {
       assert.equal(getEventContractVersion(CHAIN), v);
     });
@@ -109,6 +110,25 @@ test("v2 still resolves its own override once the ledger literal exists", () => 
       );
     },
   );
+});
+
+test("ledger2 resolves its OWN address, never the version-1 ledger's", () => {
+  // Both ledgers stay configured across the cutover: version 1 for the tickets
+  // already on it, version 2 for new registrations. Reading the old variable
+  // would register every new event on the old contract.
+  withEnv(
+    {
+      [VERSION_KEY]: "ledger2",
+      [LEDGER_ADDR_KEY]: "0x1111111111111111111111111111111111111111",
+      [LEDGER2_ADDR_KEY]: "0x3333333333333333333333333333333333333333",
+    },
+    () => {
+      assert.equal(getWoCoEventAddress(CHAIN), "0x3333333333333333333333333333333333333333");
+    },
+  );
+  withEnv({ [VERSION_KEY]: "ledger2", [LEDGER_ADDR_KEY]: "0x1111111111111111111111111111111111111111", [LEDGER2_ADDR_KEY]: undefined }, () => {
+    assert.equal(getWoCoEventAddress(CHAIN), undefined, "unset must be undefined, not the version-1 address");
+  });
 });
 
 test("selecting the ledger before it is deployed yields no address, not a wrong one", () => {
@@ -228,6 +248,15 @@ test("ledger derivation matches the contract, byte for byte", () => {
     deriveEventId("ledger", SPONSOR, NONCE, CHAIN_ID, CONTRACT),
     "0xf2e609b38f3da8e3659ebf6be0cfb7d4d6a3be2a4d46e35899a5f51ff41660d8",
     "server derivation drifted from WoCoTicketLedger.registerEvent",
+  );
+});
+
+test("ledger2 derives ids exactly as version 1 — its registerEvent is unchanged", () => {
+  // Same vector as above: WoCoTicketLedger version 2 kept the derivation. A
+  // drift here makes the #318 walk find nothing and re-broadcast (#423).
+  assert.equal(
+    deriveEventId("ledger2", "0x00000000000000000000000000000000000000bb", 7, 8453, "0x00000000000000000000000000000000000000aa"),
+    "0xf2e609b38f3da8e3659ebf6be0cfb7d4d6a3be2a4d46e35899a5f51ff41660d8",
   );
 });
 

@@ -124,7 +124,7 @@ targets the Etherna gateway; the gateway picker is gone (#617, #618).
 | `woco/site/config/{siteId}` | The `Site` JSON |
 | `woco/site/pages/{siteId}` | The pages array — **split from config** to stay under one 4096-byte chunk |
 | `woco/site/{siteId}/events` | `SiteEventsIndex` |
-| `woco/site/creator/{address}[/pN]` | The creator's site directory, paged |
+| `woco/site/creator/{address}` | The creator's site directory: page 0 + one overflow blob (#950, `SWARM_DATA_MODEL.md` §2) |
 | `woco-multisite-{siteId}` | The per-site pointer → latest deployed collection hash |
 | `woco-site-{eventId}` | The same kind of pointer for a single-event page, owned by the organiser's feed signer (#614) |
 

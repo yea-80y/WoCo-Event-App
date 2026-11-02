@@ -1,4 +1,5 @@
 import { PROXY_URL, UPLOAD_SECRET } from "../../config/swarm.js";
+import { readCappedJson } from "../http/read-capped.js";
 
 /**
  * Ask the WoCo gateway proxy to allow public reads of these Swarm hashes.
@@ -33,3 +34,39 @@ export async function whitelistHashes(hashes: string[]): Promise<void> {
   });
   if (!resp.ok) throw new Error(`whitelist responded ${resp.status}`);
 }
+
+/** The proxy's admin calls need the secret whenever a proxy is configured; null = no proxy (local dev). */
+function adminSecret(): string | null {
+  if (!PROXY_URL) return null;
+  if (!UPLOAD_SECRET) throw new Error("UPLOAD_SECRET is not set but PROXY_URL is");
+  return UPLOAD_SECRET;
+}
+
+/** Stop public reads of one hash through the proxy. Idempotent: an absent hash is a no-op there. */
+export async function unwhitelistHash(hash: string): Promise<void> {
+  const secret = adminSecret();
+  if (secret === null) return;
+  const resp = await fetch(`${PROXY_URL}/admin/whitelist/${hash.toLowerCase()}`, {
+    method: "DELETE",
+    headers: { "x-upload-secret": secret },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!resp.ok) throw new Error(`whitelist delete responded ${resp.status}`);
+}
+
+/** Every hash the proxy serves. null = no proxy configured. */
+export async function listWhitelist(): Promise<Set<string> | null> {
+  const secret = adminSecret();
+  if (secret === null) return null;
+  const resp = await fetch(`${PROXY_URL}/admin/whitelist`, {
+    headers: { "x-upload-secret": secret },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!resp.ok) throw new Error(`whitelist list responded ${resp.status}`);
+  const { hashes } = await readCappedJson<{ hashes?: unknown }>(resp, WHITELIST_LIST_MAX_BYTES, "whitelist list");
+  if (!Array.isArray(hashes)) throw new Error("whitelist list: no hashes array");
+  return new Set(hashes.filter((h): h is string => typeof h === "string").map((h) => h.toLowerCase()));
+}
+
+/** ~67 bytes a hash: room for ~500k entries, against ~18k on 2026-10-31. */
+const WHITELIST_LIST_MAX_BYTES = 32 * 1024 * 1024;

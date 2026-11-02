@@ -226,3 +226,34 @@ test("an unknown order touches nothing at the door", async () => {
   assert.deepEqual(await eraseOrder("cd".repeat(32), { by: "request" }), { kind: "not-found" });
   assert.equal(JSON.stringify(doorLines()), before);
 });
+
+// ---------------------------------------------------------------------------
+// #983: an erased order's held tickets go with it
+// ---------------------------------------------------------------------------
+
+const holds = await import("../src/lib/ticket-hold/store.js");
+const { deriveXWingKeypairFromSeed } = await import("@woco/shared/crypto/xwing");
+const HOLD_KEY = deriveXWingKeypairFromSeed("0x" + "4d".repeat(32)).publicKey;
+
+async function soldAndHeld(ref: string, slot: number): Promise<string> {
+  const sessionId = `cs_test_erase${ref.slice(0, 10)}`;
+  sales.recordSaleStub({ sessionId, paymentIntentId: `pi_h${ref.slice(0, 8)}`, connectedAccountId: "acct_1", eventId: "e-erase", seriesId: "s1", quantity: 1, amountTotal: 1000, currency: "gbp" });
+  sales.recordSaleSlots(sessionId, "0x" + "0e".repeat(32), "c", [slot], ref);
+  const qrContent = `woco://t/e-erase/s1/${slot + 1}/0x${"cd".repeat(65)}`;
+  assert.equal(await holds.holdTickets({ sessionId, eventId: "e-erase", seriesId: "s1", orderKeyRef: "ab".repeat(32), tickets: [{ edition: slot + 1, qrContent }] }, async () => HOLD_KEY), true);
+  return sessionId;
+}
+
+test("#983: a burned order's held tickets are deleted", async () => {
+  const ref = await stored();
+  const sessionId = await soldAndHeld(ref, 40);
+  await eraseOrder(ref, { by: "request" }, honestBurns as never);
+  assert.equal(holds.getTicketHold(sessionId), null);
+});
+
+test("#983: an order erased before it was stored takes its held tickets too", async () => {
+  const ref = await heldPaid(8);
+  const sessionId = await soldAndHeld(ref, 41);
+  assert.deepEqual(await eraseOrder(ref, { by: "request" }), { kind: "deleted-before-store" });
+  assert.equal(holds.getTicketHold(sessionId), null);
+});

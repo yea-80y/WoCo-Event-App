@@ -43,7 +43,7 @@ import {
   pendingRefundsHealth,
 } from "../lib/stripe/pending-refunds.js";
 import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
-import { acknowledgePartialRefund, listFlaggedSales, ticketSalesHealth } from "../lib/stripe/ticket-sales.js";
+import { acknowledgePartialRefund, listFlaggedSales, salesResentTo, ticketSalesHealth } from "../lib/stripe/ticket-sales.js";
 import { reopenVoid } from "../lib/stripe/payout-ledger.js";
 import {
   listOpenUnledgeredSales,
@@ -65,7 +65,7 @@ import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledg
 import { attendeeCheckoutRefusal, attendeeStamperAddress } from "../lib/attendee-batch/writer.js";
 import { refreshAttendeeBatch, registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
 import { eraseOrder } from "../lib/attendee-batch/erase.js";
-import { ledgerReadable, ordersForEmailHash } from "../lib/attendee-batch/ledger.js";
+import { getOrderRecord, ledgerReadable, ordersForEmailHash, type OrderRecord } from "../lib/attendee-batch/ledger.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { heldOrdersHealth, paidUnstored } from "../lib/attendee-batch/held-orders.js";
 import { MAX_LIMIT as RETENTION_MAX_LIMIT, previewOrderRetention, runOrderRetention } from "../lib/attendee-batch/retention.js";
@@ -815,7 +815,7 @@ ops.post("/attendee-batch/lookup", async (c) => {
   if (!ledgerReadable() || heldOrdersHealth().unreadable) {
     return c.json({ ok: false, error: "The attendee ledger or held orders are unreadable - see /api/health; no answer until restored" }, 503);
   }
-  const orders = ordersForEmailHash(emailHash).map(({ root, record }) => ({
+  const row = (root: string, record: OrderRecord, resentTo: boolean) => ({
     root,
     state: record.state,
     kind: record.kind,
@@ -823,7 +823,19 @@ ops.post("/attendee-batch/lookup", async (c) => {
     organiser: record.organiser ?? null,
     createdAt: record.createdAt,
     burnedAt: record.burnedAt ?? null,
-  }));
+    resentTo,
+  });
+  const orders = ordersForEmailHash(emailHash).map(({ root, record }) => row(root, record, false));
+  // A ticket an organiser resent to this address (#983): its order was bought under the
+  // address typed at checkout, so it is found through the sale, never by its own hash.
+  const known = new Set(orders.map((o) => o.root));
+  for (const sale of salesResentTo(emailHash)) {
+    const root = sale.orderRef;
+    const record = root ? getOrderRecord(root) : null;
+    if (!root || !record || known.has(root)) continue;
+    known.add(root);
+    orders.push(row(root, record, true));
+  }
   const held = paidUnstored()
     .filter((o) => o.emailHash === emailHash)
     .map((o) => ({ root: o.root, eventId: o.eventId ?? null, paidAt: o.paidAt ?? null }));

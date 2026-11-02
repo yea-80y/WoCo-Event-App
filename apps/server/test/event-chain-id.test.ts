@@ -41,3 +41,19 @@ test("the boot check refuses to start without it", () => {
   delete process.env.WOCO_EVENT_CHAIN_ID;
   assert.throws(() => assertEventContractConfig(), EventContractConfigError);
 });
+
+test("ledger v2 on a chain the accounts do not live on refuses to boot, naming why", () => {
+  const name = "WOCO_EVENT_VERSION_421614";
+  const savedVersion = process.env[name];
+  try {
+    process.env.WOCO_EVENT_CHAIN_ID = "421614";
+    process.env[name] = "ledger2";
+    assert.throws(
+      () => assertEventContractConfig(),
+      (e: unknown) => e instanceof EventContractConfigError && /accounts live on chain 42161/.test(e.message),
+    );
+  } finally {
+    if (savedVersion === undefined) delete process.env[name];
+    else process.env[name] = savedVersion;
+  }
+});

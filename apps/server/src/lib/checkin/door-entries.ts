@@ -223,6 +223,62 @@ export async function sealDoorEntries(
 }
 
 /**
+ * A ticket resent to another address (#983): its line is sealed again with the address
+ * it now went to, replacing the one fulfilment sealed. Online scanners take the later
+ * line for the same ticket. A removed (erased) ticket is never added back. Never throws.
+ */
+export async function replaceDoorEntries(
+  eventId: string,
+  tickets: Array<{ seriesId: string; edition: number }>,
+  who: { email?: string; buyerName?: string },
+  now: number = Date.now(),
+): Promise<number> {
+  try {
+    if (!who.email && !who.buyerName) return 0;
+    const pass = activeDoorPass(eventId);
+    if (!pass?.doorKeyRef || pass.exp * 1000 <= now) return 0;
+    const f = load(eventId);
+    if (!f || f.jti !== pass.jti || doorKeyRefOf(hexToBytes(f.doorKey)) !== pass.doorKeyRef) return 0;
+    const todo = [...new Map(tickets.map((t) => [ticket(t), t])).values()];
+    if (todo.length === 0) return 0;
+
+    const { sealBoxJson, doorEntrySealContext } = await import("@woco/shared/crypto/sealed-box");
+    const sealed = [];
+    for (const t of todo) {
+      const plain: DoorEntryPlaintext = {
+        v: 1,
+        seriesId: t.seriesId,
+        edition: t.edition,
+        ...(who.email ? { email: who.email } : {}),
+        ...(who.buyerName ? { buyerName: who.buyerName } : {}),
+      };
+      sealed.push({ t, box: await sealBoxJson(f.doorKey, plain, doorEntrySealContext(eventId, f.jti, t.seriesId, t.edition)) });
+    }
+
+    // As sealDoorEntries: re-read after the awaits, then swap with no await in between -
+    // and an erasure that landed meanwhile still wins.
+    const cur = load(eventId);
+    if (!cur || cur.jti !== f.jti) return 0;
+    const gone = new Set(cur.log.filter((i) => i.kind === "remove").map(ticket));
+    const fresh = sealed.filter((s) => !gone.has(ticket(s.t)));
+    if (fresh.length === 0) return 0;
+    const swapped = new Set(fresh.map((s) => ticket(s.t)));
+    const at = new Date(now).toISOString();
+    let last = cur.last;
+    const lines: DoorEntryLogItem[] = fresh.map((s) => ({ seq: ++last, kind: "add", seriesId: s.t.seriesId, edition: s.t.edition, box: s.box, at }));
+    const keep = cur.log.filter((i) => !(i.kind === "add" && swapped.has(ticket(i))));
+    commit(eventId, { ...cur, last, log: [...keep, ...lines] });
+    health.sealed += lines.length;
+    return lines.length;
+  } catch (err) {
+    health.failed++;
+    health.lastError = `replace failed (${errorClass(err)})`;
+    console.error("[checkin] door entries could not be replaced (the resend stands):", errorClass(err));
+    return 0;
+  }
+}
+
+/**
  * An erased order: delete its tickets' sealed lines and append a final removal each,
  * which tells every online scanner to drop the ticket - from the organiser's roster too.
  * Never throws (the erasure itself has happened); a failure is on `/api/health`.

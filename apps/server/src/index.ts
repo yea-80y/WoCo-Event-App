@@ -9,7 +9,7 @@ import { FEATURES, FEED_FAMILY_STORES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
 import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
-import { securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
+import { apiNoStoreByDefault, securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
 import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS, corsOrigin } from "./lib/http/cors.js";
 import { buildFramePage } from "./lib/embed/frame-page.js";
 import { revokeSession, revokeAllSessions, revocationHealth, RevocationStoreUnavailableError } from "./lib/auth/revocation.js";
@@ -18,6 +18,8 @@ import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
 import { claims } from "./routes/claims.js";
 import { orders } from "./routes/orders.js";
+import { undeliveredRoutes, undeliveredSummaryRoutes } from "./routes/undelivered.js";
+import { startUndeliveredNotices } from "./lib/ticket-hold/organiser-notice-live.js";
 import { admin } from "./routes/admin.js";
 import { ops } from "./routes/ops.js";
 import { siteRoute } from "./routes/site.js";
@@ -120,8 +122,10 @@ import { droppedOptInsHealth } from "./lib/marketing/consent-capture.js";
 import { suppressionStoreHealth } from "./lib/marketing/suppression-store.js";
 import { sweepExpiredRosters, rosterRetentionHealth } from "./lib/checkin/roster-retention.js";
 import { doorEntriesHealth } from "./lib/checkin/door-entries.js";
+import { ticketHoldsHealth } from "./lib/ticket-hold/store.js";
 import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
-import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
+import { getAttendeeStamper, retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
+import { tickOrderGateway } from "./lib/attendee-batch/order-gateway.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -275,6 +279,7 @@ app.use("/api/*", apiBodyLimit());
 // organiser-site assets through this origin, where nosniff would turn a
 // mistyped content-type into a dead asset. See lib/http/security-headers.ts.
 app.use("/api/*", securityHeaders());
+app.use("/api/*", apiNoStoreByDefault());
 app.use("/embed/*", securityHeaders());
 // Ticket pages carry a working ticket in their URL, so they must never hand it
 // to another site in a Referer header. Every /t response is our own HTML, PNG or
@@ -533,6 +538,10 @@ function healthReport() {
     email: {
       provider: activeEmailProvider(),
       undelivered: failureHealth(),
+      // Held tickets (#983): each emailed ticket's QR sealed to its organiser, the copy
+      // a bounced ticket is resent from. Red while a copy is present but unreadable;
+      // `failed` counts sales emailed without one since boot (they can only be reissued).
+      ticketHolds: ticketHoldsHealth(),
       broadcasts: drainWorkerHealth(),
       // Sender pacing (#619). `ok: false` means a sender has been STOPPED for
       // bounces or complaints (an operator must look: /api/ops/sender-pacing),
@@ -773,6 +782,8 @@ app.route("/api/pairing", pairing);
 app.route("/api/events", events);
 app.route("/api/events", claims);
 app.route("/api/events", orders);
+app.route("/api/events", undeliveredRoutes());
+app.route("/api/undelivered", undeliveredSummaryRoutes());
 app.route("/api/events", broadcast);
 app.route("/api/events", reservations);
 app.route("/api/events", checkinOrganiser);
@@ -904,6 +915,8 @@ const sweepConsents = () => {
 };
 setTimeout(sweepConsents, 5 * 60_000).unref();
 setInterval(sweepConsents, 24 * 60 * 60 * 1000).unref();
+// #983: the organiser hears when a ticket for their event bounced, not only WoCo.
+startUndeliveredNotices();
 // #883: each event's door roster and door entries go 2 days after its onchain end.
 const sweepRosters = () => {
   sweepExpiredRosters().catch((err) => console.warn("[checkin] roster sweep failed:", (err as Error).message));
@@ -918,6 +931,14 @@ const sweepOrderRetention = () => {
 };
 setTimeout(sweepOrderRetention, 7 * 60_000).unref();
 setInterval(sweepOrderRetention, 24 * 60 * 60 * 1000).unref();
+// #965: our gateway serves every stored attendee order and no erased one. Only a
+// server that owns an attendee batch edits the list: a dev server's key is blank.
+const tickGateway = () => {
+  if (!getAttendeeStamper()) return;
+  tickOrderGateway().catch((err) => console.warn("[order-gateway] reconcile failed:", (err as Error).message));
+};
+setTimeout(tickGateway, 3 * 60_000).unref();
+setInterval(tickGateway, 5 * 60_000).unref();
 // #546: store paid orders whose store failed at fulfilment, and delete unpaid
 // holds past their day.
 setInterval(() => {

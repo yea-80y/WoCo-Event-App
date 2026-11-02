@@ -232,6 +232,12 @@ export function getStyles(theme: "dark" | "light"): string {
       line-height: 1.35;
     }
 
+    .field-error {
+      font-size: 0.6875rem;
+      color: ${vars.error};
+      line-height: 1.35;
+    }
+
     .order-form input,
     .order-form textarea,
     .order-form select {

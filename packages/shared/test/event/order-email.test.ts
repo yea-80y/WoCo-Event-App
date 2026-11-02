@@ -12,6 +12,8 @@ import {
   orderFormCollectsEmail,
   orderFieldRequired,
   resolveBuyerEmail,
+  buyerEmailConfirmed,
+  buyerEmailMismatch,
 } from "../../src/event/order-email.js";
 import type { OrderField } from "../../src/crypto/types.js";
 
@@ -81,4 +83,35 @@ test("#639: every other field follows the organiser's tick, account or not", () 
     assert.equal(orderFieldRequired(name, { canUseAccount }), true);
     assert.equal(orderFieldRequired(guestEmail, { canUseAccount }), false);
   }
+});
+
+test("#982: the confirm box must repeat the address, trimmed and in any case", () => {
+  assert.equal(buyerEmailConfirmed("buyer@example.com", "buyer@example.com"), true);
+  assert.equal(buyerEmailConfirmed(" Buyer@Example.com ", "buyer@EXAMPLE.com"), true);
+  assert.equal(buyerEmailConfirmed("buyer@example.com", "buyr@example.com"), false, "the typo this exists for");
+  assert.equal(buyerEmailConfirmed("buyer@example.com", ""), false, "an untouched confirm box is not a confirmation");
+});
+
+test("#982: a blank address has nothing to confirm", () => {
+  // The "enter an email" checks name that case; a confirm gate here would hide them.
+  assert.equal(buyerEmailConfirmed("", ""), true);
+  assert.equal(buyerEmailConfirmed("   ", "stray@example.com"), true);
+});
+
+test("#982: the mismatch line waits until typing more cannot make a match", () => {
+  const typing = (typed: string, confirm: string) => buyerEmailMismatch(typed, confirm, false);
+  assert.equal(typing("buyer@example.com", ""), false, "nothing typed in the second box");
+  assert.equal(typing("buyer@example.com", "Buyer@ex"), false, "still typing it out");
+  assert.equal(typing("buyer@example.com", "buyer@example.com"), false);
+  assert.equal(typing("buyer@example.com", "buyr"), true);
+  assert.equal(typing("buyer@example.com", "buyer@example.com.uk"), true, "longer than the address");
+  assert.equal(typing("", "buyer@example.com"), false, "a blank address has nothing to confirm");
+});
+
+test("#982: once the buyer leaves the confirm box, any mismatch shows", () => {
+  // A correct confirm that is a prefix of a typo'd first box: the keyboard-bounce slip.
+  assert.equal(buyerEmailMismatch("bob@gmail.comn", "bob@gmail.com", false), false);
+  assert.equal(buyerEmailMismatch("bob@gmail.comn", "bob@gmail.com", true), true);
+  assert.equal(buyerEmailMismatch("bob@gmail.com", " BOB@gmail.com ", true), false, "a match is never a mismatch");
+  assert.equal(buyerEmailMismatch("bob@gmail.com", "", true), false, "an empty box says nothing");
 });
