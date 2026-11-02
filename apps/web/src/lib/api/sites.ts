@@ -98,12 +98,13 @@ export interface DeploySiteResult {
  */
 export async function deploySite(
   siteId: string,
-  opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site?: Site; parentAddress?: string },
+  /** `site` and `parentAddress` are required: every website is built here (null = not signed in). */
+  opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site: Site; parentAddress: string | null },
   feedSigner?: ContentFeedSigner | null,
   retry: StorageBusyRetryOptions = {},
-) {
+): Promise<ApiResponse<DeploySiteResult>> {
   const { parentAddress, site, ...request } = opts;
-  if (!parentAddress || !site) return { ok: false as const, error: "Sign in to publish your website." };
+  if (!parentAddress) return { ok: false, error: "Sign in to publish your website." };
   const clientFeed = feedSigner ? { clientFeed: true } : {};
   const send = (body: Record<string, unknown>) =>
     retryOnceIfStorageBusy(() => authPost<DeploySiteResult>(`/api/sites/${siteId}/deploy`, body), retry);
@@ -117,15 +118,16 @@ export async function deploySite(
         wocoAppUrl: request.wocoAppUrl ?? "https://woco.eth.limo",
       }),
     );
-  const unbuilt = { ok: false as const, error: "Could not prepare your website for publishing - check your connection and try again." };
 
-  let built = await build();
-  if (!built) return unbuilt;
+  let attempt = await build();
+  if (!attempt.ok) return attempt;
+  let built = attempt.built;
   let res = await send({ ...request, site: built.site, collection: built.body, ...clientFeed });
   if (rebuildForNewRuntime(res)) {
     // A new runtime release landed between the kit read and the deploy: build on it once.
-    built = await build();
-    if (!built) return unbuilt;
+    attempt = await build();
+    if (!attempt.ok) return attempt;
+    built = attempt.built;
     res = await send({ ...request, site: built.site, collection: built.body, ...clientFeed });
   }
   if (storedSomethingElse(res, built.root)) {

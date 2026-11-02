@@ -19,20 +19,28 @@ const input = { site, parentAddress: PARENT, apiUrl: "https://events-api.woco-ne
 
 const realFetch = globalThis.fetch;
 const asked: string[] = [];
+const cacheModes: Array<RequestCache | undefined> = [];
 function serve(answer: (url: string) => unknown) {
-  globalThis.fetch = (async (u: RequestInfo | URL) => {
+  globalThis.fetch = (async (u: RequestInfo | URL, init?: RequestInit) => {
     asked.push(String(u));
+    cacheModes.push(init?.cache);
     const body = answer(String(u));
     return new Response(JSON.stringify(body), { status: (body as { ok?: boolean }).ok ? 200 : 503, headers: { "Content-Type": "application/json" } });
   }) as typeof fetch;
 }
-test.afterEach(() => { globalThis.fetch = realFetch; asked.length = 0; });
+test.afterEach(() => { globalThis.fetch = realFetch; asked.length = 0; cacheModes.length = 0; });
+
+async function builtOk(i = input) {
+  const r = await buildClientSiteCollection(i);
+  assert.ok(r.ok, JSON.stringify(r));
+  return r.built;
+}
 
 test("builds on the kit of the store the gateway lands on, with the owner the server stamps", async () => {
   serve(() => ({ ok: true, data: kit }));
-  const built = await buildClientSiteCollection(input);
-  assert.ok(built);
+  const built = await builtOk();
   assert.equal(asked[0], "https://events-api.woco-net.com/api/sites/runtime/kit/woco");
+  assert.equal(cacheModes[0], "no-store", "never a cached kit: the rebuild after a new release must see it");
   assert.equal((built.site as { ownerAddress: string }).ownerAddress, PARENT.toLowerCase());
   // What the server rebuilds from the same request: `{ ...body.site, ownerAddress }` and the URL origins.
   const serverSite = { ...JSON.parse(JSON.stringify(built.site)), ownerAddress: PARENT.toLowerCase() };
@@ -44,22 +52,24 @@ test("builds on the kit of the store the gateway lands on, with the owner the se
 
 test("an Etherna deploy asks for the Etherna kit", async () => {
   serve(() => ({ ok: false, error: "x" }));
-  assert.equal(await buildClientSiteCollection({ ...input, gatewayUrl: "https://gateway.etherna.io" }), null);
+  assert.equal((await buildClientSiteCollection({ ...input, gatewayUrl: "https://gateway.etherna.io" })).ok, false);
   assert.match(asked[0]!, /\/kit\/etherna$/);
 });
 
-test("no kit, the wrong store's kit, or a kit that does not hash: null, and the server builds", async () => {
+test("the server's reason is passed on; the wrong store's kit or one that does not hash is refused", async () => {
   const warn = console.warn;
   console.warn = () => {};
   try {
-    serve(() => ({ ok: false, error: "unavailable" }));
-    assert.equal(await buildClientSiteCollection(input), null);
+    serve(() => ({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }));
+    assert.deepEqual(await buildClientSiteCollection(input), { ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" });
+    globalThis.fetch = (async () => { throw new TypeError("fetch failed"); }) as typeof fetch;
+    assert.match((await buildClientSiteCollection(input) as { error: string }).error, /check your connection/);
     serve(() => ({ ok: true, data: { ...kit, store: "etherna" } }));
-    assert.equal(await buildClientSiteCollection(input), null);
+    assert.equal((await buildClientSiteCollection(input)).ok, false);
     const bad = Buffer.from(fx.rootNode, "hex");
     bad[bad.length - 1] ^= 1;
     serve(() => ({ ok: true, data: { ...kit, rootNode: bad.toString("base64") } }));
-    assert.equal(await buildClientSiteCollection(input), null);
+    assert.equal((await buildClientSiteCollection(input)).ok, false);
   } finally {
     console.warn = warn;
   }

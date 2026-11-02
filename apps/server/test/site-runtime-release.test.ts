@@ -26,13 +26,24 @@ function scripted(reads: RuntimeFeedRead[]) {
   return { cache, tick: (ms: number) => { clock += ms; }, calls: () => calls };
 }
 
-test("nothing published yet: no release, and that is not an error", async () => {
-  const { cache } = scripted([{ status: "absent" }]);
+test("health: unknown before the first read, red with no release held, green once one is", async () => {
+  const { cache } = scripted([{ status: "absent" }, { status: "error", error: new Error("x") }, ok(release(1)), { status: "error", error: new Error("y") }]);
+  assert.equal(cache.health().ok, null, "not read yet: listed, never pages");
   assert.equal(await cache.get(0), null);
   const h = cache.health();
-  assert.equal(h.configured, false);
-  assert.equal(h.lastError, null);
-  assert.equal(h.ok, true);
+  assert.deepEqual([h.configured, h.lastError, h.ok], [false, null, false], "nothing published: no site can be published");
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await cache.get(0);
+    assert.equal(cache.health().ok, false, "reads failing since boot");
+    await cache.get(0);
+    assert.equal(cache.health().ok, true);
+    await cache.get(0);
+    assert.equal(cache.health().ok, true, "a failed read keeps the release held");
+  } finally {
+    console.warn = warn;
+  }
 });
 
 test("a valid descriptor is held and reported", async () => {

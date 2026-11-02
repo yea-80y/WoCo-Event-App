@@ -41,7 +41,8 @@ import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js
 
 /** Per-owner byte cap for free-hosted (shared platform batch) website deploys.
  *  Quota counts each site's LATEST deploy only (republish supersedes — see
- *  storage-ledger.ts), so 100MB ≈ 10 live sites at the ~8-10MB tar size. */
+ *  storage-ledger.ts). A site links the shared runtime (#1032), so a deploy is a
+ *  few KB of its own and the cap now meters the site's own objects only. */
 const FREE_HOSTING_QUOTA_BYTES = Number(process.env.FREE_HOSTING_QUOTA_BYTES) || 100 * 1024 * 1024;
 import { getEthernaBee, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedIndex, fetchEthernaRootChunk } from "../lib/etherna/upload.js";
 import { isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from "../lib/swarm/storage-busy.js";
@@ -902,12 +903,11 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     if (!resolvedUrls.ok) return c.json({ ok: false, error: resolvedUrls.error }, 400);
     const { apiUrl, gatewayUrl, wocoAppUrl } = resolvedUrls.urls;
 
-    // Prefer the site config sent by the client — avoids a Swarm re-read immediately
-    // after publishSite (deferred writes can have a brief propagation window).
-    // Fall back to Swarm read for direct API calls. Always stamp ownerAddress server-side.
-    // Either way, an EXISTING siteId may only be deployed by its owner — without
-    // this gate the body.site fast path would let any authenticated user overwrite
-    // another site's woco-multisite feed and re-point its custom domains.
+    // The site is the one the client rendered (`body.site`, below; #1032 the
+    // browser builds it), owner stamped server-side. An EXISTING siteId may only
+    // be deployed by its owner — without this gate the body.site path would let
+    // any authenticated user overwrite another site's woco-multisite feed and
+    // re-point its custom domains.
     // As on publish: "unavailable" is not "unclaimed" (#181). This gate is the
     // only thing standing between the body.site fast path and a caller taking over
     // another site's woco-multisite feed, which is what the custom domains resolve
