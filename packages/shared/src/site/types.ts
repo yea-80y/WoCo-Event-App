@@ -408,6 +408,12 @@ export interface SiteDirectoryEntry {
    * platform-written sites.
    */
   siteFeedSigner?: Hex0x;
+  /**
+   * The site runtime release the last deploy LINKED (#1032), set by a
+   * browser-built deploy and cleared by a server build (a full copy). The
+   * builder offers an update when it is behind the latest release.
+   */
+  runtimeVersion?: number;
 }
 
 /** On-feed envelope, page 0 of a paged directory (server `swarm/paged-feed.ts`). */
