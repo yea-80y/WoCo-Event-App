@@ -79,7 +79,7 @@ const keyOf = (chainId: number, address: string) => `${chainId}:${address.toLowe
  * correct direction to fail on a money path — a caller retrying a level up is
  * recoverable, a double-mint is not.
  */
-function isNonceError(err: unknown): boolean {
+export function isNonceError(err: unknown): boolean {
   const e = err as { code?: string; message?: string; info?: { error?: { message?: string } } };
   const msg = `${e?.message ?? ""} ${e?.info?.error?.message ?? ""}`.toLowerCase();
 
@@ -123,8 +123,10 @@ export function resetSponsorNonce(chainId: number, address: string): void {
  *   const receipt = await tx.wait(1);   // outside the lock, by design
  *
  * Resolves as soon as the tx is broadcast. The caller awaits confirmation.
+ * A send may instead sign locally, broadcast raw and return the hash (the card
+ * mint does, so it knows the hash even when the broadcast call fails, #994).
  */
-export async function sendSponsorTx<T extends TransactionResponse>(
+export async function sendSponsorTx<T extends TransactionResponse | string>(
   ctx: { chainId: number; address: string; provider: Provider; label: string },
   send: (overrides: NonceOverride) => Promise<T>,
 ): Promise<T> {
