@@ -1005,11 +1005,9 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     await fs.writeFile(join(tmpDir, "multi-site.html"), injectedWithPwa, "utf-8");
     await fs.writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
 
-    // Copy embed bundle so ./woco-embed.js resolves within the collection
-    const embedSrc = resolve(__dirname, "../../../../packages/embed/dist/woco-embed.js");
-    if (existsSync(embedSrc)) {
-      await fs.copyFile(embedSrc, join(tmpDir, "woco-embed.js"));
-    }
+    // No woco-embed.js in the collection: nothing in a site can load it. Pasted
+    // embed HTML stopped rendering with #212 (providers are rebuilt iframes from
+    // an allowlist), and the ticket widget loads from the API (/embed/woco-embed.js).
 
     await spawnPromise("tar", ["-cf", tarPath, "-C", tmpDir, "."]);
     const tarData = await fs.readFile(tarPath);
