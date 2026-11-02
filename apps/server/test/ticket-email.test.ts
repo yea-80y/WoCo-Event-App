@@ -210,3 +210,27 @@ test("the sent message carries text, every attachment, the hero, the context and
   assert.equal(opts.priority, "transactional");
   assert.deepEqual(opts.context, { stripeSessionId: "cs_1" });
 });
+
+test("#983: a link-only resend carries no attachments, and its body still links every ticket", async () => {
+  process.env.EMAIL_FROM ??= "tickets@example.com";
+  let built = false;
+  let sent: { msg: Record<string, unknown> } | null = null;
+  await sendTicketEmail(
+    { ...group, linkOnly: true },
+    {
+      build: async () => {
+        built = true;
+        return { attachments: [{ filename: "x.png", content: Buffer.from("x"), contentType: "image/png" }], hero: true };
+      },
+      send: (async (msg: Record<string, unknown>) => {
+        sent = { msg };
+      }) as never,
+    },
+  );
+  assert.equal(built, false, "nothing rendered: the message itself was what got refused");
+  assert.deepEqual(sent!.msg.attachments, []);
+  assert.doesNotMatch(String(sent!.msg.html), /cid:/);
+  // The same body as the full email, minus the banner: every ticket's page link is there.
+  assert.equal(sent!.msg.html, buildTicketHtml({ ...group, linkOnly: true }, { hero: false }));
+  for (const t of group.tickets) assert.ok(String(sent!.msg.html).includes(`#ev123/ga/${t.edition}/${SIG}`), `ticket ${t.edition}'s page`);
+});

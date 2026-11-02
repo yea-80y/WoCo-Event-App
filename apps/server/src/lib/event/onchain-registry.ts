@@ -43,6 +43,7 @@ import {
   getOnChainEvent,
   legacyEventContract,
   contractKey,
+  isLedgerFamily,
   unhandledVersion,
 } from "../chain/event-contract.js";
 import type { EventContractTarget, EventContractVersion } from "../chain/event-contract.js";
@@ -77,7 +78,9 @@ type PersistedRegistration =
   | string
   | { onChainEventId: string; chainId: number; contract: string; version: EventContractVersion };
 
-const VERSIONS: ReadonlySet<string> = new Set<EventContractVersion>(["v1", "v2", "ledger"]);
+// A record naming a version this build does not know is unreadable (fails
+// closed), so "ledger2" must be listed here before any is written.
+const VERSIONS: ReadonlySet<string> = new Set<EventContractVersion>(["v1", "v2", "ledger", "ledger2"]);
 
 function parseRegistration(v: unknown): Registration | null {
   if (typeof v === "string") return v ? { onChainEventId: v } : null;
@@ -754,7 +757,10 @@ export function deriveEventId(
 ): string {
   const abi = AbiCoder.defaultAbiCoder();
   switch (version) {
+    // Version 2 keeps version 1's derivation: chain and contract in the id, so
+    // a successor at a new address never reproduces the predecessor's ids.
     case "ledger":
+    case "ledger2":
       return keccak256(
         abi.encode(
           ["uint256", "address", "address", "uint256"],
@@ -847,7 +853,7 @@ async function walkChainRegistrations(): Promise<void> {
   // return for an unrecognised version reads as "absent" to the #318 intent
   // resolver, which then re-broadcasts and DUPLICATES a landed registration.
   if (deployed.version === "v1") return;
-  if (deployed.version !== "v2" && deployed.version !== "ledger") {
+  if (deployed.version !== "v2" && !isLedgerFamily(deployed.version)) {
     throw new Error(
       `walkChainRegistrations: unhandled contract version ${JSON.stringify(deployed.version)} — ` +
       `refusing to report registrations as absent`,

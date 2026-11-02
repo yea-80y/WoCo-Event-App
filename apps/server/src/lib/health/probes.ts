@@ -63,6 +63,7 @@ import {
   evaluateTicketMintAllowance,
   evaluateTicketMintRamp,
   evaluateTicketSponsorAuthorised,
+  evaluateTicketBearerMints,
   evaluateTicketSponsorBalance,
   type GlobalMintReading,
   type TicketMintReading,
@@ -555,6 +556,45 @@ async function readPlatformBatchOnChain(
   return "listed";
 }
 
+/**
+ * How close to the chain tip our bee's batch store must be for `batchOnChain` to
+ * say "gone". Measured 7-8 blocks in steady state (2026-11-01). A batch bought
+ * within this window is not in the store yet - and data stamped on another node
+ * (an organiser's own batch) can be that young - so it bounds a false "gone" to
+ * ~2.5 min on Gnosis, where the alarm threshold (`BEE_CHAIN_LAG_MAX_BLOCKS`) would allow an hour.
+ */
+const BATCH_VERDICT_MAX_LAG_BLOCKS = 30;
+
+/**
+ * Is this batch still on chain, by our bee's batch store? One pass, for telling a
+ * person why stored data could not be found; it changes wording, never a write.
+ * "gone" needs our bee within `BATCH_VERDICT_MAX_LAG_BLOCKS` of the tip and our own
+ * live batch in its store this call (a wiped or refilling store answers 404 for
+ * everything).
+ */
+export async function batchOnChain(
+  batchId: string,
+  readers: Pick<HealthReaders, "beeBatch" | "chainstate"> = liveReaders,
+): Promise<"listed" | "gone" | "unknown"> {
+  try {
+    await readers.beeBatch(batchId);
+    return "listed";
+  } catch (err) {
+    if (!isNotFound(err)) return "unknown";
+  }
+  if (!POSTAGE_BATCH_ID) return "unknown";
+  try {
+    const raw = await readers.chainstate();
+    const block = num(raw.block);
+    const chainTip = num(raw.chainTip);
+    if (block === null || chainTip === null || chainTip - block > BATCH_VERDICT_MAX_LAG_BLOCKS) return "unknown";
+    await readers.beeBatch(POSTAGE_BATCH_ID);
+  } catch {
+    return "unknown";
+  }
+  return "gone";
+}
+
 export interface ChainCheck {
   ok: Verdict;
   /** Our bee's batch store lists the batch; null when it could not be asked. */
@@ -763,11 +803,12 @@ export async function refreshTicketMinting(
   noteVerdict("ticketMinting.sponsorBalance", section.checks.sponsorBalance, log, ticketSponsorReading.detail);
   noteVerdict("ticketMinting.mintAllowance", section.checks.mintAllowance, log, ticketMintReading.detail);
   noteVerdict("ticketMinting.mintRamp", section.checks.mintRamp, log, ticketMintReading.detail);
+  noteVerdict("ticketMinting.bearerMints", section.checks.bearerMints, log, ticketMintReading.detail);
 }
 const TICKET_SPONSOR_UNCONFIGURED = "no ticket sponsor wallet configured (WOCO_SPONSOR_PRIVATE_KEY)";
 const TICKET_CONTRACT_MISCONFIGURED =
   "the events contract is misconfigured: no address, or it does not answer the events-contract ABI " +
-  "(authorisedSponsors / sponsorMintAllowance)";
+  "(authorisedSponsors / sponsorMintAllowance / bearerMintsDisabled)";
 
 // ---------------------------------------------------------------------------
 // Sections
@@ -1097,7 +1138,9 @@ export interface TicketMintingSection {
   alarmPct: number;
   /** The busiest open window of the last 7 days on this contract; null if none. */
   peak7d: { used: number; perHour: number; pct: number; windowEndedAt: string } | null;
-  checks: { sponsorAuthorised: Check; sponsorBalance: Check; mintAllowance: Check; mintRamp: Check };
+  /** Version 2's bearer-mint switch; `"n/a"` before version 2, null until read. */
+  bearerMints: "on" | "off" | "n/a" | null;
+  checks: { sponsorAuthorised: Check; sponsorBalance: Check; mintAllowance: Check; mintRamp: Check; bearerMints: Check };
   stale: boolean;
   checkedAt: string | null;
   configError?: string;
@@ -1126,6 +1169,9 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
   const mintRamp = unconfigured
     ? { ok: false as const, reason: ticketMintReading.error! }
     : evaluateTicketMintRamp({ reading: policy?.allowance ?? null, alarmPct: cfg.alarmPct, reason: ticketMintReading.error });
+  const bearerMints = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketBearerMints({ state: policy?.bearerMints ?? null, reason: ticketMintReading.error });
   const sponsorBalance =
     ticketSponsorReading.error === TICKET_SPONSOR_UNCONFIGURED
       || ticketSponsorReading.error === TICKET_CONTRACT_MISCONFIGURED
@@ -1139,7 +1185,7 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
   const reads = [ticketMintReading.at, ticketSponsorReading.at];
   const oldest = reads.some((at) => at === null) ? null : Math.min(...(reads as number[]));
   return {
-    ok: combine([sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp]),
+    ok: combine([sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp, bearerMints]),
     chainId: policy?.contract.chainId ?? activeChainIdOrNull(),
     contract: policy?.contract.address ?? null,
     version: policy?.contract.version ?? null,
@@ -1153,7 +1199,8 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
     minMintable: cfg.minMintable,
     alarmPct: cfg.alarmPct,
     peak7d: mintPeak7d(now),
-    checks: { sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp },
+    bearerMints: policy?.bearerMints ?? null,
+    checks: { sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp, bearerMints },
     stale: isStale(oldest, now, PROBE_INTERVAL_MS),
     checkedAt: oldest === null ? null : new Date(oldest).toISOString(),
     ...(cfg.configError ? { configError: cfg.configError } : {}),

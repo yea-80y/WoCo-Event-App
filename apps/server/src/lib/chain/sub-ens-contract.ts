@@ -465,18 +465,13 @@ export async function getLabelContenthash(label: string): Promise<string | null>
 }
 
 /**
- * The public Arbitrum RPC refuses an `eth_getLogs` spanning more than this many
+ * The public Arbitrum RPC refuses an `eth_getLogs` spanning more than LOG_SCAN_WINDOW
  * blocks, inclusive (measured 2026-10-06: 10,000,000 answers, 10,000,001 is
- * refused). An unbounded scan asks for 0..latest, over 500M blocks (#782).
+ * refused). An unbounded scan asks for 0..latest, over 500M blocks (#782). Shared
+ * with the browser's ledger scans, so both page the same way.
  */
-export const LOG_SCAN_WINDOW = 10_000_000;
-
-/** Inclusive `[from, to]` ranges covering `start..latest`, none wider than `size`. */
-export function logScanWindows(start: number, latest: number, size = LOG_SCAN_WINDOW): Array<[number, number]> {
-  const out: Array<[number, number]> = [];
-  for (let from = start; from <= latest; from += size) out.push([from, Math.min(from + size - 1, latest)]);
-  return out;
-}
+import { LOG_SCAN_WINDOW, logScanWindows } from "@woco/shared/chain/log-windows";
+export { LOG_SCAN_WINDOW, logScanWindows };
 
 /**
  * Where a scan of the registry's logs starts: its deploy block, since no log

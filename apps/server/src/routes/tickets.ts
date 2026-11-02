@@ -43,10 +43,16 @@ export interface TicketEmailOpts {
    *  ticket page tries it first for the image. */
   imageGateway?: string;
   /** Add the "Add to WoCo" button (Route A gate token). Set ONLY on
-   *  paths where `to` is the VERIFIED purchase email (Stripe webhook): a gate
+   *  paths where `to` is the VERIFIED purchase email (Stripe webhook), or the
+   *  address an organiser resends an undelivered ticket to after checking the
+   *  buyer against the order (#983) - which then IS the ticket's address. A gate
    *  token minted for an arbitrary inbox would let anyone holding a leaked /t
    *  link bind the ticket without knowing the purchase email. */
   profileCta?: boolean;
+  /** No attachments (#983): the message itself was refused - too large, or its
+   *  content or attachments rejected - so the same email would fail again. The
+   *  body still links every ticket's page. */
+  linkOnly?: boolean;
   /** Organiser contact address for the Reply-To header. Only affects where
    *  replies land — the From domain stays platform-owned so a bad organiser
    *  campaign can never tank ticket-delivery reputation (see client.ts). */
@@ -385,7 +391,7 @@ export async function sendTicketEmail(
   const fromAddress = getFromAddress();
   const { to, eventTitle, tickets: tix } = opts;
   const subject = tix.length > 1 ? `Your ${tix.length} tickets - ${eventTitle}` : `Your ticket - ${eventTitle}`;
-  const { attachments, hero } = await deps.build(opts);
+  const { attachments, hero } = opts.linkOnly ? { attachments: [], hero: false } : await deps.build(opts);
 
   await deps.send(
     {

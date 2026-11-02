@@ -30,6 +30,7 @@ import { XWingKem } from "./xwing-hpke.js";
 import { assertXWingPublicKey, XWING_SEED_BYTES } from "./xwing.js";
 import { compressionSupported, gunzip, gzip, isGzipped } from "./compress.js";
 import { SEALED_BOX_VERSION, isSealedBoxV2, type SealedBoxV2 } from "./sealed-box-shape.js";
+import { CHECKOUT_SESSION_RE } from "../event/ticket-hold.js";
 
 export { SEALED_BOX_VERSION, isSealedBoxV2, type SealedBoxV2 } from "./sealed-box-shape.js";
 
@@ -100,6 +101,26 @@ export function doorEntrySealContext(eventId: string, passId: string, seriesId: 
     throw new Error("door entry seal context: malformed event, pass, series or edition");
   }
   return { info: DOOR_ENTRY_SEAL_INFO, aad: `${DOOR_ENTRY_SEAL_INFO}:${eventId}:${passId}:${seriesId}:${edition}` };
+}
+
+/** HPKE info for a HELD TICKET (a sold ticket's QR, sealed to the organiser in case its email bounces, #983). FROZEN. */
+export const TICKET_HOLD_SEAL_INFO = "woco/ticket-hold/v1";
+
+/**
+ * A held ticket is bound to its event, its ticket type, its edition and the sale
+ * (Checkout Session) it was emailed for: lifted to another ticket or served against
+ * another sale's bounce it fails its tag, so an organiser's client cannot be led to
+ * mail one buyer's ticket to another. Same id rule as orders; a session id cannot
+ * hold a ":".
+ */
+export function ticketHoldSealContext(eventId: string, seriesId: string, edition: number, sessionId: string): SealContext {
+  if (
+    !ID_RE.test(eventId) || !ID_RE.test(seriesId) || !Number.isInteger(edition) || edition < 1 ||
+    !CHECKOUT_SESSION_RE.test(sessionId)
+  ) {
+    throw new Error("ticket hold seal context: malformed event, series, edition or session");
+  }
+  return { info: TICKET_HOLD_SEAL_INFO, aad: `${TICKET_HOLD_SEAL_INFO}:${eventId}:${seriesId}:${edition}:${sessionId}` };
 }
 
 /** HPKE info for a door-key proof CHALLENGE (a nonce sealed to the account's order key). FROZEN. */

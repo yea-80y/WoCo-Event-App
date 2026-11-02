@@ -23,6 +23,9 @@ const R = passkey(3); // removed
 const hex = (b: Uint8Array) => `0x${bytesToHex(b)}`;
 const SEED = hex(newAccountSecret());
 const RING0 = "a0".repeat(32);
+const ORGANISER_KEY = "0x" + "0c".repeat(20);
+const LEDGER = "0x" + "1e".repeat(20);
+const EVENT_ID = "0x" + "e1".repeat(32);
 
 async function ring0(): Promise<KeyRing> {
   return buildKeyRing({
@@ -49,7 +52,13 @@ function harness(over: Partial<RotationSteps> = {}) {
     fetchRing: async () => ring0(),
     selfMember: () => memberOf(PARENT, A),
     newSecret: () => "0x" + "5e".repeat(32),
-    keysOf: async (secret) => ({ secret, feedSigner: { privKey: "0x01", address: "0x" + "f1".repeat(20) }, orderKeyRef: "0b".repeat(32), orderPublicKey: new Uint8Array() }),
+    keysOf: async (secret) => ({
+      secret,
+      feedSigner: { privKey: "0x01", address: "0x" + "f1".repeat(20) },
+      orderKeyRef: "0b".repeat(32),
+      orderPublicKey: new Uint8Array(),
+      organiserKey: ORGANISER_KEY,
+    }),
     loadPending: async () => pending,
     savePending: async (p) => {
       pending = p;
@@ -69,8 +78,12 @@ function harness(over: Partial<RotationSteps> = {}) {
       calls.push(`store:gen${args.gen}:${args.members.map((m) => m.statement.coOwner).sort().join(",")}`);
       return "b1".repeat(32);
     },
-    flip: async (going, ring) => {
-      calls.push(`flip:${going.join(",")}:${ring.prev}->${ring.next}`);
+    organiserKeyMove: async (keys) => {
+      calls.push(`move:${keys.organiserKey}`);
+      return { ledger: LEDGER, ids: [EVENT_ID], key: keys.organiserKey };
+    },
+    flip: async (going, ring, move) => {
+      calls.push(`flip:${going.join(",")}:${ring.prev}->${ring.next}:${move ? `${move.ids.join(",")}@${move.key}` : "no-move"}`);
       anchor = ring.next;
       return { confirmed: true };
     },
@@ -93,13 +106,34 @@ test("removal: copy under the new signer, store the ring for the rest, ONE flip,
     "profile",
     `store:gen1:${sorted}`,
     "save:copying+ring",
-    `flip:${R.address}:${RING0}->${"b1".repeat(32)}`,
+    // The events' key is read right before the flip and rides in it: one op.
+    `move:${ORGANISER_KEY}`,
+    `flip:${R.address}:${RING0}->${"b1".repeat(32)}:${EVENT_ID}@${ORGANISER_KEY}`,
     "save:flipped+ring",
     `adopt:gen1:0x${"5e".repeat(32)}`,
     ...AFTER_STEPS.map((st) => (st === "records" ? `after:records:${R.address}` : `after:${st}`)),
     "clear",
   ]);
   assert.deepEqual(res, { unfinished: [], keyless: [] });
+  // The organiser catch-up runs right after the device record goes, before the slow redeploys.
+  assert.deepEqual(AFTER_STEPS.slice(0, 3), ["server", "records", "organiser"]);
+});
+
+test("organiser key: no events to move = a flip without a move; an unreadable chain stops before the flip", async () => {
+  const none = harness({ organiserKeyMove: async () => null });
+  await rotateOnRemoval(none.steps, [R.address]);
+  assert.ok(none.calls.some((c) => c.startsWith("flip:") && c.endsWith(":no-move")), JSON.stringify(none.calls));
+
+  const unread = harness({
+    organiserKeyMove: async () => {
+      throw new Error("Couldn't read your events onchain - nothing was changed. Try again.");
+    },
+  });
+  await assert.rejects(rotateOnRemoval(unread.steps, [R.address]), /events onchain/);
+  assert.ok(!unread.calls.some((c) => c.startsWith("flip")), "flipped without the events' key");
+  // Resumable: the same removal, its secret and stored ring kept for the retry.
+  assert.equal(unread.pending?.phase, "copying");
+  assert.ok(unread.pending?.nextRing);
 });
 
 test("refusals leave the account unchanged: nothing copied, stored or flipped", async () => {

@@ -26,9 +26,11 @@ import { bindTicket } from "../gate/store.js";
 import { consume as consumeReservation } from "../event/reservation-store.js";
 import { captureCheckoutConsent } from "../marketing/consent-capture.js";
 import { recordAttendeeEmail } from "../event/attendee-index.js";
-import { getSiteTheme, resolveSiteEventSigner } from "../site/service.js";
+import { resolveSiteEventSigner } from "../site/service.js";
+import { organiserSiteTheme } from "../ticket-hold/organiser-site.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
 import { sealDoorEntries } from "../checkin/door-entries.js";
+import { holdTickets } from "../ticket-hold/store.js";
 import { recordFailure } from "../email/failure-ledger.js";
 import { recordPendingRefund } from "./pending-refunds.js";
 import { recordAutoRefund, recordSaleSlots, orderRefInOtherSale } from "./ticket-sales.js";
@@ -37,6 +39,21 @@ import { kickCancellationRefunds } from "./cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "./cancellation-refunds-live.js";
 import { eventKeys } from "../keyring/event-keys.js";
 import type { FulfilmentDeps } from "./fulfilment.js";
+
+/**
+ * The order key a held ticket is sealed to, by its ref. Content-addressed and verified
+ * against the ref, so a cached copy is as good as a fresh one: one bee read per key per
+ * process, not one per sale ahead of the buyer's email (`door-key.ts` does the same).
+ */
+const holdKeys = new Map<string, Uint8Array>();
+async function holdKey(ref: string): Promise<Uint8Array> {
+  const cached = holdKeys.get(ref);
+  if (cached) return cached;
+  const pk = await fetchOrderKey(ref, BEE_URL);
+  if (holdKeys.size >= 1000) holdKeys.delete(holdKeys.keys().next().value!);
+  holdKeys.set(ref, pk);
+  return pk;
+}
 
 export const liveFulfilmentDeps: FulfilmentDeps = {
   hashEmail,
@@ -89,7 +106,8 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   },
   captureCheckoutConsent,
   recordAttendeeEmail,
-  getSiteTheme,
+  holdTicketCopy: (input) => holdTickets(input, holdKey),
+  getSiteTheme: (siteId, eventId) => organiserSiteTheme(siteId, eventId),
   sendTicketEmail,
   sealDoorEntries: (eventId, tickets, who) => sealDoorEntries(eventId, tickets, who),
   recordUndeliveredTicket: ({ to, subject, error, context }) => {

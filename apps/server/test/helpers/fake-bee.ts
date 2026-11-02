@@ -6,7 +6,9 @@
  * bee 2.8's one-minute skip list on demand: `GET /feeds` 404 "lookup at failed",
  * `GET /chunks` 500 "read chunk failed". Uploads are pushes, not retrievals, so
  * the skip list never refuses them; `uploadFails` makes a topic's uploads 500
- * for tests of a write that fails part-way.
+ * for tests of a write that fails part-way. `/bytes` keeps immutable blobs under
+ * a content hash (keccak, not bee's BMT: no test computes a ref itself), with
+ * `net.bytesUploadFails` / `net.bytes500` for refused uploads and failed reads.
  *
  * Extracted from the site-directory test (#944) so every first-write directory
  * test runs against the same bee. Start it before importing any server module:
@@ -38,13 +40,20 @@ export interface FakeBee {
   chunks: Map<string, Uint8Array>;
   /** Every SOC address an upload was accepted for, in order. */
   posted: string[];
+  /** Blob ref -> bytes, from `POST /bytes`. */
+  blobs: Map<string, Uint8Array>;
   net: {
     /** Every feed lookup answers 404 "lookup at failed". */
     lookupFailed: boolean;
     /** Every chunk read answers 500 "read chunk failed". */
     chunks500: boolean;
+    /** Every `POST /bytes` is refused. */
+    bytesUploadFails: boolean;
+    /** Every `GET /bytes` answers 500 "read chunk failed". */
+    bytes500: boolean;
     feedLookups: number;
     chunkReads: number;
+    bytesReads: number;
     /** Hold the next lookup of this topic: answer computed on arrival, sent on release. */
     holdOnce: null | { topicHex: string; arrived: () => void; release: Promise<void> };
   };
@@ -79,7 +88,17 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 export async function startFakeBee(): Promise<FakeBee> {
   const chunks = new Map<string, Uint8Array>();
   const posted: FakeBee["posted"] = [];
-  const net: FakeBee["net"] = { lookupFailed: false, chunks500: false, feedLookups: 0, chunkReads: 0, holdOnce: null };
+  const blobs = new Map<string, Uint8Array>();
+  const net: FakeBee["net"] = {
+    lookupFailed: false,
+    chunks500: false,
+    bytesUploadFails: false,
+    bytes500: false,
+    feedLookups: 0,
+    chunkReads: 0,
+    bytesReads: 0,
+    holdOnce: null,
+  };
   /** Topic keys (`owner/topic`) skip-listed, with the chunk addresses they cover. */
   const skipped = new Map<string, Set<string>>();
   /** Identifier -> topic key, for topics whose uploads fail. */
@@ -126,6 +145,21 @@ export async function startFakeBee(): Promise<FakeBee> {
       if (!chunks.has(addr)) chunks.set(addr, Binary.concatBytes(unhex(identifier), unhex(url.searchParams.get("sig")!), body));
       return json(res, 201, { reference: addr });
     }
+    if (req.method === "POST" && path === "/bytes") {
+      const body = await readBody(req);
+      // 402 (an unusable batch): refused outright, so bytes.ts does not back off for seconds.
+      if (net.bytesUploadFails) return json(res, 402, { code: 402, message: "batch not usable" });
+      const ref = hex(Binary.keccak256(body));
+      blobs.set(ref, body);
+      return json(res, 201, { reference: ref });
+    }
+    if (req.method === "GET" && path.startsWith("/bytes/")) {
+      net.bytesReads++;
+      if (net.bytes500) return json(res, 500, { code: 500, message: "read chunk failed" });
+      const b = blobs.get(path.split("/")[2]!.toLowerCase());
+      if (!b) return json(res, 404, { code: 404, message: "Not Found" });
+      return res.writeHead(200, { "Content-Type": "application/octet-stream" }).end(Buffer.from(b));
+    }
     if (req.method === "GET" && path.startsWith("/chunks/")) {
       net.chunkReads++;
       const addr = path.split("/")[2]!.toLowerCase();
@@ -156,6 +190,7 @@ export async function startFakeBee(): Promise<FakeBee> {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     chunks,
     posted,
+    blobs,
     net,
     skipListed(on) {
       net.lookupFailed = on;
@@ -193,8 +228,11 @@ export async function startFakeBee(): Promise<FakeBee> {
     reset() {
       net.lookupFailed = false;
       net.chunks500 = false;
+      net.bytesUploadFails = false;
+      net.bytes500 = false;
       net.feedLookups = 0;
       net.chunkReads = 0;
+      net.bytesReads = 0;
       net.holdOnce = null;
       posted.length = 0;
       skipped.clear();

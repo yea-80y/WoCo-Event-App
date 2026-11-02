@@ -18,6 +18,7 @@ import { persistFailureCount } from "./persist.js";
 import { marksFor, suppressGlobal, suppressOrg } from "./suppression-store.js";
 import { eraseRecipient, failuresForHash, type EmailFailure } from "../email/failure-ledger.js";
 import { broadcastsContaining, type BroadcastRecord } from "../email/broadcast-jobs.js";
+import { salesResentTo } from "../stripe/ticket-sales.js";
 import { forgetHash as forgetPacingProof, sendersProvenFor } from "../sender-pacing/index.js";
 
 export interface SubjectReport {
@@ -35,6 +36,12 @@ export interface SubjectReport {
    * the data the subject is most entitled to know about.
    */
   emailFailures: EmailFailure[];
+  /**
+   * Sales whose tickets an organiser resent to this address (#983). The order was
+   * bought under the address typed at checkout, so the ops lookup finds it through
+   * these; the hash stays on the sale as the record of where the ticket went.
+   */
+  ticketResends: Array<{ sessionId: string; eventId: string | null }>;
   /**
    * Broadcast jobs that mailed this address. Hash-only records — no plaintext
    * has ever been in that store — but the fact that an organiser's broadcast
@@ -80,6 +87,7 @@ export function reportSubject(emailHash: string, organiser?: string): SubjectRep
     // Platform-level, like the ledger itself: an organiser-scoped request does
     // not reach it, matching how `eraseSubject` treats it.
     emailFailures: org ? [] : failuresForHash(emailHash),
+    ticketResends: salesResentTo(emailHash).map((s) => ({ sessionId: s.sessionId, eventId: s.eventId ?? null })),
     // Scoped to the named controller when one is given: a broadcast belongs to
     // the organiser who sent it, unlike the platform-level failure ledger.
     broadcasts: broadcastsContaining(emailHash).filter((b) => !org || b.org === org),

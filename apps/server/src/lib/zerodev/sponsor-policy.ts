@@ -44,9 +44,17 @@
  *   renew          `execute` single `weighted.renew(list)` - add or remove a co-owner
  *   ring           `execute` single `anchor.setRing(prev, ring)` - the account's key ring moves
  *                  without a list change (a passkey given the keys, #186)
+ *   organiser-key  `execute` single `ledger2.setOrganiserKey(ids, key)` - the account's events
+ *                  move to its current organiser key (`@woco/shared/ticket/ledger2`), for the
+ *                  events a removal's own op could not carry
  * The co-owners and renew shapes may END with that same `setRing` call: a removal is
- * [renew(list without it), setRing(prev, next)], so the keys it lost and its place on the
- * list change in one op or not at all. A ring is never zero, and rides on no other shape.
+ * [renew(list without it), setOrganiserKey(ids, key)?, setRing(prev, next)], so the keys
+ * it lost, the events' organiser key and its place on the list change in one op or not at
+ * all. The ring alone may carry the key move too (a removal whose passkeys another device
+ * already took off). A ring is never zero, and rides on no other shape; the key move rides
+ * only right before a ring after renew or alone, at 1..50 distinct ids, on the ledger the
+ * server registers on. An id that is not the account's reverts the op on our gas, as a
+ * stale ring does: the per-account count bounds both.
  * Both co-owner shapes carry a list only when it is 1..10 distinct keys, every weight 1,
  * threshold 1, no delay: the validator accepts an empty list or an unreachable threshold
  * and the account is then locked for good (WoCo-Contracts WeightedRootKernel.t.sol F5).
@@ -90,6 +98,7 @@ import {
 } from "@woco/shared/kernel/co-owners";
 import { FEATURES } from "@woco/shared";
 import { KEY_RING_ANCHOR_ABI, KEY_RING_ANCHOR_ADDRESS } from "@woco/shared/keyring/anchor";
+import { isValidOrganiserKeyMove, SET_ORGANISER_KEY_FN } from "@woco/shared/ticket/ledger2";
 import type { GateStatus } from "../gate/check.js";
 import { SlidingWindowLimiter } from "../http/rate-limit.js";
 import { RollingDayCount } from "./upgrade-intents.js";
@@ -103,7 +112,8 @@ export type SponsorShape =
   | "co-owners"
   | "upgrade"
   | "renew"
-  | "ring";
+  | "ring"
+  | "organiser-key";
 
 export type Classified =
   | { ok: true; shape: SponsorShape; subject: string; guardian?: string }
@@ -147,12 +157,15 @@ const RECOVERY_ABI = parseAbi([RECOVERY_EXECUTOR_FN]);
 const INSTALL = lc(toFunctionSelector(INSTALL_MODULE_FN));
 const EXECUTE = lc(toFunctionSelector("function execute(bytes32 execMode, bytes executionCalldata)"));
 const HOOK_MUTATORS = new Set(["addGuardian", "revokeGuardian", "setGuardians", "clearGuardians"]);
+/** The mutators that only take guardians away - all a route removal may carry. */
+const HOOK_REMOVERS = new Set(["revokeGuardian", "clearGuardians"]);
 const MAX_CALLS = 4;
 const WEIGHTED = lc(WEIGHTED_ECDSA_VALIDATOR_V3_1);
 const CO_OWNER_ABI = parseAbi([WEIGHTED_RENEW_FN, CHANGE_ROOT_VALIDATOR_FN, UNINSTALL_VALIDATION_FN]);
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const RING_ANCHOR = lc(KEY_RING_ANCHOR_ADDRESS);
 const RING_ABI = parseAbi(KEY_RING_ANCHOR_ABI);
+const ORGANISER_KEY_ABI = parseAbi([SET_ORGANISER_KEY_FN]);
 
 function uint(v: unknown): bigint | null {
   if (v === undefined || v === null || v === "" || v === "0x") return 0n;
@@ -175,14 +188,21 @@ function unpack128(v: unknown): [bigint, bigint] | null {
  * The most the paymaster can be charged for the gas the SENDER chose: (pVG + vGL +
  * cGL) x maxFeePerGas, the EntryPoint 0.7 prefund less the paymaster's own two
  * limits, which ZeroDev sets when it signs and the sender cannot raise. Read from
- * unpacked fields or 0.7's packed words. Missing fields read as 0 (a stub request).
+ * unpacked fields and 0.7's packed words: where a body carries both, the LARGER of each,
+ * so small numbers in one form can never hide large ones in the other (audit 1157 I-7).
+ * Missing fields read as 0 (a stub request).
  */
 function maxCostOf(op: Record<string, unknown>): bigint | null {
   const packedLimits = unpack128(op.accountGasLimits);
   const packedFees = unpack128(op.gasFees);
-  const verification = packedLimits ? packedLimits[0] : uint(op.verificationGasLimit);
-  const call = packedLimits ? packedLimits[1] : uint(op.callGasLimit);
-  const maxFee = packedFees ? packedFees[1] : uint(op.maxFeePerGas);
+  // One rule for both forms: absent (as `uint` reads absent) is 0, present must parse.
+  const absent = (v: unknown) => v === undefined || v === null || v === "" || v === "0x";
+  if ((!absent(op.accountGasLimits) && !packedLimits) || (!absent(op.gasFees) && !packedFees)) return null;
+  const larger = (packed: bigint | undefined, unpacked: bigint | null): bigint | null =>
+    unpacked === null ? null : packed !== undefined && packed > unpacked ? packed : unpacked;
+  const verification = larger(packedLimits?.[0], uint(op.verificationGasLimit));
+  const call = larger(packedLimits?.[1], uint(op.callGasLimit));
+  const maxFee = larger(packedFees?.[1], uint(op.maxFeePerGas));
   const pre = uint(op.preVerificationGas);
   if (verification === null || call === null || maxFee === null || pre === null) return null;
   return (pre + verification + call) * maxFee;
@@ -251,12 +271,14 @@ function readExecute(callData: Hex): InnerCall[] | string {
   return "call-type";
 }
 
-function isHookMutator(call: InnerCall): boolean {
-  if (call.to !== HOOK) return false;
+/** The hook mutator `call` makes, or null when it is not one. */
+function hookMutator(call: InnerCall): string | null {
+  if (call.to !== HOOK) return null;
   try {
-    return HOOK_MUTATORS.has(decodeFunctionData({ abi: WOCO_GUARDIAN_HOOK_ABI, data: call.data }).functionName);
+    const name = decodeFunctionData({ abi: WOCO_GUARDIAN_HOOK_ABI, data: call.data }).functionName;
+    return HOOK_MUTATORS.has(name) ? name : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -346,6 +368,25 @@ function isSetRing(call: InnerCall): boolean {
   }
 }
 
+/** `ledger.setOrganiserKey(ids, key)` on a ledger the server registers on, as WoCo builds it. */
+function isOrganiserKeyMove(call: InnerCall, ledgers: ReadonlySet<string>): boolean {
+  if (!ledgers.has(call.to)) return false;
+  try {
+    const d = decodeFunctionData({ abi: ORGANISER_KEY_ABI, data: call.data });
+    if (d.functionName !== "setOrganiserKey") return false;
+    const [ids, key] = d.args as [readonly Hex[], string];
+    return isValidOrganiserKeyMove(call.to, ids, key);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Any `to`: the account being recovered varies per op. Safe ONLY because `decide` gates
+ * that account (an authenticated session's unlock) BEFORE the guardian read - a contract
+ * can list itself as its own guardian on the hook, but never pass the gate (audit 1157
+ * I-6). Keep the gate first.
+ */
 function recoveryTarget(call: InnerCall): string | null {
   try {
     const d = decodeFunctionData({ abi: RECOVERY_ABI, data: call.data });
@@ -356,8 +397,17 @@ function recoveryTarget(call: InnerCall): string | null {
   }
 }
 
-/** WHAT: the shape of this userOp, and whose unlock pays for it. Pure. */
-export function classifyUserOp(op: PolicyUserOp): Classified {
+/**
+ * WHAT: the shape of this userOp, and whose unlock pays for it. Pure. `ledgers`: where
+ * an organiser-key move may go (lowercase); empty = no key move is ever paid.
+ */
+export function classifyUserOp(op: PolicyUserOp, ledgers: ReadonlySet<string> = new Set()): Classified {
+  // Only a FIRST op names a factory. A deployed sender is taken to be a real Kernel - its
+  // calls are what `execute` decodes to - for two reasons kept OUTSIDE this file (audit
+  // 1157 I-5): Kernel addresses are CREATE2 from the real factory, and no login can make
+  // an arbitrary address (an EIP-7702 EOA included) a gate-unlocked account
+  // (walletLoginAllowed / coinbaseLoginAllowed off). Turning either login on means a
+  // code check here first.
   if (op.factory !== null && !KERNEL_FACTORIES.has(op.factory)) return { ok: false, reason: "factory" };
   const selector = lc(op.callData.slice(0, 10));
 
@@ -387,10 +437,23 @@ export function classifyUserOp(op: PolicyUserOp): Classified {
   if (calls.some((c, i) => c.to === RING_ANCHOR && !(ringLast && i === calls.length - 1))) {
     return { ok: false, reason: "ring" };
   }
-  if (!ringLast) return classifyCalls(calls, op.sender);
-  if (calls.length === 1) return { ok: true, shape: "ring", subject: op.sender };
-  const inner = classifyCalls(calls.slice(0, -1), op.sender);
-  return inner.ok && (inner.shape === "renew" || inner.shape === "co-owners") ? inner : { ok: false, reason: "ring" };
+  const body = ringLast ? calls.slice(0, -1) : calls;
+  // The organiser-key move: right before the ring, or alone. Any other ledger call, never.
+  const moveAt = body.length - 1;
+  const moveLast = moveAt >= 0 && isOrganiserKeyMove(body[moveAt]!, ledgers);
+  if (calls.some((c, i) => ledgers.has(c.to) && !(moveLast && i === moveAt))) {
+    return { ok: false, reason: "organiser-key" };
+  }
+  const rest = moveLast ? body.slice(0, -1) : body;
+  if (!ringLast) {
+    if (!moveLast) return classifyCalls(calls, op.sender);
+    return rest.length === 0 ? { ok: true, shape: "organiser-key", subject: op.sender } : { ok: false, reason: "organiser-key" };
+  }
+  if (rest.length === 0) return { ok: true, shape: "ring", subject: op.sender };
+  const inner = classifyCalls(rest, op.sender);
+  // A key move rides only with a removal: renew. The switch adds a passkey and keeps the keys.
+  if (inner.ok && (inner.shape === "renew" || (inner.shape === "co-owners" && !moveLast))) return inner;
+  return { ok: false, reason: "ring" };
 }
 
 /** The `execute` calls of every shape but the ring's, classified. */
@@ -414,10 +477,19 @@ function classifyCalls(calls: InnerCall[], sender: string): Classified {
       : { ok: false, reason: "call" };
   }
   let uninstalls = 0;
+  let adds = false;
   for (const c of calls) {
-    if (isRouteUninstall(c, sender)) uninstalls++;
-    else if (!isHookMutator(c)) return { ok: false, reason: "call" };
+    if (isRouteUninstall(c, sender)) {
+      uninstalls++;
+      continue;
+    }
+    const m = hookMutator(c);
+    if (m === null) return { ok: false, reason: "call" };
+    if (!HOOK_REMOVERS.has(m)) adds = true;
   }
+  // A removal is paid even with backups off, so it may carry only removals: an add
+  // riding on it would be a backup change paid past that switch (audit 1157 L-2).
+  if (uninstalls > 0 && adds) return { ok: false, reason: "call" };
   return { ok: true, shape: uninstalls > 0 ? "remove-route" : "guardians", subject: sender };
 }
 
@@ -427,6 +499,8 @@ export interface PolicyDeps {
   isGuardian(account: string, guardian: string): Promise<boolean | null>;
   /** Spend the intent the locked account's own session asked for: true when it held one. */
   upgradeIntent: { spend(account: string): boolean };
+  /** Ledgers an organiser-key move may go to, on the Kernel chain. Absent = none. */
+  organiserKeyLedgers?(): readonly string[];
 }
 
 export type Decision =
@@ -464,7 +538,7 @@ export class SponsorPolicy {
   ) {}
 
   async decide(op: PolicyUserOp): Promise<Decision> {
-    const shape = classifyUserOp(op);
+    const shape = classifyUserOp(op, new Set((this.deps.organiserKeyLedgers?.() ?? []).map(lc)));
     if (!shape.ok) return { proceed: false, reason: shape.reason };
     const { subject } = shape;
     // Email accounts' backups are off for launch (#186): no op that ADDS one is paid.
@@ -475,7 +549,10 @@ export class SponsorPolicy {
     // Every request, the counted ones too: the stub carries no limits, the final
     // carries the real ones.
     if (op.maxCostWei > this.maxOpCostWei) return { proceed: false, reason: "gas", shape: shape.shape, subject };
-    const opKey = `${op.sender}:${op.nonce}:${subject}`;
+    // The call data too: the stub and the final of one op share it, so they still count
+    // once, while a different op at the same nonce is never let past the cap as the same
+    // one (audit 1157 L-3).
+    const opKey = `${op.sender}:${op.nonce}:${subject}:${keccak256(op.callData)}`;
     const counted = this.seen.has(opKey);
     if (!counted && !this.limiter.peek(subject)) return { proceed: false, reason: "cap", shape: shape.shape, subject };
 

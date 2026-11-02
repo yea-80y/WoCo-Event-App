@@ -10,6 +10,7 @@ import {
   orderFormShown,
   orderFormCollectsEmail,
   ORDER_EMAIL_FIELD_ID,
+  buyerEmailMismatch,
   MARKETING_CURRENT_VERSION,
   listKeeps,
   marketingChoice,
@@ -94,6 +95,10 @@ interface SeriesState {
    *  re-renders the card to refresh the total, which would otherwise wipe
    *  what the buyer already typed/ticked. */
   email: string;
+  /** Confirm email (#982), beside whichever box holds the ticket address. */
+  emailConfirm: string;
+  /** The buyer has left the confirm box: any mismatch shows from then on. */
+  emailConfirmSettled: boolean;
   /** The marketing control as last RENDERED, and its box. Checkout sends this,
    *  never a mode re-derived from a status that arrived after the render: what
    *  is sent must be what the buyer saw. */
@@ -257,6 +262,8 @@ export class WocoTickets extends HTMLElement {
       buyOpen: false,
       quantity: 1,
       email: "",
+      emailConfirm: "",
+      emailConfirmSettled: false,
       marketing: { mode: "consent", ticked: false },
       orderFormData: {},
       hold: null,
@@ -489,6 +496,8 @@ export class WocoTickets extends HTMLElement {
           st.buyOpen = false;
           st.orderFormData = {};
           st.email = "";
+          st.emailConfirm = "";
+          st.emailConfirmSettled = false;
           st.marketing = { mode: "consent", ticked: false };
           st.quantity = 1;
           st.error = null;
@@ -504,7 +513,19 @@ export class WocoTickets extends HTMLElement {
       const emailAttr = el.getAttribute("data-email-input");
       if (emailAttr && el instanceof HTMLInputElement) {
         const st = this.seriesStates.get(emailAttr);
-        if (st) st.email = el.value;
+        if (st) {
+          st.email = el.value;
+          this.refreshEmailMismatch(emailAttr, st);
+        }
+        return;
+      }
+      const confirmAttr = el.getAttribute("data-email-confirm");
+      if (confirmAttr && el instanceof HTMLInputElement) {
+        const st = this.seriesStates.get(confirmAttr);
+        if (st) {
+          st.emailConfirm = el.value;
+          this.refreshEmailMismatch(confirmAttr, st);
+        }
         return;
       }
       const attr = el.getAttribute("data-order-field");
@@ -514,7 +535,17 @@ export class WocoTickets extends HTMLElement {
       if (!st) return;
       if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
         st.orderFormData[fieldId] = el.value;
+        if (fieldId === ORDER_EMAIL_FIELD_ID) this.refreshEmailMismatch(sid, st);
       }
+    });
+
+    // `focusout`, not `blur`: only the former bubbles to a delegated listener.
+    this.shadow.addEventListener("focusout", (e) => {
+      const sid = (e.target as HTMLElement).getAttribute("data-email-confirm");
+      const st = sid ? this.seriesStates.get(sid) : undefined;
+      if (!sid || !st) return;
+      st.emailConfirmSettled = true;
+      this.refreshEmailMismatch(sid, st);
     });
 
     this.shadow.addEventListener("change", (e) => {
@@ -665,6 +696,42 @@ export class WocoTickets extends HTMLElement {
     return seriesPayable(s.payment);
   }
 
+  /** The address typed for the ticket: the form's field when it shows one, else the widget's box. */
+  private typedEmail(st: SeriesState): string {
+    return orderFormCollectsEmail(this.event?.orderFields, this.orderKey ?? undefined)
+      ? st.orderFormData[ORDER_EMAIL_FIELD_ID] ?? ""
+      : st.email;
+  }
+
+  /** Confirm email under the ticket's address box (#982). Always required: this widget has no account path. */
+  private renderEmailConfirm(seriesId: string, st: SeriesState): string {
+    const mismatch = buyerEmailMismatch(this.typedEmail(st), st.emailConfirm, st.emailConfirmSettled);
+    const lineId = this.esc(this.mismatchLineId(seriesId));
+    return `
+        <label class="form-field">
+          <span class="form-label">Confirm email <span class="required">*</span></span>
+          <input type="email" data-email-confirm="${this.esc(seriesId)}" value="${this.esc(st.emailConfirm)}" autocomplete="email" aria-invalid="${mismatch}" ${mismatch ? `aria-describedby="${lineId}"` : ""} />
+          <span class="field-error" role="alert" id="${lineId}" data-email-mismatch="${this.esc(seriesId)}" ${mismatch ? "" : "hidden"}>The emails don't match</span>
+        </label>
+      `;
+  }
+
+  private mismatchLineId(seriesId: string): string {
+    return `woco-email-mismatch-${seriesId}`;
+  }
+
+  /** Toggle the mismatch line in place: a card re-render would drop the buyer's focus mid-typing. */
+  private refreshEmailMismatch(seriesId: string, st: SeriesState) {
+    const mismatch = buyerEmailMismatch(this.typedEmail(st), st.emailConfirm, st.emailConfirmSettled);
+    const sid = CSS.escape(seriesId);
+    this.shadow.querySelector(`[data-email-mismatch="${sid}"]`)?.toggleAttribute("hidden", !mismatch);
+    const input = this.shadow.querySelector(`[data-email-confirm="${sid}"]`);
+    input?.setAttribute("aria-invalid", String(mismatch));
+    // Only while the line shows: a hidden element named here is still read out.
+    if (mismatch) input?.setAttribute("aria-describedby", this.mismatchLineId(seriesId));
+    else input?.removeAttribute("aria-describedby");
+  }
+
   private renderOrderFields(seriesId: string, st: SeriesState): string {
     const fields = this.event?.orderFields ?? [];
     let fieldsHtml = "";
@@ -708,6 +775,7 @@ export class WocoTickets extends HTMLElement {
           ${isHealthField(f) ? `<span class="field-note">${this.esc(HEALTH_FIELD_NOTE)}</span>` : ""}
         </label>
       `;
+      if (f.id === ORDER_EMAIL_FIELD_ID) fieldsHtml += this.renderEmailConfirm(seriesId, st);
     }
 
     return fieldsHtml;
@@ -745,7 +813,7 @@ export class WocoTickets extends HTMLElement {
           : `<label class="form-field">
           <span class="form-label">Email for your ticket <span class="required">*</span></span>
           <input type="email" data-email-input="${this.esc(s.seriesId)}" value="${this.esc(st.email)}" placeholder="your@email.com" autocomplete="email" />
-        </label>`}
+        </label>${this.renderEmailConfirm(s.seriesId, st)}`}
         <label class="form-field qty-row">
           <span class="form-label">Quantity</span>
           <select data-qty-select="${this.esc(s.seriesId)}">${qtyOptions}</select>
@@ -1023,6 +1091,7 @@ export class WocoTickets extends HTMLElement {
       verifiedKey: this.orderKey ?? undefined,
       formData: st.orderFormData,
       inlineEmail: st.email,
+      emailConfirm: st.emailConfirm,
     });
     if (!verdict.ok) {
       st.error = verdict.error;

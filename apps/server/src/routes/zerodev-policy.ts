@@ -30,7 +30,7 @@ import { jsonBodyLimit } from "../lib/http/body-limit.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
-import { getChainRpcUrl } from "../lib/chain/event-contract.js";
+import { getChainRpcUrl, ledger2Address } from "../lib/chain/event-contract.js";
 import {
   DEFAULT_MAX_OP_COST_WEI,
   SponsorPolicy,
@@ -99,7 +99,16 @@ async function isGuardianLive(account: string, guardian: string): Promise<boolea
   }
 }
 
-const liveDeps: PolicyDeps = { gate: (a) => checkAttendeeGate(a), isGuardian: isGuardianLive, upgradeIntent: upgradeIntents };
+const liveDeps: PolicyDeps = {
+  gate: (a) => checkAttendeeGate(a),
+  isGuardian: isGuardianLive,
+  upgradeIntent: upgradeIntents,
+  // The Kernel calls the ledger directly, so only a ledger on the Kernel's own chain.
+  organiserKeyLedgers: () => {
+    const a = ledger2Address(KERNEL_CHAIN_ID);
+    return a ? [a] : [];
+  },
+};
 
 /** `ZERODEV_POLICY_MAX_OP_COST_WEI`, else the default; a bad value is reported, never fatal. */
 function maxOpCost(): { wei: bigint; configError?: string } {

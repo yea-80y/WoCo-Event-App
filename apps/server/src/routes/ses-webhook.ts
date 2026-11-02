@@ -40,9 +40,17 @@
  *   - `Reject` → ledger. Also accepted-then-discarded (content verdict), and our
  *     ticket mail carries PNG attachments, so a false positive is a live path.
  *     No suppression: the fault is in our message, not in the recipient.
- *   - `Transient` / `Undetermined` / `DeliveryDelay` → neither. The message may
- *     still arrive, and an alarm that resolves itself teaches operators to
- *     ignore the alarm.
+ *   - `Transient` with a subtype in `LEDGERED_TRANSIENT` → ledger (#983). SES
+ *     sends a Transient bounce only once it has STOPPED retrying ("SES provides
+ *     notifications for hard bounces, and for soft bounces that it stopped trying
+ *     to deliver" - notification-contents), so the ticket will not arrive later:
+ *     a full mailbox is a paid ticket nobody holds, and the row is what lets the
+ *     organiser resend it.
+ *   - `Transient/General` → neither. AWS files an out-of-office auto-reply under
+ *     it - a message that WAS delivered - and a row would alarm on every one and
+ *     open the organiser's resend for a ticket the buyer already has.
+ *   - `Undetermined` / `DeliveryDelay` → neither. Not enough to say the ticket
+ *     is lost, and DeliveryDelay means SES is still trying.
  *   - `Complaint` → suppress, do NOT ledger. The message WAS delivered; the
  *     person pressed "spam". Recording it as an undelivered ticket would be
  *     false, and it would turn `/api/health` red for something no operator
@@ -118,6 +126,13 @@ interface SesEventPayload {
     tags?: Record<string, string[]>;
   };
 }
+
+/**
+ * Transient bounces that are a final "not delivered" (see LEDGER POLICY). The
+ * last three are about our message, not the mailbox: the same email to the same
+ * address fails again, so the remedy is the organiser's, never a retry.
+ */
+const LEDGERED_TRANSIENT = new Set(["MailboxFull", "MessageTooLarge", "ContentRejected", "AttachmentRejected"]);
 
 /** Said once per process: it is a wiring fault, not a per-message event. */
 let warnedUntagged = false;
@@ -196,9 +211,9 @@ function ledgerAsyncFailure(opts: {
     // the third after two throttles — but zero would assert no call was made,
     // which is false. `asyncEvent` in the context says how to read it.
     attempts: 1,
-    // Re-sending to an address that hard-bounced bounces again. This also keeps
-    // the entry out of the drain worker, which only ever takes what `sendVia`
-    // enqueued.
+    // Re-sending to an address that hard-bounced bounces again, and a soft bounce
+    // reaches us only after SES stopped retrying. This also keeps the entry out
+    // of the drain worker, which only ever takes what `sendVia` enqueued.
     retryable: false,
     context: {
       ...context,
@@ -394,6 +409,20 @@ sesWebhook.post("/webhook", async (c) => {
         `[ses-webhook] Permanent bounce (${subType}): suppressed ${suppressed} address(es)` +
           `${ledgered ? ", ledgered as undelivered" : ""}`,
       );
+    } else if (bounceType === "Transient" && LEDGERED_TRANSIENT.has(payload.bounce?.bounceSubType ?? "")) {
+      // Ledgered, never suppressed: the address is fine, this message did not land.
+      const subType = payload.bounce!.bounceSubType!;
+      const bounced = (payload.bounce?.bouncedRecipients ?? []).filter((r) => r.emailAddress?.includes("@"));
+      ledgered = ledgerAsyncFailure({
+        payload,
+        eventType: "Bounce",
+        addresses: bounced.map((r) => r.emailAddress!),
+        code: `Bounce/Transient/${subType}`,
+        error:
+          bounced[0]?.diagnosticCode ||
+          (bounced[0]?.status ? `SMTP status ${bounced[0].status}` : `Transient bounce (${subType}), SES stopped retrying`),
+      });
+      console.log(`[ses-webhook] Transient bounce (${subType}): not suppressing${ledgered ? ", ledgered as undelivered" : ""}`);
     } else {
       console.log(`[ses-webhook] ${bounceType ?? "Unknown"} bounce — not suppressing`);
     }

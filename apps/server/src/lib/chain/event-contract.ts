@@ -1,5 +1,6 @@
 import { JsonRpcProvider, Contract } from "ethers";
-import type { PaymentChainId } from "@woco/shared";
+import { KERNEL_CHAIN_ID, type PaymentChainId } from "@woco/shared";
+import { TICKET_LEDGER2_ADDRESSES } from "@woco/shared/ticket/ledger2";
 import { getRpcUrl } from "../payment/constants.js";
 
 /** RPC URLs for chains used by WoCoEvent but outside PaymentChainId (e.g. L2 testnets). */
@@ -22,7 +23,17 @@ export function getChainRpcUrl(chainId: number): string {
 // Default is V1 everywhere — V2 is opt-in via `WOCO_EVENT_VERSION_{chainId}=v2`
 // so the production runtime stays unchanged until explicitly flipped.
 
-export type EventContractVersion = "v1" | "v2" | "ledger";
+// "ledger2" (#983 step 5) is WoCoTicketLedger version 2: the same reads and
+// registration as "ledger", plus seats the registrant can change, a later
+// cutoff, and bearer mints that `reissue` can point at a fresh key. Its own
+// literal, never "ledger" at a new address: card sales on it must mint through
+// `batchClaimBearer`, and only it has the off switch the checkout reads.
+export type EventContractVersion = "v1" | "v2" | "ledger" | "ledger2";
+
+/** Both WoCoTicketLedger versions: same reads, same registration, same cap. */
+export function isLedgerFamily(v: EventContractVersion): v is "ledger" | "ledger2" {
+  return v === "ledger" || v === "ledger2";
+}
 
 /**
  * A MISCONFIGURATION, not a transient failure.
@@ -86,6 +97,24 @@ const DEPLOYED_V2: Record<number, string> = {
 const DEPLOYED_LEDGER: Record<number, string> = {};
 
 /**
+ * WoCoTicketLedger version 2: the SHARED constant, because an account's browser
+ * re-points its events' organiser key there itself (`@woco/shared/ticket/ledger2`).
+ * Override via WOCO_EVENT_ADDRESS_LEDGER2_{chainId} only where the constant is empty:
+ * boot refuses an override that names another ledger (`assertEventContractConfig`).
+ */
+const DEPLOYED_LEDGER2: Readonly<Record<number, string>> = TICKET_LEDGER2_ADDRESSES;
+
+/**
+ * The ledger v2 address on `chainId` whatever version env selects there, lowercase, or
+ * null when there is none: an event registered on it keeps its organiser key after a
+ * later cutover, and its account still moves that key.
+ */
+export function ledger2Address(chainId: number): string | null {
+  const a = process.env[`WOCO_EVENT_ADDRESS_LEDGER2_${chainId}`]?.trim() || DEPLOYED_LEDGER2[chainId];
+  return a ? a.toLowerCase() : null;
+}
+
+/**
  * Chain the server uses for event registration: `WOCO_EVENT_CHAIN_ID`, REQUIRED.
  *
  * It used to default to Base Sepolia (84532), a chain nothing watches any more,
@@ -117,16 +146,29 @@ export function getActiveChainId(): number {
 export function getEventContractVersion(chainId: number): EventContractVersion {
   const v = process.env[`WOCO_EVENT_VERSION_${chainId}`];
   if (v === undefined || v === "") return "v1";
-  if (v === "v1" || v === "v2" || v === "ledger") return v;
+  if (v === "v1" || v === "v2" || v === "ledger" || v === "ledger2") return v;
   throw new EventContractConfigError(
     `WOCO_EVENT_VERSION_${chainId}="${v}" is not a known contract version ` +
-    `(expected "v1", "v2" or "ledger")`,
+    `(expected "v1", "v2", "ledger" or "ledger2")`,
   );
+}
+
+/** The env name that holds a version's address on a chain. */
+function addressEnvName(version: EventContractVersion, chainId: number): string {
+  switch (version) {
+    case "ledger2": return `WOCO_EVENT_ADDRESS_LEDGER2_${chainId}`;
+    case "ledger":  return `WOCO_EVENT_ADDRESS_LEDGER_${chainId}`;
+    case "v2":      return `WOCO_EVENT_ADDRESS_V2_${chainId}`;
+    case "v1":      return `WOCO_EVENT_ADDRESS_${chainId}`;
+    default:        return unhandledVersion(version, "addressEnvName");
+  }
 }
 
 export function getWoCoEventAddress(chainId: number): string | undefined {
   const version = getEventContractVersion(chainId);
   switch (version) {
+    case "ledger2":
+      return process.env[addressEnvName(version, chainId)] ?? DEPLOYED_LEDGER2[chainId];
     case "ledger":
       return process.env[`WOCO_EVENT_ADDRESS_LEDGER_${chainId}`] ?? DEPLOYED_LEDGER[chainId];
     case "v2":
@@ -193,9 +235,12 @@ export function getDefaultEventContract(chainId: number = getActiveChainId()): E
  *
  * Undefined when there is no such contract (the ledger on a chain V2 never
  * ran on) — callers refuse rather than guess.
+ *
+ * The same holds under "ledger2": an unrecorded registration is never on either
+ * ledger, so it must not follow env to the NEW one either (#983 step 5).
  */
 export function legacyEventContract(chainId: number = getActiveChainId()): EventContractTarget | undefined {
-  if (getEventContractVersion(chainId) !== "ledger") return getDefaultEventContract(chainId);
+  if (!isLedgerFamily(getEventContractVersion(chainId))) return getDefaultEventContract(chainId);
   const address = process.env[`WOCO_EVENT_ADDRESS_V2_${chainId}`] ?? DEPLOYED_V2[chainId];
   return address ? { chainId, address: address.toLowerCase(), version: "v2" } : undefined;
 }
@@ -244,7 +289,8 @@ export async function getOrganiserNonce(address: string, chainId: number): Promi
   const c = getDeployedContract(chainId);
   if (!c) throw new Error(`No WoCoEvent contract deployed on chain ${chainId}`);
   switch (c.version) {
-    case "ledger": {
+    case "ledger":
+    case "ledger2": {
       const { getRegistrantNonceLedger } = await import("./event-contract-ledger.js");
       return getRegistrantNonceLedger(address, c.address, chainId);
     }
@@ -280,7 +326,9 @@ export async function getSlotDataAt(
   slot: number,
 ): Promise<SlotData> {
   switch (c.version) {
-    case "ledger": {
+    // Version 2 keeps version 1's getSlotData; after a reissue the owner is the new key.
+    case "ledger":
+    case "ledger2": {
       const { getSlotDataLedger } = await import("./event-contract-ledger.js");
       return getSlotDataLedger(onChainEventId, slot, c.address, c.chainId);
     }
@@ -319,7 +367,8 @@ export async function getOnChainEventEndAt(
   onChainEventId: string,
 ): Promise<number | null> {
   switch (c.version) {
-    case "ledger": {
+    case "ledger":
+    case "ledger2": {
       const { getOnChainEventEndLedger } = await import("./event-contract-ledger.js");
       return getOnChainEventEndLedger(onChainEventId, c.address, c.chainId);
     }
@@ -359,7 +408,10 @@ export async function getOnChainEventAt(
   onChainEventId: string,
 ): Promise<OnChainEvent | null> {
   switch (c.version) {
-    case "ledger": {
+    // A reissue re-points a slot in place, so version 2's `getEvent` means
+    // what version 1's does: `nextSlot` is both the slot range and seats sold.
+    case "ledger":
+    case "ledger2": {
       const { getOnChainEventLedger } = await import("./event-contract-ledger.js");
       return getOnChainEventLedger(onChainEventId, c.address, c.chainId);
     }
@@ -393,12 +445,31 @@ export async function getOnChainEventAt(
  */
 export function assertEventContractConfig(): void {
   const chainId = getActiveChainId();
+  // Browsers move organiser keys on the shared address: a server registering on
+  // another would leave every key move it sponsors pointing at the wrong ledger.
+  const shared = DEPLOYED_LEDGER2[chainId]?.toLowerCase();
+  const override = process.env[`WOCO_EVENT_ADDRESS_LEDGER2_${chainId}`]?.trim().toLowerCase();
+  if (shared && override && override !== shared) {
+    throw new EventContractConfigError(
+      `WOCO_EVENT_ADDRESS_LEDGER2_${chainId} (${override}) is not the shared ledger v2 address (${shared}). ` +
+      `Remove the override, or change TICKET_LEDGER2_ADDRESSES in @woco/shared/ticket/ledger2.`,
+    );
+  }
   const version = getEventContractVersion(chainId); // throws on an unknown value
+  // A ledger2 event's organiser is the account's Kernel, which lives on the Kernel chain
+  // only: elsewhere no account could move its events' keys, and the browser - finding no
+  // ledger on its chain - would count every move done (Fable sign-off 2026-11-02).
+  if (version === "ledger2" && chainId !== KERNEL_CHAIN_ID) {
+    throw new EventContractConfigError(
+      `WOCO_EVENT_VERSION_${chainId}=ledger2, but accounts live on chain ${KERNEL_CHAIN_ID}: ` +
+      `ledger v2 runs only there. Use version "ledger" on chain ${chainId}.`,
+    );
+  }
   const address = getWoCoEventAddress(chainId);
   if (!address) {
     throw new EventContractConfigError(
       `No WoCoEvent contract address for chain ${chainId} at version "${version}". ` +
-      `Set WOCO_EVENT_ADDRESS${version === "ledger" ? "_LEDGER" : version === "v2" ? "_V2" : ""}_${chainId}, ` +
+      `Set ${addressEnvName(version, chainId)}, ` +
       `or point WOCO_EVENT_VERSION_${chainId} at a deployed version.`,
     );
   }

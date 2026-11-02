@@ -184,6 +184,20 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    // Held tickets (#983): one file per sale in a directory the writer creates itself.
+    store: "ticket-hold/store",
+    drive: async () => {
+      const m = await import("../src/lib/ticket-hold/store.js");
+      const { deriveXWingKeypairFromSeed } = await import("@woco/shared/crypto/xwing");
+      const key = deriveXWingKeypairFromSeed("0x" + "4d".repeat(32)).publicKey;
+      const held = await m.holdTickets(
+        { sessionId: "cs_test_modes00000001", eventId: "event-1", seriesId: "series-1", orderKeyRef: "ab".repeat(32), tickets: [{ edition: 1, qrContent: "q" }] },
+        async () => key,
+      );
+      assert.equal(held, true, "the copy must actually land for its mode to be checked");
+    },
+  },
+  {
     store: "domains/service",
     drive: async () => {
       const m = await import("../src/lib/domains/service.js");
