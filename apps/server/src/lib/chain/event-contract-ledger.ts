@@ -102,7 +102,8 @@ export const LEDGER_ABI = [
  * from birth.
  */
 const LEDGER2_READ_ABI = [
-  "function getRegistrant(bytes32) view returns (address)",
+  "function getOrganiserKey(bytes32) view returns (address)",
+  "function isSeated(bytes32) view returns (bool)",
   "function getSlotFlags(bytes32 eventId, uint256 slot) view returns (bool bearer, bool held)",
   "function bearerMintsDisabled() view returns (bool)",
 ];
@@ -128,16 +129,29 @@ const LEDGER2_ADMIN_ABI = [
   "event SupplySet(bytes32 indexed eventId, uint64 previous, uint64 supply)",
   "event SalesEndExtended(bytes32 indexed eventId, uint64 previous, uint64 eventEndTs)",
   "event BearerMintsDisabled(address indexed by)",
-  "error NotRegistrant()",
+  "error NotOrganiser()",
+  "error NotOrganiserKey()",
   "error SupplyUnchanged()",
   "error InvalidEventEnd()",
+];
+
+/**
+ * Version 2 registers with the ORGANISER KEY beside the organiser: the key that signs the
+ * event's terms (supply, cutoff, cancel, seat moves) for the organiser from then on, so no
+ * sponsor ever holds them. `Registered` is unchanged, so the registration walk reads both
+ * versions alike; `OrganiserKeySet` follows it in the same receipt.
+ */
+const LEDGER2_REGISTER_ABI = [
+  "function registerEvent(address organiser, address organiserKey, uint64 supply, bytes32 manifestRef, uint64 eventEndTs) returns (bytes32 eventId)",
+  "event Registered(bytes32 indexed eventId, address indexed organiser, address indexed registrant, uint64 supply, bytes32 manifestRef, uint64 eventEndTs)",
+  "event OrganiserKeySet(bytes32 indexed eventId, address indexed previous, address indexed key)",
 ];
 
 export const LEDGER2_ABI = [
   ...LEDGER_READ_ABI,
   ...LEDGER2_READ_ABI,
   ...LEDGER2_CLAIM_ABI,
-  ...LEDGER_REGISTER_ABI,
+  ...LEDGER2_REGISTER_ABI,
   ...LEDGER_LIFECYCLE_ABI,
   ...LEDGER2_ADMIN_ABI,
 ] as const;
@@ -624,9 +638,14 @@ async function mintBatchLedger(
  *
  * The contract reverts `InvalidEventEnd` unless `eventEndTs > block.timestamp`,
  * so callers must floor it above now.
+ *
+ * `organiserKey`: null registers on version 1 (`registerEvent(organiser, …)`);
+ * an address registers on version 2 with that key beside the organiser. The
+ * caller has checked the organiser holds it (`lib/event/organiser-key.ts`).
  */
 export async function registerEventLedger(
   organiser: string,
+  organiserKey: string | null,
   supply: number,
   manifestRef: string,
   eventEndTs: number,
@@ -637,11 +656,11 @@ export async function registerEventLedger(
   onTxReserved?: (r: { nonce: number; chainId: number }) => void,
 ): Promise<{ onChainEventId: string; txHash: string }> {
   const wallet   = new Wallet(sponsorPk, getProvider(chainId));
-  const contract = new Contract(contractAddress, LEDGER_REGISTER_ABI, wallet);
+  const contract = new Contract(contractAddress, organiserKey ? LEDGER2_REGISTER_ABI : LEDGER_REGISTER_ABI, wallet);
 
   console.log(
-    `[sponsor ledger] registerEvent organiser=${organiser} supply=${supply} ` +
-    `eventEndTs=${eventEndTs} manifestRef=${manifestRef.slice(0, 10)}… chain=${chainId}`,
+    `[sponsor ledger] registerEvent organiser=${organiser}${organiserKey ? ` key=${organiserKey}` : ""} ` +
+    `supply=${supply} eventEndTs=${eventEndTs} manifestRef=${manifestRef.slice(0, 10)}… chain=${chainId}`,
   );
 
   const tx = await sendSponsorTx(
@@ -651,7 +670,9 @@ export async function registerEventLedger(
       // send (#318). Inside the closure so a nonce re-sync retry re-journals
       // the corrected nonce.
       onTxReserved?.({ nonce: o.nonce, chainId });
-      return contract.registerEvent(organiser, supply, manifestRef, eventEndTs, o);
+      return organiserKey
+        ? contract.registerEvent(organiser, organiserKey, supply, manifestRef, eventEndTs, o)
+        : contract.registerEvent(organiser, supply, manifestRef, eventEndTs, o);
     },
   );
   // Durably mark the tx as broadcast BEFORE awaiting it: everything from here to

@@ -7,6 +7,7 @@ import type {
   CreateEventResponse,
   SeriesClaimStatus,
   OrderEntry,
+  OrganiserKeyBindingV1,
 } from "@woco/shared";
 export type { OrderEntry };
 import { authPost, authGet, get, apiBase, authStream, currentSiteId } from "./client.js";
@@ -351,15 +352,17 @@ export async function getOrganiserNonce(address: string): Promise<{
 export async function registerSeriesOnChain(
   eventId: string,
   seriesId: string,
+  organiserKeyBinding?: OrganiserKeyBindingV1,
 ): Promise<{ onChainEventId: string; txHash?: string; eventFeed?: EventFeed }> {
   // The route returns onChainEventId/txHash at the TOP level (not under .data),
   // so read the raw envelope rather than ApiResponse<T>'s data field.
   // The server resolves the event from trusted sources only (its cache, primed at
   // create, or the caller's platform-written creator index) — a client-supplied
-  // signer carrier is deliberately not accepted.
+  // signer carrier is deliberately not accepted. The organiser key's binding is a
+  // proof, not a carrier: the server checks it against this session's account.
   const resp = (await authPost<unknown>(
     `/api/events/${eventId}/register-on-chain`,
-    { seriesId },
+    { seriesId, ...(organiserKeyBinding ? { organiserKeyBinding } : {}) },
   )) as { ok: boolean; error?: string; message?: string; onChainEventId?: string; txHash?: string; eventFeed?: EventFeed };
   if (!resp.ok || !resp.onChainEventId) {
     throw new Error(refusalText(resp, "please try again"));

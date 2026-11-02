@@ -4,6 +4,7 @@
  * (`_coOwnerHost` in auth-store.svelte.ts), so none of this is in a page load.
  */
 import type { BuiltKernel } from "./kernel-account.js";
+import type { OrganiserKeyMove } from "./co-owner-calls.js";
 
 /** The chain reads and the one write these flows use - kernel-account.ts's, or a test's. */
 export interface CoOwnerChain {
@@ -14,8 +15,14 @@ export interface CoOwnerChain {
     root: "ecdsa" | "weighted" | "none",
     signers: readonly string[],
     ring?: { prev: string | null; next: string },
+    move?: OrganiserKeyMove,
   ): Promise<unknown>;
-  setKeyRingAlone(kernel: BuiltKernel, ring: { prev: string | null; next: string }): Promise<{ confirmed: boolean }>;
+  setKeyRingAlone(
+    kernel: BuiltKernel,
+    ring: { prev: string | null; next: string },
+    move?: OrganiserKeyMove,
+  ): Promise<{ confirmed: boolean }>;
+  setOrganiserKeyAlone(kernel: BuiltKernel, move: OrganiserKeyMove): Promise<unknown>;
   readRingAnchor(account: string): Promise<string | null | "error">;
 }
 
@@ -96,13 +103,15 @@ export async function removeCoOwners(
 /**
  * A removal's FLIP (#186): the passkeys off the list and the account's key ring onto
  * `ring` in ONE op. If another device already took them off, the ring still moves (a
- * ring-only op) - the new keys must land whatever the list says. The anchor is read
- * back: the flip is done only when it names the new ring.
+ * ring-only op) - the new keys must land whatever the list says. `move`, the events'
+ * organiser key, rides in that same op either way. The anchor is read back: the flip is
+ * done only when it names the new ring.
  */
 export async function removeCoOwnersWithRing(
   h: CoOwnerHost,
   keys: readonly string[],
   ring: { prev: string | null; next: string },
+  move?: OrganiserKeyMove,
 ): Promise<void> {
   await h.ensureKernel();
   const { root, list } = await currentCoOwners(h);
@@ -110,17 +119,25 @@ export async function removeCoOwnersWithRing(
   const going = keys.map((k) => k.toLowerCase()).filter((k) => list.includes(k));
   const chain = await chainOf(h);
   if (going.length === 0) {
-    await chain.setKeyRingAlone(h.kernel()!, ring);
+    await chain.setKeyRingAlone(h.kernel()!, ring, move);
   } else {
     const { listWithout } = await import("./co-owner-calls.js");
     const next = going.reduce<string[]>((acc, k) => listWithout(acc, k), list);
-    await chain.setCoOwners(h.kernel()!, "weighted", next, ring);
+    await chain.setCoOwners(h.kernel()!, "weighted", next, ring, move);
   }
   h.dropKernel();
   const parent = h.parent();
   if (parent && (await chain.readRingAnchor(parent)) !== ring.next) {
     throw new Error("Your account's new keys didn't land - nothing else was changed. Try again.");
   }
+}
+
+/** Events a removal's own op could not carry, onto the account's organiser key: one op. */
+export async function moveOrganiserKey(h: CoOwnerHost, move: OrganiserKeyMove): Promise<void> {
+  await h.ensureKernel();
+  const kernel = h.kernel();
+  if (!kernel) throw new Error(h.lockedMessage());
+  await (await chainOf(h)).setOrganiserKeyAlone(kernel, move);
 }
 
 /**
