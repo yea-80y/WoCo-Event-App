@@ -106,6 +106,17 @@ export function getRegistryAddress(chainId: number): string {
   );
 }
 
+/**
+ * `{chainId}:{registry}` - the registry every owner read here goes to. Server
+ * state about names is scoped by it, so a registry change (a redeploy, a chain
+ * move) starts that state empty instead of carrying claims about names the new
+ * registry has never held.
+ */
+export function subEnsRegistryId(): string {
+  const chainId = getSubEnsChainId();
+  return `${chainId}:${getRegistryAddress(chainId).toLowerCase()}`;
+}
+
 // Mirrors WoCoRegistrar._validLabel and L2Registry.makeNode:
 // node = keccak256(abi.encodePacked(baseNode, keccak256(bytes(label))))
 function computeLabelNode(label: string): bigint {

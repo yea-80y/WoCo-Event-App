@@ -558,7 +558,12 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     binding points stops firing until each user re-binds; nothing is lost that a
     user cannot redo. Note the clock deliberately OUTLIVES the name it refers to:
     nothing deletes a record, or `release old -> mint new -> bind` would read as
-    a first bind and skip the cooldown)
+    a first bind and skip the cooldown. One section PER REGISTRY (`{chainId}:{registry}`),
+    only the current one read: a registry change starts clean by itself, no file to move
+    aside (the 10-23 reset needed that by hand). A migration that carries names over
+    must carry the section over too. ROLLBACK: a build older than 2026-11-02 reads the
+    sectioned file as EMPTY (fails open) and its first bind writes a flat map over it,
+    dropping every section - back the file up before a rollback, restore it rolling forward)
   event-attendees.json (#387 — eventId → attendee email hashes, appended at fulfilment;
     the ONLY server-visible proof a broadcast recipient holds a ticket. Losing it means no
     organiser can tell attendees their event is cancelled, and it CANNOT be rebuilt: the

@@ -2,7 +2,9 @@
  * #1032 slice 2 — the site render moved from the server into shared code without
  * changing a byte. `fixtures/site-render-vectors.json` was generated from the
  * server's own functions BEFORE the move (an ordinary site, a bare Etherna-hosted
- * one, and one made of hostile organiser text).
+ * one, and one made of hostile organiser text). One deliberate change since: the
+ * manifests' icon paths gained `icons/` (they 404'd); apps/web/test/site-pwa-icons
+ * checks every icon named there ships in the runtime.
  */
 
 import test from "node:test";
