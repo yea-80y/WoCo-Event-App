@@ -18,6 +18,16 @@ import {
   isSafeIdParam,
 } from "../lib/site/deploy-config.js";
 import { renderSiteHtml, sitePwaManifest } from "@woco/shared";
+import { siteDeployConfig, type SiteCollection } from "@woco/shared/site/collection";
+import {
+  admitClientCollection,
+  clientPublishAllowed,
+  decodeClientCollection,
+  siteRuntimeKits,
+  storeForTarget,
+  uploadSiteObjects,
+  type SiteRuntimeKit,
+} from "../lib/site/collection-publish.js";
 import { updateDomainsForSite } from "../lib/domains/service.js";
 import {
   readFeedPage,
@@ -573,6 +583,34 @@ sitesRouter.get("/runtime", async (c) => {
   return c.json({ ok: true, data: release });
 });
 
+// GET /api/sites/runtime/kit/:store - what a browser needs to build a site on the
+// current release (#1032 slice 3): the store's release root node and the template.
+// Nothing here is trusted by the deploy, which rebuilds from its own copy; the
+// client checks the node against the descriptor's root itself.
+sitesRouter.get("/runtime/kit/:store", async (c) => {
+  const store = c.req.param("store");
+  if (store !== "woco" && store !== "etherna") return c.json({ ok: false, error: "unknown store" }, 400);
+  const release = siteRuntimeReleases.peek() ?? (await siteRuntimeReleases.get());
+  if (!release) return c.json({ ok: false, error: "No site runtime release is available", code: "RUNTIME_RELEASE_UNAVAILABLE" }, 503);
+  try {
+    const kit = await siteRuntimeKits.kit(release, store);
+    c.header("Cache-Control", "public, max-age=60");
+    return c.json({
+      ok: true,
+      data: {
+        version: kit.version,
+        store,
+        release: kit.release,
+        rootNode: Buffer.from(kit.rootNode).toString("base64"),
+        template: kit.template,
+      },
+    });
+  } catch (e) {
+    console.warn(`[sites/runtime/kit] ${store}: ${e instanceof Error ? e.message : String(e)}`);
+    return c.json({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }, 503);
+  }
+});
+
 sitesRouter.get("/:id", async (c) => {
   const siteId = c.req.param("id");
   if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
@@ -860,7 +898,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
   let holdAfterMs = 0;
 
   try {
-    const body = await c.req.json() as { apiUrl: string; gatewayUrl?: string; wocoAppUrl?: string; site?: Site; clientFeed?: boolean };
+    const body = await c.req.json() as { apiUrl: string; gatewayUrl?: string; wocoAppUrl?: string; site?: Site; clientFeed?: boolean; collection?: unknown };
     if (!body.apiUrl) return c.json({ ok: false, error: "apiUrl required" }, 400);
 
     // All three are free-form in the request body and all three are load-bearing
@@ -904,7 +942,9 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     endDeploy = beginDeploy(`site:${siteId}`);
     if (!endDeploy) return c.json({ ok: false, error: DEPLOY_IN_PROGRESS_MESSAGE, code: DEPLOY_IN_PROGRESS_CODE }, 409);
 
-    if (!existsSync(distMultisitePath)) {
+    // A browser-built site (#1032 slice 3) needs no runtime copy on this server.
+    const clientBuilt = body.collection !== undefined && clientPublishAllowed(parentAddress);
+    if (!clientBuilt && !existsSync(distMultisitePath)) {
       return c.json({
         ok: false,
         error: "Site template not on server. Run `npm run build:web` then rsync apps/web/dist-multisite/ to server.",
@@ -943,46 +983,76 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const signer = getPlatformSigner();
     const owner = getPlatformOwner();
     const bee = target === "etherna" ? getEthernaBee() : getBee();
-
-    // Inject runtime config into the HTML template
-    const htmlPath = join(distMultisitePath, "multi-site.html");
-    const html = await fs.readFile(htmlPath, "utf-8");
     // Event images are uploaded to WoCo Bee at event-creation time and are not
     // re-uploaded during site deploy. Inject contentGatewayUrl so the runtime
     // always fetches event images from WoCo Bee regardless of site host.
-    const config: Record<string, unknown> = { site, gatewayUrl, apiUrl, wocoAppUrl };
-    if (target === "etherna") config.contentGatewayUrl = "https://gateway.woco-net.com";
+    const renderUrls = { apiUrl, gatewayUrl, wocoAppUrl, ...(target === "etherna" ? { contentGatewayUrl: "https://gateway.woco-net.com" } : {}) };
 
-    const ts = Date.now();
-    tmpDir = `/tmp/woco-multisite-${ts}`;
-    tarPath = `/tmp/woco-multisite-${ts}.tar`;
+    // Either the browser built the site, linking the shared runtime, and the
+    // server's own rebuild must match it exactly; or the server builds the old
+    // way, a full copy of the runtime in a tar (#1032 slice 3; the tar retires in slice 4).
+    let clientCollection: SiteCollection | null = null;
+    let clientKit: SiteRuntimeKit | null = null;
+    let tarData: Buffer<ArrayBuffer> | null = null;
+    if (clientBuilt) {
+      const received = decodeClientCollection(body.collection);
+      if (!received || !body.site || body.site.siteId !== siteId) {
+        return c.json({ ok: false, error: "Malformed site collection", code: "COLLECTION_MISMATCH" }, 400);
+      }
+      const release = await siteRuntimeReleases.get();
+      let kit: SiteRuntimeKit | null = null;
+      if (release) {
+        kit = await siteRuntimeKits.kit(release, storeForTarget(target)).catch((e: unknown) => {
+          console.warn(`[sites/deploy] site runtime kit unavailable: ${e instanceof Error ? e.message : String(e)}`);
+          return null;
+        });
+      }
+      if (!kit) return c.json({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }, 503);
+      const verdict = admitClientCollection({ kit, site, urls: renderUrls, received });
+      if (!verdict.ok) {
+        console.warn(`[sites/deploy] client-built site refused for ${siteId}: ${verdict.code} (${verdict.error})`);
+        return c.json({ ok: false, error: verdict.error, code: verdict.code }, 409);
+      }
+      clientCollection = verdict.collection;
+      clientKit = kit;
+    } else {
+      const html = await fs.readFile(join(distMultisitePath, "multi-site.html"), "utf-8");
+      const config = siteDeployConfig(site, renderUrls);
 
-    // The shared render (packages/shared/src/site/render.ts): the same bytes the
-    // browser's publish will produce (#1032).
-    const manifest = sitePwaManifest(site);
-    const injectedWithPwa = renderSiteHtml({ template: html, config, site, gatewayUrl });
+      const ts = Date.now();
+      tmpDir = `/tmp/woco-multisite-${ts}`;
+      tarPath = `/tmp/woco-multisite-${ts}.tar`;
 
-    await fs.cp(distMultisitePath, tmpDir, { recursive: true });
-    await fs.writeFile(join(tmpDir, "multi-site.html"), injectedWithPwa, "utf-8");
-    await fs.writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
+      // The shared render (packages/shared/src/site/render.ts): the same bytes the
+      // browser's publish produces (#1032).
+      const manifest = sitePwaManifest(site);
+      const injectedWithPwa = renderSiteHtml({ template: html, config, site, gatewayUrl });
 
-    // No woco-embed.js in the collection: nothing in a site can load it. Pasted
-    // embed HTML stopped rendering with #212 (providers are rebuilt iframes from
-    // an allowlist), and the ticket widget loads from the API (/embed/woco-embed.js).
+      await fs.cp(distMultisitePath, tmpDir, { recursive: true });
+      await fs.writeFile(join(tmpDir, "multi-site.html"), injectedWithPwa, "utf-8");
+      await fs.writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
 
-    await spawnPromise("tar", ["-cf", tarPath, "-C", tmpDir, "."]);
-    const tarData = await fs.readFile(tarPath);
+      // No woco-embed.js in the collection: nothing in a site can load it. Pasted
+      // embed HTML stopped rendering with #212 (providers are rebuilt iframes from
+      // an allowlist), and the ticket widget loads from the API (/embed/woco-embed.js).
+
+      await spawnPromise("tar", ["-cf", tarPath, "-C", tmpDir, "."]);
+      tarData = await fs.readFile(tarPath);
+    }
+    const deployBytes = clientCollection
+      ? clientCollection.objects.reduce((n, o) => n + o.data.length, 0)
+      : tarData!.length;
 
     // Free-hosted deploys share the platform batch, so cap what each owner can
     // put on it. Checked against the storage ledger BEFORE spending postage.
-    // This site's own current deploy is excluded — the new tar supersedes it.
+    // This site's own current deploy is excluded — the new upload supersedes it.
     if (selection.freeHosted) {
       const used = getFreeHostedBytes(parentAddress, { excludeSite: siteId });
-      if (used + tarData.length > FREE_HOSTING_QUOTA_BYTES) {
+      if (used + deployBytes > FREE_HOSTING_QUOTA_BYTES) {
         const mb = (n: number) => (n / (1024 * 1024)).toFixed(1);
         return c.json({
           ok: false,
-          error: `Free hosting quota exceeded: ${mb(used)}MB used + ${mb(tarData.length)}MB deploy > ${mb(FREE_HOSTING_QUOTA_BYTES)}MB limit. Purchase your own storage batch to continue.`,
+          error: `Free hosting quota exceeded: ${mb(used)}MB used + ${mb(deployBytes)}MB deploy > ${mb(FREE_HOSTING_QUOTA_BYTES)}MB limit. Purchase your own storage batch to continue.`,
           code: "FREE_HOSTING_QUOTA_EXCEEDED",
         }, 413);
       }
@@ -1019,10 +1089,16 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         : { rail: "woco", nextIndex: await resolveFeedNextIndex(topic, feedOwnerSigner ?? owner.toHex(), "woco") };
 
     let contentHash: string;
-    if (target === "etherna") {
+    if (clientCollection) {
+      // Six small objects; everything else is linked from the release, which is
+      // already stored (and offered on Etherna: a site root's offer serves it, slice 0).
+      await uploadSiteObjects(target, batchId, clientCollection);
+      contentHash = clientCollection.root;
+      if (target === "etherna") await registerEthernaOffer(contentHash);
+    } else if (target === "etherna") {
       contentHash = await uploadCollectionToEtherna({
         batchId,
-        tarData,
+        tarData: tarData!,
         indexDocument: "multi-site.html",
       });
       await registerEthernaOffer(contentHash);
@@ -1038,7 +1114,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         },
         // @ts-ignore — Node 18 fetch doesn't expose duplex in type defs
         duplex: "half",
-        body: tarData,
+        body: tarData!,
         signal: AbortSignal.timeout(BEE_COLLECTION_TIMEOUT_MS),
       });
 
@@ -1053,12 +1129,14 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // the quota meter and the per-owner migration manifest (re-stamp walks it).
     recordUpload(parentAddress, {
       ref: contentHash,
-      bytes: tarData.length,
+      bytes: deployBytes,
       kind: "site-deploy",
       batchId,
       target,
       note: siteId,
       ...(selection.freeHosted ? { freeHosted: true } : {}),
+      // A browser-built site links the release: a re-stamp of the owner's site stops there.
+      ...(clientKit ? { links: [clientKit.release.root] } : {}),
     });
 
     let feedManifestHash = "";
@@ -1250,6 +1328,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         contentHash,
         feedManifestHash,
         siteUrl,
+        // Which side built the site: "client" = the browser's collection, admitted (#1032).
+        builtBy: clientCollection ? "client" : "server",
         // Present only when the pointer feed is client-owned: the caller signs
         // the sequence-feed update SOC (beeFeedUpdateIdentifier) with this.
         ...(multisiteFeed ? { multisiteFeed } : {}),
