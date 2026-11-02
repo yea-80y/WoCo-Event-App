@@ -88,7 +88,14 @@ export class OrderOpener {
         clearTimeout(timer);
         resolve(o);
       });
-      this.port!.postMessage({ type: "open", req, epoch, eventId, jobs });
+      try {
+        this.port!.postMessage({ type: "open", req, epoch, eventId, jobs });
+      } catch (err) {
+        // The browser could not copy a job to the worker (a reactive proxy did exactly
+        // this, 2026-11-02): open on the page instead - never stop with nothing said.
+        console.error("[order-opener] could not hand orders to the worker; opening them on the page:", err);
+        this.fail();
+      }
     });
   }
 
