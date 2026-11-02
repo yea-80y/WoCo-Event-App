@@ -10,12 +10,12 @@
 import type { Chain } from "viem";
 import { arbitrum, arbitrumSepolia } from "viem/chains";
 import type { OrdersSeriesLedger, OrdersStatus } from "@woco/shared";
-import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import { authPost } from "../../api/client.js";
 import { buildEnv } from "../../build-env.js";
 import { WOCO_GATEWAY_URL } from "../../swarm/gateways.js";
 import type { BrowserOrdersDeps, SlotRead } from "./browser-orders.js";
 import type { FetchResult, GatewayBudget } from "./detail-queue.js";
+import { MAX_BOX_BYTES, boxFromBytes } from "./order-box.js";
 
 const LEDGER_CHAINS: Record<number, { chain: Chain; rpc: string }> = {
   42161: { chain: arbitrum, rpc: "https://arb1.arbitrum.io/rpc" },
@@ -62,8 +62,6 @@ const LEDGER_ABI = [
  * would be ~160 calls against a rate-limited public RPC.
  */
 const MULTICALL_CHUNK = 250;
-/** A sealed order is at most 16 KB of JSON (MAX_ORDER_BOX_JSON). */
-const MAX_BOX_TEXT = 64 * 1024;
 
 const clients = new Map<number, Promise<import("viem").PublicClient>>();
 function clientFor(chainId: number): Promise<import("viem").PublicClient> {
@@ -183,22 +181,15 @@ export async function fetchOrderBox(root: string): Promise<FetchResult> {
   }
   if (resp.status === 404) return { kind: "missing", budget };
   if (!resp.ok) return { kind: "unavailable", budget };
-  if (Number(resp.headers.get("content-length")) > MAX_BOX_TEXT) return { kind: "unreadable", budget };
-  let text: string;
+  if (Number(resp.headers.get("content-length")) > MAX_BOX_BYTES) return { kind: "unreadable", budget };
+  let bytes: Uint8Array;
   try {
-    text = await resp.text();
+    bytes = new Uint8Array(await resp.arrayBuffer());
   } catch {
     return { kind: "unavailable", budget };
   }
-  try {
-    if (text.length > MAX_BOX_TEXT) return { kind: "unreadable", budget };
-    const box = JSON.parse(text) as { enc?: unknown; ct?: unknown };
-    return typeof box.enc === "string" && typeof box.ct === "string"
-      ? { kind: "ok", box: box as unknown as SealedBoxV2, budget }
-      : { kind: "unreadable", budget };
-  } catch {
-    return { kind: "unreadable", budget };
-  }
+  // The exact bytes must hash to the root they were asked for (order-box.ts).
+  return { ...boxFromBytes(root, bytes), budget };
 }
 
 export function liveBrowserOrdersDeps(eventId: string): BrowserOrdersDeps {
