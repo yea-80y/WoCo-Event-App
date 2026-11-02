@@ -23,10 +23,10 @@ export type OrganiserKeyCheck =
   | { ok: false; reason: "missing" | "invalid" | "stale" | "unavailable" };
 
 export interface OrganiserKeyDeps {
-  currentRing(account: string): Promise<CurrentRing>;
+  currentRing(account: string, opts: { fresh: true; strict: true }): Promise<CurrentRing>;
 }
 
-const realDeps: OrganiserKeyDeps = { currentRing: (a) => realCurrentRing(a) };
+const realDeps: OrganiserKeyDeps = { currentRing: (a, opts) => realCurrentRing(a, opts) };
 
 /** The organiser key `binding` proves for `parent` (the VERIFIED session parent), or why not. */
 export async function checkOrganiserKeyBinding(
@@ -38,7 +38,10 @@ export async function checkOrganiserKeyBinding(
   const proven = verifyOrganiserKeyBinding(binding, parent.toLowerCase());
   if (!proven) return { ok: false, reason: "invalid" };
 
-  const ring = await deps.currentRing(parent);
+  // Fresh from the chain, never the 30 s cache, and never the last ring seen when the
+  // chain cannot be read: a device removed seconds ago must not register under the key it
+  // still holds (audit 1157 H-1). This path writes onchain anyway; one read is cheap.
+  const ring = await deps.currentRing(parent, { fresh: true, strict: true });
   if (ring.status === "unavailable") return { ok: false, reason: "unavailable" };
   const gen = ring.status === "ring" ? ring.ring.gen : 0;
   if (proven.gen !== gen) return { ok: false, reason: "stale" };

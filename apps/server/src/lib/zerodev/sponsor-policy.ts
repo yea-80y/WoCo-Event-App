@@ -157,6 +157,8 @@ const RECOVERY_ABI = parseAbi([RECOVERY_EXECUTOR_FN]);
 const INSTALL = lc(toFunctionSelector(INSTALL_MODULE_FN));
 const EXECUTE = lc(toFunctionSelector("function execute(bytes32 execMode, bytes executionCalldata)"));
 const HOOK_MUTATORS = new Set(["addGuardian", "revokeGuardian", "setGuardians", "clearGuardians"]);
+/** The mutators that only take guardians away - all a route removal may carry. */
+const HOOK_REMOVERS = new Set(["revokeGuardian", "clearGuardians"]);
 const MAX_CALLS = 4;
 const WEIGHTED = lc(WEIGHTED_ECDSA_VALIDATOR_V3_1);
 const CO_OWNER_ABI = parseAbi([WEIGHTED_RENEW_FN, CHANGE_ROOT_VALIDATOR_FN, UNINSTALL_VALIDATION_FN]);
@@ -186,14 +188,18 @@ function unpack128(v: unknown): [bigint, bigint] | null {
  * The most the paymaster can be charged for the gas the SENDER chose: (pVG + vGL +
  * cGL) x maxFeePerGas, the EntryPoint 0.7 prefund less the paymaster's own two
  * limits, which ZeroDev sets when it signs and the sender cannot raise. Read from
- * unpacked fields or 0.7's packed words. Missing fields read as 0 (a stub request).
+ * unpacked fields and 0.7's packed words: where a body carries both, the LARGER of each,
+ * so small numbers in one form can never hide large ones in the other (audit 1157 I-7).
+ * Missing fields read as 0 (a stub request).
  */
 function maxCostOf(op: Record<string, unknown>): bigint | null {
   const packedLimits = unpack128(op.accountGasLimits);
   const packedFees = unpack128(op.gasFees);
-  const verification = packedLimits ? packedLimits[0] : uint(op.verificationGasLimit);
-  const call = packedLimits ? packedLimits[1] : uint(op.callGasLimit);
-  const maxFee = packedFees ? packedFees[1] : uint(op.maxFeePerGas);
+  const larger = (packed: bigint | undefined, unpacked: bigint | null): bigint | null =>
+    unpacked === null ? null : packed !== undefined && packed > unpacked ? packed : unpacked;
+  const verification = larger(packedLimits?.[0], uint(op.verificationGasLimit));
+  const call = larger(packedLimits?.[1], uint(op.callGasLimit));
+  const maxFee = larger(packedFees?.[1], uint(op.maxFeePerGas));
   const pre = uint(op.preVerificationGas);
   if (verification === null || call === null || maxFee === null || pre === null) return null;
   return (pre + verification + call) * maxFee;
@@ -262,12 +268,14 @@ function readExecute(callData: Hex): InnerCall[] | string {
   return "call-type";
 }
 
-function isHookMutator(call: InnerCall): boolean {
-  if (call.to !== HOOK) return false;
+/** The hook mutator `call` makes, or null when it is not one. */
+function hookMutator(call: InnerCall): string | null {
+  if (call.to !== HOOK) return null;
   try {
-    return HOOK_MUTATORS.has(decodeFunctionData({ abi: WOCO_GUARDIAN_HOOK_ABI, data: call.data }).functionName);
+    const name = decodeFunctionData({ abi: WOCO_GUARDIAN_HOOK_ABI, data: call.data }).functionName;
+    return HOOK_MUTATORS.has(name) ? name : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -370,6 +378,12 @@ function isOrganiserKeyMove(call: InnerCall, ledgers: ReadonlySet<string>): bool
   }
 }
 
+/**
+ * Any `to`: the account being recovered varies per op. Safe ONLY because `decide` gates
+ * that account (an authenticated session's unlock) BEFORE the guardian read - a contract
+ * can list itself as its own guardian on the hook, but never pass the gate (audit 1157
+ * I-6). Keep the gate first.
+ */
 function recoveryTarget(call: InnerCall): string | null {
   try {
     const d = decodeFunctionData({ abi: RECOVERY_ABI, data: call.data });
@@ -385,6 +399,12 @@ function recoveryTarget(call: InnerCall): string | null {
  * an organiser-key move may go (lowercase); empty = no key move is ever paid.
  */
 export function classifyUserOp(op: PolicyUserOp, ledgers: ReadonlySet<string> = new Set()): Classified {
+  // Only a FIRST op names a factory. A deployed sender is taken to be a real Kernel - its
+  // calls are what `execute` decodes to - for two reasons kept OUTSIDE this file (audit
+  // 1157 I-5): Kernel addresses are CREATE2 from the real factory, and no login can make
+  // an arbitrary address (an EIP-7702 EOA included) a gate-unlocked account
+  // (walletLoginAllowed / coinbaseLoginAllowed off). Turning either login on means a
+  // code check here first.
   if (op.factory !== null && !KERNEL_FACTORIES.has(op.factory)) return { ok: false, reason: "factory" };
   const selector = lc(op.callData.slice(0, 10));
 
@@ -454,10 +474,19 @@ function classifyCalls(calls: InnerCall[], sender: string): Classified {
       : { ok: false, reason: "call" };
   }
   let uninstalls = 0;
+  let adds = false;
   for (const c of calls) {
-    if (isRouteUninstall(c, sender)) uninstalls++;
-    else if (!isHookMutator(c)) return { ok: false, reason: "call" };
+    if (isRouteUninstall(c, sender)) {
+      uninstalls++;
+      continue;
+    }
+    const m = hookMutator(c);
+    if (m === null) return { ok: false, reason: "call" };
+    if (!HOOK_REMOVERS.has(m)) adds = true;
   }
+  // A removal is paid even with backups off, so it may carry only removals: an add
+  // riding on it would be a backup change paid past that switch (audit 1157 L-2).
+  if (uninstalls > 0 && adds) return { ok: false, reason: "call" };
   return { ok: true, shape: uninstalls > 0 ? "remove-route" : "guardians", subject: sender };
 }
 
@@ -517,7 +546,10 @@ export class SponsorPolicy {
     // Every request, the counted ones too: the stub carries no limits, the final
     // carries the real ones.
     if (op.maxCostWei > this.maxOpCostWei) return { proceed: false, reason: "gas", shape: shape.shape, subject };
-    const opKey = `${op.sender}:${op.nonce}:${subject}`;
+    // The call data too: the stub and the final of one op share it, so they still count
+    // once, while a different op at the same nonce is never let past the cap as the same
+    // one (audit 1157 L-3).
+    const opKey = `${op.sender}:${op.nonce}:${subject}:${keccak256(op.callData)}`;
     const counted = this.seen.has(opKey);
     if (!counted && !this.limiter.peek(subject)) return { proceed: false, reason: "cap", shape: shape.shape, subject };
 

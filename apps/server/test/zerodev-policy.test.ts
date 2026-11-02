@@ -140,6 +140,14 @@ test("remove all backups: uninstall the route + clear, one batch", async () => {
   assert.equal(c.ok && c.shape, "remove-route");
 });
 
+test("a route removal carries only removals: an add or a set riding on it is refused", async () => {
+  const [uninstall] = buildRemoveRecoveryCalls(d, ACCOUNT);
+  assert.equal(classifyUserOp(op(await viaExecute([uninstall!, buildRevokeGuardianCall(encodeFunctionData, GUARDIAN_KERNEL)]))).ok, true);
+  for (const add of [buildAddGuardianCall(encodeFunctionData, GUARDIAN_KERNEL), buildSetGuardiansCall(encodeFunctionData, [GUARDIAN_KERNEL])]) {
+    assert.deepEqual(classifyUserOp(op(await viaExecute([uninstall!, add]))), { ok: false, reason: "call" });
+  }
+});
+
 test("make this device the main one: exactly the two validator calls", async () => {
   const c = classifyUserOp(op(await viaExecute(rotationCalls(NEW_OWNER))));
   assert.deepEqual(c, { ok: true, shape: "rotate", subject: ACCOUNT.toLowerCase() });
@@ -241,6 +249,19 @@ test("the cost bound is the gas the sender chose x max fee, unpacked or packed",
   });
   assert.equal(packed?.maxCostWei, unpacked?.maxCostWei);
   assert.equal(readUserOp({ sender: ACCOUNT, nonce: "1", callData, maxFeePerGas: "-1" }), null);
+  // Both forms present: the larger of each, whichever form carries it.
+  const both = readUserOp({
+    sender: ACCOUNT, nonce: "1", callData, preVerificationGas: 78_000,
+    accountGasLimits: word(1n, 1n), gasFees: word(1n, 1n),
+    verificationGasLimit: 3_000_000, callGasLimit: 1_000_000, maxFeePerGas: 20_000_000,
+  });
+  assert.equal(both?.maxCostWei, unpacked?.maxCostWei, "small packed words hid the unpacked limits");
+  const bothPacked = readUserOp({
+    sender: ACCOUNT, nonce: "1", callData, preVerificationGas: 78_000,
+    accountGasLimits: word(3_000_000n, 1_000_000n), gasFees: word(1n, 20_000_000n),
+    verificationGasLimit: 1, callGasLimit: 1, maxFeePerGas: 1,
+  });
+  assert.equal(bothPacked?.maxCostWei, unpacked?.maxCostWei, "small unpacked fields hid the packed words");
 });
 
 test("more than four calls in one batch is refused", async () => {
@@ -315,6 +336,9 @@ test("six ops an hour per account; the stub and final request of one op count on
   }
   assert.deepEqual(await p.decide(op(callData, { nonce: "7" })), { proceed: false, reason: "cap", shape: "guardians", subject: ACCOUNT.toLowerCase() });
   assert.equal((await p.decide(op(callData, { nonce: "6" }))).proceed, true, "an op already counted still completes");
+  // A DIFFERENT op at a counted nonce is a new op, never waved past the cap as that one.
+  const otherOp = await viaExecute([buildRevokeGuardianCall(encodeFunctionData, GUARDIAN_KERNEL)]);
+  assert.deepEqual(await p.decide(op(otherOp, { nonce: "6" })), { proceed: false, reason: "cap", shape: "guardians", subject: ACCOUNT.toLowerCase() });
   // Another account has its own budget.
   const other = "0x9999999999999999999999999999999999999999";
   unlocked.add(other);
