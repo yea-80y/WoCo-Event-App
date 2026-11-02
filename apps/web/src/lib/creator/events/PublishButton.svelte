@@ -6,6 +6,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { ensureIssuingKey } from "../../auth/issuing-key.js";
+  import { organiserKeyBinding } from "../../auth/organiser-key.js";
   import { buildEventManifests } from "../../object/event-builder.js";
   import { createEventStreaming, registerSeriesOnChain, signEventFeedSoc, type PublishProgress } from "../../api/events.js";
   import { eventContentTopic } from "@woco/shared";
@@ -351,6 +352,14 @@
     if (!hasPaidSeries) return true;
 
     phase = "chain";
+    // The organiser key (ledger2): proof that the key which will hold this event's terms
+    // is this account's. Made once per publish; a server still on the earlier ledger
+    // ignores it, so a failure here only matters once ledger2 is live, and the server
+    // then says so.
+    const keyBinding = await organiserKeyBinding().catch((e) => {
+      console.warn("[publish] organiser key binding unavailable:", e);
+      return undefined;
+    });
     for (const s of series) {
       if (!s.payment) continue; // free series are not registered on-chain
 
@@ -361,7 +370,7 @@
         // the OWNER signs that exact feed below. Do not rely on local mutation alone:
         // if the final SOC misses onChainEventId, Stripe falls back to the legacy
         // Swarm claim path.
-        const { onChainEventId, eventFeed } = await registerSeriesOnChain(eventId, s.seriesId);
+        const { onChainEventId, eventFeed } = await registerSeriesOnChain(eventId, s.seriesId, keyBinding);
         if (eventFeed) {
           pendingFeed = eventFeed;
         } else if (pendingFeed) {

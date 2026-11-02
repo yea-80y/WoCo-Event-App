@@ -773,3 +773,69 @@ test("backups off (#186): an op that ADDS a backup is refused before any read; r
     enableFeature("accountBackupsAllowed");
   }
 });
+
+// ── The events' organiser key (#186, ledger v2) ──────────────────────────────
+// A removal moves the account's events onto its new organiser key: in its own op,
+// right before the ring after renew (or before a ring alone), or, for what that op
+// could not carry, alone. Only `setOrganiserKey` on the ledger the server registers on.
+
+const LEDGER2 = "0x" + "1e".repeat(20);
+const NEW_ORG_KEY = "0x" + "0e".repeat(20);
+const eventIds = (n: number) => Array.from({ length: n }, (_, i) => "0x" + (i + 1).toString(16).padStart(64, "0"));
+const ledgers = new Set([LEDGER2]);
+
+async function keyMove(ids = eventIds(2), key = NEW_ORG_KEY, ledger = LEDGER2): Promise<Call> {
+  const { organiserKeyMoveCall } = await import("../../web/src/lib/auth/co-owner-calls.js");
+  const enc = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as never;
+  const c = organiserKeyMoveCall(enc, { ledger, ids, key });
+  return { to: c.to as Address, data: c.data };
+}
+
+/** The same call with arguments the app's builder would refuse to encode. */
+function rawKeyMove(ids: string[], key: string, ledger = LEDGER2): Call {
+  const abi = parseAbi(["function setOrganiserKey(bytes32[] eventIds, address key)"]);
+  return { to: ledger as Address, data: encodeFunctionData({ abi, functionName: "setOrganiserKey", args: [ids as Hex[], key as Address] }) };
+}
+
+test("organiser key: the app's own removal shapes are paid - renew + move + ring, move + ring, move alone", async () => {
+  const subject = ACCOUNT.toLowerCase();
+  const move = await keyMove();
+  assert.deepEqual(classifyUserOp(op(await viaExecute([renewCall([P1, P2]), move, ringCall()])), ledgers), { ok: true, shape: "renew", subject });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([move, ringCall()])), ledgers), { ok: true, shape: "ring", subject });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([move])), ledgers), { ok: true, shape: "organiser-key", subject });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([await keyMove(eventIds(50))])), ledgers).ok, true, "fifty ids");
+});
+
+test("organiser key: never elsewhere, never malformed, never with the switch, never off the server's ledger", async () => {
+  const refused = async (calls: Call[], why: string, l: ReadonlySet<string> = ledgers) =>
+    assert.equal(classifyUserOp(op(await viaExecute(calls)), l).ok, false, why);
+  const move = await keyMove();
+  await refused([move], "no ledger configured: no key move is ever paid", new Set());
+  await refused([await keyMove(eventIds(2), NEW_ORG_KEY, GUARDIAN_EOA)], "setOrganiserKey on another contract");
+  await refused([ringCall(), move], "after the ring");
+  await refused([move, renewCall([P1, P2]), ringCall()], "before the list change");
+  await refused([move, move], "twice");
+  await refused([renewCall([P1, P2]), move], "on a renew without the ring");
+  await refused([...switchCalls(enableOf([P1, P2])), move, ringCall()], "on the switch: adding a passkey keeps the keys");
+  await refused([rawKeyMove(eventIds(51), NEW_ORG_KEY)], "more than fifty ids");
+  await refused([rawKeyMove([], NEW_ORG_KEY)], "no ids");
+  await refused([rawKeyMove([eventIds(1)[0]!, eventIds(1)[0]!], NEW_ORG_KEY)], "the same id twice");
+  await refused([rawKeyMove(["0x" + "0".repeat(64)], NEW_ORG_KEY)], "a zero id");
+  await refused([rawKeyMove(eventIds(1), "0x" + "0".repeat(40))], "a zero key");
+  await refused([rawKeyMove(eventIds(1), LEDGER2)], "the ledger as the key");
+  const abi = parseAbi(["function revokeSignatures(bytes32 eventId)"]);
+  const other = { to: LEDGER2 as Address, data: encodeFunctionData({ abi, functionName: "revokeSignatures", args: [eventIds(1)[0] as Hex] }) };
+  await refused([other], "any other call on the ledger");
+  await refused([renewCall([P1, P2]), other, ringCall()], "any other ledger call riding a removal");
+});
+
+test("organiser key: the policy pays it for an unlocked account on the configured ledger, refuses a locked one", async () => {
+  const p = new SponsorPolicy({ ...deps, organiserKeyLedgers: () => [LEDGER2.toUpperCase().replace("0X", "0x")] });
+  const callData = await viaExecute([await keyMove()]);
+  assert.deepEqual(await p.decide(op(callData)), { proceed: false, reason: "locked", shape: "organiser-key", subject: ACCOUNT.toLowerCase() });
+  unlocked.add(ACCOUNT.toLowerCase());
+  const paid = await p.decide(op(callData, { nonce: "11" }));
+  assert.equal(paid.proceed, true);
+  const none = new SponsorPolicy(deps);
+  assert.equal((await none.decide(op(callData, { nonce: "12" }))).proceed, false, "no ledger wired: refused");
+});

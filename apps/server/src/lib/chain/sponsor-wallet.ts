@@ -73,6 +73,18 @@ export interface RegisterEventParams {
   /** V2 ONLY — optional gate contract; address(0) = open FIFO. Removed from
    *  the ledger, which never consulted it on the sponsor path anyway. */
   dropGate: string;
+  /** LEDGER2 ONLY, and required there: the key that signs the event's terms for
+   *  the organiser, checked by the route (`lib/event/organiser-key.ts`). Ignored
+   *  by every earlier version. */
+  organiserKey?: string;
+}
+
+/** A ledger2 registration with no proven organiser key: the client must send one. */
+export class OrganiserKeyRequiredError extends Error {
+  constructor() {
+    super("registerEventOnChain: ledger2 requires the organiser key");
+    this.name = "OrganiserKeyRequiredError";
+  }
 }
 
 /** @deprecated Name kept so existing imports keep compiling. Use RegisterEventParams. */
@@ -719,7 +731,8 @@ async function registerOn(
 ): Promise<{ onChainEventId: string; txHash: string }> {
   const { chainId, address, version } = target;
 
-  // Version 2 registers exactly as version 1 (same function, same `Registered`).
+  // Version 2 registers as version 1 with the organiser key beside the organiser
+  // (same `Registered`), so the terms are the organiser's from registration.
   if (isLedgerFamily(version)) {
     const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
     if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
@@ -729,9 +742,15 @@ async function registerOn(
     if (!v2Params.organiser) {
       throw new Error("registerEventOnChain: ledger requires an explicit organiser address");
     }
+    let organiserKey: string | null = null;
+    if (version === "ledger2") {
+      if (!v2Params.organiserKey) throw new OrganiserKeyRequiredError();
+      organiserKey = v2Params.organiserKey;
+    }
     const { registerEventLedger } = await import("./event-contract-ledger.js");
     return registerEventLedger(
       v2Params.organiser,
+      organiserKey,
       supply,
       manifestRef,
       v2Params.eventEndTs,

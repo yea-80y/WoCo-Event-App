@@ -151,7 +151,7 @@ export async function loadAccountChain(
       h.commitSigner();
       // A co-owned account's passkey with no ring entry yet adds itself, once.
       if (keys && h.unlocked()?.chain?.ringRef !== enrolledAt(seedAddr)) void enrolSelfOnce(h, seedAddr);
-      if (keys) void removalLeftHere(h, seedAddr);
+      if (keys) void removalLeftHere(h, seedAddr).then(() => organiserKeysLeftBehind(h, seedAddr));
     }
   } catch (e) {
     console.warn("[auth] account keys could not be checked:", e);
@@ -369,6 +369,67 @@ async function enrolSelfOnce(h: AccountKeysHost, seedAddr: string): Promise<void
   }
 }
 
+/**
+ * Events still on an older generation's organiser key, moved from ANY of the account's
+ * passkeys (Fable sign-off 2026-11-02). A removal's own op carries some; the rest sit in
+ * the removing device's pending record, which may never open again (cleared, lost) - and
+ * nothing else would ever move them. So each device, once per ring: a whole chain read,
+ * the moves, then a mark. Anything short of that is tried again at the next unlock. A
+ * ring checked stays checked: events registered under it already name its key.
+ */
+function organiserKeysLeftBehind(h: AccountKeysHost, seedAddr: string): Promise<void> {
+  return (movingKeys ??= moveKeysLeftBehind(h, seedAddr).finally(() => (movingKeys = null)));
+}
+
+let movingKeys: Promise<void> | null = null;
+
+const organiserKeysMark = (seedAddr: string) => `woco:keyring:organiser-keys:${seedAddr}`;
+
+async function moveKeysLeftBehind(h: AccountKeysHost, seedAddr: string): Promise<void> {
+  // This passkey's own enrolment, fired at the same unlock, may be moving the anchor:
+  // two ops at once and one is refused. The ring is read after it.
+  if (enrolling) await enrolling.catch(() => {});
+  const gen = h.lockGen();
+  const u = h.unlocked();
+  const ring = u?.chain?.ringRef;
+  // Generation 0 never moved: every event names the key it was registered with.
+  if (!u || !ring || (u.chain?.gen ?? 0) < 1) return;
+  try {
+    if (globalThis.localStorage?.getItem(organiserKeysMark(seedAddr)) === ring) return;
+    if (!h.isPasskey() || h.deviceRole() || !(await h.currentKeysConfirmed())) return;
+    // A removal still finishing here moves them itself.
+    const { hasPendingRotation } = await import("./pending-rotation.js");
+    if (await hasPendingRotation(seedAddr)) return;
+    const [{ ownLedger2Deployment, organiserKeysDue }, { deriveOrganiserKey }, { MAX_ORGANISER_KEY_IDS }, flows] =
+      await Promise.all([
+        import("./organiser-event-scan.js"),
+        import("@woco/shared/crypto/organiser-key"),
+        import("@woco/shared/ticket/ledger2"),
+        import("../auth/co-owner-flows.js"),
+      ]);
+    // No ledger in this build: nothing to move, and no mark - a build that has one checks.
+    const deployment = await ownLedger2Deployment();
+    if (!deployment) return;
+    const derived = deriveOrganiserKey(currentSecretOf(u.seed, u.chain));
+    const key = derived.address.toLowerCase();
+    derived.privateKey.fill(0);
+    const due = await organiserKeysDue(u.parent, key, deployment, { strict: true });
+    // Before each op and the mark, from the CHAIN: another passkey may have removed one
+    // and moved the account on while the scan ran. Its events then name the NEWER key, and
+    // moving them "back" to this ring's key would hand them to the passkey just removed
+    // (Fable re-check 2026-11-02). Signed out, or another account in: not this Kernel.
+    const stillHere = async () =>
+      gen === h.lockGen() && h.unlocked()?.parent === u.parent && (await readAnchor(h, u.parent, { fresh: true })) === ring;
+    for (let i = 0; i < due.ids.length; i += MAX_ORGANISER_KEY_IDS) {
+      if (!(await stillHere())) return;
+      await flows.moveOrganiserKey(h.coOwnerHost(), { ledger: due.ledger, ids: due.ids.slice(i, i + MAX_ORGANISER_KEY_IDS), key });
+    }
+    if (await stillHere()) globalThis.localStorage?.setItem(organiserKeysMark(seedAddr), ring);
+  } catch (e) {
+    console.warn("[auth] events not yet moved to your account's current key (retried at the next unlock):", e);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // A passkey left out of the keys: one asks, another gives
 // ---------------------------------------------------------------------------
@@ -478,6 +539,8 @@ export async function rotateOnRemovalFor(h: AccountKeysHost, going: string[], op
   // The confirm before this re-unlocks, which may start this passkey's enrolment: both
   // move the anchor from the same ring, so the slower would revert. Let it land first.
   if (enrolling) await enrolling.catch(() => {});
+  // Likewise a catch-up move: two ops of one account at once, and one is refused.
+  if (movingKeys) await movingKeys.catch(() => {});
   const u = h.unlocked();
   const keys = h.passkeyKeys();
   const ownerKey = h.ownerKey();
@@ -496,10 +559,11 @@ export async function rotateOnRemovalFor(h: AccountKeysHost, going: string[], op
     chain: u.chain,
     oldSigner: deriveFeedSignerKey(currentSecretOf(u.seed, u.chain)),
     oldSecrets: allSecretsOf(u.seed, u.chain),
-    flip: async (g, ring) => {
-      await flows.removeCoOwnersWithRing(h.coOwnerHost(), g, ring);
+    flip: async (g, ring, move) => {
+      await flows.removeCoOwnersWithRing(h.coOwnerHost(), g, ring, move ?? undefined);
       return { confirmed: true };
     },
+    moveOrganiserKey: (move) => flows.moveOrganiserKey(h.coOwnerHost(), move),
     adopt: (chain) => adoptOwnRing(h, chain),
     signTypedDataAsHolder: (typed) => h.signTypedDataAsHolder(typed),
     removeRecord: (key) => h.removeRecordAfterList(u.parent, key),
