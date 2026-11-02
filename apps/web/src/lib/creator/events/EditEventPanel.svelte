@@ -8,7 +8,10 @@
   import LocationPicker from "./LocationPicker.svelte";
   import GenreTagPicker from "./GenreTagPicker.svelte";
   import CancelEventPanel from "./CancelEventPanel.svelte";
+  import TicketNumbersPanel from "./TicketNumbersPanel.svelte";
+  import ChangeSavingStatus from "./ChangeSavingStatus.svelte";
   import { toLocalInput } from "./date.js";
+  import type { ChangePhase, Ledger2Change, Ledger2EventView } from "../../ledger2/organiser-changes.js";
 
   interface Props {
     event: EventFeed;
@@ -48,6 +51,61 @@
   let saving = $state(false);
   let error = $state<string | null>(null);
   let saved = $state(false);
+
+  // Ticket types the organiser controls (ledger2), read from the chain. Null until
+  // read, and for every event before ledger2 is deployed: nothing below shows then.
+  let ledger2 = $state<Ledger2EventView | null>(null);
+  let endPhase = $state<ChangePhase | null>(null);
+  let endChange: Ledger2Change | null = null;
+  $effect(() => {
+    const parent = auth.parent?.toLowerCase();
+    if (!parent || event.cancelledAt) return;
+    let live = true;
+    void (async () => {
+      const [{ readLedger2Event }, { liveLedger2ClientIO }] = await Promise.all([
+        import("../../ledger2/organiser-changes.js"),
+        import("../../ledger2/organiser-changes-live.js"),
+      ]);
+      const view = await readLedger2Event(event, parent, liveLedger2ClientIO).catch(() => null);
+      if (live) ledger2 = view;
+    })();
+    return () => {
+      live = false;
+    };
+  });
+
+  /**
+   * A later end date on a ledger2 event moves its ticket sales cutoff first, signed by
+   * the organiser, so the edit below is not refused. Throws with the reason when the
+   * cutoff did not move; resolves when there was nothing to move.
+   */
+  async function extendSalesFirst(newEndIso: string): Promise<void> {
+    const parent = auth.parent?.toLowerCase();
+    if (!ledger2 || !parent) return;
+    const newEnd = Math.floor(new Date(newEndIso).getTime() / 1000);
+    const [lib, { liveLedger2ClientIO: io }] = await Promise.all([
+      import("../../ledger2/organiser-changes.js"),
+      import("../../ledger2/organiser-changes-live.js"),
+    ]);
+    const fresh = await lib.readLedger2Event(event, parent, io);
+    const due = fresh?.series.filter((s) => !s.cancelled && s.eventEndTs < newEnd) ?? [];
+    if (!fresh || due.length === 0) return;
+    if (due.some((s) => fresh.chainNow >= s.eventEndTs)) {
+      throw new Error("Ticket sales for this event have ended, so the end date can't move later.");
+    }
+    const changes = due.map((s) => ({ kind: "extendSalesEnd" as const, seriesId: s.seriesId, eventEndTs: newEnd }));
+    const started = await lib.startTermsChange(event, parent, fresh, changes, io, (p) => (endPhase = p));
+    endChange = started.change;
+    try {
+      await started.done;
+    } finally {
+      endChange = null;
+    }
+    if (endPhase?.phase !== "saved" && endPhase?.phase !== "already_saved") {
+      throw new Error(endPhase?.phase === "failed" ? endPhase.message : "The end date was not changed.");
+    }
+    ledger2 = await lib.readLedger2Event(event, parent, io).catch(() => ledger2);
+  }
   let deleting = $state(false);
   let deleteError = $state<string | null>(null);
 
@@ -119,6 +177,10 @@
       }
 
       await auth.ensureOrganiserUnlock();
+      endPhase = null;
+      if (updates.endDate && Date.parse(updates.endDate) > Date.parse(event.endDate)) {
+        await extendSalesFirst(updates.endDate);
+      }
       // Phase B: this event's feed is a client-owned SOC — the edit only becomes
       // visible once WE re-sign it, so fail loudly if the current account can't
       // produce the owning key (e.g. signed in as a different identity).
@@ -177,8 +239,13 @@
 
 <div class="edit-panel">
   <p class="edit-note">
-    Ticket tiers, pricing and supply are locked once published. Everything below
-    can be changed freely.
+    {#if ledger2}
+      Ticket types and prices are locked once published; how many are on sale can be
+      changed further down. Everything below can be changed freely.
+    {:else}
+      Ticket tiers, pricing and supply are locked once published. Everything below
+      can be changed freely.
+    {/if}
   </p>
 
   <ImageUpload bind:imageDataUrl onchange={(url) => (imageDataUrl = url)} />
@@ -244,10 +311,17 @@
   {#if saved && !error}
     <p class="save-ok">Changes saved. Attendee pages update within a minute or two.</p>
   {/if}
+  {#if endPhase && endPhase.phase !== "saved"}
+    <ChangeSavingStatus phase={endPhase} oncancel={() => void endChange?.cancel()} what="new end date" />
+  {/if}
 
   <button class="btn btn--primary save-btn" onclick={save} disabled={!canSave}>
     {saving ? "Saving…" : "Save changes"}
   </button>
+
+  {#if ledger2 && !event.cancelledAt}
+    <TicketNumbersPanel {event} view={ledger2} onchanged={(v) => (ledger2 = v)} />
+  {/if}
 
   <CancelEventPanel {event} {ordersCount} {oncancelled} />
 

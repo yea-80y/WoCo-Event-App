@@ -15,6 +15,8 @@
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { cancelEvent } from "../../api/events.js";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import type { Ledger2RelayItem } from "@woco/shared/ticket/ledger2-terms";
+  import type { Ledger2EventView } from "../../ledger2/organiser-changes.js";
 
   interface Props {
     event: EventFeed;
@@ -62,6 +64,94 @@
     open = true;
   }
 
+  // A ledger2 event also cancels where its tickets are recorded, by the organiser's
+  // signature. Read here so the panel can say when that part is still to do, or when
+  // the event was cancelled from elsewhere and only the refunds are left to confirm.
+  let ledger2 = $state<Ledger2EventView | null>(null);
+  let finishing = $state(false);
+  let finishMsg = $state<string | null>(null);
+  $effect(() => {
+    const parent = auth.parent?.toLowerCase();
+    void event.cancelledAt;
+    if (!parent) return;
+    let live = true;
+    void readView(parent).then((v) => {
+      if (live) ledger2 = v;
+    });
+    return () => {
+      live = false;
+    };
+  });
+  const cancelledElsewhere = $derived(!event.cancelledAt && !!ledger2?.series.some((s) => s.cancelled));
+  const chainLeft = $derived(event.cancelledAt ? (ledger2?.series.filter((s) => !s.cancelled) ?? []) : []);
+
+  async function readView(parent: string): Promise<Ledger2EventView | null> {
+    const [{ readLedger2Event }, { liveLedger2ClientIO }] = await Promise.all([
+      import("../../ledger2/organiser-changes.js"),
+      import("../../ledger2/organiser-changes-live.js"),
+    ]);
+    return readLedger2Event(event, parent, liveLedger2ClientIO).catch(() => null);
+  }
+
+  /**
+   * The signed cancels for every ticket type not yet cancelled, or none. Best effort:
+   * a chain that cannot be read, or a key that cannot sign, never stops the
+   * cancellation itself - money stops server-side, and "Finish cancelling" does the rest.
+   */
+  async function signCancels(): Promise<Ledger2RelayItem[] | undefined> {
+    const parent = auth.parent?.toLowerCase();
+    if (!parent) return undefined;
+    try {
+      const [{ readLedger2Event, signTermsChanges }, { liveLedger2ClientIO: io }] = await Promise.all([
+        import("../../ledger2/organiser-changes.js"),
+        import("../../ledger2/organiser-changes-live.js"),
+      ]);
+      const view = await readLedger2Event(event, parent, io);
+      const open = view?.series.filter((s) => !s.cancelled) ?? [];
+      if (!view || open.length === 0) return undefined;
+      return await signTermsChanges(view, open.map((s) => ({ kind: "cancel" as const, seriesId: s.seriesId })), io);
+    } catch (e) {
+      console.warn("[cancel] could not sign the ticket-record cancels; cancelling without them:", e);
+      return undefined;
+    }
+  }
+
+  /** Codes that refuse what was SIGNED: the cancellation goes ahead without it. */
+  const SIGNED_REFUSALS = new Set(["signature_stale", "already_cancelled", "not_available", "series_not_found", "window_invalid", "signature_not_yet_valid", "signature_expiring", "deadline_too_far"]);
+
+  async function cancelWithChain(confirmTitle: string, feedSigner: ContentFeedSigner | null) {
+    const chainCancels = await signCancels();
+    try {
+      return await cancelEvent(event.eventId, confirmTitle, { feedSigner, chainCancels });
+    } catch (e) {
+      if (!chainCancels || !SIGNED_REFUSALS.has((e as { code?: string }).code ?? "")) throw e;
+      return cancelEvent(event.eventId, confirmTitle, { feedSigner });
+    }
+  }
+
+  async function finishCancelling() {
+    if (finishing) return;
+    finishing = true;
+    finishMsg = null;
+    try {
+      await auth.ensureOrganiserUnlock();
+      const chainCancels = await signCancels();
+      if (!chainCancels) {
+        finishMsg = "Couldn't finish just now. Try again in a moment.";
+        return;
+      }
+      const result = await cancelEvent(event.eventId, event.title, { chainCancels });
+      const done = result.chain?.status === "landed" && (result.chain.landed ?? []).every(Boolean);
+      finishMsg = done ? "Done - the cancellation is complete." : "Not finished yet. Try again in a moment.";
+      const parent = auth.parent?.toLowerCase();
+      if (parent) ledger2 = await readView(parent);
+    } catch (e) {
+      finishMsg = e instanceof Error ? e.message : "Couldn't finish just now. Try again in a moment.";
+    } finally {
+      finishing = false;
+    }
+  }
+
   async function confirmCancel() {
     if (!matches || working) return;
     working = true;
@@ -81,7 +171,7 @@
           feedSigner = null;
         }
       }
-      const result = await cancelEvent(event.eventId, typed, { feedSigner });
+      const result = await cancelWithChain(typed, feedSigner);
       oncancelled(result.eventFeed ?? { ...event, cancelledAt: new Date().toISOString() }, result.feedUpdated);
     } catch (e) {
       error = e instanceof Error ? e.message : "Could not cancel the event";
@@ -99,17 +189,36 @@
       This event was cancelled on {new Date(event.cancelledAt).toLocaleDateString()}. Refund progress is at
       the top of this dashboard.
     </p>
+    {#if chainLeft.length > 0}
+      <p class="warn">
+        One step is left: finish cancelling so every ticket checker sees it too. Sales have already stopped and
+        refunds are under way.
+      </p>
+      <button class="cancel-btn" onclick={finishCancelling} disabled={finishing}>
+        {finishing ? "Finishing…" : "Finish cancelling"}
+      </button>
+    {/if}
+    {#if finishMsg}
+      <p class="hint">{finishMsg}</p>
+    {/if}
   {:else if windowClosed}
     <p class="hint">
       This event ended more than {ORGANISER_CANCEL_WINDOW_DAYS} days ago, so it can no longer be cancelled. You can
       still refund individual buyers from your Stripe Dashboard.
     </p>
   {:else if !open}
-    <p class="hint">
-      If the event isn't going ahead, cancel it here. Every buyer gets back everything they paid.
-    </p>
+    {#if cancelledElsewhere}
+      <p class="warn">
+        This event has been cancelled from another app, so its tickets can't be sold. Confirm the cancellation here
+        so every buyer is refunded.
+      </p>
+    {:else}
+      <p class="hint">
+        If the event isn't going ahead, cancel it here. Every buyer gets back everything they paid.
+      </p>
+    {/if}
     <button class="cancel-btn" onclick={openForm} disabled={asking}>
-      {asking ? "Confirming it's you…" : "Cancel this event"}
+      {asking ? "Confirming it's you…" : cancelledElsewhere ? "Confirm cancellation" : "Cancel this event"}
     </button>
   {:else}
     {#if alreadyEnded}
