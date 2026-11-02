@@ -10,7 +10,7 @@
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { navigate } from "../../router/router.svelte.js";
+  import { navigate, replaceRoute, router } from "../../router/router.svelte.js";
   import { openEvent } from "../../attendee/events/open-event.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { authGet } from "../../api/client.js";
@@ -78,10 +78,16 @@
   // platform. The badge's whole value is that WoCo vouched, and a signed chunk
   // carries that on its own; an API answer only carried WoCo's word for it.
   let badge = $state<BadgeV1 | null>(null);
+  let networkBadge = $state<BadgeV1 | null>(null);
   $effect(() => {
     badge = null;
+    networkBadge = null;
     if (!viewAddress) return;
-    readBadge(viewAddress as Hex0x).then((b) => { badge = b; }).catch(() => {});
+    const addr = viewAddress as Hex0x;
+    // A late answer for an address the page has since left must not land on
+    // the new one.
+    readBadge(addr).then((b) => { if (viewAddress === addr) badge = b; }).catch(() => {});
+    readBadge(addr, undefined, "network").then((b) => { if (viewAddress === addr) networkBadge = b; }).catch(() => {});
   });
   let saveError = $state('');
   let ensBindError = $state('');
@@ -456,11 +462,14 @@
   // isConnected half of the key this effect would never re-fire and the page
   // would keep showing the previous account's profile after logout.
   let _prevView = "";
+  let _wasOwnView = false;
   $effect(() => {
     const v = viewAddress;
     const key = `${v}:${auth.isConnected}`;
     if (key === _prevView) return;
+    const signedOutOfOwn = _wasOwnView && !auth.isConnected;
     _prevView = key;
+    _wasOwnView = isOwner;
     saveLifetime?.abort();
     profile = null; events = []; eventsLoaded = false; eventsLoading = false; eventsFailed = false;
     eventsSubTab = "upcoming";
@@ -470,6 +479,15 @@
     editName = ""; editBio = ""; editWebsite = ""; editTwitter = ""; editFarcaster = "";
     formLoaded = { displayName: "", bio: "", website: "", twitterHandle: "", farcasterHandle: "" };
     formDirty = false;
+    if (signedOutOfOwn && v) {
+      // The Profile tab opens `/creator/profile/0x…`, so the address outlives the
+      // sign-out and this page would come back as the PUBLIC view of the account
+      // just left - name, bio, events, a Follow button on yourself - reading as
+      // still signed in. The address-less route shows nothing and asks to sign in.
+      loading = false;
+      replaceRoute(router.surface === "creator" ? "/creator/profile" : "/profile");
+      return;
+    }
     if (!v) {
       loading = false;
       if (!auth.isConnected) loginRequest.request().then(ok => { if (!ok) navigate("/"); });
@@ -552,15 +570,19 @@
       {:else}
         <div class="name-row">
           <h1 class="display-name">{displayName}</h1>
-          <!-- `value === true` only: a revoked badge is a LATER version of the
-               same record, so `readBadge` returns it and the display rule is
-               here. Truthiness alone would render a revocation as a badge. -->
+          <!-- `value === true` only: the display rule is the caller's
+               (`readBadge`), and truthiness alone would show any badge record. -->
           {#if badge?.value === true}
             <span
               class="cohort-mark"
               title={badge.epoch === 0 ? "Early adopter - signed by WoCo" : `Cohort ${badge.epoch} - signed by WoCo`}
             >
               <CohortStamp epoch={badge.epoch} size={36} />
+            </span>
+          {/if}
+          {#if networkBadge?.value === true}
+            <span class="cohort-mark" title="Network builder - signed by WoCo">
+              <CohortStamp kind="network" size={36} />
             </span>
           {/if}
           {#if isOwner && auth.kind}
@@ -928,7 +950,7 @@
 
     {#if activeTab === "passport"}
       <div class="tab-body">
-        <PassportTab {badge} />
+        <PassportTab {badge} {networkBadge} />
       </div>
     {/if}
 

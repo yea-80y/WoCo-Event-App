@@ -101,8 +101,13 @@ const CAMPAIGN_VERSION = 1;
  * The closed list of badge kinds. A kind outside it has no address and no
  * schema: a typo must fail loudly rather than mint a badge at an address
  * nothing reads.
+ *
+ *   · `joined`  — a first meaningful action (a publish, a confirmed referral).
+ *   · `network` — someone this account referred has had a referral of their own
+ *     confirmed. Recognition only, never money: the revenue share stays one
+ *     level deep (A is paid nothing on C's sales).
  */
-export const BADGE_KINDS = ["joined"] as const;
+export const BADGE_KINDS = ["joined", "network"] as const;
 export type BadgeKind = (typeof BADGE_KINDS)[number];
 
 /**
@@ -138,8 +143,8 @@ export function campaignAccountSubject(address: string): Hex0x {
 
 /**
  * Three of the five families are PINNED to band 0. The referee's statement is
- * latest-wins, the follow scheme exactly; the confirmation is write-once; a
- * badge gains a version only on revocation. None has a growth axis, so none
+ * latest-wins, the follow scheme exactly; the confirmation and the badge are
+ * write-once, read at version 0. None has a growth axis, so none
  * bands — and a pinned family must never be handed to a band walk, because
  * every opener probe would address the same chunk.
  */
@@ -228,13 +233,24 @@ export interface ReferralConfirmationV1 {
   confirmedAt: string;
 }
 
+/**
+ * PERMANENT (owner decision 2026-11-02). The badge of record is VERSION 0 of its
+ * topic, read by computed address exactly like a confirmation, so nothing the
+ * issuer writes later can take it back: a badge is the platform's signed word
+ * that cannot be quietly withdrawn, and anyone holding the chunk can check it
+ * without asking WoCo. If bots ever earn badges, the answer is a separate,
+ * public list a reader can consult - never an edit to the badge.
+ */
 export interface BadgeV1 {
   format: typeof BADGE_FORMAT;
   subject: Hex0x;
   badge: BadgeKind;
   /** A platform-defined campaign window, not clock math. */
   epoch: number;
-  /** `false` revokes — the abuse escape hatch for badges minted by bots. */
+  /**
+   * Always `true` from this issuer. Kept in the frozen schema; a reader shows a
+   * badge only for `true`, and a later version saying `false` is never read.
+   */
   value: boolean;
 }
 
@@ -304,6 +320,15 @@ export function validateBadgeV1(value: unknown): value is BadgeV1 {
   if (typeof o.epoch !== "number" || !Number.isSafeInteger(o.epoch) || o.epoch < 0) return false;
   if (typeof o.subject !== "string" || !SUBJECT_RE.test(o.subject)) return false;
   return typeof o.value === "boolean";
+}
+
+/**
+ * A badge read from `badgeTopic(subject, kind)` is that badge only if it names
+ * the same subject and kind. With more than one kind, a schema-valid record of
+ * another kind or account at this address is foreign bytes, not this badge.
+ */
+export function badgeMatches(record: BadgeV1, subject: Hex0x, kind: BadgeKind): boolean {
+  return record.subject === subject && record.badge === kind;
 }
 
 export function validateReferrerIndexV1(value: unknown): value is ReferrerIndexV1 {
