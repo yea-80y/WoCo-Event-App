@@ -8,6 +8,7 @@
  * with the same frozen labels the seed has always used:
  *
  *   content-feed signer   HKDF(S_g, "woco/feed-signer/v1")        crypto/feed-signer.ts
+ *   organiser key         HKDF(S_g, "woco/organiser-key/v1")      crypto/organiser-key.ts
  *   order key (X-Wing)    HKDF(S_g, "woco/encryption/xwing/v1")   crypto/xwing.ts
  *   door pass secret P    HKDF(S_g, "", "woco/door-pass/v2:{eventId}:{passId}")
  *     roster key            HKDF(P, "", "woco/door-pass/v2/roster-aead")   checkin/door-keys.ts
