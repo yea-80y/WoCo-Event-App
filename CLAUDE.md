@@ -610,6 +610,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     Losing it only reopens that window; present-but-unreadable is never overwritten; `/api/health`
     `keyRing` alarms, also when an account stays below its mark for 10 min - remove its entry with
     the server stopped if the recorded generation is wrong)
+  site-runtime-high-water.json (#1032 — the highest site runtime release version accepted, so a
+    restart cannot be handed an older (genuinely signed) release to build browser-built sites on.
+    Losing it only reopens that window. Unreadable = never overwritten, no release accepted (browser
+    builds refused, the old build path unaffected), `/api/health` `siteRuntime` red)
   name-targets.json (feed manifest -> the collection a deploy last baked there: the ONLY thing a site or
     event-page name may show - the CCIP gateway's WoCo-built rule never signs the holder's pointer. Losing it
     fails SAFE: every such name shows the app until republished. Unreadable = never overwritten, every such

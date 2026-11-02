@@ -207,10 +207,20 @@ Today every deploy copies the whole runtime (~9 MB) into the site. The replaceme
 published ONCE per release (`node scripts/publish-site-runtime.cjs`, real repo, clean main) to our
 bee on the core batch and to the Etherna platform batch, and a signed descriptor
 (`packages/shared/src/site/runtime-release.ts`) is written to the `woco-site-runtime-v1` feed under
-the frontend deploy key. Sites will link the release's shared directories into their own manifest
-(~20 KB per publish) and pin the release they linked; the feed is discovery only. The server reads
-the latest descriptor (`GET /api/sites/runtime`, `/api/health` `siteRuntime`). Not used by
-publishing yet (slice 3). Design, measurements and slice plan: #1032.
+the frontend deploy key. The server reads the latest descriptor (`GET /api/sites/runtime`,
+`/api/health` `siteRuntime`), checks the update's signature itself, and never accepts a lower
+version than `.data/site-runtime-high-water.json` records.
+
+**Browser-built sites (slice 3, behind `SITE_CLIENT_PUBLISH`: unset = off, `all`, or a comma list of
+account addresses).** The builder fetches `GET /api/sites/runtime/kit/{woco|etherna}` (the store's
+release root node + template), renders the site with the shared render, and lays out a collection
+that copies the release's `/`, `assets/`, `icons/` and `logo.png` fork records and adds its own
+`multi-site.html` + `manifest.json` (`@woco/shared/site/collection`, loaded only on publish): six
+objects, ~3 KB, encoded exactly as bee encodes a `/bzz` upload. It sends them with the deploy; the
+server rebuilds from its own copy of the release and stores them (`/bytes`, redundancy 0, each at the
+computed address) only if byte-identical, else 409 `COLLECTION_MISMATCH` / `RUNTIME_RELEASE_CHANGED`
+and the builder re-sends for the old build. Off for an account, the collection is ignored. The
+response says `builtBy`. Next: retire the tar path and `dist-multisite` on the VM (slice 4).
 
 ---
 

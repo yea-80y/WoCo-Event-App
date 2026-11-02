@@ -481,7 +481,8 @@
       if (feedRes.code === 'STRIPE_VERIFICATION_REQUIRED') throw new StripeVerificationNeeded(feedRes.error);
       if (!feedRes.ok) throw new Error(feedRes.error ?? 'Publish failed');
 
-      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) }, feedSigner, retry);
+      // parentAddress: build the site here on the shared runtime (#1032); the server checks it.
+      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site), parentAddress: auth.parent ?? undefined }, feedSigner, retry);
       publishWaitNote = '';
       if (!deployRes.ok || !deployRes.data) {
         if (deployRes.code === 'BATCH_PURCHASE_REQUIRED') throw new BatchPurchaseNeeded();
