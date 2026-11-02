@@ -21,7 +21,7 @@
  * absent / unavailable, and only `absent` licenses a write. A source that
  * cannot answer is `unavailable` and a throw is treated the same — treating
  * either as absence would write a confirmation over a slot that is already
- * spent, re-issue a badge someone revoked, or countersign a referral whose
+ * spent, write a badge over a slot that already holds one, or countersign a referral whose
  * retraction sits in a store that did not answer.
  *
  * EVERY READ NAMES ITS FAMILY (#657). The referee's statement is the
@@ -44,6 +44,7 @@ import {
   LAST_VERSION_IN_BAND,
   REFERRAL_CONFIRMATION_FORMAT,
   REFERRER_INDEX_FORMAT,
+  badgeMatches,
   badgeTopic,
   campaignAccountSubject,
   referralConfirmationTopic,
@@ -53,6 +54,7 @@ import {
   validateReferralConfirmationV1,
   validateReferralStatementV1,
   validateReferrerIndexV1,
+  type BadgeKind,
   type BadgeV1,
   type Hex0x,
   type ReferralConfirmationV1,
@@ -122,9 +124,9 @@ export type RecordRead<T> =
 // ---------------------------------------------------------------------------
 
 export interface IssuerDeps {
-  /** Latest version of a pinned-band feed — badges and the referee's statement. */
+  /** Latest version of a pinned-band feed — the referee's statement. */
   readHead: (ownerHex: string, topic: string, family: FeedFamily) => Promise<VersionedFeedRead>;
-  /** Version 0 EXACTLY, by computed address. The first-confirmed-wins read. */
+  /** Version 0 EXACTLY, by computed address. The first-confirmed-wins read, and every badge read. */
   readVersion0: (ownerHex: string, topic: string, family: FeedFamily) => Promise<SlotRead>;
   readBanded: (
     ownerHex: string,
@@ -225,8 +227,9 @@ function unavailable(label: string, detail?: string): { status: "unavailable"; r
 
 /** One confirm at a time per referee — see the header. */
 const inFlight = new Set<string>();
-/** One badge write at a time per address; `issueJoinedBadge` fires from several
- *  success paths at once and each would otherwise read the same absent slot. */
+/** One badge write at a time per address AND kind; `issueJoinedBadge` fires from
+ *  several success paths at once and each would otherwise read the same absent
+ *  slot. Two kinds are two slots, so one must not hold the other back. */
 const badgesInFlight = new Set<string>();
 
 // ---------------------------------------------------------------------------
@@ -423,7 +426,73 @@ async function finishConfirmation(record: ReferralConfirmationV1, deps: IssuerDe
   // A confirmed referral is a first meaningful action for both parties.
   void issueBadge(record.referee, deps);
   void issueBadge(record.referrer, deps);
+  // The Network badge has two orders to catch: C confirmed after B (look up at
+  // B's confirmation) and C confirmed BEFORE B (B's confirmation lands now: look
+  // down at the referees B already has).
+  void issueNetworkBadge(record, deps);
+  void issueNetworkBadgeFromIndex(record, deps);
   return indexed;
+}
+
+/**
+ * The other order (Fable sign-off 2026-11-02): every account gets an invite link
+ * at signup, but its own confirmation lands only when its Stripe verification
+ * does. So B can invite C, C can confirm first (B's confirmation absent, no
+ * badge), and B's confirmation landing later looked only UP. Here `record` is
+ * B's confirmation: if B's referrer index already lists anyone other than A, A
+ * gets the badge.
+ *
+ * A dirty scan is fine: the index only grows, and this is a trigger for a
+ * write-once badge, not a write decision over the index.
+ */
+async function issueNetworkBadgeFromIndex(record: ReferralConfirmationV1, deps: IssuerDeps): Promise<void> {
+  try {
+    const top = campaignAccountSubject(record.referrer);
+    const middle = campaignAccountSubject(record.referee);
+    const read = await deps.readBanded(
+      getCampaignIssuerOwnerHex(),
+      (band) => referrerIndexTopic(middle, band),
+      "campaignIssuer",
+    );
+    if (read.status !== "found") return;
+    const index = parseJson(read.bytes);
+    if (!validateReferrerIndexV1(index)) return;
+    // The same loop guard as above, from this side: A referred B and B referred
+    // A puts A in B's index, and that alone is not a second step.
+    if (!index.subjects.some((s) => s !== top)) return;
+    await issueBadge(record.referrer, deps, "network");
+  } catch (err) {
+    console.warn(`[campaign] network badge index check failed for ${record.referee}:`, err);
+  }
+}
+
+/**
+ * The Network badge: when B (who referred `record.referee`) was themselves
+ * referred by A, A's referral has grown a second step, and A gets the badge.
+ *
+ * Read from B's own confirmation at version 0, the same first-confirmed-wins
+ * read every other caller uses, so the A it names is the referrer of record and
+ * nothing a request body said. Recognition only: no revenue share follows it.
+ *
+ * Never throws, like {@link issueBadge}: it rides a success path. A read it
+ * cannot make is not retried here; the next confirmation below B, or a repair
+ * after a restart, runs it again, and the badge write itself is write-once.
+ */
+async function issueNetworkBadge(record: ReferralConfirmationV1, deps: IssuerDeps): Promise<void> {
+  try {
+    const middle = record.referrer.toLowerCase();
+    const topic = referralConfirmationTopic(campaignAccountSubject(middle));
+    const slot = await deps.readVersion0(getCampaignIssuerOwnerHex(), topic, "campaignIssuer");
+    if (slot.status !== "found") return;
+    const upstream = parseJson(slot.bytes);
+    if (!validateReferralConfirmationV1(upstream) || upstream.referee !== middle) return;
+    // A refers B, then B refers A: the loop closes on A, who would earn a badge
+    // for being referred by their own referee. Not a second step, so no badge.
+    if (upstream.referrer === record.referee.toLowerCase()) return;
+    await issueBadge(upstream.referrer, deps, "network");
+  } catch (err) {
+    console.warn(`[campaign] network badge check failed for ${record.referee}:`, err);
+  }
 }
 
 /**
@@ -581,38 +650,44 @@ export function currentEpoch(): number {
 }
 
 /**
- * Issue the Joined badge for `address`, once ever. Never throws — every caller
- * fires it from a success path that must not fail because a badge did.
+ * Issue the `kind` badge (Joined by default) for `address`, once ever. Never
+ * throws — every caller fires it from a success path that must not fail because
+ * a badge did.
  *
- * A badge feed is LATEST-WINS, so this reads the head rather than version 0: a
- * revocation is a later version, and re-issuing over one would undo the abuse
- * escape hatch the format exists to provide. Any valid badge already there —
- * granted or revoked — ends the attempt.
+ * A badge is PERMANENT: version 0 is the badge of record (see `BadgeV1`), so
+ * this reads version 0 by computed address, as a confirmation does, and anything
+ * already there ends the attempt.
  */
-export async function issueBadge(address: string, deps: IssuerDeps = liveDeps()): Promise<void> {
+export async function issueBadge(
+  address: string,
+  deps: IssuerDeps = liveDeps(),
+  kind: BadgeKind = "joined",
+): Promise<void> {
   const addr = address.toLowerCase();
   if (!/^0x[0-9a-f]{40}$/.test(addr)) return;
   // Boot-accepted, not merely set — `events.ts` fires this on every publish,
   // so this is the entry point a mismatched key would most quietly leak
   // through, writing badges into an address space no client reads.
   if (!health.configured) return;
-  if (badgesInFlight.has(addr)) return;
-  badgesInFlight.add(addr);
+  const flightKey = `${addr}:${kind}`;
+  if (badgesInFlight.has(flightKey)) return;
+  badgesInFlight.add(flightKey);
   try {
     const subject = campaignAccountSubject(addr);
-    const topic = badgeTopic(subject, "joined");
+    const topic = badgeTopic(subject, kind);
     const issuerOwner = getCampaignIssuerOwnerHex();
 
-    const head = await deps.readHead(issuerOwner, topic, "campaignIssuer");
-    if (head.status === "unavailable") {
+    const slot = await deps.readVersion0(issuerOwner, topic, "campaignIssuer");
+    if (slot.status === "unavailable") {
       // Not an error worth counting: the next qualifying action retries, which
       // is how this rail has always recovered from a read it could not make.
-      console.warn(`[campaign] badge read unavailable for ${addr}: ${head.reason ?? "unavailable"}`);
+      console.warn(`[campaign] badge read unavailable for ${addr}: ${slot.reason}`);
       return;
     }
-    if (head.status === "found") {
-      if (!validateBadgeV1(parseJson(head.bytes))) {
-        console.error(`[campaign] foreign bytes at the badge feed for ${addr} — not overwriting`);
+    if (slot.status === "found") {
+      const existing = parseJson(slot.bytes);
+      if (!validateBadgeV1(existing) || !badgeMatches(existing, subject, kind)) {
+        console.error(`[campaign] foreign bytes at the ${kind} badge slot for ${addr} — not overwriting`);
       }
       return;
     }
@@ -626,7 +701,7 @@ export async function issueBadge(address: string, deps: IssuerDeps = liveDeps())
     const badge: BadgeV1 = {
       format: BADGE_FORMAT,
       subject,
-      badge: "joined",
+      badge: kind,
       epoch: currentEpoch(),
       value: true,
     };
@@ -653,7 +728,7 @@ export async function issueBadge(address: string, deps: IssuerDeps = liveDeps())
   } catch (err) {
     console.error(`[campaign] badge issue threw for ${addr}:`, err);
   } finally {
-    badgesInFlight.delete(addr);
+    badgesInFlight.delete(flightKey);
   }
 }
 
@@ -679,27 +754,29 @@ export async function readConfirmation(
   return { status: "found", record };
 }
 
-/** An address's Joined badge — head read, because a revocation is a later version. */
+/** An address's `kind` badge — version 0, because a badge is permanent (see `BadgeV1`). */
 export async function readBadge(
   address: string,
   deps: IssuerDeps = liveDeps(),
+  kind: BadgeKind = "joined",
 ): Promise<RecordRead<BadgeV1>> {
   if (!health.configured) return { status: "unavailable" };
-  const topic = badgeTopic(campaignAccountSubject(address.toLowerCase()), "joined");
-  let head: VersionedFeedRead;
+  const subject = campaignAccountSubject(address.toLowerCase());
+  const topic = badgeTopic(subject, kind);
+  let slot: SlotRead;
   try {
-    head = await deps.readHead(getCampaignIssuerOwnerHex(), topic, "campaignIssuer");
+    slot = await deps.readVersion0(getCampaignIssuerOwnerHex(), topic, "campaignIssuer");
   } catch (err) {
-    // A head read can still throw (a malformed address, a bug below the
-    // probe). There is no global error handler, so an uncaught throw here is a
-    // bare 500 for a public read that should say "try again".
+    // The live read never throws, but an injected one or a bug below it can.
+    // There is no global error handler, so an uncaught throw here is a bare 500
+    // for a public read that should say "try again".
     console.warn(`[campaign] badge read threw for ${address}:`, err);
     return { status: "unavailable" };
   }
-  if (head.status === "unavailable") return { status: "unavailable" };
-  if (head.status === "absent") return { status: "absent" };
-  const record = parseJson(head.bytes);
-  if (!validateBadgeV1(record)) return { status: "unavailable" };
+  if (slot.status === "unavailable") return { status: "unavailable" };
+  if (slot.status === "absent") return { status: "absent" };
+  const record = parseJson(slot.bytes);
+  if (!validateBadgeV1(record) || !badgeMatches(record, subject, kind)) return { status: "unavailable" };
   return { status: "found", record };
 }
 

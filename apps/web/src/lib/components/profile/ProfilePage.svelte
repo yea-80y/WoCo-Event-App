@@ -78,10 +78,16 @@
   // platform. The badge's whole value is that WoCo vouched, and a signed chunk
   // carries that on its own; an API answer only carried WoCo's word for it.
   let badge = $state<BadgeV1 | null>(null);
+  let networkBadge = $state<BadgeV1 | null>(null);
   $effect(() => {
     badge = null;
+    networkBadge = null;
     if (!viewAddress) return;
-    readBadge(viewAddress as Hex0x).then((b) => { badge = b; }).catch(() => {});
+    const addr = viewAddress as Hex0x;
+    // A late answer for an address the page has since left must not land on
+    // the new one.
+    readBadge(addr).then((b) => { if (viewAddress === addr) badge = b; }).catch(() => {});
+    readBadge(addr, undefined, "network").then((b) => { if (viewAddress === addr) networkBadge = b; }).catch(() => {});
   });
   let saveError = $state('');
   let ensBindError = $state('');
@@ -552,15 +558,19 @@
       {:else}
         <div class="name-row">
           <h1 class="display-name">{displayName}</h1>
-          <!-- `value === true` only: a revoked badge is a LATER version of the
-               same record, so `readBadge` returns it and the display rule is
-               here. Truthiness alone would render a revocation as a badge. -->
+          <!-- `value === true` only: the display rule is the caller's
+               (`readBadge`), and truthiness alone would show any badge record. -->
           {#if badge?.value === true}
             <span
               class="cohort-mark"
               title={badge.epoch === 0 ? "Early adopter - signed by WoCo" : `Cohort ${badge.epoch} - signed by WoCo`}
             >
               <CohortStamp epoch={badge.epoch} size={36} />
+            </span>
+          {/if}
+          {#if networkBadge?.value === true}
+            <span class="cohort-mark" title="Network builder - signed by WoCo">
+              <CohortStamp kind="network" size={36} />
             </span>
           {/if}
           {#if isOwner && auth.kind}
@@ -928,7 +938,7 @@
 
     {#if activeTab === "passport"}
       <div class="tab-body">
-        <PassportTab {badge} />
+        <PassportTab {badge} {networkBadge} />
       </div>
     {/if}
 
