@@ -50,7 +50,7 @@ before(async () => {
 });
 after(() => new Promise<void>((r) => bee.close(() => r())));
 
-const kit = () => ({ version: 1, store: "woco" as const, release: fx.release, rootNode, template: fx.template });
+const kit = () => ({ version: 1, line: "site" as const, store: "woco" as const, release: fx.release, rootNode, template: fx.template });
 const clientBuild = (s = site, u = urls) => shared.buildSiteCollection({ site: s, urls: u, template: fx.template, release: fx.release, releaseRootNode: rootNode });
 const b64 = (c: { objects: { data: Uint8Array }[] }) => c.objects.map((o) => Buffer.from(o.data).toString("base64"));
 
@@ -109,33 +109,62 @@ const NODES = new Map<string, Uint8Array>([
   [fx.htmlLeaf.address, hexToBytes(fx.htmlLeaf.data)],
 ]);
 const templateBytes = new TextEncoder().encode(fx.template);
+/** Release v1's site runtime as the site line of a v2 descriptor (the page line is not read here). */
+const siteRelease = () =>
+  ({ version: 1, runtimes: { site: { dist: { files: 1, bytes: 1 }, roots: { woco: fx.release } }, eventPage: { dist: { files: 1, bytes: 1 }, roots: { woco: { ...fx.release, indexDocument: "site.html" } } } } }) as never;
 
 test("a kit whose root node does not hash to the descriptor's root is refused, and not cached", async () => {
   let rootReads = 0;
   let root = rootNode.slice();
   root[root.length - 1] ^= 1;
+  const asked: string[] = [];
   const kits = mod.createSiteRuntimeKits({
     node: async (_s, a) => {
       if (a === fx.release.root) { rootReads++; return root; }
       return NODES.get(a)!;
     },
-    template: async () => templateBytes,
+    template: async (wocoRoot, index) => { asked.push(`${wocoRoot}/${index}`); return templateBytes; },
   });
-  const release = { version: 1, roots: { woco: fx.release } } as never;
-  await assert.rejects(kits.kit(release, "woco"), /does not match/);
+  const release = siteRelease();
+  await assert.rejects(kits.kit(release, "site", "woco"), /does not match/);
   root = rootNode;
-  const k = await kits.kit(release, "woco");
-  assert.equal(k.version, 1);
-  assert.equal(k.template, fx.template);
-  await kits.kit(release, "woco");
+  const k = await kits.kit(release, "site", "woco");
+  assert.deepEqual([k.version, k.line, k.template], [1, "site", fx.template]);
+  assert.equal(asked.at(-1), `${fx.release.root}/multi-site.html`, "the site line's index document");
+  await kits.kit(release, "site", "woco");
   assert.equal(rootReads, 2, "a failed load is retried, a good one is cached");
-  await assert.rejects(kits.kit(release, "etherna"), /no etherna root/);
+  await assert.rejects(kits.kit(release, "site", "etherna"), /no site etherna root/);
+});
+
+test("an event-page kit reads its own line's root and index document (site.html)", async () => {
+  const { encodeMantarayNode, encodeMantarayFork, mantarayNodeAddress } = await import("@woco/shared/swarm/mantaray");
+  const { bytesTreeRoot } = await import("@woco/shared/swarm/bytes-tree");
+  const pageTemplate = new TextEncoder().encode("<!doctype html><html><head><title>Event</title></head><body></body></html>");
+  const leaf = encodeMantarayNode(bytesTreeRoot(pageTemplate), []);
+  const slash = encodeMantarayNode(null, []);
+  const root = encodeMantarayNode(null, [
+    encodeMantarayFork({ type: 18, prefix: "/", ref: mantarayNodeAddress(slash), metadata: { "website-error-document": "site.html", "website-index-document": "site.html" } }),
+    encodeMantarayFork({ type: 18, prefix: "site.html", ref: mantarayNodeAddress(leaf), metadata: { "Content-Type": "text/html; charset=utf-8", Filename: "site.html" } }),
+  ]);
+  const pageRoot = { root: mantarayNodeAddress(root), edges: {}, files: {}, indexDocument: "site.html" };
+  const nodes = new Map([[pageRoot.root, root], [mantarayNodeAddress(leaf), leaf]]);
+  const asked: string[] = [];
+  const kits = mod.createSiteRuntimeKits({
+    node: async (_s, a) => nodes.get(a) ?? new Uint8Array(0),
+    template: async (wocoRoot, index) => { asked.push(`${wocoRoot}/${index}`); return pageTemplate; },
+  });
+  const release = { version: 2, runtimes: { site: { dist: { files: 1, bytes: 1 }, roots: { woco: fx.release } }, eventPage: { dist: { files: 1, bytes: 1 }, roots: { woco: pageRoot } } } } as never;
+  const k = await kits.kit(release, "eventPage", "woco");
+  assert.deepEqual([k.line, k.release.root, k.template], ["eventPage", pageRoot.root, new TextDecoder().decode(pageTemplate)]);
+  assert.deepEqual(asked, [`${pageRoot.root}/site.html`]);
+  // The two lines never share a cached kit.
+  assert.equal((await kits.kit(release, "site", "woco").catch(() => null))?.line ?? "site", "site");
 });
 
 test("the template must be the one the signed root names, read through hash-checked nodes", async () => {
-  const release = { version: 1, roots: { woco: fx.release } } as never;
+  const release = siteRelease();
   const kitWith = (template: Uint8Array, nodes = NODES) =>
-    mod.createSiteRuntimeKits({ node: async (_s, a) => nodes.get(a) ?? new Uint8Array(0), template: async () => template }).kit(release, "woco");
+    mod.createSiteRuntimeKits({ node: async (_s, a) => nodes.get(a) ?? new Uint8Array(0), template: async () => template }).kit(release, "site", "woco");
   const other = new TextEncoder().encode(fx.template.replace("<title>Site</title>", "<title>Other</title>"));
   await assert.rejects(kitWith(other), /template does not match its root/);
   const forged = new Map(NODES);

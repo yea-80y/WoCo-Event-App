@@ -1,6 +1,9 @@
 <script lang="ts">
   import type { MySiteRecord } from './types.js';
   import { subEnsWebUrl } from '@woco/shared';
+  import { onMount } from 'svelte';
+  import { getSiteRuntimeVersion } from '../../api/sites.js';
+  import { runtimeUpdateAvailable } from './runtime-update.js';
 
   interface Props {
     sites: MySiteRecord[];
@@ -26,6 +29,12 @@
     }
     return null;
   }
+
+  /** The latest site runtime release (#1032): a linked site behind it gets an update note. */
+  let latestRuntime = $state<number | null>(null);
+  onMount(() => {
+    void getSiteRuntimeVersion().then((v) => { latestRuntime = v; });
+  });
 
   let showAdvanced = $state(false);
   let advancedId = $state('');
@@ -142,6 +151,10 @@
                 <p class="card-meta">Published {timeAgo(rec.publishedAt)}</p>
               {:else}
                 <p class="card-meta">Not yet published</p>
+              {/if}
+
+              {#if runtimeUpdateAvailable(rec, latestRuntime)}
+                <p class="card-update">Update ready - open the builder and publish to get it.</p>
               {/if}
 
               {#if siteName(rec)}
@@ -478,6 +491,13 @@
   .card-meta {
     font-size: 0.8125rem;
     color: var(--muted);
+    margin: 0;
+  }
+
+  .card-update {
+    font-size: 0.8125rem;
+    color: var(--accent-text, var(--accent));
+    font-weight: 600;
     margin: 0;
   }
 

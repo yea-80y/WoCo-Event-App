@@ -25,11 +25,11 @@ import {
   MANTARAY_TYPE_VALUE,
 } from "../swarm/mantaray.js";
 import { isEthernaGatewayUrl, isWocoGatewayUrl, WOCO_GATEWAY_URL } from "../swarm/feed-routes.js";
-import { isSiteRuntimeFileType, type SiteRuntimeRoot, type SiteRuntimeStore } from "./runtime-release.js";
+import { isSiteRuntimeFileType, SITE_RUNTIME_INDEX_DOCUMENT, type SiteRuntimeRoot, type SiteRuntimeStore } from "./runtime-release.js";
 import { renderSiteHtml, sitePwaManifest } from "./render.js";
 import type { Site } from "./types.js";
 
-export const SITE_INDEX_DOCUMENT = "multi-site.html";
+export const SITE_INDEX_DOCUMENT = SITE_RUNTIME_INDEX_DOCUMENT.site;
 /** Both per-site files start with "m", so they hang off one "m" edge, as bee lays them out. */
 const SITE_FILES_EDGE = "m";
 const HTML_TYPE = "text/html; charset=utf-8";
@@ -92,13 +92,15 @@ export function siteDeployConfig(site: Site, urls: SiteRenderUrls): Record<strin
 }
 
 /**
- * The release forks a site keeps, checked against the descriptor: every listed
+ * The release forks a page keeps, checked against the descriptor: every listed
  * edge and file must be in the root exactly as described, plus the root's "/"
- * (index document) record. Anything else in the release root is dropped.
+ * (index document) record naming `indexDocument`. Anything else in the release
+ * root is dropped. `ownFiles` are the names the page writes itself: no kept
+ * record may start with the same byte, or the page's own fork would collide.
  */
-function releaseForks(release: SiteRuntimeRoot, rootNode: Uint8Array): Uint8Array[] {
+export function releaseForks(release: SiteRuntimeRoot, rootNode: Uint8Array, indexDocument: string, ownFiles: readonly string[]): Uint8Array[] {
   if (mantarayNodeAddress(rootNode) !== release.root) throw new Error("site runtime: root node does not match its address");
-  if (release.indexDocument !== SITE_INDEX_DOCUMENT) throw new Error("site runtime: unexpected index document");
+  if (release.indexDocument !== indexDocument) throw new Error("site runtime: unexpected index document");
   const forks = new Map(parseMantarayNode(rootNode).forks.map((f) => [f.prefix, f]));
   const kept: Uint8Array[] = [];
 
@@ -106,8 +108,8 @@ function releaseForks(release: SiteRuntimeRoot, rootNode: Uint8Array): Uint8Arra
   if (
     !slash ||
     slash.type !== (MANTARAY_TYPE_VALUE | MANTARAY_TYPE_METADATA) ||
-    slash.metadata?.["website-index-document"] !== SITE_INDEX_DOCUMENT ||
-    slash.metadata?.["website-error-document"] !== SITE_INDEX_DOCUMENT ||
+    slash.metadata?.["website-index-document"] !== indexDocument ||
+    slash.metadata?.["website-error-document"] !== indexDocument ||
     Object.keys(slash.metadata).length !== 2
   ) {
     throw new Error("site runtime: root has no index document record");
@@ -136,8 +138,9 @@ function releaseForks(release: SiteRuntimeRoot, rootNode: Uint8Array): Uint8Arra
     }
     kept.push(f.record);
   }
+  const own = new Set(ownFiles.map((n) => n.charCodeAt(0)));
   for (const rec of kept) {
-    if (rec[2] === SITE_FILES_EDGE.charCodeAt(0)) throw new Error("site runtime: a shared path collides with the site's own files");
+    if (own.has(rec[2]!)) throw new Error("site runtime: a shared path collides with the page's own files");
   }
   return kept;
 }
@@ -159,7 +162,7 @@ export function buildSiteCollection(input: {
   release: SiteRuntimeRoot;
   releaseRootNode: Uint8Array;
 }): SiteCollection {
-  const kept = releaseForks(input.release, input.releaseRootNode);
+  const kept = releaseForks(input.release, input.releaseRootNode, SITE_INDEX_DOCUMENT, [SITE_INDEX_DOCUMENT, "manifest.json"]);
   const enc = new TextEncoder();
   const html = enc.encode(
     renderSiteHtml({ template: input.template, config: siteDeployConfig(input.site, input.urls), site: input.site, gatewayUrl: input.urls.gatewayUrl }),

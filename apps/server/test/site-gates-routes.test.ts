@@ -267,6 +267,18 @@ test("client publish with no release to build on: a retryable 503, never a fallb
   }
 });
 
+test("both runtime kit routes answer, for their own line, and refuse an unknown store (#1032)", async () => {
+  // The fake bee holds no release: both lines say so, typed, rather than 404 or 500.
+  for (const path of ["/api/sites/runtime/kit/woco", "/api/site/runtime/kit/etherna"]) {
+    const r = await app.request(path);
+    assert.equal(r.status, 503, path);
+    assert.equal(((await r.json()) as { code?: string }).code, "RUNTIME_RELEASE_UNAVAILABLE", path);
+  }
+  for (const path of ["/api/sites/runtime/kit/ipfs", "/api/site/runtime/kit/ipfs"]) {
+    assert.equal((await app.request(path)).status, 400, path);
+  }
+});
+
 test("event-page deploy refuses a malformed eventId (400)", async () => {
   const { status, json } = await call(await organiser(), "POST", "/api/site/deploy", { eventId: "../../x" });
   assert.equal(status, 400);

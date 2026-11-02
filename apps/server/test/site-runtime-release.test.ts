@@ -15,8 +15,10 @@ const release = (version: number) => ({
   version,
   commit: "b".repeat(40),
   builtAt: "2026-11-02T15:00:00.000Z",
-  dist: { files: 251, bytes: 8_900_000 },
-  roots: { woco: { root: H("1"), indexDocument: "multi-site.html", edges: { "assets/": H("2") }, files: {} } },
+  runtimes: {
+    site: { dist: { files: 251, bytes: 8_900_000 }, roots: { woco: { root: H("1"), edges: { "assets/": H("2") }, files: {}, indexDocument: "multi-site.html" } } },
+    eventPage: { dist: { files: 240, bytes: 8_700_000 }, roots: { woco: { root: H("3"), edges: { "assets/": H("4") }, files: {}, indexDocument: "site.html" } } },
+  },
 });
 const ok = (v: unknown): RuntimeFeedRead => ({ status: "ok", payload: new TextEncoder().encode(JSON.stringify(v)) });
 
