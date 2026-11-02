@@ -213,9 +213,9 @@ design protects; it is not a claim that the running app avoids the server.
 | Output | Entry | Runs where |
 |---|---|---|
 | `dist/` | `index.html`, `verify.html`, `ticket.html` | The platform app, at `woco.eth.limo`. The same collection carries the standalone verification page and the static ticket page (`vite.ticket.config.ts`: one file, script inlined, `connect-src 'none'`). |
-| `dist-multisite/` | `multi-site.html` | Each **deployed organiser site** — a standalone Swarm collection with `window.SITE_CONFIG` injected at deploy time. No server at page load. |
+| `dist-multisite/` | `multi-site.html` | Each **deployed organiser site** — a standalone Swarm collection with `window.SITE_CONFIG` injected at publish, linking this runtime from the published release (#1032). No server at page load. |
 | `dist-scanner/` | `scanner.html` | The **door-scanner PWA**. Deliberately has no auth stack and no Swarm reads - provisioned entirely by a door-pass URL. Whether it admits offline depends on the pass's door mode ([TICKETING.md §5](./TICKETING.md#5-at-the-door)). |
-| `dist-site/` | `site.html` | Each published **single-event page**. The event-page builder (`apps/server/src/routes/site.ts`) bakes this bundle in, so - as with multisite - a change reaches nobody until each page is re-published. |
+| `dist-site/` | `site.html` | Each published **single-event page**. Built in the organiser's browser on the runtime release's `eventPage` line and linked, not copied (#1032); the server admits only its identical rebuild. As with multisite, a runtime change ships as a release and reaches a page when it is re-published. |
 
 `packages/embed` builds separately: two IIFE bundles that third-party pages load directly. The
 server serves `woco-embed.js` off its own filesystem at `GET /embed/woco-embed.js` and builds it

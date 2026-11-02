@@ -1,6 +1,6 @@
 /**
  * Rendering a single-event page (#1032 slice 5): the same pure functions for the
- * server's deploy today and the browser's publish next, as `render.ts` is for
+ * browser's build and the server's admitting rebuild, as `render.ts` is for
  * websites. Moved verbatim from apps/server (lib/site/deploy-config.ts,
  * routes/site.ts); `test/fixtures/event-page-render-vectors.json` holds the
  * server's output from before the move.

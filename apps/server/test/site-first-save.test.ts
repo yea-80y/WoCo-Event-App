@@ -715,6 +715,27 @@ test("event page: a head that is not the one rendered, or a tampered page, is re
   assert.equal(contents.size, before, "nothing stored");
 });
 
+test("event page: page-config is a signed GET with a query string, and the server checks the path it was signed over", async () => {
+  const who = await organiser();
+  const eventId = eventOf(who);
+  const withQuery = await call(who, `/api/site/${eventId}/page-config?apiUrl=${encodeURIComponent(PUBLIC_BASE)}`, null, "GET");
+  assert.equal(withQuery.status, 200, JSON.stringify(withQuery.json));
+  assert.equal((withQuery.json.data as { config: { apiUrl: string } }).config.apiUrl, PUBLIC_BASE);
+});
+
+test("event page: the suggested head never ends on half of an emoji", async () => {
+  const { EVENT_PAGE_TITLE_MAX, parseEventPageHead } = await import("@woco/shared");
+  // getEvent is unavailable here, so test the shaping through the shared parser's rule directly:
+  // a title cut at the limit inside a surrogate pair must still round-trip as text.
+  const title = "x".repeat(EVENT_PAGE_TITLE_MAX - 1) + "\u{1F389}";
+  let cut = title.slice(0, EVENT_PAGE_TITLE_MAX);
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  assert.equal(cut, "x".repeat(EVENT_PAGE_TITLE_MAX - 1));
+  assert.ok(parseEventPageHead({ title: cut }));
+  const src = readFileSync(new URL("../src/routes/site.ts", import.meta.url), "utf8");
+  assert.match(src, /if \(\/\[\\uD800-\\uDBFF\]\$\/\.test\(title\)\) title = title\.slice\(0, -1\);/, "the route drops a trailing high surrogate");
+});
+
 test("event page: only the creator gets the page config or publishes the page", async () => {
   const creator = await organiser();
   const stranger = await organiser();

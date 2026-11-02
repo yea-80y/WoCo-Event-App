@@ -145,7 +145,7 @@ Attendees can use any login. See [PASSKEY_SMART_WALLET.md](docs/PASSKEY_SMART_WA
 apps/web/              Vite + Svelte 5 (runes) + TypeScript - the platform UI.
                        Also builds three other bundles from the same source:
                          dist-multisite/  deployed organiser sites (standalone, no server)
-                         dist-site/       single-event pages (baked into each published page)
+                         dist-site/       single-event pages (linked from the runtime release)
                          dist-scanner/    door-scanner PWA (offline-capable)
 apps/server/           Hono API - Swarm relay, auth verification, Stripe, email,
                        chain writes, ENS CCIP-Read gateway. ~36 route modules.

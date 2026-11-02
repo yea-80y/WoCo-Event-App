@@ -70,7 +70,9 @@ function pageConfig(apiUrl: string, eventId: string, signer: string): EventPageC
  * on the head the browser sends, never on a read of the event.
  */
 function suggestedHead(event: { title?: string; imageHash?: string } | null): EventPageHead {
-  const title = (event?.title?.trim() || "Event").slice(0, EVENT_PAGE_TITLE_MAX);
+  let title = (event?.title?.trim() || "Event").slice(0, EVENT_PAGE_TITLE_MAX);
+  // Never end on half of a surrogate pair (an emoji cut at the limit).
+  if (/[\uD800-\uDBFF]$/.test(title)) title = title.slice(0, -1);
   const ref = (event?.imageHash ?? "").toLowerCase();
   return /^[0-9a-f]{64}$/.test(ref) && !/^0+$/.test(ref) ? { title, imageHash: ref } : { title };
 }
