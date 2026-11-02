@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { EventFeed, OrderEntry, OrderField } from "@woco/shared";
+  import { FEATURES, type EventFeed, type OrderEntry, type OrderField } from "@woco/shared";
   import { cancelEvent, getEvent } from "../../api/events.js";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { getEventOrderCount, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
@@ -25,7 +25,14 @@
   import CancellationStatus from "./CancellationStatus.svelte";
   import UndeliveredTickets from "./UndeliveredTickets.svelte";
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
-  import { OpenedOrders, ORDERS_POLL_MS, createOrdersPoller } from "./live-orders.js";
+  import { OpenedOrders, ORDERS_POLL_MS, createOrdersPoller, orderSlotKey } from "./live-orders.js";
+  import { BrowserOrders, OrdersStatusUnavailable } from "./browser-orders.js";
+  import { canReadLedger, liveBrowserOrdersDeps, liveGatewayFetcher } from "./browser-orders-live.js";
+  import { DetailQueue, type DetailState } from "./detail-queue.js";
+  import { OrderOpener, type OpenerPort } from "./order-opener.js";
+  import { DETAIL_CSV, listGate, rowDetail, shortfall, type RowDetail } from "./list-completeness.js";
+  import { withoutSealedOrders } from "../../api/orders-cache.js";
+  import type { RequestSigningOptions } from "../../auth/request-session.js";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
   import { buildCsv, downloadCsv } from "../../utils/csv.js";
 
@@ -48,6 +55,13 @@
   let ordersLocked = $state(false);
   // The server's list is on screen (not just the cached paint): live polling may start.
   let ordersFromServer = $state(false);
+  // The list could not be read (ledger or erasure check): what is on screen stays, the poller retries.
+  let ordersReadError = $state<string | null>(null);
+  // Bumped when the background detail queue changes what a row shows.
+  let detailTick = $state(0);
+  // Page shown per series (ORDERS_PAGE_SIZE rows each).
+  let seriesPage = $state<Record<string, number>>({});
+  const ORDERS_PAGE_SIZE = 100;
 
   let activeTab = $state<"orders" | "broadcast" | "payments" | "door" | "edit">("orders");
 
@@ -199,10 +213,39 @@
     return map;
   }
 
+  /**
+   * Each row's details standing (list-completeness.ts), for actions on the whole
+   * list. Reads `detailTick` and the opened map, so a gate re-renders as details land.
+   */
+  function rowDetailsOf(rows: OrderEntry[]): RowDetail[] {
+    void detailTick;
+    if (!ordersResponse) return [];
+    const position = new Map(ordersResponse.orders.map((o, i) => [o, i]));
+    return rows.map((o) => rowDetail(o, decryptedOrders.has(position.get(o) ?? -1), detailState(o), decrypting, ordersLocked));
+  }
+
+  /** The orders a whole-list action covers: one series, or all. */
+  function ordersIn(seriesFilter: string): OrderEntry[] {
+    const all = ordersResponse?.orders ?? [];
+    return seriesFilter === "all" ? all : all.filter((o) => o.seriesId === seriesFilter);
+  }
+
   function downloadCSV(seriesName: string, seriesOrders: OrderEntry[], fields: OrderField[]) {
-    const headers = ["Edition", "Claimer", "Email", "Paid via", "Refund", "Claimed At", ...fields.map((f) => f.label)];
-    const rows = seriesOrders.map((order) => {
-      const dec = decryptedOrders.get(ordersResponse!.orders.indexOf(order));
+    const details = rowDetailsOf(seriesOrders);
+    const gate = listGate(details);
+    if (gate.kind === "loading") return;
+    if (
+      gate.kind === "gaps" &&
+      !confirm(
+        `Details for ${shortfall(gate)} tickets are not in this export (${gate.why}). Their rows are marked in the Details column. Export anyway?`,
+      )
+    ) {
+      return;
+    }
+    const headers = ["Edition", "Claimer", "Email", "Paid via", "Refund", "Claimed At", "Details", ...fields.map((f) => f.label)];
+    const position = new Map(ordersResponse!.orders.map((o, i) => [o, i]));
+    const rows = seriesOrders.map((order, i) => {
+      const dec = decryptedOrders.get(position.get(order) ?? -1);
       return [
         String(order.edition),
         order.erased
@@ -220,6 +263,7 @@
               ? "Part refunded"
               : "",
         order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "",
+        DETAIL_CSV[details[i]],
         ...fields.map((f) => dec?.fields?.[f.id] ?? ""),
       ];
     });
@@ -305,11 +349,8 @@
   }
 
   function unsentCount(seriesOrders: OrderEntry[]): number {
-    return seriesOrders.filter((o) => {
-      const key = orderKey(o);
-      const globalIdx = ordersResponse!.orders.indexOf(o);
-      return decryptedOrders.has(globalIdx) && !sentMap[key];
-    }).length;
+    const position = new Map(ordersResponse!.orders.map((o, i) => [o, i]));
+    return seriesOrders.filter((o) => decryptedOrders.has(position.get(o) ?? -1) && !sentMap[orderKey(o)]).length;
   }
 
   async function sendAllUnsent(seriesId: string, seriesOrders: OrderEntry[]) {
@@ -322,9 +363,10 @@
       return;
     }
     bulkSending = seriesId;
+    const position = new Map(ordersResponse!.orders.map((o, i) => [o, i]));
     for (const order of seriesOrders) {
       const key = orderKey(order);
-      const globalIdx = ordersResponse!.orders.indexOf(order);
+      const globalIdx = position.get(order) ?? -1;
       if (!decryptedOrders.has(globalIdx) || sentMap[key]) continue;
       await sendOne(order, globalIdx);
       // 200ms delay between sends
@@ -361,6 +403,13 @@
       return;
     }
 
+    // Recipients come from opened orders: never send to part of the room without saying so.
+    const gate = listGate(rowDetailsOf(ordersIn(broadcastSeriesFilter)));
+    // A resume re-sends to recipients the server already holds: nothing here to wait for.
+    if (!resumeOf && gate.kind === "loading") {
+      broadcastError = `Attendee details are still loading (${gate.done} of ${gate.total}). Send once they have all arrived.`;
+      return;
+    }
     const recipients = getEmailRecipients(broadcastSeriesFilter);
     if (recipients.length === 0) {
       broadcastError = "No email recipients found. Only attendees who claimed with an email can receive broadcasts.";
@@ -396,7 +445,11 @@
     const crossingWarning = broadcastServiceType && !resumeOf
       ? "\n\nThis is a service notice, so it will also reach ticket-holders who unsubscribed from your marketing. It cannot reach addresses that bounced or reported spam."
       : "";
-    if (!confirm(`${verb} — ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""} (${seriesLabel})?${crossingWarning}`)) {
+    const gapWarning =
+      !resumeOf && gate.kind === "gaps"
+        ? `\n\nDetails for ${shortfall(gate)} tickets are missing (${gate.why}), so those ticket holders will NOT receive this.`
+        : "";
+    if (!confirm(`${verb} — ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""} (${seriesLabel})?${crossingWarning}${gapWarning}`)) {
       return;
     }
 
@@ -437,8 +490,38 @@
   // ---------------------------------------------------------------------------
 
   /** What this page has opened, by ticket - so a poll opens only the new orders. */
-  const opened = new OpenedOrders<DecryptedOrder>(() => ({}));
+  const opened = new OpenedOrders<DecryptedOrder>();
   let decryptChain: Promise<void> = Promise.resolve();
+  /** Bumped when the keys lock: an opening run still going stops and keeps nothing. */
+  let openEpoch = 0;
+  /** Opened per step when no worker runs, then the page gets a turn. */
+  const OPEN_CHUNK = 20;
+  /** Orders per message to the opening worker. */
+  const OPEN_BATCH = 50;
+  /** Rows kept in the page's saved copy of the list (localStorage); none above it. */
+  const ROW_CACHE_MAX = 5_000;
+
+  /**
+   * Opening runs in a worker (order-opener.ts): thousands of orders never freeze the
+   * page. null = this browser has no workers; the page opens them itself.
+   */
+  let opener: OrderOpener | null | undefined;
+  /** The account whose keys the worker holds (auth.seedAddress at hand-over). */
+  let keyedAccount: string | null = null;
+  function orderOpener(): OrderOpener | null {
+    if (opener === undefined) {
+      opener =
+        typeof Worker === "undefined"
+          ? null
+          : new OrderOpener(
+              () =>
+                new Worker(new URL("./order-opener.worker.ts", import.meta.url), { type: "module" }) as unknown as OpenerPort,
+            );
+    }
+    return opener;
+  }
+  // Leaving the page ends the worker, its keys and every run (Fable sign-off M1).
+  $effect(() => () => endOpening());
 
   /**
    * Show a freshly read list. The display map is rebuilt in the same step from
@@ -447,6 +530,8 @@
    */
   function showOrders(fresh: EventOrdersResponse): void {
     ordersResponse = fresh;
+    // An order erased (or re-sealed) since: what was opened from its old box goes now.
+    opened.prune(fresh.orders);
     decryptedOrders = opened.remap(fresh.orders);
   }
 
@@ -464,12 +549,22 @@
   }
 
   async function decryptOnce(prompt: boolean): Promise<void> {
-    if (!ordersResponse) return;
+    // Left the page: nothing is opened for a dashboard no longer on screen.
+    if (destroyed || !ordersResponse) return;
     const hasEncryptedOrders = ordersResponse.orders.some((o) => !!o.encryptedOrder);
     if (!hasEncryptedOrders) return;
 
     decrypting = true;
+    try {
+      await openOrders(prompt);
+    } finally {
+      // Every way out - a lock, a failure, leaving the page - stops showing "Opening...".
+      decrypting = false;
+    }
+  }
 
+  async function openOrders(prompt: boolean): Promise<void> {
+    if (!ordersResponse) return;
     if (!auth.seedAddress) {
       decryptError = "Not logged in. Cannot decrypt orders.";
       decrypting = false;
@@ -492,11 +587,15 @@
       }
     }
     if (!secrets) {
+      // No keys on this device now: nothing opened earlier may outlive them.
+      endOpening();
       ordersLocked = true;
       decrypting = false;
       return;
     }
     ordersLocked = false;
+    // Whose keys these are: the worker is keyed for this account only.
+    const account = auth.seedAddress;
 
     // Every generation's order key this device holds (#642, #186): an order is sealed
     // to whichever was current when it was bought. Loaded on first use.
@@ -504,29 +603,73 @@
       import("../../keyring/order-keys.js"),
       import("@woco/shared/crypto/sealed-box"),
     ]);
-    const { secretKeys } = await orderKeysOf(secrets);
+    const epoch = openEpoch;
     opened.markOpened();
 
-    const results = await Promise.allSettled(
-      opened.unopened(ordersResponse.orders).map(async ({ order }) => {
-        if (!order.encryptedOrder) return;
-        // Bound to THIS event and the SLOT's series (the server sets
-        // `order.seriesId` from the slot) — never the payload's own seriesId, so
-        // an order lifted from another series fails to open instead of showing.
-        const decrypted = await openJsonWithAnyKey<DecryptedOrder>(
-          secretKeys,
-          order.encryptedOrder,
-          orderSealContext(eventId, order.seriesId),
+    const worker = orderOpener();
+    let useWorker = worker !== null;
+    let pageKeys: Uint8Array[] | null = null;
+    for (;;) {
+      // Each step from the rows on screen NOW, so an order erased mid-run is never
+      // opened; one that would not open is recorded and not retried with this box.
+      const batch = ordersResponse ? opened.unopened(ordersResponse.orders).slice(0, useWorker ? OPEN_BATCH : OPEN_CHUNK) : [];
+      if (batch.length === 0) break;
+      if (worker && useWorker) {
+        if (!worker.keyedFor(epoch)) {
+          const { secretKeys: keys } = await orderKeysOf(secrets);
+          // Locked, left, or another account signed in while the keys were derived:
+          // never hand them to a new worker (Fable sign-off S4).
+          if (epoch !== openEpoch || destroyed || auth.seedAddress !== account) return;
+          keyedAccount = account;
+          worker.unlock(epoch, keys);
+        }
+        // Bound to THIS event and the SLOT's series (order-opener-core.ts).
+        const out = await worker.open(
+          epoch,
+          eventId,
+          batch.map(({ order }, id) => ({ id, seriesId: order.seriesId, box: order.encryptedOrder })),
         );
-        opened.put(order, decrypted);
-      }),
-    );
-    const failCount = results.filter((r) => r.status === "rejected").length;
-    // The list on screen now - a poll may have replaced it while this ran.
+        if (out.kind === "unavailable") {
+          // No worker after all: the rest open on this page.
+          useWorker = false;
+          continue;
+        }
+        // Locked, or left, while this batch ran: keep nothing it opened.
+        if (out.kind === "locked" || epoch !== openEpoch || destroyed) return;
+        const answered = new Map(out.results.map((r) => [r.id, r]));
+        batch.forEach(({ order }, id) => {
+          const r = answered.get(id);
+          // No answer for a box counts as a failure, so a run can never loop on it.
+          if (r?.data !== undefined) opened.put(order, r.data as DecryptedOrder);
+          else opened.fail(order);
+        });
+        if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
+        continue;
+      }
+      // No worker (or it failed to start): open on this page, in steps.
+      const keys = (pageKeys ??= (await orderKeysOf(secrets)).secretKeys);
+      if (epoch !== openEpoch || destroyed) return;
+      const results = await Promise.allSettled(
+        batch.map(async ({ order }) => {
+          // Bound to THIS event and the SLOT's series (the server sets
+          // `order.seriesId` from the slot) — never the payload's own seriesId, so
+          // an order lifted from another series fails to open instead of showing.
+          return openJsonWithAnyKey<DecryptedOrder>(keys, order.encryptedOrder, orderSealContext(eventId, order.seriesId));
+        }),
+      );
+      // Locked, or left, while this step ran: keep nothing it opened.
+      if (epoch !== openEpoch || destroyed) return;
+      results.forEach((r, k) => {
+        if (r.status === "fulfilled") opened.put(batch[k].order, r.value);
+        else opened.fail(batch[k].order);
+      });
+      // The list on screen now - a poll may have replaced it while this ran.
+      if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (epoch !== openEpoch || destroyed) return;
+    }
     if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
-    decryptError = failCount > 0 ? `Failed to decrypt ${failCount} order(s)` : null;
-
-    decrypting = false;
+    decryptError = opened.failures > 0 ? `Failed to decrypt ${opened.failures} order(s)` : null;
   }
 
   // Unlocked - by the panel's tap or elsewhere this app open: show the details.
@@ -536,30 +679,203 @@
     if (auth.hasIdentitySeed && ordersLocked && !decrypting) void decryptCurrent();
   });
   $effect(() => {
-    if (auth.kind === "passkey" && !auth.hasIdentitySeed && decryptedOrders.size > 0) {
-      opened.clear();
-      decryptedOrders = new Map();
+    // A keyed worker whose every open failed still holds keys (Fable sign-off S3).
+    if (auth.kind === "passkey" && !auth.hasIdentitySeed && (decryptedOrders.size > 0 || decrypting || keyedAccount !== null)) {
+      endOpening();
       ordersLocked = true;
     }
   });
+  // The worker's keys belong to the account that opened them: signing out, or another
+  // account on this page, ends it and everything it opened - for every login kind.
+  $effect(() => {
+    const account = auth.isConnected ? auth.seedAddress : null;
+    if (keyedAccount !== null && account !== keyedAccount) endOpening();
+  });
+
+  /** Stop any opening run, end the worker, and forget everything opened. */
+  function endOpening(): void {
+    openEpoch++;
+    keyedAccount = null;
+    opener?.lock();
+    opened.clear();
+    decryptedOrders = new Map();
+    decrypting = false;
+  }
+
+  /**
+   * The browser reads the list itself (#965): rows from the chain and the server's
+   * erasure answer (browser-orders.ts), then sealed orders in the background
+   * (detail-queue.ts). This page's reads are kept in memory only.
+   */
+  let browserOrders: { eventId: string; reader: BrowserOrders; queue: DetailQueue } | null = null;
+  /** Where the list on screen came from: only the browser's list takes boxes from the queue. */
+  let ordersSource: "browser" | "server" | null = null;
+  function ordersReader(): { reader: BrowserOrders; queue: DetailQueue } {
+    if (browserOrders?.eventId !== eventId) {
+      browserOrders?.queue.stop();
+      const queue = new DetailQueue({
+        // Bundles of up to 100 orders where the gateway has them, one at a time where not.
+        ...liveGatewayFetcher(),
+        now: () => Date.now(),
+        setTimer: (cb, ms) => setTimeout(cb, ms),
+        clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+        random: Math.random,
+        // A long background load needs a fresh erasure answer: never asks to sign in.
+        wantCoverage: () => void refreshOrders(),
+        onChange: scheduleRebuild,
+      });
+      browserOrders = { eventId, reader: new BrowserOrders(liveBrowserOrdersDeps(eventId), canReadLedger), queue };
+    }
+    return browserOrders;
+  }
+  /**
+   * The page is gone. A read, a poll or a batch of boxes still in flight can land
+   * after this; none of them may start opening orders (Fable sign-off M1).
+   */
+  let destroyed = false;
+  $effect(() => () => {
+    destroyed = true;
+    openEpoch++;
+    browserOrders?.queue.stop();
+    if (rebuildTimer !== null) clearTimeout(rebuildTimer);
+    rebuildTimer = null;
+  });
+
+  /** Boxes arrive one by one: show them in batches, not one repaint per order. */
+  let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleRebuild(): void {
+    if (rebuildTimer !== null || destroyed) return;
+    rebuildTimer = setTimeout(() => {
+      rebuildTimer = null;
+      detailTick++;
+      if (destroyed || ordersSource !== "browser" || !browserOrders || !ordersResponse) return;
+      const { reader, queue } = browserOrders;
+      showOrders(reader.build((root) => queue.box(root)));
+      void decryptCurrent();
+    }, 250);
+  }
+
+  /**
+   * The orders. Rows come from the chain and the server's erasure answer, and show
+   * at once; their sealed orders follow from the queue. The server's full read only
+   * for a series on a ledger this browser cannot read - not when a chain read or the
+   * server's answer failed: its full read is the per-ticket cost #965 removed, and
+   * would fail on the answer the same way (Fable consult 2026-11-01 Q7). Then what is
+   * on screen stays, and the poller retries with backoff.
+   */
+  let ordersLoad: Promise<EventOrdersResponse | null> | null = null;
+  function loadOrders(opts?: RequestSigningOptions): Promise<EventOrdersResponse | null> {
+    // One read at a time: a poll, a page open and the queue's refresh share it.
+    return (ordersLoad ??= readOrders(opts).finally(() => (ordersLoad = null)));
+  }
+
+  async function readOrders(opts?: RequestSigningOptions): Promise<EventOrdersResponse | null> {
+    const { reader, queue } = ordersReader();
+    try {
+      const read = await reader.loadRows(opts);
+      if (read) {
+        queue.cover(read.coverage);
+        const data = reader.build((root) => queue.box(root));
+        ordersSource = "browser";
+        ordersReadError = null;
+        // Rows only (no boxes), and not past ROW_CACHE_MAX: ~200 KB per 1,000 rows, and the
+        // site's whole storage is ~5 MB. Above it, an older smaller copy would paint wrong.
+        if (data.orders.length <= ROW_CACHE_MAX) {
+          cacheSet(cacheKey.eventOrders(eventId), withoutSealedOrders(data), TTL.EVENT_ORDERS);
+        } else {
+          cacheDel(cacheKey.eventOrders(eventId));
+        }
+        return data;
+      }
+    } catch (err) {
+      console.warn("[dashboard] reading orders failed; retrying on the next check:", err);
+      ordersReadError =
+        err instanceof OrdersStatusUnavailable
+          ? "Couldn't check your orders right now. Retrying..."
+          : "Couldn't read the ticket ledger right now. Retrying...";
+      return null;
+    }
+    const data = (await getEventOrdersSWR(eventId).refresh(opts)).data ?? null;
+    if (data) {
+      ordersSource = "server";
+      ordersReadError = null;
+    }
+    return data;
+  }
 
   /** A poll found the count moved: read the list, show it, open only the new orders - never asking. */
   async function refreshOrders(): Promise<boolean> {
-    const fresh = (await getEventOrdersSWR(eventId).refresh({ establish: false })).data;
-    if (!fresh || !event) return false;
+    const fresh = await loadOrders({ establish: false });
+    if (destroyed || !fresh || !event) return false;
     showOrders(fresh);
+    // A real list is on screen now - also after a failed first read - so polling stays on
+    // once that read's error clears (Fable sign-off M2).
+    ordersFromServer = true;
     void decryptCurrent();
     return true;
   }
 
+  /** The row's order root, when the browser read it (none for the server's list). */
+  function rootOfRow(order: OrderEntry): string | null {
+    return ordersSource === "browser" && browserOrders ? browserOrders.reader.rootOf(order) : null;
+  }
+
+  /** Where a row's attendee details stand, when they are not on screen. Reads `detailTick`. */
+  function detailState(order: OrderEntry): DetailState | undefined {
+    void detailTick;
+    const root = rootOfRow(order);
+    return root && browserOrders ? browserOrders.queue.state(root) : undefined;
+  }
+
+  const DETAIL_LABEL: Record<DetailState, string> = {
+    queued: "Loading details...",
+    fetching: "Loading details...",
+    retrying: "Details unavailable - retrying",
+    ready: "Opening...",
+    missing: "Details not found",
+    unreadable: "Details unreadable",
+  };
+
+  /** What a row shows in place of attendee details it does not have. */
+  function detailLabel(order: OrderEntry): string {
+    if (order.encryptedOrder) return ordersLocked ? "Locked" : decrypting ? "Opening..." : "-";
+    const state = detailState(order);
+    return state ? DETAIL_LABEL[state] : "-";
+  }
+
+  /** The background load's tally, while the browser's list is on screen. Reads `detailTick`. */
+  function detailProgress() {
+    void detailTick;
+    if (ordersSource !== "browser" || !browserOrders) return null;
+    return { ...browserOrders.queue.progress(), waitingOn: browserOrders.queue.waitingOn() };
+  }
+
+  // The page on screen is fetched first.
+  $effect(() => {
+    if (!ordersResponse || !browserOrders || ordersSource !== "browser") return;
+    const { reader, queue } = browserOrders;
+    const visible: string[] = [];
+    for (const [seriesId, rows] of groupBySeries(ordersResponse.orders)) {
+      const page = seriesPage[seriesId] ?? 0;
+      for (const order of rows.slice(page * ORDERS_PAGE_SIZE, (page + 1) * ORDERS_PAGE_SIZE)) {
+        const root = reader.rootOf(order);
+        if (root) visible.push(root);
+      }
+    }
+    untrack(() => queue.prioritise(visible));
+  });
+
   // New sales appear while the page is open and in view (rules: live-orders.ts).
-  const liveReady = $derived(ordersFromServer && !error && !!event);
+  // Also after a failed first read: the poller's backoff is the retry.
+  const liveReady = $derived((ordersFromServer || ordersReadError !== null) && !error && !!event);
   $effect(() => {
     if (!liveReady) return;
     const id = eventId;
     const poller = createOrdersPoller({
       intervalMs: ORDERS_POLL_MS,
-      count: () => getEventOrderCount(id, { establish: false }),
+      // From the chain once the browser knows the registrations; the server's count before that.
+      count: async () =>
+        (await ordersReader().reader.count().catch(() => null)) ?? getEventOrderCount(id, { establish: false }),
       refresh: refreshOrders,
       // A session already on this device: a poll never starts a sign-in.
       canRequest: () => auth.isConnected && auth.hasSession,
@@ -581,13 +897,15 @@
       clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
       now: () => Date.now(),
     });
-    poller.start(untrack(() => ordersResponse?.orders.length ?? 0));
+    // After a failed first read no count matches, so the first check reads the list again.
+    poller.start(untrack(() => (ordersReadError !== null ? -1 : (ordersResponse?.orders.length ?? 0))));
     return () => poller.stop();
   });
 
   onMount(async () => {
-    // Load webhook config from localStorage
-    webhookConfig = loadWebhookConfig();
+    // Webhooks off: drop any stored config, which held the endpoint's auth header in clear.
+    if (!FEATURES.webhooksAllowed) clearWebhookConfig();
+    webhookConfig = FEATURES.webhooksAllowed ? loadWebhookConfig() : null;
     sentMap = loadSentMap();
     if (webhookConfig) {
       webhookFormUrl = webhookConfig.url;
@@ -661,7 +979,7 @@
         return;
       }
 
-      const freshOrders = (await ordersSWR.refresh()).data;
+      const freshOrders = await loadOrders();
 
       event = ev;
       if (freshOrders) {
@@ -782,14 +1100,16 @@
         orders={ordersResponse.orders}
         {decryptedOrders}
         {decrypting}
+        rosterGate={listGate(rowDetailsOf(ordersResponse.orders))}
         onEnsureDecrypted={() => decryptCurrent(true)}
       />
     {:else if activeTab === "broadcast"}
       <!-- Broadcast tab -->
       {@const emailRecipients = getEmailRecipients(broadcastSeriesFilter)}
+      {@const broadcastGate = listGate(rowDetailsOf(ordersIn(broadcastSeriesFilter)))}
       <div class="broadcast-section">
 
-        {#if decryptedOrders.size === 0 && ordersResponse && ordersResponse.orders.length > 0}
+        {#if decryptedOrders.size === 0 && ordersResponse && ordersResponse.orders.some((o) => !!o.encryptedOrder)}
           <div class="broadcast-notice">
             Orders need to be decrypted before you can send broadcasts.
             Switch to the Orders tab to trigger decryption, then come back here.
@@ -966,6 +1286,7 @@
             <button
               class="btn-broadcast"
               disabled={broadcastSending
+                || broadcastGate.kind === "loading"
                 || emailRecipients.length === 0
                 || !broadcastBody.trim()
                 || (!broadcastServiceType && !broadcastSubject.trim())}
@@ -973,12 +1294,20 @@
             >
               {#if broadcastSending}
                 Starting…
+              {:else if broadcastGate.kind === "loading"}
+                Loading attendee details ({broadcastGate.done} of {broadcastGate.total})…
               {:else}
                 Send to {emailRecipients.length} recipient{emailRecipients.length !== 1 ? "s" : ""}
               {/if}
             </button>
             <span class="broadcast-rate-hint">Max 5 broadcasts per hour</span>
           </div>
+          {#if broadcastGate.kind === "gaps"}
+            <p class="warning">
+              Details for {shortfall(broadcastGate)} tickets are missing ({broadcastGate.why}). Those ticket holders
+              won't receive this.
+            </p>
+          {/if}
 
         {/if}
       </div>
@@ -986,6 +1315,7 @@
     {:else}
 
     <!-- Webhook config panel -->
+    {#if FEATURES.webhooksAllowed}
     <div class="webhook-section">
       <button
         class="webhook-toggle"
@@ -1031,6 +1361,7 @@
         </div>
       {/if}
     </div>
+    {/if}
 
     <!-- ── Sales overview (organiser-only) ────────────────────────────────────
          Replaces the customer-facing "X / Y available" line on the event
@@ -1099,11 +1430,27 @@
         <UnlockPanel subject="Attendee details" action="Show attendees" />
       {/if}
 
+      {#if ordersReadError}
+        <p class="warning">{ordersReadError}</p>
+      {/if}
+
+      {@const progress = detailProgress()}
+      {#if progress && progress.total > progress.ready}
+        <p class="status detail-progress">
+          Attendee details: {progress.ready} of {progress.total} loaded{#if progress.missing > 0}, {progress.missing} not found{/if}{#if progress.unreadable > 0}, {progress.unreadable} unreadable{/if}{#if progress.retrying > 0}, {progress.retrying} retrying{/if}.
+          {#if progress.waitingOn === "gateway"}Paused briefly - the storage gateway asked us to slow down.{:else if progress.waitingOn === "erasure-check"}Waiting for the latest erasure check.{/if}
+        </p>
+      {/if}
+
       {@const grouped = groupBySeries(ordersResponse.orders)}
+      {@const rowIndex = new Map(ordersResponse.orders.map((o, i) => [o, i]))}
       {#each event.series as series}
         {@const seriesOrders = grouped.get(series.seriesId) ?? []}
         {#if seriesOrders.length > 0}
           {@const remaining = Math.max(0, series.totalSupply - seriesOrders.length)}
+          {@const pages = Math.ceil(seriesOrders.length / ORDERS_PAGE_SIZE)}
+          {@const page = Math.min(seriesPage[series.seriesId] ?? 0, pages - 1)}
+          {@const pageRows = seriesOrders.slice(page * ORDERS_PAGE_SIZE, (page + 1) * ORDERS_PAGE_SIZE)}
           <div class="series-section">
             <div class="series-header">
               <h2>{series.name}</h2>
@@ -1111,14 +1458,16 @@
                 {seriesOrders.length} / {series.totalSupply} sold · {remaining} remaining
               </span>
               {#if event.orderFields && decryptedOrders.size > 0}
+                {@const csvGate = listGate(rowDetailsOf(seriesOrders))}
                 <button
                   class="csv-btn"
+                  disabled={csvGate.kind === "loading"}
                   onclick={() => downloadCSV(series.name, seriesOrders, event!.orderFields!)}
                 >
-                  Export CSV
+                  {csvGate.kind === "loading" ? `Export CSV (details ${csvGate.done} of ${csvGate.total})` : "Export CSV"}
                 </button>
               {/if}
-              {#if webhookConfig && decryptedOrders.size > 0}
+              {#if FEATURES.webhooksAllowed && webhookConfig && decryptedOrders.size > 0}
                 {@const unsent = unsentCount(seriesOrders)}
                 {#if unsent > 0}
                   <button
@@ -1152,12 +1501,12 @@
                         <th>{field.label}</th>
                       {/each}
                     {/if}
-                    <th>Webhook</th>
+                    {#if FEATURES.webhooksAllowed}<th>Webhook</th>{/if}
                   </tr>
                 </thead>
                 <tbody>
-                  {#each seriesOrders as order}
-                    {@const globalIdx = ordersResponse!.orders.indexOf(order)}
+                  {#each pageRows as order (orderSlotKey(order))}
+                    {@const globalIdx = rowIndex.get(order) ?? -1}
                     {@const dec = decryptedOrders.get(globalIdx)}
                     {@const key = orderKey(order)}
                     {@const sent = sentMap[key]}
@@ -1185,8 +1534,11 @@
                           {:else}
                             <span class="claim-type">Wallet claim</span>
                           {/if}
-                        {:else}
+                        {:else if dec}
                           {order.claimerAddress.slice(0, 6)}...{order.claimerAddress.slice(-4)}
+                        {:else}
+                          <!-- The address here is the ticket's single-use key: say where the details stand instead. -->
+                          <span class="claim-type">{detailLabel(order)}</span>
                         {/if}
                       </td>
                       <td>
@@ -1210,9 +1562,10 @@
                       <td>{order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "—"}</td>
                       {#if event.orderFields}
                         {#each event.orderFields as field}
-                          <td>{dec?.fields?.[field.id] ?? (decrypting ? "..." : "-")}</td>
+                          <td>{dec ? (dec.fields?.[field.id] ?? "-") : ""}</td>
                         {/each}
                       {/if}
+                      {#if FEATURES.webhooksAllowed}
                       <td class="webhook-cell">
                         {#if isSending}
                           <span class="badge badge-sending">Sending...</span>
@@ -1235,17 +1588,35 @@
                           <span class="badge badge-none">-</span>
                         {/if}
                       </td>
+                      {/if}
                     </tr>
                   {/each}
                 </tbody>
               </table>
             </div>
+            {#if pages > 1}
+              <div class="pager">
+                <button disabled={page === 0} onclick={() => (seriesPage = { ...seriesPage, [series.seriesId]: page - 1 })}>
+                  Previous
+                </button>
+                <span>
+                  {page * ORDERS_PAGE_SIZE + 1}-{Math.min((page + 1) * ORDERS_PAGE_SIZE, seriesOrders.length)} of {seriesOrders.length}
+                </span>
+                <button disabled={page >= pages - 1} onclick={() => (seriesPage = { ...seriesPage, [series.seriesId]: page + 1 })}>
+                  Next
+                </button>
+              </div>
+            {/if}
           </div>
         {/if}
       {/each}
     {/if}
 
     {/if} <!-- end {:else} orders tab -->
+  {:else if event && ordersReadError}
+    <h1>Orders Dashboard</h1>
+    <p class="subtitle">{event.title}</p>
+    <p class="warning">{ordersReadError}</p>
   {/if}
 </div>
 
@@ -1509,6 +1880,39 @@
     color: var(--text-muted);
     font-size: 0.75rem;
     line-height: 1.5;
+  }
+
+  .detail-progress {
+    padding: 0 0 1rem;
+    font-size: 0.8125rem;
+  }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+  }
+
+  .pager button {
+    padding: 0.375rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    transition: all var(--transition);
+  }
+
+  .pager button:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .pager button:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
 
   .bulk-send-btn {

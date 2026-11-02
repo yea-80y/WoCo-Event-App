@@ -63,6 +63,7 @@ FEATURE FLAGS — READ BEFORE ASSUMING A RAIL IS LIVE
   shopAllowed           = false   # shops, POS, spend-permission draws (#124)
   walletLoginAllowed    = false   # MetaMask/WalletConnect login: phishable sign-to-derive seed (#186)
   accountBackupsAllowed = false   # email accounts' Protect backups; passkey accounts add passkeys (#186)
+  webhooksAllowed       = false   # dashboard order webhook: its relay was our server's one plaintext attendee path
   (also off: agentCommerceAllowed, coinbaseLoginAllowed, organiserSendingDomains)
 
 Flags gate UI AND server validation in lockstep — an old client cannot reach a disabled
@@ -128,9 +129,9 @@ DEV COMMANDS:
 AUTH ARCHITECTURE
 ============================================================================
 
-FOUR keys per account — items 1, 2, 4 and 5 below; item 3 is the SEED, which is not a key.
-(Was five until #518 removed the ed25519 holder key, 2026-09-10;
-issuer-curve migration #443, PRs #447–#453, 2026-09-01).
+FIVE keys per account — items 1, 2, 4, 5 and 6 below; item 3 is the SEED, which is not a key.
+(Four after #518 removed the ed25519 holder key, 2026-09-10; the organiser key, 6, came with
+ledger2, 2026-11-01; issuer-curve migration #443, PRs #447–#453, 2026-09-01).
 Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
 1. Primary wallet (secp256k1) — permanent identity
 2. Session key (secp256k1, random, 30-day expiry) — signs API requests
@@ -164,9 +165,14 @@ Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
    IS that rule now — one AAD-bound slot, one escrow secret, and a rotated credential cannot
    fork the feeds because it cannot change the seed. Never falls back to platform signing.
    Coinbase Smart Wallet stays parked (non-deterministic 1271 ⇒ no reproducible seed).
+6. Organiser key (secp256k1, HKDF of the CURRENT account secret — info "woco/organiser-key/v1",
+   `packages/shared/src/crypto/organiser-key.ts`) — signs a ledger2 event's terms (supply,
+   cutoff, cancel, seat moves) as EIP-712 anyone can submit; named on chain per event at
+   registration after a proof-of-possession binding (`lib/event/organiser-key.ts`). Derived on
+   use after the organiser unlock (`apps/web/src/lib/auth/organiser-key.ts`), zeroed, never stored.
 
 ACCOUNT SECRET GENERATIONS (#186): a passkey removal makes a RANDOM account secret S_{g+1} (S_0 =
-the seed); keys 5, the X-Wing order key and the door-pass secret P derive from the CURRENT one
+the seed); keys 5, 6, the X-Wing order key and the door-pass secret P derive from the CURRENT one
 (the issuing key stays on S_0). The current generation is a key ring named onchain by `WoCoKeyRing`
 (`@woco/shared/keyring/*`), set in the same Kernel op as the co-owner change. Clients sign/seal only
 on a CONFIRMED-current verdict (`apps/web/src/lib/keyring/account-keys.ts`, lazy); the server reads
@@ -495,7 +501,9 @@ tagged 403 as "this chunk does not exist" — which is what took a cold credit r
 ~1.4s (#329). So a LOST whitelist entry makes real data read as absent, and an absent read is
 `clean`, which is exactly what the `scanClean`/`bandClean` erasure guards check for. Reads that
 feed a read-modify-write pass `thorough` and never trust the gate for this reason. Back up
-`whitelist.json`; never deploy an empty one over it.
+`whitelist.json`; never deploy an empty one over it. Attendee order roots are listed at store and
+delisted at erasure, and an hourly reconcile from the attendee ledger repairs both (#965,
+`lib/attendee-batch/order-gateway.ts`) - so a lost whitelist heals for orders, not for anything else.
 
 `.data/broadcast-chunks/` is the OPPOSITE case — it must NOT survive. Broadcast recipients
 are encrypted under a key held only in the running process, so a restart makes them
@@ -583,7 +591,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     batch must NEVER be registered again (buy a new one). Unreadable = checkout refuses until restored.
     Since #797 each record also holds the buyer's email HMAC + organiser: it is the index the ops
     lookup answers access/erasure requests from, and an EMAIL_HASH_SECRET rotation blinds it. Since #547 a
-    record also holds retainMonths, the retention sweep's only source for the period, and erasedBy + rule)
+    record also holds retainMonths, the retention sweep's only source for the period, and erasedBy + rule.
+    Since #965 the gateway reconcile lists every record not erased: a RESTORE FROM BACKUP re-lists orders
+    erased since that backup - with the server stopped, restore, then re-run those erasures (ops burn
+    route) before the first reconcile, 3 min after boot)
   event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified
     creator, pinned at create, write-once. The money path's ONLY carrier for an UNLISTED event.
     Losing it fails CLOSED: unlisted events stop selling until re-created; listed ones fall back

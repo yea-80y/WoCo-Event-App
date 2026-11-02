@@ -140,6 +140,14 @@ test("remove all backups: uninstall the route + clear, one batch", async () => {
   assert.equal(c.ok && c.shape, "remove-route");
 });
 
+test("a route removal carries only removals: an add or a set riding on it is refused", async () => {
+  const [uninstall] = buildRemoveRecoveryCalls(d, ACCOUNT);
+  assert.equal(classifyUserOp(op(await viaExecute([uninstall!, buildRevokeGuardianCall(encodeFunctionData, GUARDIAN_KERNEL)]))).ok, true);
+  for (const add of [buildAddGuardianCall(encodeFunctionData, GUARDIAN_KERNEL), buildSetGuardiansCall(encodeFunctionData, [GUARDIAN_KERNEL])]) {
+    assert.deepEqual(classifyUserOp(op(await viaExecute([uninstall!, add]))), { ok: false, reason: "call" });
+  }
+});
+
 test("make this device the main one: exactly the two validator calls", async () => {
   const c = classifyUserOp(op(await viaExecute(rotationCalls(NEW_OWNER))));
   assert.deepEqual(c, { ok: true, shape: "rotate", subject: ACCOUNT.toLowerCase() });
@@ -241,6 +249,25 @@ test("the cost bound is the gas the sender chose x max fee, unpacked or packed",
   });
   assert.equal(packed?.maxCostWei, unpacked?.maxCostWei);
   assert.equal(readUserOp({ sender: ACCOUNT, nonce: "1", callData, maxFeePerGas: "-1" }), null);
+  // Both forms present: the larger of each, whichever form carries it.
+  const both = readUserOp({
+    sender: ACCOUNT, nonce: "1", callData, preVerificationGas: 78_000,
+    accountGasLimits: word(1n, 1n), gasFees: word(1n, 1n),
+    verificationGasLimit: 3_000_000, callGasLimit: 1_000_000, maxFeePerGas: 20_000_000,
+  });
+  assert.equal(both?.maxCostWei, unpacked?.maxCostWei, "small packed words hid the unpacked limits");
+  const bothPacked = readUserOp({
+    sender: ACCOUNT, nonce: "1", callData, preVerificationGas: 78_000,
+    accountGasLimits: word(3_000_000n, 1_000_000n), gasFees: word(1n, 20_000_000n),
+    verificationGasLimit: 1, callGasLimit: 1, maxFeePerGas: 1,
+  });
+  assert.equal(bothPacked?.maxCostWei, unpacked?.maxCostWei, "small unpacked fields hid the packed words");
+  // One rule for both forms: a malformed field refuses whichever form it is in; absent is 0.
+  const base = { sender: ACCOUNT, nonce: "1", callData, preVerificationGas: 78_000 };
+  assert.equal(readUserOp({ ...base, accountGasLimits: word(1n, 1n), gasFees: word(1n, 1n), maxFeePerGas: "-1" }), null);
+  assert.equal(readUserOp({ ...base, accountGasLimits: "0x1234", gasFees: word(1n, 1n) }), null);
+  assert.equal(readUserOp({ ...base, gasFees: "0xzz" }), null);
+  assert.equal(readUserOp({ ...base, accountGasLimits: "0x", gasFees: null })?.maxCostWei, 0n, "an empty stub field reads as absent");
 });
 
 test("more than four calls in one batch is refused", async () => {
@@ -315,6 +342,9 @@ test("six ops an hour per account; the stub and final request of one op count on
   }
   assert.deepEqual(await p.decide(op(callData, { nonce: "7" })), { proceed: false, reason: "cap", shape: "guardians", subject: ACCOUNT.toLowerCase() });
   assert.equal((await p.decide(op(callData, { nonce: "6" }))).proceed, true, "an op already counted still completes");
+  // A DIFFERENT op at a counted nonce is a new op, never waved past the cap as that one.
+  const otherOp = await viaExecute([buildRevokeGuardianCall(encodeFunctionData, GUARDIAN_KERNEL)]);
+  assert.deepEqual(await p.decide(op(otherOp, { nonce: "6" })), { proceed: false, reason: "cap", shape: "guardians", subject: ACCOUNT.toLowerCase() });
   // Another account has its own budget.
   const other = "0x9999999999999999999999999999999999999999";
   unlocked.add(other);
@@ -772,4 +802,70 @@ test("backups off (#186): an op that ADDS a backup is refused before any read; r
   } finally {
     enableFeature("accountBackupsAllowed");
   }
+});
+
+// ── The events' organiser key (#186, ledger v2) ──────────────────────────────
+// A removal moves the account's events onto its new organiser key: in its own op,
+// right before the ring after renew (or before a ring alone), or, for what that op
+// could not carry, alone. Only `setOrganiserKey` on the ledger the server registers on.
+
+const LEDGER2 = "0x" + "1e".repeat(20);
+const NEW_ORG_KEY = "0x" + "0e".repeat(20);
+const eventIds = (n: number) => Array.from({ length: n }, (_, i) => "0x" + (i + 1).toString(16).padStart(64, "0"));
+const ledgers = new Set([LEDGER2]);
+
+async function keyMove(ids = eventIds(2), key = NEW_ORG_KEY, ledger = LEDGER2): Promise<Call> {
+  const { organiserKeyMoveCall } = await import("../../web/src/lib/auth/co-owner-calls.js");
+  const enc = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as never;
+  const c = organiserKeyMoveCall(enc, { ledger, ids, key });
+  return { to: c.to as Address, data: c.data };
+}
+
+/** The same call with arguments the app's builder would refuse to encode. */
+function rawKeyMove(ids: string[], key: string, ledger = LEDGER2): Call {
+  const abi = parseAbi(["function setOrganiserKey(bytes32[] eventIds, address key)"]);
+  return { to: ledger as Address, data: encodeFunctionData({ abi, functionName: "setOrganiserKey", args: [ids as Hex[], key as Address] }) };
+}
+
+test("organiser key: the app's own removal shapes are paid - renew + move + ring, move + ring, move alone", async () => {
+  const subject = ACCOUNT.toLowerCase();
+  const move = await keyMove();
+  assert.deepEqual(classifyUserOp(op(await viaExecute([renewCall([P1, P2]), move, ringCall()])), ledgers), { ok: true, shape: "renew", subject });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([move, ringCall()])), ledgers), { ok: true, shape: "ring", subject });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([move])), ledgers), { ok: true, shape: "organiser-key", subject });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([await keyMove(eventIds(50))])), ledgers).ok, true, "fifty ids");
+});
+
+test("organiser key: never elsewhere, never malformed, never with the switch, never off the server's ledger", async () => {
+  const refused = async (calls: Call[], why: string, l: ReadonlySet<string> = ledgers) =>
+    assert.equal(classifyUserOp(op(await viaExecute(calls)), l).ok, false, why);
+  const move = await keyMove();
+  await refused([move], "no ledger configured: no key move is ever paid", new Set());
+  await refused([await keyMove(eventIds(2), NEW_ORG_KEY, GUARDIAN_EOA)], "setOrganiserKey on another contract");
+  await refused([ringCall(), move], "after the ring");
+  await refused([move, renewCall([P1, P2]), ringCall()], "before the list change");
+  await refused([move, move], "twice");
+  await refused([renewCall([P1, P2]), move], "on a renew without the ring");
+  await refused([...switchCalls(enableOf([P1, P2])), move, ringCall()], "on the switch: adding a passkey keeps the keys");
+  await refused([rawKeyMove(eventIds(51), NEW_ORG_KEY)], "more than fifty ids");
+  await refused([rawKeyMove([], NEW_ORG_KEY)], "no ids");
+  await refused([rawKeyMove([eventIds(1)[0]!, eventIds(1)[0]!], NEW_ORG_KEY)], "the same id twice");
+  await refused([rawKeyMove(["0x" + "0".repeat(64)], NEW_ORG_KEY)], "a zero id");
+  await refused([rawKeyMove(eventIds(1), "0x" + "0".repeat(40))], "a zero key");
+  await refused([rawKeyMove(eventIds(1), LEDGER2)], "the ledger as the key");
+  const abi = parseAbi(["function revokeSignatures(bytes32 eventId)"]);
+  const other = { to: LEDGER2 as Address, data: encodeFunctionData({ abi, functionName: "revokeSignatures", args: [eventIds(1)[0] as Hex] }) };
+  await refused([other], "any other call on the ledger");
+  await refused([renewCall([P1, P2]), other, ringCall()], "any other ledger call riding a removal");
+});
+
+test("organiser key: the policy pays it for an unlocked account on the configured ledger, refuses a locked one", async () => {
+  const p = new SponsorPolicy({ ...deps, organiserKeyLedgers: () => [LEDGER2.toUpperCase().replace("0X", "0x")] });
+  const callData = await viaExecute([await keyMove()]);
+  assert.deepEqual(await p.decide(op(callData)), { proceed: false, reason: "locked", shape: "organiser-key", subject: ACCOUNT.toLowerCase() });
+  unlocked.add(ACCOUNT.toLowerCase());
+  const paid = await p.decide(op(callData, { nonce: "11" }));
+  assert.equal(paid.proceed, true);
+  const none = new SponsorPolicy(deps);
+  assert.equal((await none.decide(op(callData, { nonce: "12" }))).proceed, false, "no ledger wired: refused");
 });

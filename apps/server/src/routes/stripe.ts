@@ -1332,8 +1332,9 @@ stripe.get("/checkout-status", async (c) => {
 /**
  * POST /api/stripe/webhook
  *
- * Stripe sends events here. Verifies the signature if STRIPE_WEBHOOK_SECRET
- * is set; otherwise accepts all events (fine for test mode).
+ * Stripe sends events here. Once a signing secret is configured, every event
+ * must carry a valid signature. Unsigned events are accepted only when no
+ * secret is set AND the server is not in production (local dev and tests).
  */
 stripe.post("/webhook", async (c) => {
   const rawBody = await c.req.text();
@@ -1352,16 +1353,22 @@ stripe.post("/webhook", async (c) => {
       process.env.STRIPE_WEBHOOK_SECRET,
     ].filter((s): s is string => !!s);
 
-    if (secrets.length > 0 && sig) {
+    if (secrets.length > 0) {
+      // A configured secret decides on its own, whatever NODE_ENV says: the
+      // unsigned branch below must not be one lost env var away from a server
+      // that holds live webhook secrets.
+      if (!sig) {
+        console.error("[stripe-webhook] REJECTED: no Stripe-Signature header");
+        return c.text("Webhook signature required", 400);
+      }
       let verified: import("stripe").Stripe.Event | null = null;
       let lastErr: unknown = null;
       for (const secret of secrets) {
         try {
-          // Tolerance of 3600s (1 hour) allows Stripe's retry schedule to
-          // succeed even if our server was slow/down during the first delivery.
-          // The session registry (checkAndConsumeSession) prevents any
-          // already-processed event from being acted on a second time.
-          verified = s.webhooks.constructEvent(rawBody, sig, secret, 3600);
+          // The SDK's default 5-minute tolerance. Stripe signs every delivery
+          // attempt afresh, retries included, so a wider window only lengthens
+          // how long a captured request stays replayable.
+          verified = s.webhooks.constructEvent(rawBody, sig, secret);
           break;
         } catch (err) {
           lastErr = err;
@@ -1374,7 +1381,7 @@ stripe.post("/webhook", async (c) => {
       // endpoint can forge a checkout.session.completed event with arbitrary
       // metadata and claim free tickets. Always reject unsigned webhooks in
       // production — set STRIPE_WEBHOOK_SECRET in apps/server/.env.
-      console.error("[stripe-webhook] REJECTED: STRIPE_WEBHOOK_SECRET unset or signature missing in production");
+      console.error("[stripe-webhook] REJECTED: no webhook signing secret set in production");
       return c.text("Webhook signature required", 400);
     } else {
       // Dev/test only — accept unsigned events
@@ -1382,7 +1389,10 @@ stripe.post("/webhook", async (c) => {
       event = JSON.parse(rawBody) as import("stripe").Stripe.Event;
     }
   } catch (err) {
-    console.error("[stripe-webhook] Signature verification failed:", err);
+    // The message only: the SDK's error carries the whole request body, and
+    // this endpoint is open to anyone, so logging the object writes whatever
+    // they send (up to the 16 MiB API cap) into the journal on every refusal.
+    console.error("[stripe-webhook] Signature verification failed:", err instanceof Error ? err.message : String(err));
     return c.text("Webhook signature verification failed", 400);
   }
 

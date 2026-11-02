@@ -134,9 +134,12 @@ export interface ListState {
   removed: MarketingListTombstone[];
 }
 
+/** The stored list right now. `sealedList: null` = on record but not found (`MarketingListResponse`). */
+export type StoredList = { sealedList: SealedBoxV2 | null; updatedAt: string };
+
 export interface ListSaveDeps {
-  /** The stored list right now. Null = none yet; throws when it cannot be read. */
-  readList(): Promise<{ sealedList: SealedBoxV2; updatedAt: string } | null>;
+  /** Null = none yet; throws when it cannot be read. */
+  readList(): Promise<StoredList | null>;
   openList(box: SealedBoxV2): Promise<MarketingListPayload>;
   sealList(payload: MarketingListPayload): Promise<SealedBoxV2>;
   writeList(sealed: SealedBoxV2, emails: string[], ifUpdatedAt: string | null): Promise<MarketingListMeta>;
@@ -148,13 +151,26 @@ export interface ListSaveDeps {
  * in between (`ifUpdatedAt`). So a stale tab can never bring back a contact deleted
  * elsewhere, or wipe its tombstone (Fable sign-off 2026-10-14). Throws the
  * server's LIST_CHANGED when it lost that race; the caller reloads and says so.
+ *
+ * A stored list that cannot be found is written over only by `replaceMissing`: the
+ * stamp of the missing record the organiser chose to replace ("Start a new list").
+ * Any other save throws LIST_MISSING. A replace whose record has been saved over
+ * since throws LIST_CHANGED, and one whose record opens again throws LIST_FOUND -
+ * it never wipes a list that reads (Fable review 2026-11-01).
  */
 export async function saveListChange(
   deps: ListSaveDeps,
   change: (list: ListState) => ListState,
+  { replaceMissing }: { replaceMissing?: string } = {},
 ): Promise<{ payload: MarketingListPayload; meta: MarketingListMeta }> {
   const stored = await deps.readList();
-  const base = stored ? await deps.openList(stored.sealedList) : { version: 1 as const, contacts: [] };
+  if (replaceMissing !== undefined) {
+    if (stored?.updatedAt !== replaceMissing) throw codedError(LIST_CHANGED, LIST_CHANGED_MESSAGE);
+    if (stored.sealedList) throw codedError(LIST_FOUND, LIST_FOUND_MESSAGE);
+  } else if (stored && !stored.sealedList) {
+    throw codedError(LIST_MISSING, LIST_MISSING_MESSAGE);
+  }
+  const base = stored?.sealedList ? await deps.openList(stored.sealedList) : { version: 1 as const, contacts: [] };
   const next = change({ contacts: base.contacts, removed: normaliseRemoved(base.removed) });
   const payload = listPayload(next.contacts, next.removed);
   const meta = await deps.writeList(
@@ -267,8 +283,8 @@ export interface SyncDeps {
   /** The event's questions. Throws when unreadable. */
   getOrderFields(ev: EventDirectoryEntry): Promise<readonly OrderField[]>;
   check(emails: string[]): Promise<MarketingCheckResult>;
-  /** The stored list right now. Null = none yet; throws when it cannot be read. */
-  readList(): Promise<{ sealedList: SealedBoxV2; updatedAt: string } | null>;
+  /** Null = none yet; throws when it cannot be read. */
+  readList(): Promise<StoredList | null>;
   /** `ifUpdatedAt` = the stamp of the list this was merged onto; the server refuses if it moved since. */
   writeList(sealed: SealedBoxV2, emails: string[], ifUpdatedAt: string | null): Promise<MarketingListMeta>;
   /** Still the same signed-in organiser - never write one account's buyers into another's list. */
@@ -457,11 +473,13 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
   const mergeAndWrite = async (fail: (error: string) => SyncResult): Promise<SyncResult | typeof LIST_CHANGED> => {
     if (!deps.stillCurrent()) return fail("You switched accounts, so nothing was added.");
 
-    let stored: { sealedList: SealedBoxV2; updatedAt: string } | null;
+    let stored: StoredList | null;
     let base: MarketingListPayload;
     try {
       stored = await deps.readList();
-      base = stored ? await keys.openList(stored.sealedList) : { version: 1, contacts: [] };
+      // Buyers alone written over it would read as the whole list; the organiser decides.
+      if (stored && !stored.sealedList) return fail(LIST_MISSING_MESSAGE);
+      base = stored?.sealedList ? await keys.openList(stored.sealedList) : { version: 1, contacts: [] };
     } catch (err) {
       return fail(message(err, "Could not open your list to add new buyers."));
     }
@@ -536,6 +554,26 @@ export const LIST_CHANGED = "LIST_CHANGED";
 export function isListChanged(err: unknown): boolean {
   return !!err && typeof err === "object" && (err as { code?: unknown }).code === LIST_CHANGED;
 }
+
+const LIST_CHANGED_MESSAGE = "Your list changed while this was saving, so nothing was overwritten. Try again.";
+
+/** The stored list is on record but could not be found: nothing is added until the organiser starts a new one. */
+export const LIST_MISSING = "LIST_MISSING";
+export const LIST_MISSING_MESSAGE = "Your saved contact list can't be found. Open Audience to start a new one.";
+
+/** "Start a new list" found the list it was replacing readable again: nothing replaced. */
+export const LIST_FOUND = "LIST_FOUND";
+const LIST_FOUND_MESSAGE = "Your saved contact list can be opened again, so nothing was replaced.";
+
+function codedError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+const hasCode = (err: unknown, code: string): boolean =>
+  !!err && typeof err === "object" && (err as { code?: unknown }).code === code;
+
+export const isListMissing = (err: unknown): boolean => hasCode(err, LIST_MISSING);
+export const isListFound = (err: unknown): boolean => hasCode(err, LIST_FOUND);
 
 // ── Throttle and lock ───────────────────────────────────────────────────────
 

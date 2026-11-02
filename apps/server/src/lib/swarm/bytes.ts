@@ -235,10 +235,34 @@ async function downloadFromEthernaBytes(ref: string, signal: AbortSignal): Promi
   );
   if (!resp.ok) {
     await resp.body?.cancel().catch(() => {});
-    throw new Error(`Etherna /bytes ${resp.status}`);
+    throw new EthernaReadError(resp.status);
   }
   return await readCappedText(resp, SWARM_READ_MAX_BYTES, "etherna bytes download");
 }
+
+/** Etherna's status on `httpStatus`, not `status`: `isTransientSwarmError` must classify it as it always has. */
+class EthernaReadError extends Error {
+  constructor(readonly httpStatus: number) {
+    super(`Etherna /bytes ${httpStatus}`);
+    this.name = "EthernaReadError";
+  }
+}
+
+/**
+ * Every source asked answered 404. Not proof the content is gone for good: a bee
+ * also says 404 when it cannot reach the chunk's holders. So a caller may REPORT
+ * it - never take it as "empty" and write over what it could not read.
+ */
+export class SwarmNotFoundError extends Error {
+  readonly status = 404;
+  constructor(ref: string) {
+    super(`${ref} not found on any source`);
+    this.name = "SwarmNotFoundError";
+  }
+}
+
+const answeredNotFound = (err: unknown): boolean =>
+  err instanceof EthernaReadError ? err.httpStatus === 404 : (err as { status?: unknown } | null)?.status === 404;
 
 /** Our own bee's size verdict — the only one remembered (see `oversizedRefs`). */
 class WocoBeeTooLargeError extends ResponseTooLargeError {}
@@ -293,6 +317,7 @@ export async function downloadFromBytes(ref: string, { wocoBeeOnly = false }: { 
         rememberOversized(key);
         throw new ResponseTooLargeError(SWARM_READ_MAX_BYTES, "bytes download");
       }
+      if (errors.every(answeredNotFound)) throw new SwarmNotFoundError(key);
       const inner = errors[errors.length - 1];
       lastErr = inner;
       if (isTransientSwarmError(inner) && attempt < 4) {

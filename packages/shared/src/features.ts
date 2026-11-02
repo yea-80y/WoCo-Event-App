@@ -92,6 +92,16 @@ export const FEATURES = {
   // event create. Checkout still ENFORCES a gate an existing series carries -
   // turning the flag off must never open a gated sale to everyone.
   badgesAllowed: false,
+  // The dashboard's per-order webhook: the organiser's browser opened each order
+  // and POSTed it through our server (/webhook-relay) to the organiser's endpoint -
+  // the one path where our server handled attendee details in plaintext, and not
+  // in the data inventory. OFF (owner decision 2026-10-31, with #965): no use in
+  // the server logs since 2026-10-07, and it runs against the client-first
+  // direction. Gates the dashboard panel and column AND, in lockstep, the relay
+  // route, which an old dashboard could still call. The dashboard also deletes
+  // the stored config: it held the endpoint's auth header in plaintext. Bring
+  // back browser-direct (no relay) if organisers ask, not as it was.
+  webhooksAllowed: false,
 } as const;
 
 /**

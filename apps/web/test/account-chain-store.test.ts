@@ -146,7 +146,7 @@ test("a linked device stores the handed-over secrets BEFORE it signs in, then ad
 
 test("an unfinished removal: past the flip it finishes by itself, before it the person decides", () => {
   const load = kbody("export async function loadAccountChain");
-  assert.match(load, /if \(verdict === "ok"\) \{[\s\S]*if \(keys\) void removalLeftHere\(h, seedAddr\);/, "only on a confirmed unlock");
+  assert.match(load, /if \(verdict === "ok"\) \{[\s\S]*if \(keys\) void removalLeftHere\(h, seedAddr\)\.then\(\(\) => organiserKeysLeftBehind\(h, seedAddr\)\);/, "only on a confirmed unlock");
   const left = kbody("async function removalLeftHere");
   assert.match(left, /if \(flipped\) await rotateOnRemovalFor\(h, \[\], \{ resume: true \}\);\s*else h\.setPendingRemoval\(\{ going: p\.going \}\);/);
   assert.match(left, /if \(!p \|\| p\.parent !== u\.parent\) return;/);

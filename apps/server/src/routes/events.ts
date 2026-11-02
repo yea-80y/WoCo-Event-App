@@ -12,7 +12,9 @@ import { AccountKeysChangedError, AccountKeysUnavailableError } from "../lib/key
 import { setListed } from "../lib/event/listing-state.js";
 import { feedSignerRecordHealth, getRecordedFeedSigner, isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
-import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
+import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress, getDefaultEventContract } from "../lib/chain/event-contract.js";
+import { OrganiserKeyRequiredError } from "../lib/chain/sponsor-wallet.js";
+import { checkOrganiserKeyBinding } from "../lib/event/organiser-key.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
 import { RegistrationRebindError, RegistryUnreadableError } from "../lib/event/onchain-registry.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
@@ -856,6 +858,11 @@ export const REGISTER_REFUSALS = {
   unsupportedFormat: "These tickets were saved in a format we no longer support - please create the event again.",
   didNotLoad: "This event's tickets didn't load - please try again",
   inFlight: "Your tickets are still being set up - please try again in a moment.",
+  // The organiser key (ledger2): proof the event's terms key is this account's, at its current keys.
+  organiserKeyMissing: "We couldn't get your account's signing key on this device - please reload the page and try again.",
+  organiserKeyInvalid: "We couldn't confirm your account's signing key - please reload the page and try again.",
+  organiserKeyStale: "Your account's keys changed on another device - please reload the page and try again.",
+  organiserKeyUnavailable: "We couldn't check your account's keys just now - please try again in a moment.",
   // An operator must repair the store and restart: a retry cannot succeed, so
   // neither of these two may invite one.
   unavailable: "We can't set up tickets right now because of a problem on our side - please contact support.",
@@ -912,6 +919,13 @@ export function registerOnChainErrorResponse(err: unknown): {
       },
     };
   }
+  // The live contract changed to ledger2 between the route's check and the send.
+  if (err instanceof OrganiserKeyRequiredError) {
+    return {
+      status: 409,
+      body: { ok: false, error: "organiser_key_required", message: REGISTER_REFUSALS.organiserKeyMissing },
+    };
+  }
   // The class, never the text: this path talks to the chain through a keyed
   // RPC URL, and ethers puts that URL in its error messages (#540).
   return {
@@ -931,7 +945,7 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     return c.json({ ok: false, error: REGISTER_REFUSALS.cancelled }, 409);
   }
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  const body = c.get("body") as { seriesId: string; signer?: string };
+  const body = c.get("body") as { seriesId: string; signer?: string; organiserKeyBinding?: unknown };
   const { seriesId } = body;
 
   if (!seriesId) {
@@ -1006,6 +1020,24 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const endSec = Math.floor(new Date(feed.endDate).getTime() / 1000);
   const eventEndTs = Math.max(Number.isFinite(endSec) ? endSec : 0, nowSec + 3600);
 
+  // Ledger2 registers the organiser KEY beside the organiser: the key that signs the
+  // event's terms from then on. Our sponsor wallet names it on chain only once it has
+  // signed for this account at its current keys; the key itself never leaves the browser.
+  let organiserKey: string | undefined;
+  if (getDefaultEventContract()?.version === "ledger2") {
+    const check = await checkOrganiserKeyBinding(body.organiserKeyBinding, parentAddress);
+    if (!check.ok) {
+      const refusal = {
+        missing: { status: 409, error: "organiser_key_required", message: REGISTER_REFUSALS.organiserKeyMissing },
+        invalid: { status: 400, error: "organiser_key_invalid", message: REGISTER_REFUSALS.organiserKeyInvalid },
+        stale: { status: 409, error: "organiser_key_stale", message: REGISTER_REFUSALS.organiserKeyStale },
+        unavailable: { status: 503, error: "organiser_key_unavailable", message: REGISTER_REFUSALS.organiserKeyUnavailable },
+      }[check.reason];
+      return c.json({ ok: false, error: refusal.error, message: refusal.message }, refusal.status as 400 | 409 | 503);
+    }
+    organiserKey = check.key;
+  }
+
   const tReg = Date.now();
   // Exactly-once: registerEvent is NOT idempotent (the contract keys the event id off
   // a sponsor-nonce counter, not the manifest), and publish RETRIES this endpoint after
@@ -1025,6 +1057,7 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
         priceBaseUnits: 0n,
         payoutRecipient: feed.creatorAddress,
         dropGate: ZERO_ADDRESS,
+        ...(organiserKey ? { organiserKey } : {}),
       },
       ...(feed.creatorFeedSigner ? { signerHint: feed.creatorFeedSigner } : {}),
       ...(series.onChainEventId ? { feedOnChainEventId: series.onChainEventId } : {}),

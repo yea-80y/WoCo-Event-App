@@ -11,12 +11,15 @@
  *   2. secret    S' - kept as a pending rotation, so a closed tab resumes with the SAME one
  *   3. copy      events, site configs, profile under the new signer (nothing reads them yet)
  *   4. ring      S' sealed to every remaining passkey, earlier secrets under it; stored
- *   5. flip      ONE op: the passkey off the list AND the anchor onto the new ring. Before
- *                it, readers follow the old keys; after it, the new - never a mix
+ *   5. flip      ONE op: the passkey off the list AND the anchor onto the new ring, and the
+ *                account's ledger2 events onto the organiser key S' derives (the removed
+ *                passkey can derive the old one). Before it, readers follow the old keys;
+ *                after it, the new - never a mix
  *   6. adopt     this device holds S' as current
- *   7. after     the server told; the passkey's device record removed; site pointers,
- *                live sites, event pages and names moved; the contact list re-sealed;
- *                likes and follows re-made under the new signer
+ *   7. after     the server told; the passkey's device record removed; any events the flip
+ *                could not carry moved to the new organiser key; site pointers, live sites,
+ *                event pages and names moved; the contact list re-sealed; likes and follows
+ *                re-made under the new signer
  *
  * A step before the flip that fails leaves the account exactly as it was (the removed
  * passkey still works, nothing changed). After the flip the removal is done; what is
@@ -27,6 +30,7 @@
  */
 import type { KeyRing, KeyRingMember } from "@woco/shared/keyring/ring";
 import type { AccountChain } from "../auth/account-chain.js";
+import type { OrganiserKeyMove } from "../auth/co-owner-calls.js";
 
 export interface PendingRotation {
   v: 1;
@@ -46,10 +50,11 @@ export interface PendingRotation {
   after?: AfterStep[];
 }
 
-export type AfterStep = "server" | "sites" | "pages" | "list" | "records" | "social";
+export type AfterStep = "server" | "sites" | "pages" | "list" | "records" | "organiser" | "social";
 // The removed passkey's device record goes right after the server is told: it is what
-// signs that passkey out, and the redeploys after it can take minutes.
-export const AFTER_STEPS: readonly AfterStep[] = ["server", "records", "sites", "pages", "list", "social"];
+// signs that passkey out, and the redeploys after it can take minutes. The organiser key
+// next: an event left on the old key is one the removed passkey can still sign for.
+export const AFTER_STEPS: readonly AfterStep[] = ["server", "records", "organiser", "sites", "pages", "list", "social"];
 
 export type RotationProgress =
   | { step: "keys" }
@@ -64,6 +69,8 @@ export interface NewKeys {
   feedSigner: { privKey: string; address: string };
   orderKeyRef: string;
   orderPublicKey: Uint8Array;
+  /** The organiser key's ADDRESS (`@woco/shared/crypto/organiser-key`); the key is not kept. */
+  organiserKey: string;
 }
 
 export interface RotationSteps {
@@ -87,8 +94,13 @@ export interface RotationSteps {
   copyProfile(keys: NewKeys): Promise<void>;
   /** Build the ring for S' and store it with the new order key; returns its reference. */
   storeRing(args: { gen: number; secret: string; prevRing: string | null; members: KeyRingMember[] }): Promise<string>;
-  /** The flip: one op taking `going` off the list and moving the anchor. */
-  flip(going: string[], ring: { prev: string | null; next: string }): Promise<{ confirmed: boolean }>;
+  /**
+   * The account's ledger2 events not yet on `keys.organiserKey`, as many as one op carries;
+   * null when it has none. Read from chain; throws when unreadable.
+   */
+  organiserKeyMove(keys: NewKeys): Promise<OrganiserKeyMove | null>;
+  /** The flip: one op taking `going` off the list, moving the anchor and, with `move`, the events' key. */
+  flip(going: string[], ring: { prev: string | null; next: string }, move: OrganiserKeyMove | null): Promise<{ confirmed: boolean }>;
   adopt(chain: AccountChain): Promise<void>;
   /** `ring`: the new ring the flip put on the anchor. */
   after: Record<AfterStep, (keys: NewKeys, ctx: { going: string[]; ring: string }) => Promise<void>>;
@@ -210,7 +222,10 @@ export async function rotateOnRemoval(
     const nextRing = await s.storeRing({ gen, secret: pending!.secret, prevRing: anchor, members });
     pending = { ...pending!, nextRing };
     await s.savePending(pending);
-    const flipped = await s.flip(pending.going, { prev: anchor, next: nextRing });
+    // Read last, so the fewest events can be registered between this read and the flip;
+    // the "organiser" step after it catches any that were.
+    const move = await s.organiserKeyMove(keys);
+    const flipped = await s.flip(pending.going, { prev: anchor, next: nextRing }, move);
     if (!flipped.confirmed) throw new Error("Your account's new keys didn't land - nothing else was changed. Try again.");
     pending = { ...pending, phase: "flipped", after: [...AFTER_STEPS] };
     await s.savePending(pending);

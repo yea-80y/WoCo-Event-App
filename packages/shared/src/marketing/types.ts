@@ -139,10 +139,22 @@ export interface MarketingListMeta {
   unmailableCount?: number;
 }
 
-export interface MarketingListResponse {
-  meta: MarketingListMeta;
-  sealedList: SealedBoxV2;
-}
+/**
+ * Why a list on record could not be found: its batch is off chain (`expired`, it
+ * cannot come back), still on chain (`live`, it may be unreachable for now), or
+ * the server cannot tell (no batch recorded, or the check itself failed).
+ */
+export type ListStorageVerdict = "expired" | "live" | "unknown";
+
+/**
+ * `sealedList: null` = the list is on record but every source answered "not
+ * found". Never read that as an empty list and write over it: a 404 is also what
+ * an unreachable chunk looks like. Only the organiser's own "start a new list"
+ * replaces it.
+ */
+export type MarketingListResponse =
+  | { meta: MarketingListMeta; sealedList: SealedBoxV2 }
+  | { meta: MarketingListMeta; sealedList: null; storage: ListStorageVerdict };
 
 /** Import-wizard validation result for a batch of candidate emails. */
 export interface MarketingCheckResult {

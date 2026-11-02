@@ -189,7 +189,8 @@ test("a burn while that order's store is in flight is refused 409, then works on
 
 test("the organiser's order view checks erasure before it fetches anything", () => {
   const src = readFileSync(new URL("../src/routes/orders.ts", import.meta.url), "utf8");
-  const check = src.indexOf("const erased = swarmHex ? isOrderErased(swarmHex) : false;");
+  // #965: the gateway's rule - erased, or an erasure has started.
+  const check = src.indexOf("const erased = swarmHex ? erasureStarted(swarmHex) : false;");
   const heldGate = src.indexOf("const held = swarmHex && !erased ? getHeldOrder(swarmHex) : null;");
   const guard = src.indexOf("} else if (swarmHex && !erased) {");
   const fetch = src.indexOf("await downloadFromBytes(swarmHex)");

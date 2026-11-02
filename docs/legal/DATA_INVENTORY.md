@@ -349,7 +349,11 @@ Swarm chunks are **immutable and cannot be individually deleted**, with the one 
 > order blob is stamped on its own attendee batch by a key WoCo holds, and the slot of each chunk is
 > recorded (`.data/attendee-slots.json`). Erasure overwrites those slots with newer stamps, which
 > evicts the chunks from every storer that receives the overwrite (`lib/attendee-batch/burn.ts`), and
-> WoCo stops serving the order. It runs on request through an operator route (`routes/ops.ts`), and
+> WoCo stops serving the order. Since #965 a stored order's sealed blob is readable by its reference
+> through WoCo's gateway, as on any Swarm gateway (the reference is onchain already), so the
+> organiser's browser can fetch it; erasure takes it off the gateway before the first chunk is
+> burned, and an hourly reconcile from the ledger keeps the two in step
+> (`lib/attendee-batch/order-gateway.ts`). It runs on request through an operator route (`routes/ops.ts`), and
 > on schedule through the daily retention sweep (#547, below). Not reached: copies someone else stored under their own stamp, and retrieval
 > caches. Blobs written before the change, and every other data type here, are unchanged.
 >

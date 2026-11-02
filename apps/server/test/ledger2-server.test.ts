@@ -25,8 +25,10 @@ const CHAIN = 31338;
 const SPONSOR_KEY = Wallet.createRandom().privateKey;
 process.env.WOCO_SPONSOR_PRIVATE_KEY = SPONSOR_KEY;
 
-const { batchClaimForOnChain, checkSponsorCanMint, readBearerMintsOn, readTicketMintPolicy, resolveRegisterTx } =
-  await import("../src/lib/chain/sponsor-wallet.js");
+const {
+  batchClaimForOnChain, checkSponsorCanMint, readBearerMintsOn, readTicketMintPolicy, resolveRegisterTx,
+  registerEventOnChain, OrganiserKeyRequiredError,
+} = await import("../src/lib/chain/sponsor-wallet.js");
 const { getOnChainEventAt, EventContractConfigError } = await import("../src/lib/chain/event-contract.js");
 const { LEDGER2_ABI } = await import("../src/lib/chain/event-contract-ledger.js");
 const { getOnChainHolding } = await import("../src/lib/object/holdings.js");
@@ -264,6 +266,66 @@ test("the #318 resolver finds a ledger2 Registered log — absent would re-broad
 // ---------------------------------------------------------------------------
 // Holdings skip reissued slots
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Registration names the organiser key on ledger2, and only there
+// ---------------------------------------------------------------------------
+
+const ORG_KEY = "0x" + "0e".repeat(20);
+const REGISTER = { organiser: ORGANISER, eventEndTs: 4_000_000_000, priceBaseUnits: 0n, payoutRecipient: ORGANISER, dropGate: "0x" + "00".repeat(20) };
+
+/** As `onLedger2`, for version 1 of the ledger at LEDGER1. */
+async function onLedger1<T>(fn: () => Promise<T>): Promise<T> {
+  const keys = ["WOCO_EVENT_CHAIN_ID", `WOCO_EVENT_VERSION_${CHAIN}`, `WOCO_EVENT_ADDRESS_LEDGER_${CHAIN}`] as const;
+  const saved = keys.map((k) => process.env[k]);
+  process.env.WOCO_EVENT_CHAIN_ID = String(CHAIN);
+  process.env[`WOCO_EVENT_VERSION_${CHAIN}`] = "ledger";
+  process.env[`WOCO_EVENT_ADDRESS_LEDGER_${CHAIN}`] = LEDGER1.address;
+  try {
+    return await fn();
+  } finally {
+    keys.forEach((k, i) => {
+      if (saved[i] === undefined) delete process.env[k];
+      else process.env[k] = saved[i];
+    });
+  }
+}
+
+test("on ledger2 registerEvent carries the organiser key beside the organiser", async () => {
+  const sent: string[] = [];
+  answer = recordMint(sent, iface.encodeErrorResult("InvalidEventEnd", []));
+  await assert.rejects(() => onLedger2(() => registerEventOnChain(7, MANIFEST, { ...REGISTER, organiserKey: ORG_KEY })));
+  assert.equal(sent.length, 1);
+  const decoded = iface.decodeFunctionData("registerEvent", sent[0]!);
+  assert.equal(decoded[0].toLowerCase(), ORGANISER);
+  assert.equal(decoded[1].toLowerCase(), ORG_KEY, "the key is not the second argument");
+  assert.equal(decoded[2], 7n);
+  assert.equal(sent[0]!.slice(0, 10), iface.getFunction("registerEvent")!.selector);
+});
+
+test("on ledger2 a registration without the organiser key is refused before anything is sent", async () => {
+  const sent: string[] = [];
+  answer = recordMint(sent, iface.encodeErrorResult("InvalidEventEnd", []));
+  await assert.rejects(
+    () => onLedger2(() => registerEventOnChain(7, MANIFEST, REGISTER)),
+    (e: unknown) => e instanceof OrganiserKeyRequiredError,
+  );
+  assert.equal(sent.length, 0, "a ledger2 registration without a key reached the chain");
+});
+
+test("on ledger version 1 registerEvent keeps its four arguments, whatever key is passed", async () => {
+  const v1 = new Interface([
+    "function registerEvent(address organiser, uint64 supply, bytes32 manifestRef, uint64 eventEndTs) returns (bytes32 eventId)",
+  ]);
+  const sent: string[] = [];
+  answer = recordMint(sent, iface.encodeErrorResult("InvalidEventEnd", []));
+  await assert.rejects(() => onLedger1(() => registerEventOnChain(7, MANIFEST, { ...REGISTER, organiserKey: ORG_KEY })));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]!.slice(0, 10), v1.getFunction("registerEvent")!.selector);
+  assert.notEqual(v1.getFunction("registerEvent")!.selector, iface.getFunction("registerEvent")!.selector);
+  const decoded = v1.decodeFunctionData("registerEvent", sent[0]!);
+  assert.equal(decoded[0].toLowerCase(), ORGANISER);
+});
 
 test("ledger2 holdings drop a slot whose claim log names the holder but which was reissued away", async () => {
   // Lettered, and asked for checksummed: the owner compare must not depend on case.

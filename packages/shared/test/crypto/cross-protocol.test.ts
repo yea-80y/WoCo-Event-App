@@ -33,6 +33,7 @@ import {
   signPersonalMessage,
 } from "../../src/crypto/issuing.js";
 import { buildIssuerRotationMessage } from "../../src/issuer/types.js";
+import { buildOrganiserKeyBindingMessage } from "../../src/crypto/organiser-key.js";
 import { buildManifestV2Message, manifestV2Digest } from "../../src/edition/canonical.js";
 import { signManifestV2, verifyManifestV2 } from "../../src/edition/merkle.js";
 import type { ManifestV2Body } from "../../src/edition/types.js";
@@ -85,9 +86,12 @@ test("no WoCo canonical builder can emit a 32-byte message", () => {
   );
   assert.equal(utf8ToBytes(minimalRotation).length, 113, "the shortest possible rotation message");
 
+  const minimalOrganiserKey = buildOrganiserKeyBindingMessage("0x" + "00".repeat(20), 0);
+  assert.equal(utf8ToBytes(minimalOrganiserKey).length, 74, "the shortest possible organiser-key binding");
+
   // All fields only grow the messages, so these are the floors: every domain
   // clears 32 bytes and the SOC domain is disjoint by length alone.
-  for (const len of [83, 79, 86, 67, 113]) assert.notEqual(len, 32);
+  for (const len of [83, 79, 86, 67, 113, 74]) assert.notEqual(len, 32);
 });
 
 test("every domain line is distinct", () => {
@@ -102,6 +106,7 @@ test("every domain line is distinct", () => {
     }).split("\n")[0],
     buildIssuerBindingMessage("0x" + "00".repeat(20), 0).split("\n")[0],
     buildIssuerRotationMessage("0x" + "00".repeat(20), 0, 1, "0x" + "00".repeat(20)).split("\n")[0],
+    buildOrganiserKeyBindingMessage("0x" + "00".repeat(20), 0).split("\n")[0],
   ];
   assert.equal(new Set(domains).size, domains.length, `domain collision in: ${domains}`);
 });

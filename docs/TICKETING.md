@@ -447,6 +447,14 @@ unusable until a manifest-extension rule exists; lowering works. Rollback: an ol
 know `ledger2` records - it keeps them on disk, serves none (those series stop selling) and raises
 `unreadableRecords`.
 
+Cutover order, so no event is ever registered that a passkey removal cannot find: (1) fill
+`LEDGER2_DEPLOYMENTS` in `@woco/shared/ticket/ledger2` with the address and the deploy receipt's
+block (Arbitrum's own block number, not the L1 one), merge; (2) deploy the frontend from that
+main; (3) only then set `WOCO_EVENT_VERSION_42161=ledger2` on the server. A frontend without the
+entry finds no ledger, so its removals move no event keys and count that work done. The server
+refuses `ledger2` on any chain but the Kernel chain (42161): an event's organiser is the account's
+Kernel, which exists only there.
+
 > **Superseded (kept for the record).** Until 2026-09-24 the ledger was "written, reviewed and
 > merged, and not deployed", and `DEPLOYED_LEDGER` was empty so that selecting it early failed
 > loudly with "No WoCoEvent contract deployed". The map is still empty in code; production now
