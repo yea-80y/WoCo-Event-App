@@ -182,10 +182,19 @@ export function authWindowProblems(html: string, target: AuthWindowTarget): stri
   for (const [what, re] of DENIED) if (re.test(script)) problems.push(`the script uses ${what}`);
   const links = html.replace(script, "").match(/<a\b[^>]*>/g) ?? [];
   if (links.length !== 1 || links[0] !== homeLink(target)) problems.push(`the page does not carry exactly one link, hidden, to ${authWindowHome(target)}`);
-  const literal = (v: unknown) => JSON.stringify(v);
-  if (!script.includes(literal(target.selfOrigin))) problems.push(`the script does not name its origin ${target.selfOrigin}`);
-  if (!script.includes(literal(target.rpId))) problems.push(`the script does not name its RP ID ${target.rpId}`);
-  if (!script.includes(literal(target.openers))) problems.push(`the script does not name exactly the openers ${literal(target.openers)}`);
+  // The minifier picks the quote: esbuild (Vite 7) wrote JSON's "...", Oxc (Vite 8) writes
+  // `...`. A value with no quote, backslash or "$" reads the same in any of the three, so
+  // each spelling is that exact string; anything else must appear as its JSON literal.
+  const plain = (s: string) => !/["'`\\$]/.test(s);
+  const spellings = (v: string | readonly string[]): string[] => {
+    const items = typeof v === "string" ? [v] : v;
+    if (!items.every(plain)) return [JSON.stringify(v)];
+    return ['"', "'", "`"].map((q) => (typeof v === "string" ? q + v + q : `[${v.map((s) => q + s + q).join(",")}]`));
+  };
+  const names = (v: string | readonly string[]) => spellings(v).some((l) => script.includes(l));
+  if (!names(target.selfOrigin)) problems.push(`the script does not name its origin ${target.selfOrigin}`);
+  if (!names(target.rpId)) problems.push(`the script does not name its RP ID ${target.rpId}`);
+  if (!names(target.openers)) problems.push(`the script does not name exactly the openers ${JSON.stringify(target.openers)}`);
   if (target === AUTH_WINDOW_PRODUCTION && /localhost|127\.0\.0\.1/.test(html)) problems.push("a production window names localhost");
   return problems;
 }

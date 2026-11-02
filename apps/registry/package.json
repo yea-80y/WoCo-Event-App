@@ -13,13 +13,13 @@
     "ethers": "^6.17.0"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^6.2.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.19.2",
     "svelte": "^5.57.3",
     "svelte-check": "^4.7.7",
     "typescript": "~5.9.3",
-    "vite": "^7.3.1",
+    "vite": "^8.3.5",
     "vite-plugin-node-polyfills": "^0.28.0"
   }
 }

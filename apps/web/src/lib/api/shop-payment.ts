@@ -19,9 +19,11 @@ import type {
   ShopPaymentQuote,
   ShopPaymentProof,
 } from "@woco/shared";
-import { SHOP_PAYMENT_DOMAIN, SHOP_PAYMENT_TYPES } from "@woco/shared";
-import { formatUnits, type TypedDataField } from "ethers";
 import { apiBase, authPost } from "./client.js";
+
+// No runtime import from ethers here: the storefront imports this module eagerly,
+// and Vite 8's bundler then loads all of ethers on a site's first paint. The
+// typed-data builder that needs it lives with its only caller, payment/shop-usdc-pay.ts.
 
 /** Request a server-signed USDC quote for an order. One-shot, ~3-min TTL. */
 export async function fetchShopPaymentQuote(opts: {
@@ -53,29 +55,6 @@ export async function fetchShopPaymentQuote(opts: {
     throw new Error(data.error || `Quote request failed: HTTP ${resp.status}`);
   }
   return data.data;
-}
-
-/**
- * Build the EIP-712 typed-data payload an anonymous buyer signs to bind their
- * wallet to the order. Reconstructable from the quote alone — the amount/order/
- * quoteId all come from the server-signed quote, so the wallet renders exactly
- * what the server will verify. Omit the txHash deliberately so it can be signed
- * before the transfer is broadcast (no sign → wait → sign-again stall).
- */
-export function buildShopPaymentTypedData(quote: ShopPaymentQuote, payer: Hex0x) {
-  return {
-    domain: SHOP_PAYMENT_DOMAIN,
-    types: SHOP_PAYMENT_TYPES as unknown as Record<string, TypedDataField[]>,
-    primaryType: "ShopPayment" as const,
-    message: {
-      shopId: quote.shopId,
-      orderId: quote.orderId,
-      quoteId: quote.quoteId,
-      payer: payer.toLowerCase(),
-      amount: formatUnits(BigInt(quote.amountAtomic), 6),
-      chainId: quote.chainId,
-    },
-  };
 }
 
 /**

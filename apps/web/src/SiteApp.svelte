@@ -8,8 +8,14 @@
   import SessionStatus from "./lib/components/auth/SessionStatus.svelte";
   import EventPage from "./lib/components/site/EventPage.svelte";
   import OrganiserNotice from "./lib/legal/OrganiserNotice.svelte";
-  import Dashboard from "./lib/creator/dashboard/Dashboard.svelte";
+  import LazyRoute from "./lib/router/LazyRoute.svelte";
   import { FEATURES } from "@woco/shared";
+
+  // Loaded only when the dashboard route opens. Imported statically it sat in
+  // every buyer's first load (with its orders reader and the chain libraries
+  // behind it), for a route only an organiser opens - and none can while wallet
+  // login is off.
+  const loadDashboard = () => import("./lib/creator/dashboard/Dashboard.svelte");
 
   // Runtime config (injected by deploy endpoint) takes priority over build-time env vars
   const EVENT_ID =
@@ -87,7 +93,7 @@
           <button class="sign-in-cta" onclick={() => loginRequest.request()}>Sign in</button>
         </div>
       {:else}
-        <Dashboard eventId={EVENT_ID} />
+        <LazyRoute loader={loadDashboard} props={{ eventId: EVENT_ID }} />
       {/if}
     {/if}
   </section>

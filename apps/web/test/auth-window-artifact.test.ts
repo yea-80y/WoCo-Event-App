@@ -112,6 +112,20 @@ test("the rules refuse another channel, a second script, or a CSP that does not 
   assert.ok(authWindowProblems(ok.replace(/script-src 'sha256-[^']+'/, "script-src 'sha256-AAAA'"), AUTH_WINDOW_PRODUCTION).some((p) => /CSP/.test(p)));
 });
 
+test("the three settings are found in whatever quote the minifier picks, and only as the exact values", () => {
+  const page = (literals: string) => authWindowHtml(`${literals};1`, AUTH_WINDOW_PRODUCTION);
+  const named = (html: string) => !authWindowProblems(html, AUTH_WINDOW_PRODUCTION).some((p) => /does not name/.test(p));
+  // esbuild (Vite 7) wrote JSON's double quotes; Oxc (Vite 8) writes backticks.
+  for (const q of ['"', "'", "`"]) {
+    const s = (v: string) => `${q}${v}${q}`;
+    assert.ok(named(page(`${s(SELF)};${s("auth.woco.eth.limo")};[${s(APP)}]`)), `all three in ${q}`);
+    assert.ok(!named(page(`${s("https://auth.x.example")};${s("auth.woco.eth.limo")};[${s(APP)}]`)), `another origin in ${q}`);
+    assert.ok(!named(page(`${s(SELF)};${s("woco.eth.limo")};[${s(APP)}]`)), `another RP ID in ${q}`);
+    assert.ok(!named(page(`${s(SELF)};${s("auth.woco.eth.limo")};[${s(APP)},${s("https://x.example")}]`)), `a second opener in ${q}`);
+    assert.ok(!named(page(`${s(SELF)};${s("auth.woco.eth.limo")};[${s("https://x.example")},${s(APP)}]`)), `an opener before ours in ${q}`);
+  }
+});
+
 test("the upload script refuses a dev window, and names the contenthash the Safe sets", async () => {
   const upload = createRequire(import.meta.url)("../../../scripts/upload-auth-window.cjs") as {
     windowProblems(index: string, notFound: string): Promise<string[]>;

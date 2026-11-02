@@ -1,5 +1,6 @@
-import type { IndexHtmlTransformContext, Plugin } from "vite";
-import type { OutputChunk } from "rollup";
+import type { IndexHtmlTransformContext, Plugin, Rolldown } from "vite";
+
+type OutputChunk = Rolldown.OutputChunk;
 
 /**
  * The app entry is src/boot.ts, which imports src/main.ts dynamically once it knows
