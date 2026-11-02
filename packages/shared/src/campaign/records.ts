@@ -101,8 +101,13 @@ const CAMPAIGN_VERSION = 1;
  * The closed list of badge kinds. A kind outside it has no address and no
  * schema: a typo must fail loudly rather than mint a badge at an address
  * nothing reads.
+ *
+ *   · `joined`  — a first meaningful action (a publish, a confirmed referral).
+ *   · `network` — someone this account referred has had a referral of their own
+ *     confirmed. Recognition only, never money: the revenue share stays one
+ *     level deep (A is paid nothing on C's sales).
  */
-export const BADGE_KINDS = ["joined"] as const;
+export const BADGE_KINDS = ["joined", "network"] as const;
 export type BadgeKind = (typeof BADGE_KINDS)[number];
 
 /**
@@ -304,6 +309,15 @@ export function validateBadgeV1(value: unknown): value is BadgeV1 {
   if (typeof o.epoch !== "number" || !Number.isSafeInteger(o.epoch) || o.epoch < 0) return false;
   if (typeof o.subject !== "string" || !SUBJECT_RE.test(o.subject)) return false;
   return typeof o.value === "boolean";
+}
+
+/**
+ * A badge read from `badgeTopic(subject, kind)` is that badge only if it names
+ * the same subject and kind. With more than one kind, a schema-valid record of
+ * another kind or account at this address is foreign bytes, not this badge.
+ */
+export function badgeMatches(record: BadgeV1, subject: Hex0x, kind: BadgeKind): boolean {
+  return record.subject === subject && record.badge === kind;
 }
 
 export function validateReferrerIndexV1(value: unknown): value is ReferrerIndexV1 {

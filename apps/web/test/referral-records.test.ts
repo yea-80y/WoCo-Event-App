@@ -286,6 +286,21 @@ test("readBadge returns a REVOKED badge too — the display rule is the caller's
   assert.equal(rec.feedReads[0].owner, CAMPAIGN_ISSUER_ADDRESS);
 });
 
+test("readBadge reads each kind at its own address, and only a record of that kind and account counts", async () => {
+  const subject = campaignAccountSubject(REFEREE);
+  const network = { format: BADGE_FORMAT, subject, badge: "network", epoch: 0, value: true };
+  const joined = { format: BADGE_FORMAT, subject, badge: "joined", epoch: 0, value: true };
+  {
+    const { deps } = harness({ feeds: { [badgeTopic(subject, "network")]: network } });
+    assert.deepEqual(await readBadge(REFEREE, deps, "network"), network);
+    assert.equal(await readBadge(REFEREE, deps), null, "a Network badge is not a Joined one");
+  }
+  for (const wrong of [joined, { ...network, subject: campaignAccountSubject(OTHER) }]) {
+    const { deps } = harness({ feeds: { [badgeTopic(subject, "network")]: wrong } });
+    assert.equal(await readBadge(REFEREE, deps, "network"), null);
+  }
+});
+
 test("readReferrerIndex maps subjects to addresses and drops a foreign entry", async () => {
   const subject = campaignAccountSubject(REFERRER);
   const { deps } = harness({

@@ -161,6 +161,7 @@
       <li>They verify with Stripe to start hosting.</li>
       <li>They confirm you invited them.</li>
       <li>You earn a share of the platform fee on their ticket sales.</li>
+      <li>If they invite an organiser too, you get the Network builder stamp.</li>
     </ol>
   {:else if code?.kind === "follow"}
     <ol class="steps">

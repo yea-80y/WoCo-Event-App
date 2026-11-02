@@ -44,6 +44,7 @@ import {
   REFERRAL_STATEMENT_FORMAT,
   REFERRAL_SUBJECT_INDEX_FORMAT,
   REFERRER_INDEX_FORMAT,
+  badgeMatches,
   badgeTopic,
   campaignAccountSubject,
   referralConfirmationTopic,
@@ -75,7 +76,7 @@ test("format ids are the frozen strings", () => {
   assert.equal(REFERRAL_CONFIRMATION_FORMAT, "woco.referral-confirmation.v1");
   assert.equal(BADGE_FORMAT, "woco.badge.v1");
   assert.equal(REFERRER_INDEX_FORMAT, "woco.referrer-index.v1");
-  assert.deepEqual([...BADGE_KINDS], ["joined"]);
+  assert.deepEqual([...BADGE_KINDS], ["joined", "network"]);
 });
 
 test("the campaign issuer address is pinned, lowercase, and not the indexer's", () => {
@@ -138,6 +139,16 @@ test("frozen: badge topic — the kind is in the salt, the subject in the messag
   // A kind outside the closed list has no address. Silently deriving one would
   // let a typo mint a badge nobody reads.
   assert.throws(() => badgeTopic(S_REFEREE, "early" as never));
+  // Adding a kind never moves an existing one: the kind is only in the salt.
+  assert.notEqual(badgeTopic(S_REFEREE, "network"), badgeTopic(S_REFEREE, "joined"));
+  assert.match(badgeTopic(S_REFEREE, "network"), /^woco\/badge\/v1\/[0-9a-f]{64}$/);
+});
+
+test("a badge matches only the account and kind of the address it was read from", () => {
+  const rec = { format: BADGE_FORMAT, subject: S_REFEREE, badge: "network", epoch: 0, value: true } as const;
+  assert.equal(badgeMatches(rec, S_REFEREE, "network"), true);
+  assert.equal(badgeMatches(rec, S_REFEREE, "joined"), false);
+  assert.equal(badgeMatches(rec, S_REFERRER, "network"), false);
 });
 
 test("frozen: referrer index — keyed by the REFERRER, banded", () => {
@@ -243,6 +254,7 @@ test("badge: exactly {badge, epoch, format, subject, value}", () => {
   assert.equal(validateBadgeV1(ok), true);
   assert.equal(validateBadgeV1({ ...ok, value: false }), true); // revocation
   assert.equal(validateBadgeV1({ ...ok, epoch: 7 }), true);
+  assert.equal(validateBadgeV1({ ...ok, badge: "network" }), true);
   assert.equal(validateBadgeV1({ ...ok, badge: "early" }), false);
   assert.equal(validateBadgeV1({ ...ok, epoch: -1 }), false);
   assert.equal(validateBadgeV1({ ...ok, epoch: 1.5 }), false);

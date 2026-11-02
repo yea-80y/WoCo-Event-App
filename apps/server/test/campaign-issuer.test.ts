@@ -478,6 +478,130 @@ test("a badge is minted once and never over an existing one — revoked included
 });
 
 // ---------------------------------------------------------------------------
+// The Network badge: A refers B, B refers C, A gets it
+// ---------------------------------------------------------------------------
+
+const UPSTREAM = `0x${"e5".repeat(20)}` as Hex0x;
+const S_U = campaignAccountSubject(UPSTREAM);
+const NETWORK_TOPIC = badgeTopic(S_U, "network");
+/** B's own confirmation: the slot the network check reads. */
+const MIDDLE_CONFIRM_TOPIC = referralConfirmationTopic(S_R);
+
+function confirmationOf(referee: Hex0x, referrer: Hex0x): Uint8Array {
+  return enc({
+    format: REFERRAL_CONFIRMATION_FORMAT,
+    referee,
+    refereeFeed: FEED,
+    referrer,
+    confirmedAt: new Date(NOW - 2 * 86_400_000).toISOString(),
+  });
+}
+
+/** C's slot empty (a fresh confirm), B's slot answering `middle`. */
+function chain(middle: Awaited<ReturnType<IssuerDeps["readVersion0"]>>): Partial<IssuerDeps> {
+  return {
+    readVersion0: async (_owner, topic) => (topic === MIDDLE_CONFIRM_TOPIC ? middle : { status: "absent" }),
+  };
+}
+
+test("a referral two steps deep earns the top referrer the Network badge - and nothing else", async () => {
+  const { deps, writes, confirmed } = recorder(chain({ status: "found", bytes: confirmationOf(REFERRER, UPSTREAM) }));
+
+  assert.equal((await issuer.confirmReferral(ARGS, deps)).status, "confirmed");
+  await settle();
+  await settle();
+
+  const network = writes.filter((w) => w.topic === NETWORK_TOPIC);
+  assert.equal(network.length, 1);
+  assert.deepEqual(dec(network[0]!.bytes), {
+    format: BADGE_FORMAT, subject: S_U, badge: "network", epoch: issuer.currentEpoch(), value: true,
+  });
+  assert.ok(confirmed.some((c) => c.topic === NETWORK_TOPIC && c.version === 0), "read back like every badge");
+  // No money and no index entry follow it: A is not C's referrer.
+  assert.equal(writes.some((w) => w.topic === referrerIndexTopic(S_U, 0)), false);
+  assert.equal(writes.some((w) => w.topic === badgeTopic(S_U, "joined")), false);
+});
+
+test("a standing confirmation finishes the Network badge too", async () => {
+  const { deps, writes } = recorder({
+    readVersion0: async (_owner, topic) =>
+      topic === MIDDLE_CONFIRM_TOPIC
+        ? { status: "found", bytes: confirmationOf(REFERRER, UPSTREAM) }
+        : { status: "found", bytes: confirmation(REFERRER) },
+  });
+  assert.equal((await issuer.confirmReferral(ARGS, deps)).status, "already");
+  await settle();
+  await settle();
+  assert.ok(writes.some((w) => w.topic === NETWORK_TOPIC));
+});
+
+test("no Network badge without a confirmed step above B, a readable one, or when the chain loops", async () => {
+  for (const [why, middle] of [
+    ["B was never referred", { status: "absent" }],
+    ["B's slot unreadable", { status: "unavailable", reason: "probe" }],
+    ["foreign bytes at B's slot", { status: "found", bytes: enc({ hello: "world" }) }],
+    // A valid record at B's address that names someone else as referee is not B's.
+    ["a record for another referee", { status: "found", bytes: confirmationOf(OTHER, UPSTREAM) }],
+    // A refers B, B refers A: A would be badged for being referred by their own referee.
+    ["the loop closes on C", { status: "found", bytes: confirmationOf(REFERRER, REFEREE) }],
+  ] as const) {
+    issuer.__resetIssuer({ configured: true });
+    const { deps, writes } = recorder(chain(middle));
+    assert.equal((await issuer.confirmReferral(ARGS, deps)).status, "confirmed", why);
+    await settle();
+    await settle();
+    assert.equal(writes.some((w) => w.topic.startsWith("woco/badge/") && w.topic !== BADGE_TOPIC
+      && w.topic !== badgeTopic(S_R, "joined")), false, `${why}: no Network badge anywhere`);
+  }
+});
+
+test("a Network check that throws never unmakes the confirmation", async () => {
+  const { deps } = recorder({
+    readVersion0: async (_owner, topic) => {
+      if (topic === MIDDLE_CONFIRM_TOPIC) throw new Error("bee unreachable");
+      return { status: "absent" };
+    },
+  });
+  assert.equal((await issuer.confirmReferral(ARGS, deps)).status, "confirmed");
+  await settle();
+});
+
+test("each kind is its own slot: a Joined badge neither blocks nor stands in for a Network one", async () => {
+  const joined = enc({ format: BADGE_FORMAT, subject: S_U, badge: "joined", epoch: 0, value: true });
+  const { deps, writes } = recorder({
+    readHead: async (_owner, topic) => (topic === badgeTopic(S_U, "joined") ? found(joined) : { status: "absent" }),
+  });
+  await issuer.issueBadge(UPSTREAM, deps, "network");
+  assert.deepEqual(writes.map((w) => w.topic), [NETWORK_TOPIC]);
+
+  // In flight per kind: a Joined write still mid-air must not hold a Network one back.
+  issuer.__resetIssuer({ configured: true });
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const slow = recorder({
+    readHead: async (_owner, topic) => {
+      if (topic === badgeTopic(S_U, "joined")) await gate;
+      return { status: "absent" };
+    },
+  });
+  const pending = issuer.issueBadge(UPSTREAM, slow.deps, "joined");
+  await issuer.issueBadge(UPSTREAM, slow.deps, "network");
+  assert.ok(slow.writes.some((w) => w.topic === NETWORK_TOPIC));
+  release();
+  await pending;
+});
+
+test("a badge read checks the record names this account and this kind", async () => {
+  const joinedAtNetwork = enc({ format: BADGE_FORMAT, subject: S_U, badge: "joined", epoch: 0, value: true });
+  const otherAccount = enc({ format: BADGE_FORMAT, subject: S_E, badge: "network", epoch: 0, value: true });
+  const right = enc({ format: BADGE_FORMAT, subject: S_U, badge: "network", epoch: 0, value: true });
+  for (const [bytes, want] of [[joinedAtNetwork, "unavailable"], [otherAccount, "unavailable"], [right, "found"]] as const) {
+    const { deps } = recorder({ readHead: async () => found(bytes) });
+    assert.equal((await issuer.readBadge(UPSTREAM, deps, "network")).status, want);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Boot and concurrency
 // ---------------------------------------------------------------------------
 
@@ -578,7 +702,8 @@ test("the referee's statement is read as `referral`; everything the issuer wrote
       return base.readHead(owner, topic, family);
     },
     readVersion0: async (owner, topic, family) => {
-      reads.push(`v0 ${topic === CONFIRM_TOPIC ? "confirmation" : topic} ${family}`);
+      const name = topic === CONFIRM_TOPIC ? "confirmation" : topic === referralConfirmationTopic(S_R) ? "referrer's confirmation" : topic;
+      reads.push(`v0 ${name} ${family}`);
       return base.readVersion0(owner, topic, family);
     },
     readBanded: async (owner, topicForBand, family) => {
@@ -597,6 +722,8 @@ test("the referee's statement is read as `referral`; everything the issuer wrote
     // Both parties' Joined badges, issued off the confirmation.
     "head badge campaignIssuer",
     "head badge campaignIssuer",
+    // The Network check: the referrer's own confirmation, in the issuer's space.
+    "v0 referrer's confirmation campaignIssuer",
     "v0 confirmation campaignIssuer",
     "head badge campaignIssuer",
   ]);

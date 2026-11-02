@@ -27,6 +27,7 @@ import {
   REFERRAL_SUBJECT_INDEX_FORMAT,
   CAMPAIGN_ISSUER_ADDRESS,
   addressFromProfileSubject,
+  badgeMatches,
   badgeTopic,
   campaignAccountSubject,
   referralConfirmationTopic,
@@ -38,6 +39,7 @@ import {
   validateReferralStatementV1,
   validateReferralSubjectIndexV1,
   validateReferrerIndexV1,
+  type BadgeKind,
   type BadgeV1,
   type Hex0x,
   type ReferralConfirmationV1,
@@ -326,11 +328,14 @@ export async function readConfirmation(
 export async function readBadge(
   address: Hex0x,
   deps: CampaignRecordDeps = liveDeps,
+  kind: BadgeKind = "joined",
 ): Promise<BadgeV1 | null> {
-  const topic = badgeTopic(campaignAccountSubject(address), "joined");
+  const subject = campaignAccountSubject(address);
+  const topic = badgeTopic(subject, kind);
   const res = await deps.readFeed(CAMPAIGN_ISSUER_ADDRESS, topic, { route: FEED_ROUTES.campaignIssuer, skipLegacy: true });
   if (res.status !== "found" || !validateBadgeV1(res.value)) return null;
-  return res.value as BadgeV1;
+  const record = res.value as BadgeV1;
+  return badgeMatches(record, subject, kind) ? record : null;
 }
 
 /** What a referrer-index read found. `unavailable` is a read nobody answered. */

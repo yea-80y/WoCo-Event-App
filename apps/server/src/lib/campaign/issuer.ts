@@ -44,6 +44,7 @@ import {
   LAST_VERSION_IN_BAND,
   REFERRAL_CONFIRMATION_FORMAT,
   REFERRER_INDEX_FORMAT,
+  badgeMatches,
   badgeTopic,
   campaignAccountSubject,
   referralConfirmationTopic,
@@ -53,6 +54,7 @@ import {
   validateReferralConfirmationV1,
   validateReferralStatementV1,
   validateReferrerIndexV1,
+  type BadgeKind,
   type BadgeV1,
   type Hex0x,
   type ReferralConfirmationV1,
@@ -225,8 +227,9 @@ function unavailable(label: string, detail?: string): { status: "unavailable"; r
 
 /** One confirm at a time per referee — see the header. */
 const inFlight = new Set<string>();
-/** One badge write at a time per address; `issueJoinedBadge` fires from several
- *  success paths at once and each would otherwise read the same absent slot. */
+/** One badge write at a time per address AND kind; `issueJoinedBadge` fires from
+ *  several success paths at once and each would otherwise read the same absent
+ *  slot. Two kinds are two slots, so one must not hold the other back. */
 const badgesInFlight = new Set<string>();
 
 // ---------------------------------------------------------------------------
@@ -423,7 +426,37 @@ async function finishConfirmation(record: ReferralConfirmationV1, deps: IssuerDe
   // A confirmed referral is a first meaningful action for both parties.
   void issueBadge(record.referee, deps);
   void issueBadge(record.referrer, deps);
+  void issueNetworkBadge(record, deps);
   return indexed;
+}
+
+/**
+ * The Network badge: when B (who referred `record.referee`) was themselves
+ * referred by A, A's referral has grown a second step, and A gets the badge.
+ *
+ * Read from B's own confirmation at version 0, the same first-confirmed-wins
+ * read every other caller uses, so the A it names is the referrer of record and
+ * nothing a request body said. Recognition only: no revenue share follows it.
+ *
+ * Never throws, like {@link issueBadge}: it rides a success path. A read it
+ * cannot make is not retried here; the next confirmation below B, or a repair
+ * after a restart, runs it again, and the badge write itself is write-once.
+ */
+async function issueNetworkBadge(record: ReferralConfirmationV1, deps: IssuerDeps): Promise<void> {
+  try {
+    const middle = record.referrer.toLowerCase();
+    const topic = referralConfirmationTopic(campaignAccountSubject(middle));
+    const slot = await deps.readVersion0(getCampaignIssuerOwnerHex(), topic, "campaignIssuer");
+    if (slot.status !== "found") return;
+    const upstream = parseJson(slot.bytes);
+    if (!validateReferralConfirmationV1(upstream) || upstream.referee !== middle) return;
+    // A refers B, then B refers A: the loop closes on A, who would earn a badge
+    // for being referred by their own referee. Not a second step, so no badge.
+    if (upstream.referrer === record.referee.toLowerCase()) return;
+    await issueBadge(upstream.referrer, deps, "network");
+  } catch (err) {
+    console.warn(`[campaign] network badge check failed for ${record.referee}:`, err);
+  }
 }
 
 /**
@@ -581,26 +614,32 @@ export function currentEpoch(): number {
 }
 
 /**
- * Issue the Joined badge for `address`, once ever. Never throws — every caller
- * fires it from a success path that must not fail because a badge did.
+ * Issue the `kind` badge (Joined by default) for `address`, once ever. Never
+ * throws — every caller fires it from a success path that must not fail because
+ * a badge did.
  *
  * A badge feed is LATEST-WINS, so this reads the head rather than version 0: a
  * revocation is a later version, and re-issuing over one would undo the abuse
  * escape hatch the format exists to provide. Any valid badge already there —
  * granted or revoked — ends the attempt.
  */
-export async function issueBadge(address: string, deps: IssuerDeps = liveDeps()): Promise<void> {
+export async function issueBadge(
+  address: string,
+  deps: IssuerDeps = liveDeps(),
+  kind: BadgeKind = "joined",
+): Promise<void> {
   const addr = address.toLowerCase();
   if (!/^0x[0-9a-f]{40}$/.test(addr)) return;
   // Boot-accepted, not merely set — `events.ts` fires this on every publish,
   // so this is the entry point a mismatched key would most quietly leak
   // through, writing badges into an address space no client reads.
   if (!health.configured) return;
-  if (badgesInFlight.has(addr)) return;
-  badgesInFlight.add(addr);
+  const flightKey = `${addr}:${kind}`;
+  if (badgesInFlight.has(flightKey)) return;
+  badgesInFlight.add(flightKey);
   try {
     const subject = campaignAccountSubject(addr);
-    const topic = badgeTopic(subject, "joined");
+    const topic = badgeTopic(subject, kind);
     const issuerOwner = getCampaignIssuerOwnerHex();
 
     const head = await deps.readHead(issuerOwner, topic, "campaignIssuer");
@@ -626,7 +665,7 @@ export async function issueBadge(address: string, deps: IssuerDeps = liveDeps())
     const badge: BadgeV1 = {
       format: BADGE_FORMAT,
       subject,
-      badge: "joined",
+      badge: kind,
       epoch: currentEpoch(),
       value: true,
     };
@@ -653,7 +692,7 @@ export async function issueBadge(address: string, deps: IssuerDeps = liveDeps())
   } catch (err) {
     console.error(`[campaign] badge issue threw for ${addr}:`, err);
   } finally {
-    badgesInFlight.delete(addr);
+    badgesInFlight.delete(flightKey);
   }
 }
 
@@ -679,13 +718,15 @@ export async function readConfirmation(
   return { status: "found", record };
 }
 
-/** An address's Joined badge — head read, because a revocation is a later version. */
+/** An address's `kind` badge — head read, because a revocation is a later version. */
 export async function readBadge(
   address: string,
   deps: IssuerDeps = liveDeps(),
+  kind: BadgeKind = "joined",
 ): Promise<RecordRead<BadgeV1>> {
   if (!health.configured) return { status: "unavailable" };
-  const topic = badgeTopic(campaignAccountSubject(address.toLowerCase()), "joined");
+  const subject = campaignAccountSubject(address.toLowerCase());
+  const topic = badgeTopic(subject, kind);
   let head: VersionedFeedRead;
   try {
     head = await deps.readHead(getCampaignIssuerOwnerHex(), topic, "campaignIssuer");
@@ -699,7 +740,7 @@ export async function readBadge(
   if (head.status === "unavailable") return { status: "unavailable" };
   if (head.status === "absent") return { status: "absent" };
   const record = parseJson(head.bytes);
-  if (!validateBadgeV1(record)) return { status: "unavailable" };
+  if (!validateBadgeV1(record) || !badgeMatches(record, subject, kind)) return { status: "unavailable" };
   return { status: "found", record };
 }
 
