@@ -9,6 +9,12 @@
  * COVERAGE_REFRESH_MS the queue asks for one while it still has work. A load that
  * takes minutes therefore never runs on an erasure answer from minutes ago.
  *
+ * BUNDLES. Where the gateway has a bundled read (`maxBatch()` > 1, our gateway's
+ * POST /bytes-bundle), one request carries up to that many roots, page on screen
+ * first, and counts once against everything below. Each root's answer settles by
+ * the same rules as a single read; a bundle that fails as a whole retries together;
+ * "unsupported" sends its roots back first and the page reads one at a time.
+ *
  * PACING. At most CONCURRENCY at once. A gateway limits requests per connection,
  * and the rest of the app (and anyone else on the same connection, e.g. venue
  * staff) shares that allowance. Where the RateLimit headers are readable - same
@@ -58,9 +64,26 @@ export interface Coverage {
 
 export type DetailState = "queued" | "fetching" | "retrying" | "ready" | "missing" | "unreadable";
 
+/** One root's answer, from either kind of request. */
+export type BatchResult =
+  | { kind: "items"; items: ReadonlyMap<string, FetchResult>; budget?: GatewayBudget }
+  /** 429 for the whole request. */
+  | { kind: "limited"; retryAfterMs?: number; budget?: GatewayBudget }
+  /** The request as a whole failed (network, 5xx): every root in it is retried, together. */
+  | { kind: "unavailable"; budget?: GatewayBudget }
+  /** The gateway has no bundled read. Nothing was tried: the roots go back first, and `maxBatch` now says 1. */
+  | { kind: "unsupported" };
+
+/** Requests in flight, one root each. */
 export const CONCURRENCY = 4;
+/** Requests in flight when each carries a bundle (up to 100 roots, ~0.3 MB). */
+export const BATCH_CONCURRENCY = 2;
 /** With no readable budget: 10 a second, well inside a 1,000-a-minute gateway with room for the rest of the app. */
 export const SELF_CAP_PER_MINUTE = 600;
+/** The same for bundles: inside our gateway's 120-a-minute bundle allowance. */
+export const BATCH_SELF_CAP_PER_MINUTE = 90;
+/** Retries that fall due together go out as one bundle, not one request each. */
+export const RETRY_COALESCE_MS = 100;
 /** With a readable budget: stop while this much is left (the larger of the two). */
 export const HEADROOM_MIN = 100;
 export const HEADROOM_SHARE = 0.25;
@@ -77,7 +100,10 @@ const UNAVAILABLE_MAX_MS = 10 * 60_000;
 const MINUTE = 60_000;
 
 export interface DetailQueueDeps {
-  fetchBox(root: string): Promise<FetchResult>;
+  /** One request for these roots (never more than `maxBatch()` said). */
+  fetchBatch(roots: string[]): Promise<BatchResult>;
+  /** How many roots the next request may carry: 1 when the gateway reads one at a time. */
+  maxBatch(): number;
   now(): number;
   setTimer(cb: () => void, ms: number): unknown;
   clearTimer(handle: unknown): void;
@@ -118,6 +144,10 @@ export class DetailQueue {
   private priority: string[] = [];
   /** Issue times in the last minute, for the self cap. */
   private issued: number[] = [];
+  /** Requests in flight (a bundle is one). */
+  private inFlight = 0;
+  /** Timers that retry a whole failed bundle together. */
+  private readonly groupTimers = new Set<unknown>();
   private budgetSeen = false;
   private pausedUntil = 0;
   private limitedStreak = 0;
@@ -193,6 +223,8 @@ export class DetailQueue {
     if (this.wake !== null) this.deps.clearTimer(this.wake);
     this.wake = null;
     for (const e of this.entries.values()) if (e.timer !== undefined) this.deps.clearTimer(e.timer);
+    for (const t of this.groupTimers) this.deps.clearTimer(t);
+    this.groupTimers.clear();
   }
 
   private setState(e: Entry, s: DetailState): void {
@@ -228,47 +260,89 @@ export class DetailQueue {
       this.wakeAt(this.pausedUntil, now);
       return;
     }
-    while (this.counts.fetching < CONCURRENCY && this.pending.length > 0) {
-      const gate = this.nextIssueAt(now);
+    while (this.pending.length > 0) {
+      const size = Math.max(1, Math.floor(this.deps.maxBatch()));
+      if (this.inFlight >= (size > 1 ? BATCH_CONCURRENCY : CONCURRENCY)) break;
+      const gate = this.nextIssueAt(now, size > 1);
       if (gate > now) {
         this.wakeAt(gate, now);
         return;
       }
-      this.issue(this.pending.shift()!, now);
+      // Never waits to fill a bundle: whatever is queued (page on screen first) goes now.
+      this.issue(this.pending.splice(0, size), now);
     }
     // The answer will need refreshing while work remains.
     const nextAsk = Math.max(this.coverage.at, this.askedAt) + COVERAGE_REFRESH_MS;
     if (this.busy() && nextAsk > now) this.wakeAt(nextAsk, now);
   }
 
-  private nextIssueAt(now: number): number {
+  private nextIssueAt(now: number, batched: boolean): number {
     if (this.budgetSeen) return now;
     while (this.issued.length > 0 && this.issued[0] <= now - MINUTE) this.issued.shift();
-    return this.issued.length < SELF_CAP_PER_MINUTE ? now : this.issued[0] + MINUTE;
+    const cap = batched ? BATCH_SELF_CAP_PER_MINUTE : SELF_CAP_PER_MINUTE;
+    return this.issued.length < cap ? now : this.issued[this.issued.length - cap] + MINUTE;
   }
 
-  private issue(root: string, now: number): void {
-    const e = this.entries.get(root)!;
-    this.setState(e, "fetching");
+  private issue(roots: string[], now: number): void {
+    const batch = roots.map((root) => {
+      const e = this.entries.get(root)!;
+      this.setState(e, "fetching");
+      return { root, e };
+    });
+    this.inFlight++;
     this.issued.push(now);
-    this.deps.fetchBox(root).then(
-      (r) => this.settle(root, e, r),
-      () => this.settle(root, e, { kind: "unavailable" }),
+    this.deps.fetchBatch(roots).then(
+      (r) => this.settleBatch(batch, r),
+      () => this.settleBatch(batch, { kind: "unavailable" }),
     );
   }
 
-  private settle(root: string, e: Entry, r: FetchResult): void {
+  private settleBatch(batch: Array<{ root: string; e: Entry }>, r: BatchResult): void {
+    this.inFlight--;
     if (this.stopped) return;
     const now = this.deps.now();
-    if (r.budget) this.noteBudget(r.budget, now);
-    // Forgotten while in flight (erased, held, or no longer offered): its count is gone already.
-    if (this.entries.get(root) !== e) return this.pump();
+    if (r.kind !== "unsupported" && r.budget) this.noteBudget(r.budget, now);
+    // Forgotten while in flight (erased, held, or no longer offered): their counts are gone already.
+    const live = batch.filter(({ root, e }) => this.entries.get(root) === e);
+    switch (r.kind) {
+      case "items": {
+        // Each root by the same rules as ever; one the answer left out is retried. Roots that go
+        // back to the front go together afterwards, keeping the bundle's order.
+        const front: Array<{ root: string; e: Entry }> = [];
+        for (const { root, e } of live) this.settleRoot(root, e, r.items.get(root) ?? { kind: "unavailable" }, now, front);
+        this.requeueFront(front);
+        break;
+      }
+      case "limited": {
+        this.limitedStreak++;
+        const wait = Math.max(LIMITED_MIN_MS, r.retryAfterMs ?? this.backoff(LIMITED_FIRST_MS, LIMITED_MAX_MS, this.limitedStreak));
+        this.pausedUntil = Math.max(this.pausedUntil, now + wait);
+        this.requeueFront(live);
+        break;
+      }
+      case "unsupported":
+        this.requeueFront(live);
+        break;
+      case "unavailable": {
+        // The request failed as a whole: its roots wait the longest backoff any of them has earned, then go together.
+        let worst = 0;
+        for (const { e } of live) worst = Math.max(worst, ++e.failures);
+        if (live.length > 0) this.retryTogether(live, this.backoff(UNAVAILABLE_FIRST_MS, UNAVAILABLE_MAX_MS, worst));
+        break;
+      }
+    }
+    this.deps.onChange();
+    this.pump();
+  }
+
+  /** One root's answer. A root that must go back to the front is added to `front`, for the caller to requeue in order. */
+  private settleRoot(root: string, e: Entry, r: FetchResult, now: number, front: Array<{ root: string; e: Entry }>): void {
     const c = this.coverage!;
     switch (r.kind) {
       case "ok":
         if (now - c.at >= COVERAGE_STALE_MS) {
           // No current answer vouches for it: fetch again once one does.
-          this.requeue(root, e, true);
+          front.push({ root, e });
           break;
         }
         this.limitedStreak = 0;
@@ -279,7 +353,7 @@ export class DetailQueue {
         this.limitedStreak++;
         const wait = Math.max(LIMITED_MIN_MS, r.retryAfterMs ?? this.backoff(LIMITED_FIRST_MS, LIMITED_MAX_MS, this.limitedStreak));
         this.pausedUntil = Math.max(this.pausedUntil, now + wait);
-        this.requeue(root, e, true);
+        front.push({ root, e });
         break;
       }
       case "missing":
@@ -298,8 +372,27 @@ export class DetailQueue {
         this.setState(e, "unreadable");
         break;
     }
-    this.deps.onChange();
-    this.pump();
+  }
+
+  /** Back to the front of the queue, in the order they were sent. */
+  private requeueFront(list: Array<{ root: string; e: Entry }>): void {
+    for (const { e } of list) this.setState(e, "queued");
+    this.pending.unshift(...list.map(({ root }) => root));
+  }
+
+  /** One timer for a whole failed bundle, so it goes out again as one bundle. */
+  private retryTogether(list: Array<{ root: string; e: Entry }>, ms: number): void {
+    for (const { e } of list) this.setState(e, "retrying");
+    const t = this.deps.setTimer(() => {
+      this.groupTimers.delete(t);
+      if (this.stopped) return;
+      for (const { root, e } of list) {
+        if (this.entries.get(root) === e && e.state === "retrying") this.requeue(root, e, false);
+      }
+      this.deps.onChange();
+      this.pump();
+    }, ms);
+    this.groupTimers.add(t);
   }
 
   private noteBudget(b: GatewayBudget, now: number): void {
@@ -321,7 +414,9 @@ export class DetailQueue {
       if (this.stopped || this.entries.get(root) !== e) return;
       this.requeue(root, e, false);
       this.deps.onChange();
-      this.pump();
+      // A moment's grace, so retries due together share one bundle.
+      const now = this.deps.now();
+      this.wakeAt(now + RETRY_COALESCE_MS, now);
     }, ms);
   }
 

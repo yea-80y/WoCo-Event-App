@@ -23,7 +23,11 @@ import {
   HEADROOM_MIN,
   LIMITED_MIN_MS,
   MISSING_RECHECK_MS,
+  RETRY_COALESCE_MS,
+  BATCH_CONCURRENCY,
+  BATCH_SELF_CAP_PER_MINUTE,
   SELF_CAP_PER_MINUTE,
+  type BatchResult,
   type Coverage,
   type FetchResult,
 } from "../src/lib/creator/dashboard/detail-queue.js";
@@ -79,11 +83,19 @@ function harness() {
     },
     q: null as unknown as DetailQueue,
   };
+  // One root per request, as from a gateway without bundles: the live single read's mapping.
+  const asBatch = (root: string, r: FetchResult): BatchResult =>
+    r.kind === "limited"
+      ? { kind: "limited", ...(r.retryAfterMs !== undefined ? { retryAfterMs: r.retryAfterMs } : {}), budget: r.budget }
+      : { kind: "items", items: new Map([[root, r]]), budget: r.budget };
   h.q = new DetailQueue({
-    fetchBox: (root) => {
+    maxBatch: () => 1,
+    fetchBatch: (batch) => {
+      assert.equal(batch.length, 1, "one root per request when maxBatch is 1");
+      const root = batch[0];
       calls.push(root);
-      if (h.auto) return Promise.resolve(h.auto(root));
-      return new Promise((res) => open.set(root, [...(open.get(root) ?? []), res]));
+      if (h.auto) return Promise.resolve(asBatch(root, h.auto(root)));
+      return new Promise((res) => open.set(root, [...(open.get(root) ?? []), (r: FetchResult) => res(asBatch(root, r))]));
     },
     now: c.now,
     setTimer: c.setTimer,
@@ -291,7 +303,7 @@ test("a 404 for a recent sale gets exactly one more look", async () => {
   await h.answer("a", { kind: "missing" });
   assert.equal(h.q.state("a"), "retrying");
   h.q.cover(cov(2, MISSING_RECHECK_MS - 1, ["a"], ["a"]));
-  await h.c.advance(MISSING_RECHECK_MS);
+  await h.c.advance(MISSING_RECHECK_MS + RETRY_COALESCE_MS);
   assert.equal(h.calls.length, 2);
   await h.answer("a", { kind: "missing" });
   assert.equal(h.q.state("a"), "missing");
@@ -303,10 +315,11 @@ test("a refusal or outage is retried, backing off, never given up", async () => 
   await flush();
   await h.answer("a", { kind: "unavailable" });
   assert.equal(h.q.state("a"), "retrying");
-  await h.c.advance(5_000);
+  // Each retry falls due after its backoff, then waits RETRY_COALESCE_MS to share a bundle.
+  await h.c.advance(5_000 + RETRY_COALESCE_MS);
   assert.equal(h.calls.length, 2);
   await h.answer("a", { kind: "unavailable" });
-  await h.c.advance(9_999);
+  await h.c.advance(10_000 + RETRY_COALESCE_MS - 1);
   assert.equal(h.calls.length, 2);
   await h.c.advance(1);
   assert.equal(h.calls.length, 3);
@@ -318,7 +331,8 @@ test("a refusal or outage is retried, backing off, never given up", async () => 
 test("a thrown fetch counts as unavailable, not as lost", async () => {
   const c = clock();
   const q = new DetailQueue({
-    fetchBox: () => Promise.reject(new Error("boom")),
+    maxBatch: () => 1,
+    fetchBatch: () => Promise.reject(new Error("boom")),
     now: c.now,
     setTimer: c.setTimer,
     clearTimer: c.clearTimer,
@@ -379,4 +393,151 @@ test("stop() ends everything: no fetch, no timer, no late commit", async () => {
   await h.c.advance(10 * COVERAGE_REFRESH_MS);
   assert.equal(h.calls.length, CONCURRENCY);
   assert.equal(h.c.timers(), 0);
+});
+
+// ── bundles (our gateway's POST /bytes-bundle) ─────────────────────────────
+
+/** A queue over a gateway with bundles: each request waits until the test replies to it by index. */
+function bundleHarness(size = 100) {
+  const c = clock();
+  const sent: string[][] = [];
+  const replies: Array<(r: BatchResult) => void> = [];
+  let max = size;
+  let auto: ((roots: string[]) => BatchResult) | null = null;
+  const q = new DetailQueue({
+    maxBatch: () => max,
+    fetchBatch: (roots) => {
+      assert.ok(roots.length <= max, "never more than maxBatch");
+      sent.push([...roots]);
+      if (auto) return Promise.resolve(auto(roots));
+      return new Promise((res) => replies.push(res));
+    },
+    now: c.now,
+    setTimer: c.setTimer,
+    clearTimer: c.clearTimer,
+    random: () => 0,
+    wantCoverage: () => {},
+    onChange: () => {},
+  });
+  return {
+    c,
+    q,
+    sent,
+    setMax: (n: number) => void (max = n),
+    setAuto: (f: (roots: string[]) => BatchResult) => void (auto = f),
+    async reply(i: number, r: BatchResult) {
+      replies[i](r);
+      await flush();
+    },
+  };
+}
+const itemsOf = (entries: Array<[string, FetchResult]>): BatchResult => ({ kind: "items", items: new Map(entries) });
+const allOk = (roots: string[]) => itemsOf(roots.map((r) => [r, { kind: "ok", box: box(r) }]));
+
+test("a bundle carries up to maxBatch roots, page on screen first, and counts as one request", async () => {
+  const h = bundleHarness();
+  h.q.prioritise(["r249", "r3"]);
+  h.q.cover(cov(1, 0, roots(250)));
+  await flush();
+  assert.equal(h.sent.length, BATCH_CONCURRENCY, "two bundles in flight, not two hundred requests");
+  assert.deepEqual(h.sent[0].slice(0, 4), ["r249", "r3", "r0", "r1"]);
+  assert.equal(h.sent[0].length, 100);
+  assert.equal(h.sent[1].length, 100);
+  await h.reply(0, allOk(h.sent[0]));
+  assert.equal(h.sent.length, 3);
+  assert.equal(h.sent[2].length, 50, "never waits to fill a bundle");
+  assert.equal(h.q.progress().ready, 100);
+});
+
+test("each root of a bundle settles by the usual rules; a root the answer left out is retried", async () => {
+  const h = bundleHarness();
+  h.q.cover(cov(1, 0, ["a", "b", "c", "d", "e"]));
+  await flush();
+  await h.reply(0, itemsOf([
+    ["a", { kind: "ok", box: box("a") }],
+    ["b", { kind: "missing" }],
+    ["c", { kind: "unavailable" }],
+    ["d", { kind: "unreadable" }],
+  ]));
+  assert.deepEqual(["a", "b", "c", "d", "e"].map((r) => h.q.state(r)), ["ready", "missing", "retrying", "unreadable", "retrying"]);
+});
+
+test("a 429 for a bundle pauses everything and sends its roots back first, in order", async () => {
+  const h = bundleHarness(3);
+  h.q.cover(cov(1, 0, roots(8)));
+  await flush();
+  await h.reply(0, { kind: "limited", retryAfterMs: 7_000 });
+  await h.c.advance(6_999);
+  assert.equal(h.sent.length, 2);
+  await h.reply(1, allOk(h.sent[1]));
+  assert.equal(h.sent.length, 2, "still paused");
+  await h.c.advance(1);
+  assert.deepEqual(h.sent[2], ["r0", "r1", "r2"]);
+});
+
+test("a bundle that fails as a whole retries together, as one bundle", async () => {
+  const h = bundleHarness();
+  h.q.cover(cov(1, 0, roots(5)));
+  await flush();
+  await h.reply(0, { kind: "unavailable" });
+  assert.ok(roots(5).every((r) => h.q.state(r) === "retrying"));
+  await h.c.advance(4_999);
+  assert.equal(h.sent.length, 1);
+  await h.c.advance(1);
+  assert.deepEqual(h.sent[1], roots(5));
+});
+
+test("unsupported: nothing is lost, the roots go back first, then one per request", async () => {
+  const h = bundleHarness();
+  h.q.cover(cov(1, 0, roots(3)));
+  await flush();
+  h.setMax(1); // the fetcher says so itself once it has seen the 404
+  await h.reply(0, { kind: "unsupported" });
+  assert.deepEqual(h.sent.slice(1), [["r0"], ["r1"], ["r2"]]);
+  assert.ok(roots(3).every((r) => h.q.state(r) === "fetching"));
+});
+
+test("an erasure answer landing mid-bundle: the dropped root's box is not kept", async () => {
+  const h = bundleHarness();
+  h.q.cover(cov(1, 0, ["a", "b"]));
+  await flush();
+  h.q.cover(cov(2, 0, ["b"]));
+  await h.reply(0, allOk(["a", "b"]));
+  assert.equal(h.q.box("a"), undefined);
+  assert.equal(h.q.state("a"), undefined);
+  assert.ok(h.q.box("b"));
+  assert.deepEqual(h.q.progress(), { total: 1, ready: 1, waiting: 0, retrying: 0, missing: 0, unreadable: 0 });
+});
+
+test("a bundle arriving on a stale answer keeps nothing, and goes again once a fresh one comes", async () => {
+  const h = bundleHarness();
+  h.q.cover(cov(1, 0, ["a", "b"]));
+  await flush();
+  await h.c.advance(COVERAGE_STALE_MS);
+  await h.reply(0, allOk(["a", "b"]));
+  assert.equal(h.q.box("a"), undefined);
+  assert.equal(h.q.state("a"), "queued");
+  h.q.cover(cov(2, h.c.now(), ["a", "b"]));
+  await flush();
+  assert.deepEqual(h.sent[1], ["a", "b"]);
+});
+
+test("retries due together share one bundle", async () => {
+  const h = bundleHarness();
+  h.q.cover(cov(1, 0, ["a", "b", "c"]));
+  await flush();
+  await h.reply(0, itemsOf([["a", { kind: "unavailable" }], ["b", { kind: "unavailable" }], ["c", { kind: "ok", box: box("c") }]]));
+  await h.c.advance(5_000 + RETRY_COALESCE_MS);
+  assert.deepEqual(h.sent[1], ["a", "b"], "one bundle, not one request each");
+});
+
+test("with no readable budget, the self cap counts bundles", async () => {
+  const h = bundleHarness(10);
+  h.setAuto((r) => allOk(r));
+  h.q.cover(cov(1, 0, roots(10 * (BATCH_SELF_CAP_PER_MINUTE + 5))));
+  for (let i = 0; i < 60; i++) await flush();
+  assert.equal(h.sent.length, BATCH_SELF_CAP_PER_MINUTE);
+  await h.c.advance(60_000);
+  for (let i = 0; i < 20; i++) await flush();
+  assert.equal(h.sent.length, BATCH_SELF_CAP_PER_MINUTE + 5);
 });

@@ -27,7 +27,7 @@
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
   import { OpenedOrders, ORDERS_POLL_MS, createOrdersPoller, orderSlotKey } from "./live-orders.js";
   import { BrowserOrders, OrdersStatusUnavailable } from "./browser-orders.js";
-  import { canReadLedger, fetchOrderBox, liveBrowserOrdersDeps } from "./browser-orders-live.js";
+  import { canReadLedger, liveBrowserOrdersDeps, liveGatewayFetcher } from "./browser-orders-live.js";
   import { DetailQueue, type DetailState } from "./detail-queue.js";
   import { OrderOpener, type OpenerPort } from "./order-opener.js";
   import { DETAIL_CSV, listGate, rowDetail, shortfall, type RowDetail } from "./list-completeness.js";
@@ -714,7 +714,8 @@
     if (browserOrders?.eventId !== eventId) {
       browserOrders?.queue.stop();
       const queue = new DetailQueue({
-        fetchBox: fetchOrderBox,
+        // Bundles of up to 100 orders where the gateway has them, one at a time where not.
+        ...liveGatewayFetcher(),
         now: () => Date.now(),
         setTimer: (cb, ms) => setTimeout(cb, ms),
         clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
