@@ -20,111 +20,17 @@ const DEFAULT_APP_URL = "https://woco.eth.limo";
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);
 
-/**
- * Line and paragraph separator, built from their code points rather than written
- * as literals.
- *
- * As literals they are invisible in an editor, and an earlier draft of this file
- * had both silently replaced with ordinary SPACES in transit. That turned the
- * table below into "rewrite every space as U+2028", which would have corrupted
- * the text of every deployed site — immutably, since a published site cannot be
- * patched. Nothing about it was visible on the page; the test suite is what
- * caught it, which is why `site-deploy-config.test.ts` builds these characters
- * the same way.
- */
-const LINE_SEPARATOR = String.fromCharCode(0x2028);
-const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
-
-const INLINE_SCRIPT_ESCAPES: Record<string, string> = {
-  "<": "\\u003c",
-  ">": "\\u003e",
-  "&": "\\u0026",
-  [LINE_SEPARATOR]: "\\u2028",
-  [PARAGRAPH_SEPARATOR]: "\\u2029",
-};
-
-/**
- * Derived from the table's own keys so the two can never drift apart. Safe as a
- * character class because every key is a single character and none of them is
- * `]`, `^` or `-`.
- */
-const INLINE_SCRIPT_UNSAFE = new RegExp(`[${Object.keys(INLINE_SCRIPT_ESCAPES).join("")}]`, "g");
-
-/**
- * Serialise a value for interpolation into an inline `<script>` body.
- *
- * `JSON.stringify` escapes for JSON, not for HTML: it leaves `<` and `>` intact,
- * so a string containing `</script>` closes the tag early and everything after it
- * is parsed as HTML. The config carries organiser-authored free text (page titles,
- * nav labels, section copy, the event id), so bare stringify let any organiser
- * bake arbitrary JS into a deployed site.
- *
- * `<` is a valid escape inside a JSON string literal and parses back to the
- * original character, so no consumer sees a different value. U+2028/U+2029 are
- * legal in JSON strings but terminate a line in JS source; they break the
- * statement rather than smuggle into it, and are escaped for the same reason.
- *
- * This is NOT sufficient on its own — see `siteConfigScript`, which is what the
- * deploy actually emits. Escaping keeps organiser text inside the string context;
- * it does nothing about the semantics of the surrounding object literal.
- */
-export function jsonForInlineScript(value: unknown): string {
-  // stringify returns undefined for undefined / function / symbol input.
-  return escapeForInlineScript(JSON.stringify(value) ?? "null");
-}
-
-/**
- * The escaping step alone, for callers that already hold the exact source text.
- *
- * Kept separate because conflating it with serialisation is an easy and silent
- * mistake: passing an already-serialised string to {@link jsonForInlineScript}
- * stringifies it a second time, and the page then parses its way back to a STRING
- * rather than the object. Nothing throws — `window.SITE_CONFIG` is simply the
- * wrong type, on an immutable artifact.
- */
-export function escapeForInlineScript(source: string): string {
-  return source.replace(INLINE_SCRIPT_UNSAFE, (ch) => INLINE_SCRIPT_ESCAPES[ch]);
-}
-
-/**
- * The `<script>` element the deploy injects, assigning `window.SITE_CONFIG`.
- *
- * The payload is emitted as a STRING passed to `JSON.parse`, not as a bare object
- * literal, and that difference is load-bearing rather than stylistic.
- *
- * An object literal is evaluated by the engine, and in an object initialiser the
- * key `__proto__` SETS THE PROTOTYPE instead of creating an own property.
- * `JSON.parse` has no such rule — it creates an own property like any other. The
- * request body is parsed JSON and `body.site` is used verbatim, so an organiser
- * can put `__proto__` anywhere in it; TypeScript types do not validate at runtime.
- * Escaping cannot reach this, because nothing is escaping: the key is structural,
- * not text.
- *
- * It also makes the round-trip test mean what it claims. The test asserts
- * `JSON.parse(jsonForInlineScript(x))` equals `x` — which only models the real
- * consumer once the real consumer is also `JSON.parse`.
- *
- * `<script type="application/json">` would NOT have been an alternative here, for
- * the record: a script element's content is tokenised in script-data state
- * whatever its type, so `</script>` still terminates it and `<` still has to be
- * escaped. It would have downgraded a missed escape from "script runs" to "parse
- * error" — worth having, but it is not the control, and it would have needed the
- * deployed bundle to change first.
- *
- * Escaping still applies, on the outside: the JSON text is wrapped as a JS string
- * literal (which handles quotes and backslashes) and the result is escaped for the
- * HTML context (which handles `<`).
- */
-export function siteConfigScript(config: unknown): string {
-  // Three distinct steps, each doing one job:
-  //   1. the JSON text the page will parse,
-  //   2. wrapped as a JS string literal — this is what handles quotes and
-  //      backslashes, so the argument to JSON.parse cannot be broken out of,
-  //   3. escaped for the HTML context — this is what handles `<`.
-  const json = JSON.stringify(config) ?? "null";
-  const literal = JSON.stringify(json);
-  return `<script>window.SITE_CONFIG=JSON.parse(${escapeForInlineScript(literal)});</script>`;
-}
+// The HTML/script escaping and the site render moved to packages/shared
+// (src/site/render.ts, #1032 slice 2) so the browser's publish and this server
+// render the same bytes. Re-exported here for the deploy routes and their tests.
+export {
+  jsonForInlineScript,
+  escapeForInlineScript,
+  siteConfigScript,
+  escapeHtmlAttribute,
+  injectBeforeHeadClose,
+} from "@woco/shared";
+import { escapeHtmlAttribute, injectBeforeHeadClose } from "@woco/shared";
 
 /**
  * Bounded format guard for an id that reaches a deployed page or a feed topic.
@@ -136,37 +42,6 @@ export function siteConfigScript(config: unknown): string {
  */
 export function isSafeIdParam(raw: string): boolean {
   return /^[0-9a-zA-Z_-]{8,100}$/.test(raw);
-}
-
-/**
- * Escape a value for an HTML ATTRIBUTE, quotes included.
- *
- * The deploy builds `<meta … content="${...}">` and `<link … href="${...}">` out
- * of organiser-authored theme fields. Omitting `"` — which one of the three
- * copies of this helper in the server did — leaves every one of them open to
- * attribute injection, which is a single `>` away from opening a new tag.
- */
-export function escapeHtmlAttribute(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-/**
- * Splice `snippet` in immediately before the document's `</head>`.
- *
- * The replacement is a FUNCTION, not a string, and that is the entire point:
- * `String.replace` expands `$$`, `$&`, `` $` `` and `$'` inside a string
- * replacement. The snippets here carry organiser free text, so a brand name of
- * `` $` `` spliced the whole preceding document into the payload — which in the
- * real template drags a `</script>` in and stops `window.SITE_CONFIG` ever being
- * assigned. A function replacement is used verbatim.
- */
-export function injectBeforeHeadClose(html: string, snippet: string): string {
-  return html.replace("</head>", () => `${snippet}\n  </head>`);
 }
 
 /**
