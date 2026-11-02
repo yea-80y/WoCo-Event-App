@@ -103,6 +103,29 @@ export async function refreshVerdict(
 }
 
 /**
+ * "owned" and "not-owned" are verdicts (fresh, or the last one remembered);
+ * "unknown" means nobody answered and this device never had a verdict. The
+ * owner's own settings need the split: offering the claim form on "unknown"
+ * would invite someone who does hold a name to mint a second one.
+ */
+export type NameCheck = "owned" | "not-owned" | "unknown";
+
+/** {@link verifyName} with failure kept apart from a "no". */
+export async function checkName(
+  label: string,
+  expected: string | null | undefined,
+  check: SubEnsCheck = defaultCheck,
+): Promise<NameCheck> {
+  if (!label || !expected) return "not-owned";
+  const cached = cachedVerdict(label);
+  // A failed lookup falls back to whatever we already believed, which may be
+  // nothing — never to "show it anyway".
+  const verdict = verdictIsFresh(cached) ? cached : (await refreshVerdict(label, check)) ?? cached;
+  if (!verdict) return "unknown";
+  return verdictAllows(verdict, expected) ? "owned" : "not-owned";
+}
+
+/**
  * Verify `label` belongs to `expected`, using the cache and revalidating when
  * the entry is stale. The single call site for a component.
  */
@@ -111,13 +134,7 @@ export async function verifyName(
   expected: string | null | undefined,
   check: SubEnsCheck = defaultCheck,
 ): Promise<boolean> {
-  if (!label || !expected) return false;
-  const cached = cachedVerdict(label);
-  if (verdictIsFresh(cached)) return verdictAllows(cached, expected);
-  const fresh = await refreshVerdict(label, check);
-  // A failed lookup falls back to whatever we already believed, which may be
-  // nothing — never to "show it anyway".
-  return verdictAllows(fresh ?? cached, expected);
+  return (await checkName(label, expected, check)) === "owned";
 }
 
 /**
