@@ -18,18 +18,42 @@
  * prompt; that optimisation is deferred — the binding path is correct for all.)
  */
 
-import { Contract } from "ethers";
+import { Contract, formatUnits, type TypedDataField } from "ethers";
 import type {
   Hex0x,
   PaymentChainId,
   ShopPaymentBinding,
   ShopPaymentQuote,
 } from "@woco/shared";
-import { USDC_ADDRESSES } from "@woco/shared";
+import { SHOP_PAYMENT_DOMAIN, SHOP_PAYMENT_TYPES, USDC_ADDRESSES } from "@woco/shared";
 import { switchChain } from "./chains.js";
 import { waitForConfirmations } from "./pay.js";
 import { getEthersProvider } from "../wallet/provider.js";
-import { buildShopPaymentTypedData } from "../api/shop-payment.js";
+
+/**
+ * Build the EIP-712 typed-data payload an anonymous buyer signs to bind their
+ * wallet to the order. Reconstructable from the quote alone — the amount/order/
+ * quoteId all come from the server-signed quote, so the wallet renders exactly
+ * what the server will verify. Omit the txHash deliberately so it can be signed
+ * before the transfer is broadcast (no sign → wait → sign-again stall).
+ * Lives here, not in api/shop-payment.ts, so the eagerly loaded storefront
+ * module needs no runtime ethers import.
+ */
+export function buildShopPaymentTypedData(quote: ShopPaymentQuote, payer: Hex0x) {
+  return {
+    domain: SHOP_PAYMENT_DOMAIN,
+    types: SHOP_PAYMENT_TYPES as unknown as Record<string, TypedDataField[]>,
+    primaryType: "ShopPayment" as const,
+    message: {
+      shopId: quote.shopId,
+      orderId: quote.orderId,
+      quoteId: quote.quoteId,
+      payer: payer.toLowerCase(),
+      amount: formatUnits(BigInt(quote.amountAtomic), 6),
+      chainId: quote.chainId,
+    },
+  };
+}
 
 /** Minimal ERC-20 surface — only the transfer we call. */
 const ERC20_ABI = ["function transfer(address to, uint256 amount) returns (bool)"];
