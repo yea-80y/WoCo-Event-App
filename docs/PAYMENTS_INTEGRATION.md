@@ -119,10 +119,14 @@ Base/Optimism/Mainnet/Sepolia:
   connected-accounts webhook (`account.updated` + `checkout.session.completed`) point to the
   same URL. `STRIPE_WEBHOOK_SECRET_PLATFORM` is the platform signing secret;
   `STRIPE_WEBHOOK_SECRET` is the connect-account signing secret. Route tries both.
-  `constructEvent` tolerance is 3600s (1 hour) so Stripe retries succeed even if the first
-  delivery timed out. Session ID replay prevention (`.data/consumed-stripe-sessions.json`)
+  `constructEvent` uses the SDK's default 5-minute tolerance: Stripe signs every delivery
+  attempt afresh, retries included. Session ID replay prevention (`.data/consumed-stripe-sessions.json`)
   ensures each `checkout.session.completed` is processed exactly once.
-- Production rejects unsigned webhooks (prevents forged free-ticket claims)
+- A configured secret always demands a signature. Unsigned events are accepted only by a
+  non-production server with a TEST-mode key and no secret set (#1000) - a live key never takes
+  one, even if `NODE_ENV` is lost, and a live key without both secrets refuses to boot. An event
+  whose `livemode` disagrees with the key's mode (`sk_`/`rk_`, `live_`/`test_`) is refused; an
+  unrecognised key format enforces nothing (`lib/stripe/key-mode.ts`).
 - Pre-flight on `/api/stripe/create-checkout`: refuses BEFORE creating a session (409) when the
   series is sold out, the event is cancelled, the series is not registered onchain, the sales
   window is closed (server clock or the chain's end), or the order box was already used by
