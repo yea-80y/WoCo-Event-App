@@ -68,13 +68,14 @@ test("an unreadable key ring refuses rather than guessing the generation", async
   assert.deepEqual(r, { ok: false, reason: "unavailable" });
 });
 
-test("the ring is read for the session parent, never for the key", async () => {
-  const seen: string[] = [];
+test("the ring is read for the session parent, never for the key - fresh and strict, never the cache", async () => {
+  const seen: Array<[string, unknown]> = [];
   await checkOrganiserKeyBinding(signOrganiserKeyBinding(KEY, PARENT, 0), PARENT, {
-    currentRing: async (a) => {
-      seen.push(a);
+    currentRing: async (a, opts) => {
+      seen.push([a, opts]);
       return { status: "none" };
     },
   });
-  assert.deepEqual(seen, [PARENT]);
+  // A cached ring up to 30 s old let a device removed seconds ago register under its old key (audit 1157 H-1).
+  assert.deepEqual(seen, [[PARENT, { fresh: true, strict: true }]]);
 });
