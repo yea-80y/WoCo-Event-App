@@ -220,7 +220,7 @@ test("switching back restores the old registry's record and clock, untouched", a
   assert.equal(ledger.nameChangeStatus(ACCOUNT, T0 + 2 * DAY).allowed, false, "its cooldown still runs");
 
   const written = JSON.parse(readFileSync(STORE(), "utf-8"));
-  assert.deepEqual(Object.keys(written).sort(), [REGISTRY, `42161:${OTHER_REGISTRY}`].sort(), "nothing is deleted");
+  assert.deepEqual(Object.keys(written).sort(), [REGISTRY, `${REGISTRY.split(":")[0]}:${OTHER_REGISTRY}`].sort(), "nothing is deleted");
 });
 
 test("each registry's section survives a restart", async () => {

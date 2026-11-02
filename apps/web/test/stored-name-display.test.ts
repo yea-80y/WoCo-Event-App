@@ -90,6 +90,18 @@ test("builder: every SubENSPicker gets the site's label only once it is verified
   }
 });
 
+test("builder: a claim is remembered as this account's before the label is stored", () => {
+  // Load-bearing: re-claiming a stale label hits a fresh "no such name" verdict
+  // (2 min), which checkName returns without a read - so without this the tab
+  // says "isn't registered" right after a successful mint.
+  const onclaim = builder.match(/onclaim=\{\(label\) => \{([\s\S]*?)\}\}/);
+  assert.ok(onclaim, "builder onclaim moved");
+  const body = onclaim[1]!;
+  const remembered = body.indexOf("rememberOwner(label, auth.parent)");
+  const stored = body.indexOf("site.subEnsLabel = label");
+  assert.ok(remembered >= 0 && stored > remembered, "rememberOwner must precede storing the label");
+});
+
 test("builder: Publish only asks to point a name the chain says this account holds", () => {
   const derived = builder.match(/const siteNameToPoint = \$derived\(([\s\S]*?)\);\n/);
   assert.ok(derived, "siteNameToPoint moved — re-check what Publish asks the holder to sign");
