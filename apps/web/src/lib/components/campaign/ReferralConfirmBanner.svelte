@@ -41,9 +41,30 @@
   /** `auto` hides the card: an ask must not flash while the confirm it offers is already on its way. */
   let phase = $state<"idle" | "auto" | "confirming" | "confirmed">("idle");
   let errorMsg = $state<string | null>(null);
-  let loading = false;
+  /** The account whose reads are in flight — one read per account at a time. */
+  let loadingFor: string | null = null;
+  /** The account the card's state belongs to. */
+  let shownFor: string | null = null;
+  /** Bumped on every reset: a read or confirm started before it must not land. */
+  let generation = 0;
 
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
+  /**
+   * Back to nothing. The card outlives a sign-out (Home stays mounted and shows
+   * its sign-in callout), so whatever the last account's reads found would
+   * otherwise stay on screen — "now earns from your sales" with nobody signed in.
+   */
+  function reset(): void {
+    generation++;
+    loadingFor = null;
+    myFeed = null;
+    statement = null;
+    status = null;
+    confirmed = null;
+    phase = "idle";
+    errorMsg = null;
+  }
 
   // Only once a session already exists — a home-screen mount must never trigger
   // a ceremony just to work out what to render.
@@ -55,24 +76,31 @@
   $effect(() => {
     void recheck;
     void auth.hasIdentitySeed;
-    if (!auth.isAuthenticated || loading) return;
-    loading = true;
-    void load().finally(() => { loading = false; });
+    const parent = auth.isAuthenticated ? (auth.parent?.toLowerCase() ?? null) : null;
+    if (parent !== shownFor) {
+      reset();
+      shownFor = parent;
+    }
+    if (!parent || loadingFor === parent) return;
+    loadingFor = parent;
+    const mine = generation;
+    void load(parent, mine).finally(() => { if (generation === mine) loadingFor = null; });
   });
 
-  async function load() {
-    const parent = auth.parent?.toLowerCase() ?? null;
+  async function load(parent: string, mine: number) {
+    const current = () => generation === mine && auth.parent?.toLowerCase() === parent;
     // The ADDRESS getter, not the signer: this path only reads, and the read
     // must cost the user nothing. Null means no seed on this device yet, so
     // there is no feed to read and nothing to show.
     const feed = await auth.getContentFeedSignerAddress().catch(() => null);
-    if (!feed) return;
+    if (!feed || !current()) return;
     myFeed = feed;
 
     const [claim, resp] = await Promise.all([
       readMyReferralStatement(feed).catch(() => null),
       getReferralStatus().catch(() => null),
     ]);
+    if (!current()) return;
     statement = claim;
     if (resp?.ok && resp.data) {
       status = resp.data;
@@ -86,9 +114,10 @@
     const outcome = await autoConfirmReferral({
       facts,
       feed: feed as Hex0x,
-      stillSameAccount: () => parent !== null && auth.parent?.toLowerCase() === parent,
+      stillSameAccount: current,
       confirm: confirmReferral,
     });
+    if (!current()) return;
     if (outcome.kind === "confirmed") {
       confirmed = outcome.record;
       phase = "confirmed";
@@ -106,19 +135,23 @@
 
   async function confirm() {
     if (!statement || !myFeed || phase === "confirming") return;
+    const mine = generation;
     phase = "confirming";
     errorMsg = null;
     try {
       // The ONE ceremony in this flow, and the user pressed the button that
       // asks for it. No `onChain` — nothing here touches a chain.
       const ready = await requireAccountForAction({ context: "creator" });
+      if (generation !== mine) return;
       if (!ready) { phase = "idle"; return; }
 
       const resp = await confirmReferral(statement.referrer, myFeed as Hex0x);
+      if (generation !== mine) return;
       if (!resp.ok || !resp.data) throw new Error(resp.error ?? "Could not confirm the referral.");
       confirmed = resp.data.confirmed;
       phase = "confirmed";
     } catch (err) {
+      if (generation !== mine) return;
       phase = "idle";
       errorMsg = err instanceof Error ? err.message : "Could not confirm the referral - try again.";
     }

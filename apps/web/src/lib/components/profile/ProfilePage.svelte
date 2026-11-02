@@ -10,7 +10,7 @@
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { navigate } from "../../router/router.svelte.js";
+  import { navigate, replaceRoute, router } from "../../router/router.svelte.js";
   import { openEvent } from "../../attendee/events/open-event.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { authGet } from "../../api/client.js";
@@ -462,11 +462,14 @@
   // isConnected half of the key this effect would never re-fire and the page
   // would keep showing the previous account's profile after logout.
   let _prevView = "";
+  let _wasOwnView = false;
   $effect(() => {
     const v = viewAddress;
     const key = `${v}:${auth.isConnected}`;
     if (key === _prevView) return;
+    const signedOutOfOwn = _wasOwnView && !auth.isConnected;
     _prevView = key;
+    _wasOwnView = isOwner;
     saveLifetime?.abort();
     profile = null; events = []; eventsLoaded = false; eventsLoading = false; eventsFailed = false;
     eventsSubTab = "upcoming";
@@ -476,6 +479,15 @@
     editName = ""; editBio = ""; editWebsite = ""; editTwitter = ""; editFarcaster = "";
     formLoaded = { displayName: "", bio: "", website: "", twitterHandle: "", farcasterHandle: "" };
     formDirty = false;
+    if (signedOutOfOwn && v) {
+      // The Profile tab opens `/creator/profile/0x…`, so the address outlives the
+      // sign-out and this page would come back as the PUBLIC view of the account
+      // just left - name, bio, events, a Follow button on yourself - reading as
+      // still signed in. The address-less route shows nothing and asks to sign in.
+      loading = false;
+      replaceRoute(router.surface === "creator" ? "/creator/profile" : "/profile");
+      return;
+    }
     if (!v) {
       loading = false;
       if (!auth.isConnected) loginRequest.request().then(ok => { if (!ok) navigate("/"); });
