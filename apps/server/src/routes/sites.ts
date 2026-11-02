@@ -11,13 +11,13 @@ import { requireAuth } from "../middleware/auth.js";
 import { cancellationGate } from "../lib/event/cancellations.js";
 import { getEvent, getCreatorEvents } from "../lib/event/service.js";
 import { getCreatorSites, upsertCreatorSite, resolveSiteConfig, resolveSiteConfigOrNull } from "../lib/site/service.js";
+import { siteRuntimeReleases } from "../lib/site/runtime-release.js";
 import {
   escapeHtmlAttribute as escHtml,
-  injectBeforeHeadClose,
-  siteConfigScript,
   resolveDeployUrls,
   isSafeIdParam,
 } from "../lib/site/deploy-config.js";
+import { renderSiteHtml, sitePwaManifest } from "@woco/shared";
 import { updateDomainsForSite } from "../lib/domains/service.js";
 import {
   readFeedPage,
@@ -127,33 +127,8 @@ type PointerPlan =
   | { rail: "etherna"; prepared: { feedManifestHash: string; nextIndex: bigint } }
   | { rail: "woco"; nextIndex: bigint };
 
-/** The SEO + PWA head tags baked into a deployed site. Every interpolation is escaped. */
-export function deployHeadLines(site: Site, gatewayUrl: string): string {
-  const desc = site.theme.siteDescription?.trim() ?? '';
-  const brandNameEsc = escHtml(site.theme.brandName?.trim() || 'WoCo Site');
-  const descEsc = escHtml(desc);
-  const logoRef = site.theme.logoSwarmRef;
-  // Organiser logo when set; WoCo brand image (always bundled in the collection) otherwise.
-  const thumbnailUrl = escHtml(
-    logoRef && !/^0+$/.test(logoRef) ? `${gatewayUrl}/bytes/${logoRef}` : './logo.png',
-  );
-  const themeColorEsc = escHtml(site.theme.palette.accent ?? '');
-
-  return [
-    `  <link rel="manifest" href="./manifest.json">`,
-    thumbnailUrl ? `  <link rel="icon" href="${thumbnailUrl}">` : '',
-    `  <meta name="theme-color" content="${themeColorEsc}">`,
-    desc ? `  <meta name="description" content="${descEsc}">` : '',
-    `  <meta property="og:type" content="website">`,
-    `  <meta property="og:title" content="${brandNameEsc}">`,
-    desc ? `  <meta property="og:description" content="${descEsc}">` : '',
-    thumbnailUrl ? `  <meta property="og:image" content="${thumbnailUrl}">` : '',
-    `  <meta name="twitter:card" content="${thumbnailUrl ? 'summary_large_image' : 'summary'}">`,
-    `  <meta name="twitter:title" content="${brandNameEsc}">`,
-    desc ? `  <meta name="twitter:description" content="${descEsc}">` : '',
-    thumbnailUrl ? `  <meta name="twitter:image" content="${thumbnailUrl}">` : '',
-  ].filter(Boolean).join('\n');
-}
+/** The SEO + PWA head tags baked into a deployed site: now in packages/shared (#1032 slice 2). */
+export { deployHeadLines } from "@woco/shared";
 
 /**
  * Phase B: stamp each site event entry with its organiser's content-feed-signer
@@ -583,6 +558,21 @@ function malformedId(c: Context, name: "siteId" | "eventId") {
   return c.json({ ok: false, error: `${name} is malformed` }, 400);
 }
 
+// GET /api/sites/runtime - the latest site runtime release (#1032), for the builder.
+// Registered before "/:id", or "runtime" would match as a siteId.
+sitesRouter.get("/runtime", async (c) => {
+  // From memory once one is held (the background refresh keeps it current); only a
+  // cold process reads here.
+  const release = siteRuntimeReleases.peek() ?? (await siteRuntimeReleases.get());
+  if (!release) {
+    const { lastError } = siteRuntimeReleases.health();
+    return lastError
+      ? c.json({ ok: false, error: "The site runtime release could not be read" }, 503)
+      : c.json({ ok: false, error: "No site runtime release has been published yet" }, 404);
+  }
+  return c.json({ ok: true, data: release });
+});
+
 sitesRouter.get("/:id", async (c) => {
   const siteId = c.req.param("id");
   if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
@@ -962,28 +952,15 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // always fetches event images from WoCo Bee regardless of site host.
     const config: Record<string, unknown> = { site, gatewayUrl, apiUrl, wocoAppUrl };
     if (target === "etherna") config.contentGatewayUrl = "https://gateway.woco-net.com";
-    const configScript = siteConfigScript(config);
-    const injectedHtml = injectBeforeHeadClose(html, `  ${configScript}`);
 
     const ts = Date.now();
     tmpDir = `/tmp/woco-multisite-${ts}`;
     tarPath = `/tmp/woco-multisite-${ts}.tar`;
 
-    // Build PWA manifest from site theme
-    const manifest = {
-      name: site.theme.brandName,
-      short_name: site.theme.brandName,
-      start_url: "./multi-site.html",
-      display: "standalone",
-      background_color: site.theme.palette.bg,
-      theme_color: site.theme.palette.accent,
-      icons: [
-        { src: "./icon-192.png", sizes: "192x192", type: "image/png" },
-        { src: "./icon-512.png", sizes: "512x512", type: "image/png" },
-      ],
-    };
-
-    const injectedWithPwa = injectBeforeHeadClose(injectedHtml, deployHeadLines(site, gatewayUrl));
+    // The shared render (packages/shared/src/site/render.ts): the same bytes the
+    // browser's publish will produce (#1032).
+    const manifest = sitePwaManifest(site);
+    const injectedWithPwa = renderSiteHtml({ template: html, config, site, gatewayUrl });
 
     await fs.cp(distMultisitePath, tmpDir, { recursive: true });
     await fs.writeFile(join(tmpDir, "multi-site.html"), injectedWithPwa, "utf-8");

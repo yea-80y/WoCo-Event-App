@@ -1,0 +1,139 @@
+[
+  {
+    "name": "ordinary site, logo and description",
+    "template": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Site</title>\n    <script type=\"module\" crossorigin src=\"./assets/multi-site-BYAvm4Vs.js\"></script>\n    <link rel=\"stylesheet\" crossorigin href=\"./assets/multi-site-BP9pJl0U.css\">\n  </head>\n  <body>\n    <div id=\"app\"></div>\n  </body>\n</html>\n",
+    "site": {
+      "id": "site_ordinary_1",
+      "theme": {
+        "brandName": "Acme Pub",
+        "siteDescription": "Live music every Friday",
+        "logoSwarmRef": "abababababababababababababababababababababababababababababababab",
+        "palette": {
+          "accent": "#ff3366",
+          "bg": "#101010"
+        }
+      },
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home"
+        }
+      ]
+    },
+    "gatewayUrl": "https://gateway.woco-net.com",
+    "config": {
+      "site": {
+        "id": "site_ordinary_1",
+        "theme": {
+          "brandName": "Acme Pub",
+          "siteDescription": "Live music every Friday",
+          "logoSwarmRef": "abababababababababababababababababababababababababababababababab",
+          "palette": {
+            "accent": "#ff3366",
+            "bg": "#101010"
+          }
+        },
+        "pages": [
+          {
+            "id": "home",
+            "title": "Home"
+          }
+        ]
+      },
+      "gatewayUrl": "https://gateway.woco-net.com",
+      "apiUrl": "https://events-api.woco-net.com",
+      "wocoAppUrl": "https://woco.eth.limo"
+    },
+    "html": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Site</title>\n    <script type=\"module\" crossorigin src=\"./assets/multi-site-BYAvm4Vs.js\"></script>\n    <link rel=\"stylesheet\" crossorigin href=\"./assets/multi-site-BP9pJl0U.css\">\n    <script>window.SITE_CONFIG=JSON.parse(\"{\\\"site\\\":{\\\"id\\\":\\\"site_ordinary_1\\\",\\\"theme\\\":{\\\"brandName\\\":\\\"Acme Pub\\\",\\\"siteDescription\\\":\\\"Live music every Friday\\\",\\\"logoSwarmRef\\\":\\\"abababababababababababababababababababababababababababababababab\\\",\\\"palette\\\":{\\\"accent\\\":\\\"#ff3366\\\",\\\"bg\\\":\\\"#101010\\\"}},\\\"pages\\\":[{\\\"id\\\":\\\"home\\\",\\\"title\\\":\\\"Home\\\"}]},\\\"gatewayUrl\\\":\\\"https://gateway.woco-net.com\\\",\\\"apiUrl\\\":\\\"https://events-api.woco-net.com\\\",\\\"wocoAppUrl\\\":\\\"https://woco.eth.limo\\\"}\");</script>\n    <link rel=\"manifest\" href=\"./manifest.json\">\n  <link rel=\"icon\" href=\"https://gateway.woco-net.com/bytes/abababababababababababababababababababababababababababababababab\">\n  <meta name=\"theme-color\" content=\"#ff3366\">\n  <meta name=\"description\" content=\"Live music every Friday\">\n  <meta property=\"og:type\" content=\"website\">\n  <meta property=\"og:title\" content=\"Acme Pub\">\n  <meta property=\"og:description\" content=\"Live music every Friday\">\n  <meta property=\"og:image\" content=\"https://gateway.woco-net.com/bytes/abababababababababababababababababababababababababababababababab\">\n  <meta name=\"twitter:card\" content=\"summary_large_image\">\n  <meta name=\"twitter:title\" content=\"Acme Pub\">\n  <meta name=\"twitter:description\" content=\"Live music every Friday\">\n  <meta name=\"twitter:image\" content=\"https://gateway.woco-net.com/bytes/abababababababababababababababababababababababababababababababab\">\n  </head>\n  <body>\n    <div id=\"app\"></div>\n  </body>\n</html>\n",
+    "manifest": "{\"name\":\"Acme Pub\",\"short_name\":\"Acme Pub\",\"start_url\":\"./multi-site.html\",\"display\":\"standalone\",\"background_color\":\"#101010\",\"theme_color\":\"#ff3366\",\"icons\":[{\"src\":\"./icon-192.png\",\"sizes\":\"192x192\",\"type\":\"image/png\"},{\"src\":\"./icon-512.png\",\"sizes\":\"512x512\",\"type\":\"image/png\"}]}"
+  },
+  {
+    "name": "bare site: no logo, no description, blank brand, on Etherna",
+    "template": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Site</title>\n    <script type=\"module\" crossorigin src=\"./assets/multi-site-BYAvm4Vs.js\"></script>\n    <link rel=\"stylesheet\" crossorigin href=\"./assets/multi-site-BP9pJl0U.css\">\n  </head>\n  <body>\n    <div id=\"app\"></div>\n  </body>\n</html>\n",
+    "site": {
+      "id": "site_bare_2",
+      "theme": {
+        "brandName": "  ",
+        "palette": {
+          "accent": "#00aa00",
+          "bg": "#ffffff"
+        }
+      },
+      "pages": []
+    },
+    "gatewayUrl": "https://gateway.etherna.io",
+    "config": {
+      "site": {
+        "id": "site_bare_2",
+        "theme": {
+          "brandName": "  ",
+          "palette": {
+            "accent": "#00aa00",
+            "bg": "#ffffff"
+          }
+        },
+        "pages": []
+      },
+      "gatewayUrl": "https://gateway.etherna.io",
+      "apiUrl": "https://events-api.woco-net.com",
+      "wocoAppUrl": "https://woco.eth.limo",
+      "contentGatewayUrl": "https://gateway.woco-net.com"
+    },
+    "html": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Site</title>\n    <script type=\"module\" crossorigin src=\"./assets/multi-site-BYAvm4Vs.js\"></script>\n    <link rel=\"stylesheet\" crossorigin href=\"./assets/multi-site-BP9pJl0U.css\">\n    <script>window.SITE_CONFIG=JSON.parse(\"{\\\"site\\\":{\\\"id\\\":\\\"site_bare_2\\\",\\\"theme\\\":{\\\"brandName\\\":\\\"  \\\",\\\"palette\\\":{\\\"accent\\\":\\\"#00aa00\\\",\\\"bg\\\":\\\"#ffffff\\\"}},\\\"pages\\\":[]},\\\"gatewayUrl\\\":\\\"https://gateway.etherna.io\\\",\\\"apiUrl\\\":\\\"https://events-api.woco-net.com\\\",\\\"wocoAppUrl\\\":\\\"https://woco.eth.limo\\\",\\\"contentGatewayUrl\\\":\\\"https://gateway.woco-net.com\\\"}\");</script>\n    <link rel=\"manifest\" href=\"./manifest.json\">\n  <link rel=\"icon\" href=\"./logo.png\">\n  <meta name=\"theme-color\" content=\"#00aa00\">\n  <meta property=\"og:type\" content=\"website\">\n  <meta property=\"og:title\" content=\"WoCo Site\">\n  <meta property=\"og:image\" content=\"./logo.png\">\n  <meta name=\"twitter:card\" content=\"summary_large_image\">\n  <meta name=\"twitter:title\" content=\"WoCo Site\">\n  <meta name=\"twitter:image\" content=\"./logo.png\">\n  </head>\n  <body>\n    <div id=\"app\"></div>\n  </body>\n</html>\n",
+    "manifest": "{\"name\":\"  \",\"short_name\":\"  \",\"start_url\":\"./multi-site.html\",\"display\":\"standalone\",\"background_color\":\"#ffffff\",\"theme_color\":\"#00aa00\",\"icons\":[{\"src\":\"./icon-192.png\",\"sizes\":\"192x192\",\"type\":\"image/png\"},{\"src\":\"./icon-512.png\",\"sizes\":\"512x512\",\"type\":\"image/png\"}]}"
+  },
+  {
+    "name": "hostile organiser text",
+    "template": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Site</title>\n    <script type=\"module\" crossorigin src=\"./assets/multi-site-BYAvm4Vs.js\"></script>\n    <link rel=\"stylesheet\" crossorigin href=\"./assets/multi-site-BP9pJl0U.css\">\n  </head>\n  <body>\n    <div id=\"app\"></div>\n  </body>\n</html>\n",
+    "site": {
+      "id": "site_hostile_3",
+      "theme": {
+        "brandName": "$` $& $$ </script><script>alert(1)</script> \"' & <b>",
+        "siteDescription": "line break and </head> and   end",
+        "logoSwarmRef": "0000000000000000000000000000000000000000000000000000000000000000",
+        "palette": {
+          "accent": "\"><img src=x onerror=alert(1)>",
+          "bg": "</style>"
+        }
+      },
+      "__proto__": {
+        "polluted": true
+      },
+      "pages": [
+        {
+          "id": "p",
+          "title": "</script><!--"
+        }
+      ]
+    },
+    "gatewayUrl": "https://gateway.woco-net.com",
+    "config": {
+      "site": {
+        "id": "site_hostile_3",
+        "theme": {
+          "brandName": "$` $& $$ </script><script>alert(1)</script> \"' & <b>",
+          "siteDescription": "line break and </head> and   end",
+          "logoSwarmRef": "0000000000000000000000000000000000000000000000000000000000000000",
+          "palette": {
+            "accent": "\"><img src=x onerror=alert(1)>",
+            "bg": "</style>"
+          }
+        },
+        "__proto__": {
+          "polluted": true
+        },
+        "pages": [
+          {
+            "id": "p",
+            "title": "</script><!--"
+          }
+        ]
+      },
+      "gatewayUrl": "https://gateway.woco-net.com",
+      "apiUrl": "https://events-api.woco-net.com",
+      "wocoAppUrl": "https://woco.eth.limo"
+    },
+    "html": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Site</title>\n    <script type=\"module\" crossorigin src=\"./assets/multi-site-BYAvm4Vs.js\"></script>\n    <link rel=\"stylesheet\" crossorigin href=\"./assets/multi-site-BP9pJl0U.css\">\n    <script>window.SITE_CONFIG=JSON.parse(\"{\\\"site\\\":{\\\"id\\\":\\\"site_hostile_3\\\",\\\"theme\\\":{\\\"brandName\\\":\\\"$` $\\u0026 $$ \\u003c/script\\u003e\\u003cscript\\u003ealert(1)\\u003c/script\\u003e \\\\\\\"' \\u0026 \\u003cb\\u003e\\\",\\\"siteDescription\\\":\\\"line\\u2028break and \\u003c/head\\u003e and \\u2029 end\\\",\\\"logoSwarmRef\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"palette\\\":{\\\"accent\\\":\\\"\\\\\\\"\\u003e\\u003cimg src=x onerror=alert(1)\\u003e\\\",\\\"bg\\\":\\\"\\u003c/style\\u003e\\\"}},\\\"__proto__\\\":{\\\"polluted\\\":true},\\\"pages\\\":[{\\\"id\\\":\\\"p\\\",\\\"title\\\":\\\"\\u003c/script\\u003e\\u003c!--\\\"}]},\\\"gatewayUrl\\\":\\\"https://gateway.woco-net.com\\\",\\\"apiUrl\\\":\\\"https://events-api.woco-net.com\\\",\\\"wocoAppUrl\\\":\\\"https://woco.eth.limo\\\"}\");</script>\n    <link rel=\"manifest\" href=\"./manifest.json\">\n  <link rel=\"icon\" href=\"./logo.png\">\n  <meta name=\"theme-color\" content=\"&quot;&gt;&lt;img src=x onerror=alert(1)&gt;\">\n  <meta name=\"description\" content=\"line break and &lt;/head&gt; and   end\">\n  <meta property=\"og:type\" content=\"website\">\n  <meta property=\"og:title\" content=\"$` $&amp; $$ &lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt; &quot;&#39; &amp; &lt;b&gt;\">\n  <meta property=\"og:description\" content=\"line break and &lt;/head&gt; and   end\">\n  <meta property=\"og:image\" content=\"./logo.png\">\n  <meta name=\"twitter:card\" content=\"summary_large_image\">\n  <meta name=\"twitter:title\" content=\"$` $&amp; $$ &lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt; &quot;&#39; &amp; &lt;b&gt;\">\n  <meta name=\"twitter:description\" content=\"line break and &lt;/head&gt; and   end\">\n  <meta name=\"twitter:image\" content=\"./logo.png\">\n  </head>\n  <body>\n    <div id=\"app\"></div>\n  </body>\n</html>\n",
+    "manifest": "{\"name\":\"$` $& $$ </script><script>alert(1)</script> \\\"' & <b>\",\"short_name\":\"$` $& $$ </script><script>alert(1)</script> \\\"' & <b>\",\"start_url\":\"./multi-site.html\",\"display\":\"standalone\",\"background_color\":\"</style>\",\"theme_color\":\"\\\"><img src=x onerror=alert(1)>\",\"icons\":[{\"src\":\"./icon-192.png\",\"sizes\":\"192x192\",\"type\":\"image/png\"},{\"src\":\"./icon-512.png\",\"sizes\":\"512x512\",\"type\":\"image/png\"}]}"
+  }
+]
