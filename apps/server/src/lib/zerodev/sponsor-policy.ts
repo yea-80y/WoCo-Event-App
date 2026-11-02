@@ -195,6 +195,9 @@ function unpack128(v: unknown): [bigint, bigint] | null {
 function maxCostOf(op: Record<string, unknown>): bigint | null {
   const packedLimits = unpack128(op.accountGasLimits);
   const packedFees = unpack128(op.gasFees);
+  // One rule for both forms: absent (as `uint` reads absent) is 0, present must parse.
+  const absent = (v: unknown) => v === undefined || v === null || v === "" || v === "0x";
+  if ((!absent(op.accountGasLimits) && !packedLimits) || (!absent(op.gasFees) && !packedFees)) return null;
   const larger = (packed: bigint | undefined, unpacked: bigint | null): bigint | null =>
     unpacked === null ? null : packed !== undefined && packed > unpacked ? packed : unpacked;
   const verification = larger(packedLimits?.[0], uint(op.verificationGasLimit));

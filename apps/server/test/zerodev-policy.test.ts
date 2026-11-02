@@ -262,6 +262,12 @@ test("the cost bound is the gas the sender chose x max fee, unpacked or packed",
     verificationGasLimit: 1, callGasLimit: 1, maxFeePerGas: 1,
   });
   assert.equal(bothPacked?.maxCostWei, unpacked?.maxCostWei, "small unpacked fields hid the packed words");
+  // One rule for both forms: a malformed field refuses whichever form it is in; absent is 0.
+  const base = { sender: ACCOUNT, nonce: "1", callData, preVerificationGas: 78_000 };
+  assert.equal(readUserOp({ ...base, accountGasLimits: word(1n, 1n), gasFees: word(1n, 1n), maxFeePerGas: "-1" }), null);
+  assert.equal(readUserOp({ ...base, accountGasLimits: "0x1234", gasFees: word(1n, 1n) }), null);
+  assert.equal(readUserOp({ ...base, gasFees: "0xzz" }), null);
+  assert.equal(readUserOp({ ...base, accountGasLimits: "0x", gasFees: null })?.maxCostWei, 0n, "an empty stub field reads as absent");
 });
 
 test("more than four calls in one batch is refused", async () => {
