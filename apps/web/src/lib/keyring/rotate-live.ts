@@ -360,7 +360,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
           if (!pub.ok) throw new Error(pub.error ?? `site ${entry.siteId} not republished`);
           const dep = await deploySite(
             entry.siteId,
-            { apiUrl: API_URL, gatewayUrl: ETHERNA_GATEWAY_URL, wocoAppUrl: WOCO_APP_URL, site },
+            { apiUrl: API_URL, gatewayUrl: ETHERNA_GATEWAY_URL, wocoAppUrl: WOCO_APP_URL, site, parentAddress: parent },
             keys.feedSigner,
           );
           if (!dep.ok || !dep.data) throw new Error(dep.error ?? `site ${entry.siteId} not redeployed`);

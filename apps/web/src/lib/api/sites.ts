@@ -69,6 +69,8 @@ export interface DeploySiteResult {
   siteUrl: string;
   /** "client": the browser's build was admitted (#1032); "server": the old full-copy build. */
   builtBy?: "client" | "server";
+  /** The runtime release a browser build linked; absent for a server build. */
+  runtimeVersion?: number;
   /** Present when the pointer feed is client-owned — the update we must sign. */
   multisiteFeed?: { nextIndex: number; rootChunkPayloadB64: string };
   /**
@@ -206,6 +208,13 @@ export async function deployEventPage(
     gatewayUrl: opts.gatewayUrl,
   });
   return { ...res, feedSigned: true };
+}
+
+/** The latest site runtime release's version (#1032), or null when none can be read. */
+export async function getSiteRuntimeVersion(apiUrl?: string): Promise<number | null> {
+  const r = await get<{ version?: unknown }>("/api/sites/runtime", apiUrl).catch(() => null);
+  const v = r?.ok ? r.data?.version : undefined;
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 1 ? v : null;
 }
 
 export async function loadSite(siteId: string, apiUrl?: string) {

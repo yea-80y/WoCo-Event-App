@@ -549,6 +549,8 @@
         deployedUrl: deployed.siteUrl,
         publishedAt: Date.now(),
         updatedAt: Date.now(),
+        // Present either way: a server build (a full copy) clears an older link.
+        runtimeVersion: deployed.runtimeVersion,
       });
 
       // Refresh the instant-open copy — what was just published IS the latest.

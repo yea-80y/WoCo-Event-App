@@ -1318,6 +1318,9 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       feedHash: feedManifestHash || undefined,
       deployedUrl: siteUrl,
       publishedAt: Date.now(),
+      // Present on every deploy so a server build (a full copy) clears an older
+      // link: the entry is merged over, and an absent key would keep it.
+      runtimeVersion: clientKit?.version,
     } satisfies SiteDirectoryEntry).catch((e) =>
       console.warn("[sites/deploy] creator directory upsert failed:", e)
     );
@@ -1330,6 +1333,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         siteUrl,
         // Which side built the site: "client" = the browser's collection, admitted (#1032).
         builtBy: clientCollection ? "client" : "server",
+        // The runtime release a browser build linked (#1032): the builder's update prompt.
+        ...(clientKit ? { runtimeVersion: clientKit.version } : {}),
         // Present only when the pointer feed is client-owned: the caller signs
         // the sequence-feed update SOC (beeFeedUpdateIdentifier) with this.
         ...(multisiteFeed ? { multisiteFeed } : {}),
