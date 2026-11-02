@@ -16,7 +16,7 @@
   import { cancelEvent } from "../../api/events.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import type { Ledger2RelayItem } from "@woco/shared/ticket/ledger2-terms";
-  import type { Ledger2EventView } from "../../ledger2/organiser-changes.js";
+  import { relayMessage, type Ledger2EventView } from "../../ledger2/organiser-changes.js";
 
   interface Props {
     event: EventFeed;
@@ -146,7 +146,7 @@
       const parent = auth.parent?.toLowerCase();
       if (parent) ledger2 = await readView(parent);
     } catch (e) {
-      finishMsg = e instanceof Error ? e.message : "Couldn't finish just now. Try again in a moment.";
+      finishMsg = relayMessage(e) ?? (e instanceof Error ? e.message : "Couldn't finish just now. Try again in a moment.");
     } finally {
       finishing = false;
     }
@@ -174,7 +174,7 @@
       const result = await cancelWithChain(typed, feedSigner);
       oncancelled(result.eventFeed ?? { ...event, cancelledAt: new Date().toISOString() }, result.feedUpdated);
     } catch (e) {
-      error = e instanceof Error ? e.message : "Could not cancel the event";
+      error = relayMessage(e) ?? (e instanceof Error ? e.message : "Could not cancel the event");
     } finally {
       working = false;
     }

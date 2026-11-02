@@ -531,6 +531,44 @@ test("cancel: no signatures is the record alone; an unsaved record releases the 
   assert.equal((again as { chain: { status: string } }).chain.status, "landed");
 });
 
+test("cancel: over the chain budget, or a change still saving, still records - the chain half waits", async () => {
+  const f = fake();
+  const r = await cancelEventWithChain(
+    { eventId: EVENT, parent: PARENT, seriesIds: [SERIES], chainCancels: [cancelItem()], chainAllowed: false, record: () => (f.order.push("record"), recorded) },
+    f.deps,
+  );
+  assert.equal(r.kind, "done");
+  assert.deepEqual(f.order, ["record"]);
+  assert.deepEqual((r as { chain: unknown }).chain, { status: "failed", error: "rate_limited" });
+
+  const g = fake();
+  const held = await prepareLedger2Relay(input({ items: [supplyItem(120)] }), g.deps);
+  assert.ok(held.ok, "a capacity change holds the event's lock");
+  const c = await cancelEventWithChain(
+    { eventId: EVENT, parent: PARENT, seriesIds: [SERIES], chainCancels: [cancelItem()], record: () => (g.order.push("record"), recorded) },
+    g.deps,
+  );
+  assert.equal(c.kind, "done");
+  assert.deepEqual(g.order, ["record"]);
+  assert.deepEqual((c as { chain: unknown }).chain, { status: "failed", error: "in_flight" });
+});
+
+test("two moves on one slot read that slot once", async () => {
+  const f = fake();
+  f.series.set(ID_A, seriesState({ seated: true, nextSlot: 10 }));
+  const h = holder.address.toLowerCase();
+  f.slots.set(`${ID_A}:3`, { owner: h, transferNonce: 0n, seat: 5n });
+  let reads = 0;
+  const slotState = f.deps.slotState;
+  f.deps.slotState = async (...a) => (reads++, slotState(...a));
+  const mv = (toSeat: number, nonce: bigint) => ({
+    kind: "reseatBearer", seriesId: SERIES, slot: 3, toSeat, ...W,
+    sig: sign({ kind: "reseatBearer", eventId: ID_A, slot: 3, toSeat: BigInt(toSeat), holder: h, nonce, termsNonce: 3n, seatNonce: 0n, ...W }),
+  });
+  assert.ok((await run(f, { items: [mv(9, 0n), mv(11, 1n)] })).ok);
+  assert.equal(reads, 1);
+});
+
 test("cancel: an event already cancelled on chain is refused for that series", async () => {
   const f = fake();
   f.series.set(ID_A, seriesState({ cancelled: true }));

@@ -377,18 +377,25 @@ async function checkAndSimulate(
   const slots = new Map<string, Map<number, SeatSlotState>>();
   const seats = new Map<string, Map<bigint, bigint>>();
   if (seatItems.length > 0) {
+    // Each distinct slot and target seat read once (two moves on one slot are common).
+    const reads: Array<Promise<void>> = [];
+    for (const i of seatItems) {
+      const id = ids.get(i.seriesId)!;
+      const sl = slots.get(i.seriesId) ?? new Map<number, SeatSlotState>();
+      slots.set(i.seriesId, sl);
+      const se = seats.get(i.seriesId) ?? new Map<bigint, bigint>();
+      seats.set(i.seriesId, se);
+      if (!sl.has(i.slot!)) {
+        sl.set(i.slot!, { owner: "", transferNonce: 0n, seat: LEDGER2_NO_SEAT });
+        reads.push(deps.slotState(chainId, ledger, id, i.slot!).then((s) => void sl.set(i.slot!, s)));
+      }
+      if (i.toSeat !== LEDGER2_NO_SEAT && !se.has(i.toSeat!)) {
+        se.set(i.toSeat!, 0n);
+        reads.push(deps.seatNonce(chainId, ledger, id, i.toSeat!).then((n) => void se.set(i.toSeat!, n)));
+      }
+    }
     try {
-      await Promise.all(
-        seatItems.map(async (i) => {
-          const id = ids.get(i.seriesId)!;
-          const sl = slots.get(i.seriesId) ?? new Map<number, SeatSlotState>();
-          slots.set(i.seriesId, sl);
-          const se = seats.get(i.seriesId) ?? new Map<bigint, bigint>();
-          seats.set(i.seriesId, se);
-          if (!sl.has(i.slot!)) sl.set(i.slot!, await deps.slotState(chainId, ledger, id, i.slot!));
-          if (i.toSeat !== LEDGER2_NO_SEAT && !se.has(i.toSeat!)) se.set(i.toSeat!, await deps.seatNonce(chainId, ledger, id, i.toSeat!));
-        }),
-      );
+      await Promise.all(reads);
     } catch {
       return refuse(502, "chain_unverified");
     }

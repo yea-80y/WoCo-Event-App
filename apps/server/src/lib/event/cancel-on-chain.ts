@@ -38,11 +38,19 @@ export async function cancelEventWithChain(
     chainCancels: unknown;
     /** Writes the server's record (`cancelEvent` with its live deps). */
     record: () => CancelEventResult;
+    /**
+     * False when the chain half is over its gas budget: the cancellation is recorded
+     * without it, never refused - a budget is no reason to keep selling (sign-off C3).
+     */
+    chainAllowed?: boolean;
   },
   deps: Ledger2RelayDeps,
 ): Promise<CancelOnChainResult> {
   const signed = Array.isArray(input.chainCancels) && input.chainCancels.length > 0;
   if (!signed) return { kind: "done", recorded: input.record() };
+  if (input.chainAllowed === false) {
+    return { kind: "done", recorded: input.record(), chain: { status: "failed", error: "rate_limited" } };
+  }
 
   const prepared = await prepareLedger2Relay(
     {
@@ -56,9 +64,11 @@ export async function cancelEventWithChain(
     deps,
   );
   if (!prepared.ok) {
-    // A chain we could not read, or a relay that is off, is no reason to keep selling:
-    // the record still stops the money; only a refusal of what was SIGNED stops here.
-    if (prepared.status === 502 || prepared.status === 503) {
+    // A chain we could not read, a relay that is off, or a change of the organiser's
+    // still saving (the per-event lock) is no reason to keep selling: the record still
+    // stops the money, and "Finish cancelling" does the chain half later. Only a
+    // refusal of what was SIGNED stops here (Fable sign-off C4).
+    if (prepared.status === 502 || prepared.status === 503 || prepared.error === "in_flight") {
       return { kind: "done", recorded: input.record(), chain: { status: "failed", error: prepared.error } };
     }
     return { kind: "refused", refusal: prepared };

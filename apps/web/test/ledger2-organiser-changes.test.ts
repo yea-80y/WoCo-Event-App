@@ -228,6 +228,58 @@ test("Cancel while saving: a revoke at the SAME nonce, and nothing changed", asy
   assert.deepEqual(phases.map((p) => p.phase), ["saving", "cancelling", "cancelled"]);
 });
 
+test("Cancel whose revoke was sent but did not land (the change landed between) is NOT 'cancelled'", async () => {
+  const f = fake();
+  let failNext: (() => void) | null = null;
+  f.relay = (req) => {
+    if (req.items[0]!.kind === "revoke") {
+      // The change landed first: the revoke's call failed inside the batch.
+      f.chain.set(ID_A, read({ totalSupply: 120, termsNonce: 4n }));
+      return Promise.resolve({ status: "landed", txHash: "0x2", landed: [false] });
+    }
+    return new Promise((_, reject) => (failNext = () => reject(codeErr("relay_failed"))));
+  };
+  const { change, done, phases } = await start(f);
+  await new Promise((r) => setImmediate(r));
+  const cancelling = change.cancel();
+  failNext!();
+  await Promise.all([cancelling, done]);
+  assert.equal(phases.at(-1)!.phase, "already_saved");
+  assert.equal(phases.filter((p) => p.phase === "cancelled").length, 0);
+});
+
+test("Cancel during the slow-receipt watch: the cancel's answer stands, nothing overwrites it", async () => {
+  const f = fake();
+  let watching: (() => void) | null = null;
+  f.relay = (req) =>
+    req.items[0]!.kind === "revoke"
+      ? Promise.resolve({ status: "landed", txHash: "0x2", landed: [true] })
+      : Promise.resolve({ status: "unconfirmed", txHash: "0x1" });
+  const sleep = f.io.sleep;
+  f.io.sleep = (ms) => (ms === 5_000 ? new Promise<void>((r) => (watching = r)) : sleep(ms));
+  const { change, done, phases } = await start(f);
+  while (!watching) await new Promise((r) => setImmediate(r));
+  await change.cancel();
+  watching!();
+  await done;
+  assert.deepEqual(phases.map((p) => p.phase), ["saving", "cancelling", "cancelled"]);
+});
+
+test("Cancel while a request is in flight that lands on only some ticket types", async () => {
+  const f = fake();
+  let resolve: (() => void) | null = null;
+  f.relay = () => new Promise((r) => (resolve = () => r({ status: "landed", txHash: "0x1", landed: [true, false] })));
+  const { change, done, phases } = await start(f, [
+    { kind: "setSupply", seriesId: "a", supply: 120 },
+    { kind: "setSupply", seriesId: "b", supply: 150 },
+  ]);
+  await new Promise((r) => setImmediate(r));
+  const cancelling = change.cancel();
+  resolve!();
+  await Promise.all([cancelling, done]);
+  assert.deepEqual(phases.at(-1), { phase: "partly_saved", landed: ["a"] });
+});
+
 test("Cancel too late: the request in flight landed first", async () => {
   const f = fake();
   let resolve: (() => void) | null = null;

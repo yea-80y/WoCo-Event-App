@@ -102,7 +102,7 @@ export const liveLedger2ClientIO: Ledger2ClientIO = {
     const { auth } = await import("../auth/auth-store.svelte.js");
     await auth.ensureOrganiserUnlock();
     const secrets = await auth.getAccountSecrets({ toSeal: true });
-    if (!secrets) throw new Error("Your account's signing key isn't available on this device - sign in again and retry.");
+    if (!secrets) throw new Error("This device can't confirm changes to your events right now - sign in again and retry.");
     const { deriveOrganiserKey } = await import("@woco/shared/crypto/organiser-key");
     return deriveOrganiserKey(secrets.current);
   },

@@ -292,16 +292,19 @@ export class Ledger2Change {
       return;
     }
     if (result.status === "unconfirmed") {
-      // Sent; the receipt was slow. Watch the chain for the values.
+      // Sent; the receipt was slow. Watch the chain for the values - unless Cancel was
+      // pressed meanwhile, whose own path then reads the outcome (Fable sign-off C2).
       const until = Date.now() + CONFIRM_WATCH_MS;
-      while (Date.now() < until) {
+      while (Date.now() < until && !this.cancelRequested) {
         const view = await readLedger2Event(this.event, this.parent, this.io).catch(() => null);
+        if (this.cancelRequested) return;
         if (view && changesPresent(view, this.changes)) {
           this.finish({ phase: "saved" });
           return;
         }
         await this.io.sleep(5_000);
       }
+      if (this.cancelRequested) return;
     }
     await this.finishFromChain(null);
   }
@@ -309,6 +312,7 @@ export class Ledger2Change {
   /** No clean answer from the relay: the chain says what happened. */
   private async finishFromChain(err: unknown): Promise<void> {
     const view = await readLedger2Event(this.event, this.parent, this.io).catch(() => null);
+    if (this.cancelRequested) return;
     if (view && changesPresent(view, this.changes)) {
       this.finish({ phase: "saved" });
       return;
@@ -333,7 +337,14 @@ export class Ledger2Change {
       try {
         const result = (await this.sending) as Ledger2RelayResult;
         if (result.status === "landed") {
-          this.finish({ phase: "already_saved" });
+          const landed = this.signed.filter((_, i) => result.landed?.[i]).map((s) => s.seriesId);
+          this.finish(
+            landed.length === this.signed.length
+              ? { phase: "already_saved" }
+              : landed.length === 0
+                ? { phase: "changed_elsewhere" }
+                : { phase: "partly_saved", landed },
+          );
           return;
         }
       } catch {
@@ -356,9 +367,20 @@ export class Ledger2Change {
       const revokes = await signTermsChanges(view, ours.map((s) => ({ kind: "revoke" as const, seriesId: s.seriesId })), this.io);
       for (let attempt = 0; ; attempt++) {
         try {
-          await this.io.relay(this.event.eventId, { items: revokes });
-          this.finish({ phase: "cancelled" });
-          return;
+          // A revoke is a terms write, sent `allowFailure: true`: a reply that it was sent
+          // is not a reply that it landed (Fable sign-off C1). Only every revoke landing
+          // is "Cancelled"; one that did not met a nonce the change itself moved.
+          const r = await this.io.relay(this.event.eventId, { items: revokes });
+          if (r.status === "landed" && r.landed?.length === revokes.length && r.landed.every(Boolean)) {
+            this.finish({ phase: "cancelled" });
+            return;
+          }
+          if (r.status === "unconfirmed") {
+            this.finish(await this.watchRevoke());
+            return;
+          }
+          if (r.status === "reverted_on_chain") throw new Ledger2ChangeError("", "cancel_failed");
+          break;
         } catch (err) {
           if ((err as { code?: string })?.code === "nonce_moved") break;
           if (!isTransient(err) || attempt >= 3) throw err;
@@ -380,10 +402,51 @@ export class Ledger2Change {
     }
   }
 
+  /**
+   * A revoke sent but not yet confirmed: our values on chain = the change won; a moved
+   * nonce with our values absent = the revoke won (the change can no longer land).
+   */
+  private async watchRevoke(): Promise<ChangePhase> {
+    const until = Date.now() + CONFIRM_WATCH_MS;
+    while (Date.now() < until) {
+      const view = await readLedger2Event(this.event, this.parent, this.io).catch(() => null);
+      if (view) {
+        if (changesPresent(view, this.changes)) return { phase: "already_saved" };
+        const moved = view.series.some((s) => this.signedAt.has(s.seriesId) && s.termsNonce !== this.signedAt.get(s.seriesId)!.nonce);
+        if (moved) return { phase: "cancelled" };
+      }
+      await this.io.sleep(5_000);
+    }
+    return {
+      phase: "failed",
+      message: "Couldn't confirm the cancel yet. Check back here in a few minutes.",
+      code: "cancel_unconfirmed",
+    };
+  }
+
+  /** The first answer stands: a later path never overwrites it. */
   private finish(p: ChangePhase): void {
+    if (this.done) return;
     this.done = true;
     this.onPhase(p);
   }
+}
+
+const RELAY_CODES = new Set([
+  "supply_below_sold_or_held", "supply_above_registered", "supply_unchanged", "sales_closed", "event_cancelled",
+  "already_cancelled", "sales_end_not_later", "sales_end_too_far", "signature_stale", "nonce_moved", "key_moved",
+  "rate_limited", "in_flight", "cancellation_unknown", "not_available", "digest_mismatch", "relay_failed",
+  "relay_unavailable", "chain_unverified", "invalid_request", "invalid_item", "window_invalid",
+  "signature_not_yet_valid", "signature_expiring", "deadline_too_far", "series_not_found", "not_organiser",
+]);
+
+/**
+ * `messageFor` when `err` carries one of the relay's codes, else null: a route that
+ * answers in sentences (the cancel route's own checks) keeps its sentence.
+ */
+export function relayMessage(err: unknown): string | null {
+  const code = (err as { code?: string })?.code;
+  return code && RELAY_CODES.has(code) ? messageFor(err) : null;
 }
 
 /** The organiser-facing sentence for a relay refusal. No chain words. */
@@ -420,6 +483,10 @@ export function messageFor(err: unknown): string {
       return "Your account's keys changed on another device. Reload this page.";
     case "rate_limited":
       return "Too many changes in a short time. Try again in a little while.";
+    case "in_flight":
+      return "A change to this event is still saving - try again in a minute.";
+    case "cancellation_unknown":
+      return "Couldn't check this event's status just now. Try again in a moment.";
     case "not_available":
       return "This event's tickets can't be changed here.";
     case "digest_mismatch":

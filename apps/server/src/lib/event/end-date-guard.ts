@@ -40,7 +40,7 @@ import {
  * extension only moves the end later, so a stale value refuses a sale the chain
  * would take (a lost sale for up to a minute), never charges one it would refuse.
  * The sale path itself does not use this memo on ledger2: it reads the end fresh
- * with the supply (`lib/chain/ledger2-sale-state.ts`). Every earlier version's end
+ * with the supply (`lib/event/ledger2-sale-status.ts`). Every earlier version's end
  * has no setter and stays memoized for good.
  */
 export const LEDGER2_END_TTL_MS = 60_000;
@@ -124,9 +124,11 @@ export async function chainEventEndMs(
   chainId: number = getActiveChainId(),
   read: ChainEndReader = realGetOnChainEventEnd,
   now: number = Date.now(),
+  /** Skip the memo (still refreshing it): the edit-time guard on a ledger2 contract. */
+  fresh = false,
 ): Promise<number | null> {
   const k = `${chainId}:${onChainEventId.toLowerCase()}`;
-  const hit = recall(_endMemo, k, now);
+  const hit = fresh ? undefined : recall(_endMemo, k, now);
   if (hit !== undefined) return hit;
   const endSec = await read(onChainEventId, chainId);
   if (endSec === null) return null;
@@ -171,9 +173,15 @@ export async function checkEndDateExtension(args: {
   const ids = args.series.map((s) => s.onChainEventId).filter((id): id is string => !!id);
   if (ids.length === 0) return { ok: true };
 
+  // On ledger2 the organiser has just moved the cutoff (the browser extends it before
+  // this edit), possibly through a send whose receipt our relay never saw: read fresh,
+  // or the edit is refused for up to a minute (Fable sign-off C6). Extensions are rare.
+  let movable = false;
   let ends: Array<number | null>;
   try {
-    ends = await Promise.all(ids.map((id) => chainEventEndMs(id, args.chainId, args.read)));
+    const chainId = args.chainId ?? getActiveChainId();
+    movable = defaultIsLedger2(chainId);
+    ends = await Promise.all(ids.map((id) => chainEventEndMs(id, chainId, args.read, Date.now(), movable)));
   } catch {
     return {
       ok: false,
@@ -187,10 +195,12 @@ export async function checkEndDateExtension(args: {
   if (args.newEndMs > minEnd) {
     return {
       ok: false,
-      error:
-        `${END_DATE_PAST_SALES_CLOSE} (${new Date(minEnd).toISOString()}). Sales close at a fixed ` +
-        "time set when your tickets were created, so a later end date would sell tickets that can't " +
-        "be issued. You can always make it earlier.",
+      error: movable
+        ? `${END_DATE_PAST_SALES_CLOSE} (${new Date(minEnd).toISOString()}). Save the later date from your ` +
+          "event's dashboard, which moves ticket sales with it, then try again."
+        : `${END_DATE_PAST_SALES_CLOSE} (${new Date(minEnd).toISOString()}). Sales close at a fixed ` +
+          "time set when your tickets were created, so a later end date would sell tickets that can't " +
+          "be issued. You can always make it earlier.",
     };
   }
   return { ok: true };

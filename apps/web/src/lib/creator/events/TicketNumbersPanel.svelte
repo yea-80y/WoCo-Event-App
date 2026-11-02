@@ -11,6 +11,7 @@
     readLedger2Event,
     startTermsChange,
     messageFor,
+    relayMessage,
     type ChangePhase,
     type Ledger2Change,
     type Ledger2EventView,
@@ -74,7 +75,7 @@
         for (const s of after.series) drafts[s.seriesId] = s.totalSupply;
       }
     } catch (e) {
-      error = messageFor(e) === messageFor({}) && e instanceof Error ? e.message : messageFor(e);
+      error = relayMessage(e) ?? (e instanceof Error ? e.message : messageFor(e));
     } finally {
       preparing = false;
       running = null;

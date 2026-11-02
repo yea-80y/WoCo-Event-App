@@ -72,17 +72,18 @@ eventCancel.post("/:id/cancel", requireAuth, async (c) => {
 
   // Ledger2 events also cancel on chain, by the organiser key's signatures. Signed
   // cancels are checked BEFORE the record is written (`cancel-on-chain.ts`).
+  // Its own gas budget, which never refuses the cancellation itself: over it, the
+  // record is written and the chain half waits for "Finish cancelling".
   const signed = Array.isArray(body.chainCancels) && body.chainCancels.length > 0;
-  if (signed && !chainCancelLimit.peek(parentAddress)) {
-    return c.json({ ok: false, error: "rate_limited" }, 429);
-  }
-  if (signed) chainCancelLimit.record(parentAddress);
+  const chainAllowed = !signed || chainCancelLimit.peek(parentAddress);
+  if (signed && chainAllowed) chainCancelLimit.record(parentAddress);
   const outcome = await cancelEventWithChain(
     {
       eventId,
       parent: parentAddress,
       seriesIds: event.series.map((s) => s.seriesId),
       chainCancels: body.chainCancels,
+      chainAllowed,
       record: () =>
         cancelEvent(
           {
