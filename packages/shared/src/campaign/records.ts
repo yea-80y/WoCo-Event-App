@@ -143,8 +143,8 @@ export function campaignAccountSubject(address: string): Hex0x {
 
 /**
  * Three of the five families are PINNED to band 0. The referee's statement is
- * latest-wins, the follow scheme exactly; the confirmation is write-once; a
- * badge gains a version only on revocation. None has a growth axis, so none
+ * latest-wins, the follow scheme exactly; the confirmation and the badge are
+ * write-once, read at version 0. None has a growth axis, so none
  * bands — and a pinned family must never be handed to a band walk, because
  * every opener probe would address the same chunk.
  */
@@ -233,13 +233,24 @@ export interface ReferralConfirmationV1 {
   confirmedAt: string;
 }
 
+/**
+ * PERMANENT (owner decision 2026-11-02). The badge of record is VERSION 0 of its
+ * topic, read by computed address exactly like a confirmation, so nothing the
+ * issuer writes later can take it back: a badge is the platform's signed word
+ * that cannot be quietly withdrawn, and anyone holding the chunk can check it
+ * without asking WoCo. If bots ever earn badges, the answer is a separate,
+ * public list a reader can consult - never an edit to the badge.
+ */
 export interface BadgeV1 {
   format: typeof BADGE_FORMAT;
   subject: Hex0x;
   badge: BadgeKind;
   /** A platform-defined campaign window, not clock math. */
   epoch: number;
-  /** `false` revokes — the abuse escape hatch for badges minted by bots. */
+  /**
+   * Always `true` from this issuer. Kept in the frozen schema; a reader shows a
+   * badge only for `true`, and a later version saying `false` is never read.
+   */
   value: boolean;
 }
 

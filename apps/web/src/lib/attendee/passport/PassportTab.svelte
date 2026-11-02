@@ -172,8 +172,7 @@
 
   <section>
     <h2 class="section-label">Stamps</h2>
-    <!-- `value === true` only: a revoked badge is a later version of the same
-         record, and `readBadge` returns it. -->
+    <!-- `value === true` only: the display rule is the caller's (`readBadge`). -->
     {#if badge?.value === true || networkBadge?.value === true}
       {#if badge?.value === true}
         <div class="stamp">

@@ -314,16 +314,13 @@ export async function readConfirmation(
 }
 
 /**
- * The issuer's badge for `address`, or null — a HEAD read, because a revocation
- * is a LATER version of the same topic (`value: false`, the abuse escape
- * hatch). Reading version 0 here would pin the badge to its minting and make
- * revocation unobservable, which is the exact inverse of the confirmation rule
- * above and the reason the two reads are written separately.
+ * The issuer's `kind` badge for `address`, or null — read at VERSION 0, the
+ * same rule as the confirmation above, because a badge is PERMANENT (owner
+ * decision 2026-11-02, see `BadgeV1`): a head read would let any later version
+ * the issuer wrote take a badge back.
  *
- * The DISPLAY RULE is the caller's: this returns a revoked badge as faithfully
- * as a live one, and a surface that renders a stamp must check `value === true`
- * itself. Collapsing "revoked" into null here would leave no way to tell a
- * revoked badge from an account that never had one.
+ * The DISPLAY RULE is the caller's: a surface that renders a stamp checks
+ * `value === true` itself (this issuer only ever writes `true`).
  */
 export async function readBadge(
   address: Hex0x,
@@ -332,7 +329,7 @@ export async function readBadge(
 ): Promise<BadgeV1 | null> {
   const subject = campaignAccountSubject(address);
   const topic = badgeTopic(subject, kind);
-  const res = await deps.readFeed(CAMPAIGN_ISSUER_ADDRESS, topic, { route: FEED_ROUTES.campaignIssuer, skipLegacy: true });
+  const res = await deps.readFeedAtVersion(CAMPAIGN_ISSUER_ADDRESS, topic, 0, { route: FEED_ROUTES.campaignIssuer });
   if (res.status !== "found" || !validateBadgeV1(res.value)) return null;
   const record = res.value as BadgeV1;
   return badgeMatches(record, subject, kind) ? record : null;

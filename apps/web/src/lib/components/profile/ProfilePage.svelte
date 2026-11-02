@@ -552,9 +552,8 @@
       {:else}
         <div class="name-row">
           <h1 class="display-name">{displayName}</h1>
-          <!-- `value === true` only: a revoked badge is a LATER version of the
-               same record, so `readBadge` returns it and the display rule is
-               here. Truthiness alone would render a revocation as a badge. -->
+          <!-- `value === true` only: the display rule is the caller's
+               (`readBadge`), and truthiness alone would show any badge record. -->
           {#if badge?.value === true}
             <span
               class="cohort-mark"

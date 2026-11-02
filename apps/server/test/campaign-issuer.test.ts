@@ -15,9 +15,9 @@
  *     of nothing — the read-back is what makes a dead batch visible.
  *   - THE INDEX IS NOT THE RECORD. Its failure is counted and the confirmation
  *     still stands: every entry is re-derivable from the confirmations.
- *   - A REVOKED BADGE IS NEVER RE-ISSUED. Revocation is a later version on a
- *     latest-wins feed, and re-minting over it would undo the one abuse lever
- *     the format has.
+ *   - A BADGE IS PERMANENT (owner, 2026-11-02). Version 0 is the badge of
+ *     record, read by computed address; anything there ends a mint, and a
+ *     later version is never read.
  *
  * Everything touching Swarm is injected, for the reason the evidence publisher
  * injects its own: these are all FAILURE properties and a live bee cannot be
@@ -119,6 +119,10 @@ function recorder(over: Partial<IssuerDeps> = {}) {
   return { deps, writes, confirmed };
 }
 
+/** The referee's confirmation slot holds `bytes`; every other version 0 (badges included) is empty. */
+const standing = (bytes: Uint8Array): IssuerDeps["readVersion0"] =>
+  async (_owner, topic) => (topic === CONFIRM_TOPIC ? { status: "found", bytes } : { status: "absent" });
+
 const ARGS = { referee: REFEREE, refereeFeed: FEED, referrer: REFERRER };
 const confirmWrites = (writes: { topic: string }[]): unknown[] =>
   writes.filter((w) => w.topic === CONFIRM_TOPIC);
@@ -141,7 +145,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 
 test("a confirmation already at version 0 ends the attempt, even for another referrer", async () => {
   const { deps, writes } = recorder({
-    readVersion0: async () => ({ status: "found", bytes: confirmation(OTHER) }),
+    readVersion0: standing(confirmation(OTHER)),
   });
 
   const res = await issuer.confirmReferral(ARGS, deps);
@@ -156,7 +160,7 @@ test("a standing confirmation is FINISHED on a repeat - for the referrer it name
   // The shape a timed-out read-back leaves: the chunk landed, the index and the
   // badges never ran, and the referee's next attempt reads `already`.
   const { deps, writes } = recorder({
-    readVersion0: async () => ({ status: "found", bytes: confirmation(OTHER) }),
+    readVersion0: standing(confirmation(OTHER)),
   });
 
   await issuer.confirmReferral(ARGS, deps);
@@ -196,7 +200,7 @@ test("a standing confirmation whose index write throws still answers `already`",
   // recorded index failure, not a 500 for a referral that IS confirmed.
   const S_O = campaignAccountSubject(OTHER);
   const { deps, writes } = recorder({
-    readVersion0: async () => ({ status: "found", bytes: confirmation(OTHER) }),
+    readVersion0: standing(confirmation(OTHER)),
     writeFeed: async (topic, bytes) => {
       if (topic === referrerIndexTopic(S_O, 0)) throw new Error("bee unreachable: http://user:secret@bee");
       writes.push({ topic, bytes });
@@ -449,13 +453,14 @@ test("the referrer index appends, rolls over a full band, and never unmakes a co
 // Badges
 // ---------------------------------------------------------------------------
 
-test("a badge is minted once and never over an existing one — revoked included", async () => {
-  const revoked = enc({ format: BADGE_FORMAT, subject: S_E, badge: "joined", epoch: 0, value: false });
+test("a badge is minted once, at version 0, and never over anything already in that slot", async () => {
   const granted = enc({ format: BADGE_FORMAT, subject: S_E, badge: "joined", epoch: 0, value: true });
 
   {
     issuer.__resetIssuer({ configured: true });
-    const { deps, writes, confirmed } = recorder({ readHead: async () => ({ status: "absent" }) });
+    // A head that says otherwise is never consulted: version 0 decides.
+    const headSaysTaken = async (): Promise<VersionedFeedRead> => found(granted, 3);
+    const { deps, writes, confirmed } = recorder({ readHead: headSaysTaken });
     await issuer.issueBadge(REFEREE, deps);
     assert.deepEqual(writes.map((w) => w.topic), [BADGE_TOPIC]);
     assert.deepEqual(dec(writes[0]!.bytes), {
@@ -465,16 +470,28 @@ test("a badge is minted once and never over an existing one — revoked included
     assert.equal(issuer.campaignIssuerHealth().badges, 1);
   }
 
-  for (const [why, head] of [
-    ["revoked", found(revoked)],
-    ["granted", found(granted)],
-    ["unreadable", { status: "unavailable", reason: "probe" } as VersionedFeedRead],
+  for (const [why, slot] of [
+    ["granted", { status: "found", bytes: granted }],
+    ["foreign bytes", { status: "found", bytes: enc({ hello: "world" }) }],
+    ["unreadable", { status: "unavailable", reason: "probe" }],
   ] as const) {
     issuer.__resetIssuer({ configured: true });
-    const { deps, writes } = recorder({ readHead: async () => head });
+    const { deps, writes } = recorder({ readVersion0: async () => slot });
     await issuer.issueBadge(REFEREE, deps);
     assert.equal(writes.length, 0, `${why}: nothing may be written`);
   }
+});
+
+test("a badge is read at version 0 - a later version saying `false` cannot take it back", async () => {
+  const granted = enc({ format: BADGE_FORMAT, subject: S_E, badge: "joined", epoch: 0, value: true });
+  const revoked = enc({ format: BADGE_FORMAT, subject: S_E, badge: "joined", epoch: 0, value: false });
+  const { deps } = recorder({
+    readVersion0: async (_owner, topic) => (topic === BADGE_TOPIC ? { status: "found", bytes: granted } : { status: "absent" }),
+    readHead: async () => found(revoked, 1),
+  });
+  const read = await issuer.readBadge(REFEREE, deps);
+  assert.equal(read.status, "found");
+  assert.equal(read.status === "found" && read.record.value, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -524,10 +541,10 @@ test("a referral two steps deep earns the top referrer the Network badge - and n
 
 test("a standing confirmation finishes the Network badge too", async () => {
   const { deps, writes } = recorder({
-    readVersion0: async (_owner, topic) =>
+    readVersion0: async (owner, topic, family) =>
       topic === MIDDLE_CONFIRM_TOPIC
         ? { status: "found", bytes: confirmationOf(REFERRER, UPSTREAM) }
-        : { status: "found", bytes: confirmation(REFERRER) },
+        : standing(confirmation(REFERRER))(owner, topic, family),
   });
   assert.equal((await issuer.confirmReferral(ARGS, deps)).status, "already");
   await settle();
@@ -569,7 +586,8 @@ test("a Network check that throws never unmakes the confirmation", async () => {
 test("each kind is its own slot: a Joined badge neither blocks nor stands in for a Network one", async () => {
   const joined = enc({ format: BADGE_FORMAT, subject: S_U, badge: "joined", epoch: 0, value: true });
   const { deps, writes } = recorder({
-    readHead: async (_owner, topic) => (topic === badgeTopic(S_U, "joined") ? found(joined) : { status: "absent" }),
+    readVersion0: async (_owner, topic) =>
+      topic === badgeTopic(S_U, "joined") ? { status: "found", bytes: joined } : { status: "absent" },
   });
   await issuer.issueBadge(UPSTREAM, deps, "network");
   assert.deepEqual(writes.map((w) => w.topic), [NETWORK_TOPIC]);
@@ -579,7 +597,7 @@ test("each kind is its own slot: a Joined badge neither blocks nor stands in for
   let release = (): void => {};
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const slow = recorder({
-    readHead: async (_owner, topic) => {
+    readVersion0: async (_owner, topic) => {
       if (topic === badgeTopic(S_U, "joined")) await gate;
       return { status: "absent" };
     },
@@ -596,7 +614,7 @@ test("a badge read checks the record names this account and this kind", async ()
   const otherAccount = enc({ format: BADGE_FORMAT, subject: S_E, badge: "network", epoch: 0, value: true });
   const right = enc({ format: BADGE_FORMAT, subject: S_U, badge: "network", epoch: 0, value: true });
   for (const [bytes, want] of [[joinedAtNetwork, "unavailable"], [otherAccount, "unavailable"], [right, "found"]] as const) {
-    const { deps } = recorder({ readHead: async () => found(bytes) });
+    const { deps } = recorder({ readVersion0: async () => ({ status: "found", bytes }) });
     assert.equal((await issuer.readBadge(UPSTREAM, deps, "network")).status, want);
   }
 });
@@ -639,7 +657,8 @@ test("a read that throws is a fault, never an absence and never a 500", async ()
   assert.equal(c.writes.length, 0);
   // The detail goes to the log; the public health label must not carry it.
   assert.ok(!String(issuer.campaignIssuerHealth().lastError).includes("secret"));
-  assert.equal((await issuer.readBadge(REFEREE, c.deps)).status, "unavailable");
+  // A badge is a version-0 read, so that is the read made to throw here.
+  assert.equal((await issuer.readBadge(REFEREE, recorder({ readVersion0: boom }).deps)).status, "unavailable");
 
   // After a confirmation has landed, a throwing index read is a recorded index
   // failure — the confirmation itself still stands.
@@ -702,7 +721,9 @@ test("the referee's statement is read as `referral`; everything the issuer wrote
       return base.readHead(owner, topic, family);
     },
     readVersion0: async (owner, topic, family) => {
-      const name = topic === CONFIRM_TOPIC ? "confirmation" : topic === referralConfirmationTopic(S_R) ? "referrer's confirmation" : topic;
+      const name = topic === CONFIRM_TOPIC ? "confirmation"
+        : topic === referralConfirmationTopic(S_R) ? "referrer's confirmation"
+        : topic.startsWith("woco/badge/") ? "badge" : topic;
       reads.push(`v0 ${name} ${family}`);
       return base.readVersion0(owner, topic, family);
     },
@@ -719,12 +740,13 @@ test("the referee's statement is read as `referral`; everything the issuer wrote
     // The countersign check: the referee's own feed, wherever `referral` is stamped.
     "head statement referral",
     "banded index campaignIssuer",
-    // Both parties' Joined badges, issued off the confirmation.
-    "head badge campaignIssuer",
-    "head badge campaignIssuer",
+    // Both parties' Joined badges, issued off the confirmation - version 0, as
+    // every badge read is (badges are permanent).
+    "v0 badge campaignIssuer",
+    "v0 badge campaignIssuer",
     // The Network check: the referrer's own confirmation, in the issuer's space.
     "v0 referrer's confirmation campaignIssuer",
     "v0 confirmation campaignIssuer",
-    "head badge campaignIssuer",
+    "v0 badge campaignIssuer",
   ]);
 });

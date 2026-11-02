@@ -74,6 +74,8 @@ function harness(
     feeds?: Record<string, unknown>;
     banded?: Record<string, unknown>;
     atVersion?: unknown;
+    /** Per-topic version reads; a topic not named falls back to `atVersion`. */
+    atVersionByTopic?: Record<string, unknown>;
     writeStatus?: "verified" | "superseded" | "unconfirmed";
     /** Every banded read answers `unavailable`, as a gateway that never replied would. */
     bandedUnavailable?: boolean;
@@ -96,7 +98,7 @@ function harness(
     readFeedAtVersion: async (owner, topic, version, opts) => {
       rec.versionReads.push({ owner, topic, version });
       rec.routes.push({ call: "readFeedAtVersion", route: opts.route });
-      return found(answers.atVersion);
+      return found(answers.atVersionByTopic?.[topic] ?? answers.atVersion);
     },
     readBandedFeed: async (owner, topicForBand, opts) => {
       rec.routes.push({ call: "readBandedFeed", route: opts.route });
@@ -274,16 +276,19 @@ test("readConfirmation is null for a payload that fails validation", async () =>
   assert.equal(await readConfirmation(REFEREE, deps), null);
 });
 
-test("readBadge returns a REVOKED badge too — the display rule is the caller's", async () => {
+test("readBadge reads VERSION 0 only - a badge is permanent, so no later version can take it back", async () => {
   const subject = campaignAccountSubject(REFEREE);
-  const revoked = { format: BADGE_FORMAT, subject, badge: "joined", epoch: 0, value: false };
-  const { deps, rec } = harness({ feeds: { [badgeTopic(subject, "joined")]: revoked } });
+  const granted = { format: BADGE_FORMAT, subject, badge: "joined", epoch: 0, value: true };
+  const revoked = { ...granted, value: false };
+  // A head read would see the `false`; the badge of record is version 0.
+  const { deps, rec } = harness({
+    atVersionByTopic: { [badgeTopic(subject, "joined")]: granted },
+    feeds: { [badgeTopic(subject, "joined")]: revoked },
+  });
 
-  // Null here would make a revocation indistinguishable from an account that
-  // never had a badge, which is exactly the difference the escape hatch exists
-  // to express.
-  assert.deepEqual(await readBadge(REFEREE, deps), revoked);
-  assert.equal(rec.feedReads[0].owner, CAMPAIGN_ISSUER_ADDRESS);
+  assert.deepEqual(await readBadge(REFEREE, deps), granted);
+  assert.deepEqual(rec.versionReads, [{ owner: CAMPAIGN_ISSUER_ADDRESS, topic: badgeTopic(subject, "joined"), version: 0 }]);
+  assert.equal(rec.feedReads.length, 0, "never a head read");
 });
 
 test("readBadge reads each kind at its own address, and only a record of that kind and account counts", async () => {
@@ -291,12 +296,12 @@ test("readBadge reads each kind at its own address, and only a record of that ki
   const network = { format: BADGE_FORMAT, subject, badge: "network", epoch: 0, value: true };
   const joined = { format: BADGE_FORMAT, subject, badge: "joined", epoch: 0, value: true };
   {
-    const { deps } = harness({ feeds: { [badgeTopic(subject, "network")]: network } });
+    const { deps } = harness({ atVersionByTopic: { [badgeTopic(subject, "network")]: network } });
     assert.deepEqual(await readBadge(REFEREE, deps, "network"), network);
     assert.equal(await readBadge(REFEREE, deps), null, "a Network badge is not a Joined one");
   }
   for (const wrong of [joined, { ...network, subject: campaignAccountSubject(OTHER) }]) {
-    const { deps } = harness({ feeds: { [badgeTopic(subject, "network")]: wrong } });
+    const { deps } = harness({ atVersionByTopic: { [badgeTopic(subject, "network")]: wrong } });
     assert.equal(await readBadge(REFEREE, deps, "network"), null);
   }
 });

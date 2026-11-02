@@ -21,7 +21,7 @@
  * absent / unavailable, and only `absent` licenses a write. A source that
  * cannot answer is `unavailable` and a throw is treated the same — treating
  * either as absence would write a confirmation over a slot that is already
- * spent, re-issue a badge someone revoked, or countersign a referral whose
+ * spent, write a badge over a slot that already holds one, or countersign a referral whose
  * retraction sits in a store that did not answer.
  *
  * EVERY READ NAMES ITS FAMILY (#657). The referee's statement is the
@@ -124,9 +124,9 @@ export type RecordRead<T> =
 // ---------------------------------------------------------------------------
 
 export interface IssuerDeps {
-  /** Latest version of a pinned-band feed — badges and the referee's statement. */
+  /** Latest version of a pinned-band feed — the referee's statement. */
   readHead: (ownerHex: string, topic: string, family: FeedFamily) => Promise<VersionedFeedRead>;
-  /** Version 0 EXACTLY, by computed address. The first-confirmed-wins read. */
+  /** Version 0 EXACTLY, by computed address. The first-confirmed-wins read, and every badge read. */
   readVersion0: (ownerHex: string, topic: string, family: FeedFamily) => Promise<SlotRead>;
   readBanded: (
     ownerHex: string,
@@ -618,10 +618,9 @@ export function currentEpoch(): number {
  * throws — every caller fires it from a success path that must not fail because
  * a badge did.
  *
- * A badge feed is LATEST-WINS, so this reads the head rather than version 0: a
- * revocation is a later version, and re-issuing over one would undo the abuse
- * escape hatch the format exists to provide. Any valid badge already there —
- * granted or revoked — ends the attempt.
+ * A badge is PERMANENT: version 0 is the badge of record (see `BadgeV1`), so
+ * this reads version 0 by computed address, as a confirmation does, and anything
+ * already there ends the attempt.
  */
 export async function issueBadge(
   address: string,
@@ -642,16 +641,16 @@ export async function issueBadge(
     const topic = badgeTopic(subject, kind);
     const issuerOwner = getCampaignIssuerOwnerHex();
 
-    const head = await deps.readHead(issuerOwner, topic, "campaignIssuer");
-    if (head.status === "unavailable") {
+    const slot = await deps.readVersion0(issuerOwner, topic, "campaignIssuer");
+    if (slot.status === "unavailable") {
       // Not an error worth counting: the next qualifying action retries, which
       // is how this rail has always recovered from a read it could not make.
-      console.warn(`[campaign] badge read unavailable for ${addr}: ${head.reason ?? "unavailable"}`);
+      console.warn(`[campaign] badge read unavailable for ${addr}: ${slot.reason}`);
       return;
     }
-    if (head.status === "found") {
-      if (!validateBadgeV1(parseJson(head.bytes))) {
-        console.error(`[campaign] foreign bytes at the badge feed for ${addr} — not overwriting`);
+    if (slot.status === "found") {
+      if (!validateBadgeV1(parseJson(slot.bytes))) {
+        console.error(`[campaign] foreign bytes at the badge slot for ${addr} — not overwriting`);
       }
       return;
     }
@@ -718,7 +717,7 @@ export async function readConfirmation(
   return { status: "found", record };
 }
 
-/** An address's `kind` badge — head read, because a revocation is a later version. */
+/** An address's `kind` badge — version 0, because a badge is permanent (see `BadgeV1`). */
 export async function readBadge(
   address: string,
   deps: IssuerDeps = liveDeps(),
@@ -727,19 +726,19 @@ export async function readBadge(
   if (!health.configured) return { status: "unavailable" };
   const subject = campaignAccountSubject(address.toLowerCase());
   const topic = badgeTopic(subject, kind);
-  let head: VersionedFeedRead;
+  let slot: SlotRead;
   try {
-    head = await deps.readHead(getCampaignIssuerOwnerHex(), topic, "campaignIssuer");
+    slot = await deps.readVersion0(getCampaignIssuerOwnerHex(), topic, "campaignIssuer");
   } catch (err) {
-    // A head read can still throw (a malformed address, a bug below the
-    // probe). There is no global error handler, so an uncaught throw here is a
-    // bare 500 for a public read that should say "try again".
+    // The live read never throws, but an injected one or a bug below it can.
+    // There is no global error handler, so an uncaught throw here is a bare 500
+    // for a public read that should say "try again".
     console.warn(`[campaign] badge read threw for ${address}:`, err);
     return { status: "unavailable" };
   }
-  if (head.status === "unavailable") return { status: "unavailable" };
-  if (head.status === "absent") return { status: "absent" };
-  const record = parseJson(head.bytes);
+  if (slot.status === "unavailable") return { status: "unavailable" };
+  if (slot.status === "absent") return { status: "absent" };
+  const record = parseJson(slot.bytes);
   if (!validateBadgeV1(record) || !badgeMatches(record, subject, kind)) return { status: "unavailable" };
   return { status: "found", record };
 }
