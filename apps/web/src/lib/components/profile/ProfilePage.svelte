@@ -331,7 +331,7 @@
         // The bind only returns once the server has read the owner from chain.
         // Remembered first, so the card does not drop to "checking" (unmounting
         // the picker) while a just-minted name is still landing for the RPC.
-        if (auth.parent) rememberOwner(label, auth.parent);
+        rememberOwner(label, updated.address);
         profile = updated;
         // updateProfile already wrote the fresh profile to cache — don't
         // invalidate here or the next Swarm read races against feed propagation.

@@ -31,6 +31,11 @@ test("the scan actually reaches ProfilePage", () => {
   assert.match(text, /<script lang="ts">/, "…and it must be the Svelte component");
 });
 
+test("nameVerified means the chain check said 'owned', and nothing else", () => {
+  // The picker gate below trusts this name; re-pointing it would re-open the bug.
+  assert.match(text, /const nameVerified = \$derived\(nameCheck === "owned"\);/);
+});
+
 test("every SubENSPicker on the page gets the label only once it is verified", () => {
   const pickers = [...text.matchAll(/<SubENSPicker\b[\s\S]*?\/>/g)].map((m) => m[0]);
   assert.ok(pickers.length > 0, "no SubENSPicker found — the scan would pass vacuously");
