@@ -22,6 +22,10 @@ export default defineConfig({
     svelte(),
     noEnvObject(),
   ],
+  // Same as vite.config.ts: this bundle reaches the dashboard's order-opening worker
+  // (#965), and only an ES-module worker can split chunks - with the default 'iife'
+  // the build fails outright ("UMD and IIFE output formats are not supported").
+  worker: { format: 'es' },
   build: {
     outDir: 'dist-site',
     rollupOptions: {
