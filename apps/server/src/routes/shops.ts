@@ -532,7 +532,7 @@ shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
     const session = await s.checkout.sessions.create(
       {
         mode: "payment",
-        payment_method_types: CHECKOUT_PAYMENT_METHOD_TYPES,
+        allowed_payment_method_types: CHECKOUT_PAYMENT_METHOD_TYPES,
         line_items: order.lines.map((l) => ({
           price_data: {
             currency,
