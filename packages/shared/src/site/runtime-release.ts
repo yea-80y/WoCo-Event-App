@@ -1,7 +1,10 @@
 /**
- * The site runtime release (#1032): one immutable upload of the organiser-site
- * runtime (`apps/web/dist-multisite`) per release, which sites link into their
- * own Swarm manifests instead of carrying a copy.
+ * The site runtime release (#1032): one immutable upload per release of BOTH
+ * organiser runtimes - websites (`apps/web/dist-multisite`, line `site`) and
+ * single-event pages (`apps/web/dist-site`, line `eventPage`) - which pages link
+ * into their own Swarm manifests instead of carrying a copy. One descriptor, one
+ * commit, both lines REQUIRED (v2): two release lines could drift, and a page
+ * left on old code is exactly the #642 miss (STEP 1c forgotten).
  *
  * A release is described by a small JSON document, signed as the latest update
  * of the `SITE_RUNTIME_FEED_TOPIC` feed under the frontend deploy key
@@ -16,12 +19,22 @@
  * nodes, loading each one first so its fork type bits are right.
  */
 
-export const SITE_RUNTIME_FORMAT = "woco.site-runtime.v1" as const;
+export const SITE_RUNTIME_FORMAT = "woco.site-runtime.v2" as const;
+/** The feed keeps its name across formats: a v1 descriptor on it is simply refused. */
 export const SITE_RUNTIME_FEED_TOPIC = "woco-site-runtime-v1";
 /** The frontend deploy key's address (scripts/.env FEED_PRIVATE_KEY): it signs the app feed too. */
 export const SITE_RUNTIME_RELEASE_OWNER = "0xf8af4904c6e4f08ce5f7deab7f01221280b23a80";
 
 export type SiteRuntimeStore = "woco" | "etherna";
+
+/** The two runtimes a release carries. */
+export type SiteRuntimeLine = "site" | "eventPage";
+export const SITE_RUNTIME_LINES: readonly SiteRuntimeLine[] = ["site", "eventPage"];
+/** Each line's index document, which a page writes itself and never takes from the release. */
+export const SITE_RUNTIME_INDEX_DOCUMENT: Record<SiteRuntimeLine, string> = {
+  site: "multi-site.html",
+  eventPage: "site.html",
+};
 
 export interface SiteRuntimeRoot {
   /** Root of the uploaded collection, 64 hex, no 0x. */
@@ -38,16 +51,21 @@ export interface SiteRuntimeRoot {
   indexDocument: string;
 }
 
+/** One runtime of a release: what was built and where each store holds it. */
+export interface SiteRuntimeLineRelease {
+  dist: { files: number; bytes: number };
+  roots: { woco: SiteRuntimeRoot } & Partial<Record<Exclude<SiteRuntimeStore, "woco">, SiteRuntimeRoot>>;
+}
+
 export interface SiteRuntimeRelease {
   format: typeof SITE_RUNTIME_FORMAT;
   /** Strictly increasing per publish. */
   version: number;
-  /** Full git commit the runtime was built from. */
+  /** Full git commit both runtimes were built from. */
   commit: string;
   /** ISO time of the build. */
   builtAt: string;
-  dist: { files: number; bytes: number };
-  roots: { woco: SiteRuntimeRoot } & Partial<Record<Exclude<SiteRuntimeStore, "woco">, SiteRuntimeRoot>>;
+  runtimes: Record<SiteRuntimeLine, SiteRuntimeLineRelease>;
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -69,11 +87,11 @@ export function isSiteRuntimeFileType(contentType: string): boolean {
   return SHARED_FILE_TYPE.test(contentType);
 }
 
-function parseRoot(v: unknown): SiteRuntimeRoot | null {
+function parseRoot(v: unknown, indexDocument: string): SiteRuntimeRoot | null {
   if (!v || typeof v !== "object") return null;
   const r = v as Record<string, unknown>;
   if (typeof r.root !== "string" || !HEX64.test(r.root)) return null;
-  if (typeof r.indexDocument !== "string" || !/^[\w.-]{1,64}$/.test(r.indexDocument)) return null;
+  if (r.indexDocument !== indexDocument) return null;
   if (!r.edges || typeof r.edges !== "object" || Array.isArray(r.edges)) return null;
   const entries = Object.entries(r.edges as Record<string, unknown>);
   if (entries.length === 0 || entries.length > MAX_EDGES) return null;
@@ -93,7 +111,29 @@ function parseRoot(v: unknown): SiteRuntimeRoot | null {
     if (typeof file.contentType !== "string" || !isSiteRuntimeFileType(file.contentType)) return null;
     files[name] = { ref: file.ref, contentType: file.contentType };
   }
-  return { root: r.root, edges, files, indexDocument: r.indexDocument };
+  return { root: r.root, edges, files, indexDocument };
+}
+
+function parseLine(v: unknown, line: SiteRuntimeLine): SiteRuntimeLineRelease | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const l = v as Record<string, unknown>;
+  for (const k of Object.keys(l)) if (k !== "dist" && k !== "roots") return null;
+  const dist = l.dist as Record<string, unknown> | undefined;
+  if (!dist || !Number.isSafeInteger(dist.files) || !Number.isSafeInteger(dist.bytes)) return null;
+  if ((dist.files as number) < 1 || (dist.bytes as number) < 1) return null;
+  const roots = l.roots as Record<string, unknown> | undefined;
+  if (!roots || typeof roots !== "object" || Array.isArray(roots)) return null;
+  for (const k of Object.keys(roots)) if (k !== "woco" && k !== "etherna") return null;
+  const index = SITE_RUNTIME_INDEX_DOCUMENT[line];
+  const woco = parseRoot(roots.woco, index);
+  if (!woco) return null;
+  const out: SiteRuntimeLineRelease = { dist: { files: dist.files as number, bytes: dist.bytes as number }, roots: { woco } };
+  if (roots.etherna !== undefined) {
+    const etherna = parseRoot(roots.etherna, index);
+    if (!etherna) return null;
+    out.roots.etherna = etherna;
+  }
+  return out;
 }
 
 /**
@@ -108,26 +148,11 @@ export function parseSiteRuntimeRelease(v: unknown): SiteRuntimeRelease | null {
   if (typeof d.version !== "number" || !Number.isSafeInteger(d.version) || d.version < 1) return null;
   if (typeof d.commit !== "string" || !COMMIT.test(d.commit)) return null;
   if (typeof d.builtAt !== "string" || Number.isNaN(Date.parse(d.builtAt))) return null;
-  const dist = d.dist as Record<string, unknown> | undefined;
-  if (!dist || !Number.isSafeInteger(dist.files) || !Number.isSafeInteger(dist.bytes)) return null;
-  if ((dist.files as number) < 1 || (dist.bytes as number) < 1) return null;
-  const roots = d.roots as Record<string, unknown> | undefined;
-  if (!roots || typeof roots !== "object") return null;
-  for (const k of Object.keys(roots)) if (k !== "woco" && k !== "etherna") return null;
-  const woco = parseRoot(roots.woco);
-  if (!woco) return null;
-  const out: SiteRuntimeRelease = {
-    format: SITE_RUNTIME_FORMAT,
-    version: d.version,
-    commit: d.commit,
-    builtAt: d.builtAt,
-    dist: { files: dist.files as number, bytes: dist.bytes as number },
-    roots: { woco },
-  };
-  if (roots.etherna !== undefined) {
-    const etherna = parseRoot(roots.etherna);
-    if (!etherna) return null;
-    out.roots.etherna = etherna;
-  }
-  return out;
+  const runtimes = d.runtimes as Record<string, unknown> | undefined;
+  if (!runtimes || typeof runtimes !== "object" || Array.isArray(runtimes)) return null;
+  for (const k of Object.keys(runtimes)) if (!(SITE_RUNTIME_LINES as readonly string[]).includes(k)) return null;
+  const site = parseLine(runtimes.site, "site");
+  const eventPage = parseLine(runtimes.eventPage, "eventPage");
+  if (!site || !eventPage) return null;
+  return { format: SITE_RUNTIME_FORMAT, version: d.version, commit: d.commit, builtAt: d.builtAt, runtimes: { site, eventPage } };
 }

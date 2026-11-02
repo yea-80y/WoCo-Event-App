@@ -18,6 +18,7 @@ import { isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from 
 import { beginDeploy, CLIENT_POINTER_HOLD_MS, DEPLOY_IN_PROGRESS_CODE, DEPLOY_IN_PROGRESS_MESSAGE } from "../lib/site/deploy-guard.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
 import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
+import { serveRuntimeKit } from "../lib/site/collection-publish.js";
 import {
   injectBeforeHeadClose,
   isSafeIdParam,
@@ -32,6 +33,10 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
 const site = new Hono();
+
+// GET /api/site/runtime/kit/:store - the single-event page runtime's kit (#1032
+// slice 5), as /api/sites/runtime/kit is the websites'.
+site.get("/runtime/kit/:store", (c) => serveRuntimeKit(c, "eventPage"));
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
