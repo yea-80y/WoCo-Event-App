@@ -39,12 +39,12 @@ const order = (seriesId: string, edition: number, enc?: string): OrderEntry =>
 // ── OpenedOrders ────────────────────────────────────────────────────────────
 
 test("nothing shows before the keys opened anything", () => {
-  const opened = new OpenedOrders<{ n: number }>(() => ({ n: 0 }));
+  const opened = new OpenedOrders<{ n: number }>();
   assert.equal(opened.remap([order("a", 1, "e1"), order("a", 2)]).size, 0);
 });
 
 test("an opened order follows its ticket when a sale shifts the positions", () => {
-  const opened = new OpenedOrders<{ n: number }>(() => ({ n: 0 }));
+  const opened = new OpenedOrders<{ n: number }>();
   const b1 = order("b", 1, "eb1");
   opened.markOpened();
   opened.put(b1, { n: 7 });
@@ -55,7 +55,7 @@ test("an opened order follows its ticket when a sale shifts the positions", () =
 });
 
 test("only orders with a box not opened before are opened", () => {
-  const opened = new OpenedOrders<{ n: number }>(() => ({ n: 0 }));
+  const opened = new OpenedOrders<{ n: number }>();
   const a1 = order("a", 1, "e1");
   opened.markOpened();
   opened.put(a1, { n: 1 });
@@ -64,26 +64,65 @@ test("only orders with a box not opened before are opened", () => {
 });
 
 test("a re-sealed or erased order never shows an earlier opening", () => {
-  const opened = new OpenedOrders<{ n: number }>(() => ({ n: 0 }));
+  const opened = new OpenedOrders<{ n: number }>();
   opened.markOpened();
   opened.put(order("a", 1, "old"), { n: 1 });
   const resealed = order("a", 1, "new");
   assert.equal(opened.remap([resealed]).has(0), false);
   assert.deepEqual(opened.unopened([resealed]).map((t) => t.idx), [0]);
-  // Erased on request: no box at all - an empty entry, not the old details.
-  assert.deepEqual(opened.remap([order("a", 1)]).get(0), { n: 0 });
+  // Erased on request, or not fetched yet: no box at all - no entry, never the old details.
+  assert.equal(opened.remap([order("a", 1)]).has(0), false);
+});
+
+test("a box that would not open is not tried again until it changes or the keys lock", () => {
+  const opened = new OpenedOrders<{ n: number }>();
+  const bad = order("a", 1, "e1");
+  opened.markOpened();
+  opened.fail(bad);
+  assert.equal(opened.unopened([bad]).length, 0);
+  assert.equal(opened.failures, 1);
+  assert.equal(opened.unopened([order("a", 1, "e2")]).length, 1, "a re-sealed box is tried");
+  opened.clear();
+  assert.equal(opened.unopened([bad]).length, 1, "after a relock, tried again");
+});
+
+test("prune forgets what no row carries any more: an erased or re-sealed order's details go", () => {
+  const opened = new OpenedOrders<{ n: number }>();
+  opened.markOpened();
+  const a1 = order("a", 1, "e1");
+  const a2 = order("a", 2, "e2");
+  opened.put(a1, { n: 1 });
+  opened.put(a2, { n: 2 });
+  opened.fail(order("a", 3, "e3"));
+  // a1 erased (no box), a2 unchanged, a3 gone from the list.
+  opened.prune([order("a", 1), a2]);
+  assert.equal(opened.remap([a1, a2]).has(0), false, "a1's opened details are gone even if its old box came back");
+  assert.equal(opened.remap([a1, a2]).get(1)?.n, 2);
+  assert.equal(opened.failures, 0);
+});
+
+test("a row with no box gets no entry, even after opening (#965: rows arrive before boxes)", () => {
+  const opened = new OpenedOrders<{ n: number }>();
+  opened.markOpened();
+  opened.put(order("a", 1, "e1"), { n: 1 });
+  const map = opened.remap([order("a", 1, "e1"), order("a", 2)]);
+  assert.equal(map.get(0)?.n, 1);
+  assert.equal(map.has(1), false, "an entry would read as 'opened, no details' and hide the row's state");
 });
 
 test("locking again forgets everything opened", () => {
-  const opened = new OpenedOrders<{ n: number }>(() => ({ n: 0 }));
+  const opened = new OpenedOrders<{ n: number }>();
   const a1 = order("a", 1, "e1");
   opened.markOpened();
   opened.put(a1, { n: 1 });
   opened.clear();
   assert.equal(opened.remap([a1]).size, 0);
   assert.equal(opened.unopened([a1]).length, 1);
-  // Not even an empty entry for an order with no box: an entry reads as "unlocked".
   assert.equal(opened.remap([order("a", 2)]).size, 0);
+});
+
+test("the broadcast tab asks to open orders only when there are boxes to open", () => {
+  assert.match(DASH, /\{#if decryptedOrders\.size === 0 && ordersResponse && ordersResponse\.orders\.some\(\(o\) => !!o\.encryptedOrder\)\}/);
 });
 
 // ── the poller ──────────────────────────────────────────────────────────────
@@ -352,12 +391,13 @@ const fnBody = (name: string) => {
 
 test("polls the cheap count, gated on a session already here, and never signs in", () => {
   // #965: the count comes from the chain once the browser knows the registrations.
-  assert.match(DASH, /count: async \(\) =>\s*\(await ordersReader\(\)\.count\(\)\.catch\(\(\) => null\)\) \?\? getEventOrderCount\(id, \{ establish: false \}\)/);
+  assert.match(DASH, /count: async \(\) =>\s*\(await ordersReader\(\)\.reader\.count\(\)\.catch\(\(\) => null\)\) \?\? getEventOrderCount\(id, \{ establish: false \}\)/);
   assert.match(DASH, /const fresh = await loadOrders\(\{ establish: false \}\);/);
   // …and the option reaches both the browser read and the server fallback.
-  const load = fnBody("async function loadOrders");
-  assert.match(load, /await ordersReader\(\)\.load\(opts\);/);
-  assert.match(load, /return \(await getEventOrdersSWR\(eventId\)\.refresh\(opts\)\)\.data \?\? null;/);
+  assert.match(DASH, /return \(ordersLoad \?\?= readOrders\(opts\)\.finally/);
+  const load = fnBody("async function readOrders");
+  assert.match(load, /await reader\.loadRows\(opts\);/);
+  assert.match(load, /const data = \(await getEventOrdersSWR\(eventId\)\.refresh\(opts\)\)\.data \?\? null;/);
   assert.match(DASH, /canRequest: \(\) => auth\.isConnected && auth\.hasSession/);
   assert.match(DASH, /sessionStored: async \(\) => \{\s*const parent = auth\.parent;\s*return !!parent && !!\(await getSessionDelegation\(parent\)\);/);
 });
@@ -396,14 +436,14 @@ test("a poll opens orders without ever asking", () => {
 });
 
 test("each run opens only what is not open yet", () => {
-  const body = fnBody("async function decryptOnce");
+  const body = fnBody("async function openOrders");
   assert.match(body, /opened\.unopened\(ordersResponse\.orders\)/);
   assert.doesNotMatch(body, /ordersResponse\.orders\.map\(/);
 });
 
-test("the list and its display map change together", () => {
+test("the list and its display map change together, and opened details never outlive their box", () => {
   const body = fnBody("function showOrders");
-  assert.match(body, /ordersResponse = fresh;\s*decryptedOrders = opened\.remap\(fresh\.orders\);/);
+  assert.match(body, /ordersResponse = fresh;\s*\/\/[^\n]*\n\s*opened\.prune\(fresh\.orders\);\s*decryptedOrders = opened\.remap\(fresh\.orders\);/);
   assert.doesNotMatch(DASH.replace(body, ""), /ordersResponse = (fresh|freshOrders|ordersSWR\.cached)/);
 });
 
@@ -411,9 +451,45 @@ test("locking again clears what was opened", () => {
   assert.match(DASH, /opened\.clear\(\);\s*decryptedOrders = new Map\(\);\s*ordersLocked = true;/);
 });
 
-test("polling starts from the server's list, never from the cached paint", () => {
+test("polling starts from a real read (or its failure, to retry it), never from the cached paint", () => {
   assert.match(DASH, /showOrders\(freshOrders\);\s*ordersFromServer = true;/);
-  assert.match(DASH, /const liveReady = \$derived\(ordersFromServer && !error && !!event\)/);
+  assert.match(DASH, /const liveReady = \$derived\(\(ordersFromServer \|\| ordersReadError !== null\) && !error && !!event\)/);
   const cachedPaint = DASH.slice(DASH.indexOf("showOrders(ordersSWR.cached)"), DASH.indexOf("// ── Step 2"));
-  assert.doesNotMatch(cachedPaint, /ordersFromServer = true/);
+  assert.doesNotMatch(cachedPaint, /ordersFromServer = true|ordersReadError =/);
+  // After a failed first read no count can match, so the first check reads again.
+  assert.match(DASH, /poller\.start\(untrack\(\(\) => \(ordersReadError !== null \? -1 :/);
+});
+
+test("opening runs in steps from the rows on screen, gives the page a turn, and a relock mid-run keeps nothing", () => {
+  const body = fnBody("async function openOrders");
+  assert.match(body, /const epoch = openEpoch;/);
+  // Each step from the live rows: an order erased mid-run is never opened (Fable sign-off S2).
+  assert.match(body, /const batch = ordersResponse \? opened\.unopened\(ordersResponse\.orders\)\.slice\(0, OPEN_CHUNK\) : \[\];/);
+  assert.match(body, /else opened\.fail\(batch\[k\]\.order\);/, "a box that would not open is not retried every run (S6)");
+  assert.match(body, /await new Promise\(\(resolve\) => setTimeout\(resolve, 0\)\);/);
+  const guard = body.indexOf("if (epoch !== openEpoch || destroyed) return;");
+  assert.ok(guard > 0 && guard < body.indexOf("opened.put("), "the lock check comes before anything opened is kept");
+  assert.match(DASH, /openEpoch\+\+;\s*opened\.clear\(\);/);
+});
+
+test("every way out of an opening run stops showing 'Opening...' (Fable sign-off S5)", () => {
+  const body = fnBody("async function decryptOnce");
+  assert.match(body, /decrypting = true;\s*try \{\s*await openOrders\(prompt\);\s*\} finally \{\s*\/\/[^\n]*\n\s*decrypting = false;/);
+});
+
+test("nothing opens for a dashboard that has gone (Fable sign-off M1)", () => {
+  assert.match(fnBody("async function decryptOnce"), /if \(destroyed \|\| !ordersResponse\) return;/);
+  assert.match(DASH, /\$effect\(\(\) => \(\) => \{\s*destroyed = true;\s*openEpoch\+\+;\s*browserOrders\?\.queue\.stop\(\);\s*if \(rebuildTimer !== null\) clearTimeout\(rebuildTimer\);/);
+  assert.match(DASH, /if \(destroyed \|\| ordersSource !== "browser" \|\| !browserOrders \|\| !ordersResponse\) return;/);
+  assert.match(fnBody("async function refreshOrders"), /if \(destroyed \|\| !fresh \|\| !event\) return false;/);
+});
+
+test("a retry that succeeds after a failed first read keeps polling on (Fable sign-off M2)", () => {
+  assert.match(fnBody("async function refreshOrders"), /showOrders\(fresh\);\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*ordersFromServer = true;/);
+});
+
+test("rows show where their details stand, never the ticket's single-use key", () => {
+  assert.match(DASH, /\{:else if dec\}\s*\{order\.claimerAddress\.slice\(0, 6\)\}/);
+  assert.match(DASH, /<span class="claim-type">\{detailLabel\(order\)\}<\/span>/);
+  assert.doesNotMatch(DASH, /orders\.indexOf\(order\)/, "no per-row scan of the whole list");
 });

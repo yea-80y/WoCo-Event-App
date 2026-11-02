@@ -46,13 +46,17 @@ function boxId(order: OrderEntry): string | null {
  * What this page has already opened, keyed by ticket. An order is reused only
  * while it carries the SAME box: an erased order (no box) or a re-sealed one is
  * never shown from an earlier opening.
+ *
+ * A row with no box has nothing opened, so it gets no entry - not an empty one.
+ * Rows now arrive before their boxes (#965): an empty entry would read as "opened,
+ * no details" and hide where the row's details actually stand.
  */
 export class OpenedOrders<T> {
   private byTicket = new Map<string, { box: string; data: T }>();
-  /** Set once orders were opened with the account's keys: unsealed orders then read as empty, as before. */
+  /** ticket -> the box that would not open: not tried again until the box changes or the keys lock. */
+  private failed = new Map<string, string>();
+  /** Set once orders were opened with the account's keys. */
   private opened = false;
-
-  constructor(private readonly empty: () => T) {}
 
   /** The display map for `orders` (by position), from what is already open - no keys, no work. */
   remap(orders: OrderEntry[]): Map<number, T> {
@@ -60,23 +64,22 @@ export class OpenedOrders<T> {
     if (!this.opened) return out;
     orders.forEach((order, idx) => {
       const box = boxId(order);
-      if (!box) {
-        out.set(idx, this.empty());
-        return;
-      }
+      if (!box) return;
       const hit = this.byTicket.get(orderSlotKey(order));
       if (hit && hit.box === box) out.set(idx, hit.data);
     });
     return out;
   }
 
-  /** Orders with a box this page has not opened yet. */
+  /** Orders with a box this page has not opened yet, nor failed to open. */
   unopened(orders: OrderEntry[]): Array<{ idx: number; order: OrderEntry }> {
     const out: Array<{ idx: number; order: OrderEntry }> = [];
     orders.forEach((order, idx) => {
       const box = boxId(order);
       if (!box) return;
-      const hit = this.byTicket.get(orderSlotKey(order));
+      const key = orderSlotKey(order);
+      if (this.failed.get(key) === box) return;
+      const hit = this.byTicket.get(key);
       if (!hit || hit.box !== box) out.push({ idx, order });
     });
     return out;
@@ -87,6 +90,27 @@ export class OpenedOrders<T> {
     if (box) this.byTicket.set(orderSlotKey(order), { box, data });
   }
 
+  /** This order's box would not open with the keys here. */
+  fail(order: OrderEntry): void {
+    const box = boxId(order);
+    if (box) this.failed.set(orderSlotKey(order), box);
+  }
+
+  /** Boxes on screen that would not open. */
+  get failures(): number {
+    return this.failed.size;
+  }
+
+  /**
+   * Forget everything no row carries any more - an order erased (its box gone) or
+   * re-sealed: opened details never outlive the box they came from.
+   */
+  prune(orders: OrderEntry[]): void {
+    const live = new Map(orders.map((o) => [orderSlotKey(o), boxId(o)]));
+    for (const [key, hit] of this.byTicket) if (live.get(key) !== hit.box) this.byTicket.delete(key);
+    for (const [key, box] of this.failed) if (live.get(key) !== box) this.failed.delete(key);
+  }
+
   /** The keys were open for this run. */
   markOpened(): void {
     this.opened = true;
@@ -95,6 +119,7 @@ export class OpenedOrders<T> {
   /** The keys locked again: forget everything opened, so nothing shows without them. */
   clear(): void {
     this.byTicket.clear();
+    this.failed.clear();
     this.opened = false;
   }
 }
