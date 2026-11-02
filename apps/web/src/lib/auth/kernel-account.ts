@@ -1420,7 +1420,7 @@ export type OrganiserKeyState = import("@woco/shared/ticket/ledger2").OrganiserK
 export async function readOrganiserKeyStates(ledger: string, ids: readonly string[]): Promise<OrganiserKeyState[] | "error"> {
   if (ids.length === 0) return [];
   try {
-    const [d, { LEDGER2_ORGANISER_KEY_READ_ABI }, { parseAbi, BaseError }] = await Promise.all([
+    const [d, { LEDGER2_ORGANISER_KEY_READ_ABI, organiserKeyStatesFrom }, { parseAbi, BaseError }] = await Promise.all([
       coOwnerReadDeps(),
       import("@woco/shared/ticket/ledger2"),
       import("viem"),
@@ -1437,23 +1437,7 @@ export async function readOrganiserKeyStates(ledger: string, ids: readonly strin
     });
     const notFound = (e: unknown) =>
       e instanceof BaseError && !!e.walk((x) => (x as { data?: { errorName?: string } }).data?.errorName === "EventNotFound");
-    const out: OrganiserKeyState[] = [];
-    for (let i = 0; i < ids.length; i++) {
-      const [ev, status, key] = [res[3 * i]!, res[3 * i + 1]!, res[3 * i + 2]!];
-      if (ev.status === "failure" && notFound(ev.error)) continue;
-      if (ev.status !== "success" || status.status !== "success" || key.status !== "success") return "error";
-      const [, nextSlot, organiser] = ev.result as readonly [bigint, bigint, string, string];
-      const [eventEndTs, cancelled] = status.result as readonly [bigint, boolean];
-      out.push({
-        id: ids[i]!.toLowerCase(),
-        organiser: organiser.toLowerCase(),
-        key: (key.result as string).toLowerCase(),
-        eventEndTs: Number(eventEndTs),
-        cancelled,
-        nextSlot: Number(nextSlot),
-      });
-    }
-    return out;
+    return organiserKeyStatesFrom(ids, res as readonly import("@woco/shared/ticket/ledger2").MulticallResult[], notFound);
   } catch (e) {
     console.warn("[kernel] readOrganiserKeyStates failed:", e);
     return "error";

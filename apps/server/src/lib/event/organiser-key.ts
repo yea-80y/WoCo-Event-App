@@ -8,6 +8,11 @@
  * key-ring generation, so a device behind never registers under a key the account has moved
  * off (#186). Nothing is stored: from registration on, the ledger is the only record of the
  * key (`getOrganiserKey`). An organiser registering its own event needs none of this.
+ *
+ * `gen` is a freshness tag, not a proof: the server cannot tell that the key derives from
+ * S_gen, and any session of the account can bind any key it holds at the current gen.
+ * That is the threat it is for - an honest device behind - since the session already IS
+ * the account. Never lean on it as evidence of which secret signed.
  */
 
 import { verifyOrganiserKeyBinding } from "@woco/shared";

@@ -50,6 +50,14 @@ export const LEDGER2_SPONSOR_ADDED_EVENT = "event SponsorAdded(address indexed s
  */
 export const MAX_ORGANISER_KEY_IDS = 50;
 
+/**
+ * Events the removal's own op carries - fewer than one op may. That op also renews the
+ * co-owner list and moves the key ring, and a refusal at the gas ceiling while fees are
+ * up would refuse the REMOVAL with it (Fable sign-off 2026-11-02); the rest follow in
+ * the after-step's own ops, which can wait for fees without blocking anything.
+ */
+export const ORGANISER_KEY_IDS_WITH_FLIP = 20;
+
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const BYTES32 = /^0x[0-9a-f]{64}$/;
 const ZERO_ID = `0x${"0".repeat(64)}`;
@@ -110,12 +118,47 @@ export interface OrganiserKeyEventState {
   nextSlot: number;
 }
 
+/** One call's answer in a multicall that allows failure (viem's shape). */
+export type MulticallResult = { status: "success"; result: unknown } | { status: "failure"; error: unknown };
+
+/**
+ * The live states from a multicall of [getEvent, getEventStatus, getOrganiserKey] per id,
+ * in `ids` order. An id the ledger does not know (`isNotFound` on its getEvent) is left
+ * out: it is not an event to move, so it must not keep a catch-up pending for ever. Any
+ * other failure is "error" - unread is never "nothing to move".
+ */
+export function organiserKeyStatesFrom(
+  ids: readonly string[],
+  res: readonly MulticallResult[],
+  isNotFound: (error: unknown) => boolean,
+): OrganiserKeyEventState[] | "error" {
+  if (res.length !== ids.length * 3) return "error";
+  const out: OrganiserKeyEventState[] = [];
+  for (let i = 0; i < ids.length; i++) {
+    const [ev, status, key] = [res[3 * i]!, res[3 * i + 1]!, res[3 * i + 2]!];
+    if (ev.status === "failure" && isNotFound(ev.error)) continue;
+    if (ev.status !== "success" || status.status !== "success" || key.status !== "success") return "error";
+    const [, nextSlot, organiser] = ev.result as readonly [bigint, bigint, string, string];
+    const [eventEndTs, cancelled] = status.result as readonly [bigint, boolean];
+    out.push({
+      id: ids[i]!.toLowerCase(),
+      organiser: organiser.toLowerCase(),
+      key: (key.result as string).toLowerCase(),
+      eventEndTs: Number(eventEndTs),
+      cancelled,
+      nextSlot: Number(nextSlot),
+    });
+  }
+  return out;
+}
+
 /**
  * Which events move onto `newKey`, in the order they should: only the account's own
  * (`organiser`), never a cancelled one (every terms action refuses it), never one
  * already there. Still on sale first, the busiest first - where a removed device
  * cancelling, moving seats or changing supply hurts most - then ended ones, which still
- * move: `extendSalesEnd` lets the old key reopen them.
+ * move: every other terms action refuses an ended event, but `cancelEvent` has no cutoff,
+ * so an old key could still cancel one.
  */
 export function planOrganiserKeyMoves(
   states: readonly OrganiserKeyEventState[],

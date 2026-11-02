@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { scanOrganiserEvents, type OrganiserEventScanIO } from "../src/ticket/ledger2-scan.js";
-import { planOrganiserKeyMoves, parseLedger2Override, type OrganiserKeyEventState } from "../src/ticket/ledger2.js";
+import { planOrganiserKeyMoves, parseLedger2Override, organiserKeyStatesFrom, type OrganiserKeyEventState } from "../src/ticket/ledger2.js";
 import { LOG_SCAN_WINDOW, logScanWindows } from "../src/chain/log-windows.js";
 
 const ORG = "0x" + "a1".repeat(20);
@@ -143,6 +143,23 @@ test("the plan: the account's own, not cancelled, not already moved; on sale fir
     now,
   );
   assert.deepEqual(plan, [id(3), id(2), id(7), id(1)]);
+});
+
+test("live states: an unknown id is left out, any other failed read is 'error', never 'nothing to move'", () => {
+  const KEY = "0x" + "ee".repeat(20);
+  const ok = (result: unknown) => ({ status: "success" as const, result });
+  const fail = (error: unknown) => ({ status: "failure" as const, error });
+  const NOT_FOUND = { name: "EventNotFound" };
+  const isNotFound = (e: unknown) => e === NOT_FOUND;
+  const known = [ok([10n, 4n, ORG.toUpperCase(), "0x" + "00".repeat(32)]), ok([900n, false]), ok(KEY.toUpperCase())];
+
+  assert.deepEqual(organiserKeyStatesFrom([id(1), id(2)], [...known, fail(NOT_FOUND), fail(NOT_FOUND), fail(NOT_FOUND)], isNotFound), [
+    { id: id(1), organiser: ORG, key: KEY, eventEndTs: 900, cancelled: false, nextSlot: 4 },
+  ]);
+  const rpcDown = new Error("timeout");
+  assert.equal(organiserKeyStatesFrom([id(1), id(2)], [...known, fail(rpcDown), ok([0n, false]), ok(KEY)], isNotFound), "error");
+  assert.equal(organiserKeyStatesFrom([id(1)], [known[0]!, fail(NOT_FOUND), known[2]!], isNotFound), "error", "only getEvent's not-found skips");
+  assert.equal(organiserKeyStatesFrom([id(1), id(2)], known, isNotFound), "error", "a short answer is never read as whole");
 });
 
 test("the override: address, or address:deployBlock; anything else ignored", () => {

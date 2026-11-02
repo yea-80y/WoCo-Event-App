@@ -46,14 +46,30 @@ test("the server is counted as told only when it names the ring just set", () =>
 
 test("the events' key move: found from the chain, never the platform index; never blocks the flip, never clears unread", () => {
   const due = body("async function organiserKeyDue(");
-  assert.match(due, /await scanOwnLedger2Events\(parent, deployment\)/, "the chain is the source");
+  // The chain is the source (organiserKeysDue's behaviour: organiser-event-scan.test.ts).
+  assert.match(due, /return organiserKeysDue\(parent, key, deployment, \{ strict: opts\.strict, extraIds \}\)/);
   assert.doesNotMatch(due, /getEventsByCreator/, "the platform's index is no source of the move");
-  assert.match(due, /planOrganiserKeyMoves\(states, parent, key, Date\.now\(\) \/ 1000\)/);
-  // The after-step clears only on a whole read; the flip carries what it has.
-  assert.match(due, /if \(opts\.strict && !scan\.complete\) throw/);
-  assert.match(due, /if \(states === "error"\) \{\s*if \(opts\.strict\) throw[^\n]*\n\s*return \{ ledger: deployment\.address, ids: \[\] \};/);
   // The own-feed ids only add: an unreadable feed never stops the move.
   assert.match(due, /\} catch \{\s*\/\/ The chain is the source; the feeds only add to it\.\s*\}/);
   assert.match(LIVE, /organiserKeyDue\(keys\.organiserKey, \{ ownFeedSigners: \[h\.oldSigner\.address\], strict: false \}\)/, "the flip");
   assert.match(LIVE, /organiserKeyDue\(keys\.organiserKey, \{ ownFeedSigners: \[\], strict: true \}\)/, "the after-step");
+  // The flip's op carries fewer than one op may: a gas refusal must not refuse the removal.
+  assert.match(LIVE, /due\.ids\.slice\(0, ORGANISER_KEY_IDS_WITH_FLIP\)/);
+});
+
+test("events left on an old key are moved from ANY passkey at its unlock, once per ring, never on a partial read", () => {
+  const KEYS = readFileSync(new URL("../src/lib/keyring/account-keys.ts", import.meta.url), "utf8");
+  assert.match(KEYS, /void removalLeftHere\(h, seedAddr\)\.then\(\(\) => organiserKeysLeftBehind\(h, seedAddr\)\)/);
+  const start = KEYS.indexOf("async function moveKeysLeftBehind(");
+  const fn = KEYS.slice(start, KEYS.indexOf("\n}\n", start));
+  assert.match(fn, /\(u\.chain\?\.gen \?\? 0\) < 1\) return/, "generation 0 never moved");
+  assert.match(fn, /h\.deviceRole\(\) \|\| !\(await h\.currentKeysConfirmed\(\)\)\) return/, "only a co-owner on confirmed keys");
+  assert.match(fn, /if \(await hasPendingRotation\(seedAddr\)\) return/, "a removal finishing here moves them itself");
+  assert.match(fn, /organiserKeysDue\(u\.parent, key, deployment, \{ strict: true \}\)/, "only on a whole read");
+  assert.match(fn, /derived\.privateKey\.fill\(0\)/, "only the address is kept");
+  // The mark only after every move, and only for the ring it checked.
+  const moves = fn.indexOf("flows.moveOrganiserKey(");
+  const mark = fn.indexOf("setItem(organiserKeysMark(seedAddr), ring)");
+  assert.ok(moves > 0 && mark > moves, "marked before the moves landed");
+  assert.match(KEYS, /if \(movingKeys\) await movingKeys\.catch\(\(\) => \{\}\);/, "a removal waits for a catch-up op");
 });

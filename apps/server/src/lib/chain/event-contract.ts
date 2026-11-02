@@ -1,5 +1,5 @@
 import { JsonRpcProvider, Contract } from "ethers";
-import type { PaymentChainId } from "@woco/shared";
+import { KERNEL_CHAIN_ID, type PaymentChainId } from "@woco/shared";
 import { TICKET_LEDGER2_ADDRESSES } from "@woco/shared/ticket/ledger2";
 import { getRpcUrl } from "../payment/constants.js";
 
@@ -456,6 +456,15 @@ export function assertEventContractConfig(): void {
     );
   }
   const version = getEventContractVersion(chainId); // throws on an unknown value
+  // A ledger2 event's organiser is the account's Kernel, which lives on the Kernel chain
+  // only: elsewhere no account could move its events' keys, and the browser - finding no
+  // ledger on its chain - would count every move done (Fable sign-off 2026-11-02).
+  if (version === "ledger2" && chainId !== KERNEL_CHAIN_ID) {
+    throw new EventContractConfigError(
+      `WOCO_EVENT_VERSION_${chainId}=ledger2, but accounts live on chain ${KERNEL_CHAIN_ID}: ` +
+      `ledger v2 runs only there. Use version "ledger" on chain ${chainId}.`,
+    );
+  }
   const address = getWoCoEventAddress(chainId);
   if (!address) {
     throw new EventContractConfigError(

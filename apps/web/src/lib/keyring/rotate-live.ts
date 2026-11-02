@@ -34,11 +34,6 @@ export interface RotationHost {
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
 const WOCO_APP_URL = import.meta.env.VITE_APP_URL ?? "https://woco.eth.limo";
-/**
- * Where the shared ledger v2 table is empty (dev, sandbox): the ledger this build's server
- * registers on, as `address` or `address:deployBlock` (`parseLedger2Override`).
- */
-const LEDGER2_OVERRIDE = import.meta.env.VITE_WOCO_LEDGER2_ADDRESS as string | undefined;
 const BYTES32 = /^0x[0-9a-f]{64}$/;
 
 function bytes(hex: string): Uint8Array {
@@ -130,48 +125,33 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
    * from the CHAIN - registrations naming this account, by a sponsor or by itself
    * (`ledger2-scan`) - never from the platform's index (Fable consult 2026-11-01); with
    * `ownFeedSigners`, the ids the copy step already read from the account's own feeds
-   * are added, at no cost and with no failure of their own. Every id is re-read live and
-   * `planOrganiserKeyMoves` decides. Null with no ledger here.
-   *
-   * POLARITY. Before the flip (`strict` false) nothing here stops the removal: an
-   * unreadable chain carries what was found, or nothing - refusing would leave the
-   * removed passkey in charge of the whole account. The after-step (`strict` true)
-   * throws unless the WHOLE chain was read, so it stays pending, is retried at every
-   * open and is reported unfinished until a complete scan says nothing is due.
+   * are added, at no cost and with no failure of their own. Null with no ledger here.
+   * Polarity (`strict`): `organiserKeysDue`. Strict, the after-step stays pending, is
+   * retried at every open and is reported unfinished until a complete scan says nothing
+   * is due.
    */
   async function organiserKeyDue(
     key: string,
     opts: { ownFeedSigners: string[]; strict: boolean },
   ): Promise<{ ledger: string; ids: string[] } | null> {
-    const [{ ticketLedger2Deployment, parseLedger2Override, planOrganiserKeyMoves }, { KERNEL_CHAIN_ID }] = await Promise.all([
-      import("@woco/shared/ticket/ledger2"),
-      import("@woco/shared/kernel/chain"),
-    ]);
-    const deployment = ticketLedger2Deployment(KERNEL_CHAIN_ID) ?? parseLedger2Override(LEDGER2_OVERRIDE);
+    const { ownLedger2Deployment, organiserKeysDue } = await import("./organiser-event-scan.js");
+    const deployment = await ownLedger2Deployment();
     if (!deployment) return null;
-    const { scanOwnLedger2Events } = await import("./organiser-event-scan.js");
-    const scan = await scanOwnLedger2Events(parent, deployment);
-    if (opts.strict && !scan.complete) throw new Error("Couldn't read all of your events onchain - will retry.");
-    const ids = new Set(scan.ids);
+    const extraIds: string[] = [];
     for (const signer of opts.ownFeedSigners) {
       try {
         for (const feed of await ownEventsOnce(signer)) {
           for (const s of feed.series ?? []) {
             const id = s.onChainEventId?.toLowerCase();
-            if (id && BYTES32.test(id)) ids.add(id);
+            if (id && BYTES32.test(id)) extraIds.push(id);
           }
         }
       } catch {
         // The chain is the source; the feeds only add to it.
       }
     }
-    const { readOrganiserKeyStates } = await import("../auth/kernel-account.js");
-    const states = await readOrganiserKeyStates(deployment.address, [...ids]);
-    if (states === "error") {
-      if (opts.strict) throw new Error("Couldn't read your events onchain - will retry.");
-      return { ledger: deployment.address, ids: [] };
-    }
-    return { ledger: deployment.address, ids: planOrganiserKeyMoves(states, parent, key, Date.now() / 1000) };
+    // The chain read last, so the fewest events can be registered between it and the flip.
+    return organiserKeysDue(parent, key, deployment, { strict: opts.strict, extraIds });
   }
 
   async function ownEvents(signer = h.oldSigner.address) {
@@ -351,8 +331,8 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     organiserKeyMove: async (keys) => {
       const due = await organiserKeyDue(keys.organiserKey, { ownFeedSigners: [h.oldSigner.address], strict: false });
       if (!due || due.ids.length === 0) return null;
-      const { MAX_ORGANISER_KEY_IDS } = await import("@woco/shared/ticket/ledger2");
-      return { ledger: due.ledger, ids: due.ids.slice(0, MAX_ORGANISER_KEY_IDS), key: keys.organiserKey };
+      const { ORGANISER_KEY_IDS_WITH_FLIP } = await import("@woco/shared/ticket/ledger2");
+      return { ledger: due.ledger, ids: due.ids.slice(0, ORGANISER_KEY_IDS_WITH_FLIP), key: keys.organiserKey };
     },
 
     flip: (going, ring, move) => h.flip(going, ring, move),

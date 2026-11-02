@@ -6,7 +6,7 @@
  * scan incomplete, never empty. Loaded on the removal path only.
  */
 import type { OrganiserEventScan, OrganiserEventScanIO } from "@woco/shared/ticket/ledger2-scan";
-import type { Ledger2Deployment } from "@woco/shared/ticket/ledger2";
+import type { Ledger2Deployment, OrganiserKeyEventState } from "@woco/shared/ticket/ledger2";
 
 /** The two calls the scan makes of a client: viem's `getBlockNumber` and `getLogs`. */
 export interface ScanClient {
@@ -30,10 +30,27 @@ export async function organiserEventScanIO(ledger: string, clients: readonly Sca
   const registered = parseAbiItem(LEDGER2_REGISTERED_EVENT);
   const sponsorAdded = parseAbiItem(LEDGER2_SPONSOR_ADDED_EVENT);
 
-  async function page<T>(read: (c: ScanClient) => Promise<T>): Promise<T> {
-    let lastErr: unknown;
+  // The highest head each endpoint has shown: an endpoint behind `to` is asked again,
+  // never trusted for the page.
+  const seen = new Map<ScanClient, bigint>();
+
+  /**
+   * One page from the first endpoint that has reached `to` and answers. Checked BEFORE
+   * the read: a node behind the page's end serves the logs it has with no error, and a
+   * short page would read as a whole one (Fable sign-off 2026-11-02).
+   */
+  async function page<T>(to: number, read: (c: ScanClient) => Promise<T>): Promise<T> {
+    let lastErr: unknown = new Error(`no endpoint has reached block ${to}`);
     for (const c of clients) {
       try {
+        if ((seen.get(c) ?? -1n) < BigInt(to)) {
+          const head = await c.getBlockNumber();
+          seen.set(c, head);
+          if (head < BigInt(to)) {
+            lastErr = new Error(`endpoint at block ${head}, page ends at ${to}`);
+            continue;
+          }
+        }
         return await read(c);
       } catch (e) {
         lastErr = e;
@@ -44,12 +61,12 @@ export async function organiserEventScanIO(ledger: string, clients: readonly Sca
 
   return {
     sponsorsAdded: (from, to) =>
-      page(async (c) => {
+      page(to, async (c) => {
         const logs = await c.getLogs({ address, event: sponsorAdded, fromBlock: BigInt(from), toBlock: BigInt(to) });
         return logs.map((l) => String(l.args.sponsor ?? ""));
       }),
     registered: (organiser, registrants, from, to) =>
-      page(async (c) => {
+      page(to, async (c) => {
         const logs = await c.getLogs({
           address,
           event: registered,
@@ -93,6 +110,63 @@ export async function scanOwnLedger2Events(
     console.warn("[keyring] could not read your events onchain:", e);
     return { ids: [], complete: false };
   }
+}
+
+/**
+ * The ledger v2 this build moves organiser keys on: the shared table, else - where it is
+ * empty (dev, sandbox) - the ledger this build's server registers on, as `address` or
+ * `address:deployBlock` in VITE_WOCO_LEDGER2_ADDRESS (`parseLedger2Override`).
+ */
+export async function ownLedger2Deployment(): Promise<Ledger2Deployment | null> {
+  const [{ ticketLedger2Deployment, parseLedger2Override }, { KERNEL_CHAIN_ID }] = await Promise.all([
+    import("@woco/shared/ticket/ledger2"),
+    import("@woco/shared/kernel/chain"),
+  ]);
+  return (
+    ticketLedger2Deployment(KERNEL_CHAIN_ID) ??
+    parseLedger2Override(import.meta.env.VITE_WOCO_LEDGER2_ADDRESS as string | undefined)
+  );
+}
+
+/** The two reads `organiserKeysDue` makes - the live ones, or a test's. */
+export interface OrganiserKeysDueIO {
+  scan(organiser: string, deployment: Ledger2Deployment): Promise<OrganiserEventScan>;
+  states(ledger: string, ids: string[]): Promise<OrganiserKeyEventState[] | "error">;
+}
+
+const liveDueIO: OrganiserKeysDueIO = {
+  scan: (organiser, deployment) => scanOwnLedger2Events(organiser, deployment),
+  states: async (ledger, ids) => (await import("../auth/kernel-account.js")).readOrganiserKeyStates(ledger, ids),
+};
+
+/**
+ * The account's events on `deployment` not yet on `key`, in the order to move them:
+ * found from the chain (plus `extraIds`, which only add), each re-read live, and
+ * `planOrganiserKeyMoves` decides.
+ *
+ * POLARITY. `strict` false (before a removal's flip): nothing here stops the removal - an
+ * unreadable chain carries what was found, or nothing, since refusing would leave the
+ * removed passkey in charge of the whole account. `strict` true (every later catch-up):
+ * throws unless the WHOLE chain was read, so the work is never counted done on a partial
+ * read.
+ */
+export async function organiserKeysDue(
+  parent: string,
+  key: string,
+  deployment: Ledger2Deployment,
+  opts: { strict: boolean; extraIds?: readonly string[] },
+  io: OrganiserKeysDueIO = liveDueIO,
+): Promise<{ ledger: string; ids: string[] }> {
+  const scan = await io.scan(parent, deployment);
+  if (opts.strict && !scan.complete) throw new Error("Couldn't read all of your events onchain - will retry.");
+  const ids = new Set([...scan.ids, ...(opts.extraIds ?? [])]);
+  const states = await io.states(deployment.address, [...ids]);
+  if (states === "error") {
+    if (opts.strict) throw new Error("Couldn't read your events onchain - will retry.");
+    return { ledger: deployment.address, ids: [] };
+  }
+  const { planOrganiserKeyMoves } = await import("@woco/shared/ticket/ledger2");
+  return { ledger: deployment.address, ids: planOrganiserKeyMoves(states, parent, key, Date.now() / 1000) };
 }
 
 async function defaultClients(): Promise<ScanClient[]> {

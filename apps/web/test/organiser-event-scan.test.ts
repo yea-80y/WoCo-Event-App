@@ -6,7 +6,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { scanOwnLedger2Events, type ScanClient } from "../src/lib/keyring/organiser-event-scan.ts";
+import { organiserKeysDue, scanOwnLedger2Events, type ScanClient } from "../src/lib/keyring/organiser-event-scan.ts";
 
 const LEDGER = "0x" + "1e".repeat(20);
 const ORG = "0x" + "a1".repeat(20);
@@ -63,6 +63,43 @@ test("no head from any endpoint: incomplete, and nothing thrown at the caller", 
     client({ failHead: true }, []),
   ]);
   assert.deepEqual(res, { ids: [], complete: false });
+});
+
+test("an endpoint behind the page's end is never asked for it: a short page is incomplete, not whole", async () => {
+  const calls: Call[] = [];
+  const behind: Call[] = [];
+  const res = await scanOwnLedger2Events(ORG, { address: LEDGER, deployBlock: 0 }, [
+    client({ head: 100n, failLogs: true }, calls),
+    client({ head: 95n, ids: [id(3)] }, behind),
+  ]);
+  assert.deepEqual(res, { ids: [], complete: false });
+  assert.equal(behind.length, 0, "the lagging endpoint served a page ending past its head");
+});
+
+test("what is due: strict never counts a partial read done; before the flip it carries what it has", async () => {
+  const DEP = { address: LEDGER, deployBlock: 0 };
+  const NEW = "0x" + "ee".repeat(20);
+  const OLD = "0x" + "0d".repeat(20);
+  const live = (n: number) => ({ id: id(n), organiser: ORG, key: OLD, eventEndTs: 2 ** 40, cancelled: false, nextSlot: n });
+  const io = (scan: { ids: string[]; complete: boolean }, states: "error" | ReturnType<typeof live>[], asked: string[][] = []) => ({
+    scan: async () => scan,
+    states: async (_l: string, ids: string[]) => {
+      asked.push(ids);
+      return states;
+    },
+  });
+
+  await assert.rejects(organiserKeysDue(ORG, NEW, DEP, { strict: true }, io({ ids: [id(1)], complete: false }, [live(1)])));
+  await assert.rejects(organiserKeysDue(ORG, NEW, DEP, { strict: true }, io({ ids: [id(1)], complete: true }, "error")));
+  assert.deepEqual(await organiserKeysDue(ORG, NEW, DEP, { strict: false }, io({ ids: [id(1)], complete: true }, "error")), {
+    ledger: LEDGER,
+    ids: [],
+  });
+
+  const asked: string[][] = [];
+  const due = await organiserKeysDue(ORG, NEW, DEP, { strict: false, extraIds: [id(2), id(1)] }, io({ ids: [id(1)], complete: false }, [live(1), live(2)], asked));
+  assert.deepEqual([...asked[0]!].sort(), [id(1), id(2)], "the feed ids are added, each once");
+  assert.deepEqual(due, { ledger: LEDGER, ids: [id(2), id(1)] });
 });
 
 test("the head comes from the next endpoint when the first cannot give one", async () => {
