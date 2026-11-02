@@ -16,7 +16,8 @@
   import { authGet } from "../../api/client.js";
   import { authKindLabel, authKindColor } from "../../auth/kind-label.js";
   import { rememberLabel } from "../../profile/label-cache.js";
-  import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
+  import { rememberOwner } from "../../sub-ens/verify-name.js";
+  import { createNameCheck } from "../../sub-ens/name-check.svelte.js";
   import { subEnsErrorFrom, subEnsErrorDetail, formatRetryAt } from "../../sub-ens/errors.js";
   import { canOpenRename, type ProfileNameStatus } from "../../sub-ens/rename.js";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
@@ -53,13 +54,10 @@
   // is the profile author's own claim — rendering it unverified is what would
   // let a modified client wear a name it does not own. The owner's own view is
   // not exempted: seeing your own unowned name disappear is the correct signal.
-  let nameVerified = $state(false);
-  $effect(() => {
-    const label = profile?.subEnsLabel;
-    if (!label || !viewAddress) { nameVerified = false; return; }
-    nameVerified = nameIsVerified(label, viewAddress);
-    void verifyName(label, viewAddress).then((ok) => { nameVerified = ok; });
-  });
+  // The Profile domain card reads this too: handed the raw label, the picker said
+  // "is yours" about a name from the registry retired on 2026-10-23.
+  const nameCheck = createNameCheck(() => ({ label: profile?.subEnsLabel, owner: viewAddress }));
+  const nameVerified = $derived(nameCheck.verified);
   const isOwner = $derived(
     auth.isConnected && !!viewAddress && auth.parent?.toLowerCase() === viewAddress,
   );
@@ -310,13 +308,19 @@
     renameBlocked = '';
     // Captured BEFORE the bind: after it, the ledger no longer calls this the
     // profile name, which is exactly why the relay will now accept releasing it.
-    const previous = profile?.subEnsLabel;
+    // Only a name the chain says is ours: "You still own" must not be said of a
+    // stale label.
+    const previous = nameVerified ? profile?.subEnsLabel : undefined;
     try {
       const updated = await updateProfile({ subEnsLabel: label }, (outcome) => {
         if (outcome.warning) ensBindWarning = 'This domain already points at a site, and keeps doing so.';
         if (outcome.pointer) ensPointer = { label, target: outcome.pointer.target };
       });
       if (updated) {
+        // The bind only returns once the server has read the owner from chain.
+        // Remembered first, so the card does not drop to "checking" (unmounting
+        // the picker) while a just-minted name is still landing for the RPC.
+        rememberOwner(label, updated.address);
         profile = updated;
         // updateProfile already wrote the fresh profile to cache — don't
         // invalidate here or the next Swarm read races against feed propagation.
@@ -831,12 +835,26 @@
             Claim a free, permanent <code>.woco.eth</code> domain for your profile.
             It's how people find you.
           </p>
-          <SubENSPicker
-            claimedLabel={profile?.subEnsLabel}
-            onclaim={handleSubEnsClaim}
-            singleName={true}
-            onbeforerename={guardRename}
-          />
+          {#if nameCheck.state === "checking"}
+            <p class="ens-bind-warning">Checking your domain…</p>
+          {:else if nameCheck.state === "unknown"}
+            <p class="ens-bind-warning">
+              Couldn't check your domain just now.
+              <button class="ens-discard-btn" onclick={() => nameCheck.retry()}>Try again</button>
+            </p>
+          {:else}
+            {#if nameCheck.state === "not-owned" && profile?.subEnsLabel}
+              <p class="ens-bind-warning">
+                <code>{subEnsName(profile.subEnsLabel)}</code> isn't registered to this account, so your profile doesn't show it.
+              </p>
+            {/if}
+            <SubENSPicker
+              claimedLabel={nameVerified ? profile?.subEnsLabel : undefined}
+              onclaim={handleSubEnsClaim}
+              singleName={true}
+              onbeforerename={guardRename}
+            />
+          {/if}
           {#if renameBlocked}
             <p class="ens-bind-warning">{renameBlocked}</p>
           {/if}
@@ -1358,7 +1376,8 @@
     color: var(--text-muted);
     line-height: 1.55;
   }
-  .ens-discard-offer code { font-family: var(--font-mono); color: var(--text); }
+  .ens-discard-offer code,
+  .ens-bind-warning code { font-family: var(--font-mono); color: var(--text); }
   .ens-discard-btn {
     margin-left: 0.35rem;
     font: inherit;

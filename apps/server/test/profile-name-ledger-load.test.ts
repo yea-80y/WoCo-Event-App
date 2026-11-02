@@ -81,6 +81,9 @@ async function capturingErrors(fn: () => Promise<void>): Promise<string[]> {
 }
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
+/** The section the server reads: the default registry, as no env overrides it here. */
+const { subEnsRegistryId } = await import("../src/lib/chain/sub-ens-contract.js");
+const REGISTRY = subEnsRegistryId();
 
 // ---------------------------------------------------------------------------
 // A file that will not parse
@@ -123,7 +126,9 @@ test("the next write cannot overwrite the quarantined evidence", async () => {
   assert.equal(readFileSync(join(dir, ".data", kept[0]), "utf-8"), "not json at all");
   // …and the store itself is a fresh, valid file rather than the wreckage.
   assert.equal(ledger.profileNameOf(ACCOUNT), "punkpub");
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(STORE(), "utf-8"))), [ACCOUNT.toLowerCase()]);
+  const written = JSON.parse(readFileSync(STORE(), "utf-8"));
+  assert.deepEqual(Object.keys(written), [REGISTRY]);
+  assert.deepEqual(Object.keys(written[REGISTRY]), [ACCOUNT.toLowerCase()]);
 });
 
 // ---------------------------------------------------------------------------
@@ -133,12 +138,14 @@ test("the next write cannot overwrite the quarantined evidence", async () => {
 test("a valid store loads, and reports no error", async () => {
   writeStore(
     JSON.stringify({
-      [ACCOUNT]: {
-        label: "punkpub",
-        active: true,
-        firstBoundAt: 1,
-        lastChangedAt: 1,
-        freeCorrectionUsed: false,
+      [REGISTRY]: {
+        [ACCOUNT]: {
+          label: "punkpub",
+          active: true,
+          firstBoundAt: 1,
+          lastChangedAt: 1,
+          freeCorrectionUsed: false,
+        },
       },
     }),
   );
@@ -156,4 +163,91 @@ test("a MISSING store is silent — that is a normal first boot", async () => {
   assert.equal(ledger.profileNamesHealth().loadFailed, false);
   assert.deepEqual(errors, [], "first boot must not alarm");
   assert.deepEqual(quarantined(), []);
+});
+
+// ---------------------------------------------------------------------------
+// Scoped to the registry (2026-11-02)
+// ---------------------------------------------------------------------------
+//
+// The 10-23 registry reset left every profile name and rename clock pointing at
+// names that no longer existed; the file had to be moved aside by hand. Records
+// now live per registry, and only the current registry's section is read.
+
+const OTHER_REGISTRY = "0x2222222222222222222222222222222222222222";
+const T0 = 1_700_000_000_000;
+const DAY = 24 * 60 * 60 * 1000;
+
+/** Runs `fn` with the server reading names from another registry. */
+function onOtherRegistry<T>(fn: () => T): T {
+  const before = process.env.SUB_ENS_REGISTRY_ADDRESS;
+  process.env.SUB_ENS_REGISTRY_ADDRESS = OTHER_REGISTRY;
+  try {
+    return fn();
+  } finally {
+    if (before === undefined) delete process.env.SUB_ENS_REGISTRY_ADDRESS;
+    else process.env.SUB_ENS_REGISTRY_ADDRESS = before;
+  }
+}
+
+/** Bound at T0, corrected at T0+1d (the free correction): any change is refused until T0+31d. */
+function bindIntoCooldown(ledger: Awaited<ReturnType<typeof freshLedger>>): void {
+  assert.equal(ledger.bindProfileName(ACCOUNT, "punkpub", T0).ok, true);
+  assert.equal(ledger.bindProfileName(ACCOUNT, "punkpub2", T0 + DAY).ok, true);
+  assert.equal(ledger.nameChangeStatus(ACCOUNT, T0 + 2 * DAY).allowed, false, "precondition: in cooldown");
+}
+
+test("a registry change starts with no profile name and no cooldown", async () => {
+  const ledger = await freshLedger();
+  bindIntoCooldown(ledger);
+
+  onOtherRegistry(() => {
+    assert.equal(ledger.profileNameOf(ACCOUNT), null, "a name from the old registry is not this registry's");
+    assert.equal(ledger.isProfileName(ACCOUNT, "punkpub2"), false);
+    const s = ledger.nameChangeStatus(ACCOUNT, T0 + 2 * DAY);
+    assert.equal(s.allowed, true, "a clock kept for a vanished name must not block a new one");
+    assert.equal(s.label, null);
+    assert.equal(ledger.bindProfileName(ACCOUNT, "fresh", T0 + 2 * DAY).ok, true);
+    assert.equal(ledger.profileNameOf(ACCOUNT), "fresh");
+  });
+});
+
+test("switching back restores the old registry's record and clock, untouched", async () => {
+  const ledger = await freshLedger();
+  bindIntoCooldown(ledger);
+  onOtherRegistry(() => ledger.bindProfileName(ACCOUNT, "fresh", T0 + 2 * DAY));
+
+  assert.equal(ledger.profileNameOf(ACCOUNT), "punkpub2", "the other registry's bind must not touch this one");
+  assert.equal(ledger.nameChangeStatus(ACCOUNT, T0 + 2 * DAY).allowed, false, "its cooldown still runs");
+
+  const written = JSON.parse(readFileSync(STORE(), "utf-8"));
+  assert.deepEqual(Object.keys(written).sort(), [REGISTRY, `${REGISTRY.split(":")[0]}:${OTHER_REGISTRY}`].sort(), "nothing is deleted");
+});
+
+test("each registry's section survives a restart", async () => {
+  const first = await freshLedger();
+  first.bindProfileName(ACCOUNT, "punkpub", T0);
+  onOtherRegistry(() => first.bindProfileName(ACCOUNT, "fresh", T0));
+
+  const second = await freshLedger();
+  assert.equal(second.profileNameOf(ACCOUNT), "punkpub");
+  onOtherRegistry(() => assert.equal(second.profileNameOf(ACCOUNT), "fresh"));
+});
+
+test("an unscoped (pre-registry) record is never read, never alarms, and is kept on write", async () => {
+  const legacy = { label: "punkpub", active: true, firstBoundAt: T0, lastChangedAt: T0, freeCorrectionUsed: true };
+  writeStore(JSON.stringify({ [ACCOUNT]: legacy }));
+
+  const ledger = await freshLedger();
+  const errors = await capturingErrors(async () => {
+    assert.equal(ledger.profileNameOf(ACCOUNT), null, "its registry is unknown, so it names nothing");
+    assert.equal(ledger.nameChangeStatus(ACCOUNT, T0 + DAY).allowed, true, "and its clock binds nothing");
+  });
+  assert.deepEqual(errors, [], "an old-shape file is not damage");
+  assert.equal(ledger.profileNamesHealth().loadFailed, false);
+  assert.deepEqual(quarantined(), []);
+
+  ledger.bindProfileName(ACCOUNT, "fresh", T0 + DAY);
+  const written = JSON.parse(readFileSync(STORE(), "utf-8"));
+  assert.deepEqual(written[ACCOUNT], legacy, "never deleted: written back exactly as found");
+  assert.equal(written[REGISTRY][ACCOUNT].label, "fresh");
 });
