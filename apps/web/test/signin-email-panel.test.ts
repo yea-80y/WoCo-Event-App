@@ -7,6 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readSdk } from "./sdk-source.ts";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const modal = read("../src/lib/components/auth/LoginModal.svelte");
@@ -77,7 +78,7 @@ test("the hand-off to Web3Auth (MetaMask) is one plain line, first, for every wa
 test("the screen ends with Web3Auth's own Powered by MetaMask mark, as their modal does", () => {
   assert.ok(panel.includes('<img class="powered-by" src="https://images.web3auth.io/metamask-footer-logo-dark.svg" alt="Powered by MetaMask"'));
   // The same file the modal's footer shows in dark mode (Footer.js), from a host the CSP already allows.
-  const footer = readFileSync(new URL("../node_modules/@web3auth/modal/dist/lib.esm/packages/modal/src/ui/components/Footer/Footer.js", import.meta.url), "utf8");
+  const footer = readSdk("@web3auth/modal/dist/lib.esm/packages/modal/src/ui/components/Footer/Footer.js");
   assert.ok(footer.includes('src: "https://images.web3auth.io/metamask-footer-logo-dark.svg"'));
   assert.ok(read("../vite-plugins/csp.ts").includes('"https://images.web3auth.io", // login-method icons in the Web3Auth modal'));
 });

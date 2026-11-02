@@ -16,6 +16,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readSdk } from "./sdk-source.ts";
 import { EventEmitter } from "node:events";
 import { adaptWeb3AuthSdk, AUTH_CONNECTOR, type Web3AuthV11Like } from "../src/lib/auth/web3auth-sdk-adapter.ts";
 
@@ -102,7 +103,7 @@ test("everything else passes straight through, live", async () => {
 });
 
 test("the installed SDK is v11 and has the shape the adapter reads", async () => {
-  const pkg = JSON.parse(readFileSync(new URL("../node_modules/@web3auth/modal/package.json", import.meta.url), "utf8"));
+  const pkg = JSON.parse(readSdk("@web3auth/modal/package.json"));
   assert.match(pkg.version, /^11\./);
   const { Web3Auth, CHAIN_NAMESPACES, CONNECTOR_EVENTS } = await import("@web3auth/modal");
   for (const m of ["init", "connect", "logout", "getConnector", "getUserInfo", "on", "removeListener"]) {
@@ -132,7 +133,7 @@ test("connect() settles on CONNECTED: the options pin CONNECT_ONLY over v11's CO
     "without it connect() never settles under CHAIN_NAMESPACES.OTHER",
   );
   // The SDK's own default, which the option overrides - if v11 ever changes it, re-check.
-  const noModal = readFileSync(new URL("../node_modules/@web3auth/no-modal/dist/lib.esm/noModal.js", import.meta.url), "utf8");
+  const noModal = readSdk("@web3auth/no-modal/dist/lib.esm/noModal.js");
   assert.ok(noModal.includes("options.initialAuthenticationMode = CONNECTOR_INITIAL_AUTHENTICATION_MODE.CONNECT_AND_SIGN"));
 });
 

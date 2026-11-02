@@ -18,10 +18,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readSdk } from "./sdk-source.ts";
 
 const { directLoginParams, EMAIL_PATTERN } = await import("../src/lib/auth/web3auth-direct.ts");
 
-const src = (rel: string) => readFileSync(new URL(`../node_modules/${rel}`, import.meta.url), "utf8").replace(/\s+/g, " ");
+const src = (rel: string) => readSdk(rel).replace(/\s+/g, " ");
 const ui = "@web3auth/modal/dist/lib.esm/packages/modal/src";
 const login = src(`${ui}/ui/containers/Login/Login.js`);
 const manager = src(`${ui}/modalManager.js`);

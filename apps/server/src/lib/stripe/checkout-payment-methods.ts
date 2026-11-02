@@ -13,5 +13,11 @@
  *    dispute fees.
  * The platform's connected-account payment-method config should match (non-card
  * methods Blocked), but that is a dashboard setting; this list is the guarantee.
+ *
+ * Sent as `allowed_payment_method_types` since API 2026-09-30.endive removed
+ * `payment_method_types` from session create (a 400). It only narrows: the
+ * session offers the compatible subset of this list, never a method outside it.
+ * Checked in test mode 2026-11-02 on a full-Dashboard GBP connected account:
+ * ["card"] with this list, ["card","klarna","link"] without one.
  */
 export const CHECKOUT_PAYMENT_METHOD_TYPES: ["card"] = ["card"];

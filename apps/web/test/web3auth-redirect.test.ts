@@ -14,7 +14,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readSdk } from "./sdk-source.ts";
 
 const {
   web3AuthUxModeFor,
@@ -214,7 +214,7 @@ test("install: replaces the URL once, hands the return to auth.init once, and a 
 
 // --- the SDK facts this design rests on (installed @web3auth/* source) ----------
 
-const src = (rel: string) => readFileSync(new URL(`../node_modules/${rel}`, import.meta.url), "utf8");
+const src = (rel: string) => readSdk(rel);
 const flat = (s: string) => s.replace(/\s+/g, " ");
 
 test("SDK: the default email/Google path navigates THIS tab in redirect mode, and a redirect-mode init connects a result", () => {
