@@ -100,10 +100,16 @@ async function nextSlots(ledgers: OrdersSeriesLedger[]): Promise<number[]> {
   return out;
 }
 
+/** Multicalls in flight at once: 20,000 slots = 80 calls, ~17 s one after another (measured ~217 ms each). */
+const MULTICALL_PARALLEL = 3;
+
 async function slots(ledger: OrdersSeriesLedger, from: number, to: number): Promise<Array<SlotRead | null>> {
   const client = await clientFor(ledger.chainId);
-  const out: Array<SlotRead | null> = [];
-  for (let start = from; start < to; start += MULTICALL_CHUNK) {
+  const starts: number[] = [];
+  for (let start = from; start < to; start += MULTICALL_CHUNK) starts.push(start);
+  const chunks = new Array<Array<SlotRead | null>>(starts.length);
+  let next = 0;
+  const readChunk = async (start: number): Promise<Array<SlotRead | null>> => {
     const end = Math.min(to, start + MULTICALL_CHUNK);
     // A failed call is null (read again next time); a failed batch throws.
     const results = await client.multicall({
@@ -116,16 +122,21 @@ async function slots(ledger: OrdersSeriesLedger, from: number, to: number): Prom
         args: [ledger.onChainEventId as `0x${string}`, BigInt(start + k)] as const,
       })),
     });
-    for (const r of results) {
-      if (r.status !== "success") {
-        out.push(null);
-        continue;
-      }
+    return results.map((r) => {
+      if (r.status !== "success") return null;
       const [holder, , orderRef] = r.result as readonly [string, string, string];
-      out.push({ owner: holder.toLowerCase(), orderRef });
-    }
-  }
-  return out;
+      return { owner: holder.toLowerCase(), orderRef };
+    });
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(MULTICALL_PARALLEL, starts.length) }, async () => {
+      while (next < starts.length) {
+        const i = next++;
+        chunks[i] = await readChunk(starts[i]);
+      }
+    }),
+  );
+  return chunks.flat();
 }
 
 /** Whole seconds, or an HTTP date; null when absent or unreadable. */
