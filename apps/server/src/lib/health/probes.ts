@@ -72,6 +72,7 @@ import {
   readThresholdsFromEnv,
 } from "./alarms.js";
 import { errorClass } from "../http/error-class.js";
+import { refreshLedger2Relay } from "./ledger2-relay-health.js";
 
 export const PROBE_INTERVAL_MS = 60_000;
 /** Etherna is an external OAuth service — probed a fifth as often, on purpose. */
@@ -1270,6 +1271,7 @@ export function startHealthProbes(): void {
     void refreshPaymaster().catch((err) => console.warn("[health] paymaster probe threw:", err));
     void refreshSubEnsMinting().catch((err) => console.warn("[health] sub-ENS minting probe threw:", err));
     void refreshTicketMinting().catch((err) => console.warn("[health] ticket minting probe threw:", err));
+    void refreshLedger2Relay().catch((err) => console.warn("[health] ledger2 relay probe threw:", err));
     void refreshKeyRingAnchor().catch((err) => console.warn("[health] key-ring anchor probe threw:", err));
     void refreshPostage(liveReaders, console.warn, etherna).catch((err) =>
       console.warn("[health] postage probe threw:", err),

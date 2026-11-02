@@ -208,6 +208,26 @@ export function heldFor(eventId: string, seriesId: string): number {
 }
 
 /**
+ * `heldFor`, plus when the last of those holds runs out (epoch ms, null when none).
+ * A ledger2 capacity cut below sold + held is refused (`lib/event/ledger2-relay.ts`),
+ * and the organiser is told the time it can try again.
+ */
+export function holdsFor(eventId: string, seriesId: string): { held: number; expiresBy: number | null } {
+  ensureLoaded();
+  const now = Date.now();
+  let held = 0;
+  let expiresBy: number | null = null;
+  for (const r of reservations.values()) {
+    if (r.eventId === eventId && r.seriesId === seriesId && isActive(r, now)) {
+      held += r.quantity;
+      const t = new Date(r.expiresAt).getTime();
+      if (expiresBy === null || t > expiresBy) expiresBy = t;
+    }
+  }
+  return { held, expiresBy };
+}
+
+/**
  * Seats currently held by one address AT ONE EVENT.
  *
  * The event filter is the fix in #223. This counted every active hold for the

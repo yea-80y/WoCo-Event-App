@@ -2,7 +2,9 @@
  * Cancel an event and refund everyone (#644) — organiser routes, mounted under
  * /api/events:
  *
- *   POST /:id/cancel        { confirmTitle }  cancel (one-way) and start the refunds
+ *   POST /:id/cancel        { confirmTitle, chainCancels? }  cancel (one-way) and start the refunds;
+ *                           a ledger2 event's signed cancels are checked first, then relayed
+ *                           after the record (`lib/event/cancel-on-chain.ts`)
  *   GET  /:id/cancellation                   progress: counts and totals, no buyer data
  *
  * The id that keys every store is the ROUTE PARAM ownership was resolved
@@ -23,8 +25,15 @@ import { getStripeAccount } from "../lib/stripe/accounts.js";
 import { cancelEvent, organiserCancelClosed } from "../lib/event/cancel-event.js";
 import { liveCancelEventDeps } from "../lib/event/cancel-event-live.js";
 import { cancellationGate, cancellationProgress, withCancellation } from "../lib/event/cancellations.js";
+import { cancelEventWithChain } from "../lib/event/cancel-on-chain.js";
+import { liveLedger2RelayDeps } from "../lib/event/ledger2-relay-live.js";
+import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
+import { refusalResponse } from "./ledger2-relay.js";
 
 export const eventCancel = new Hono<AppEnv>();
+
+/** The on-chain half's gas: its own budget, apart from capacity and date changes. */
+const chainCancelLimit = new SlidingWindowLimiter([{ limit: 5, windowMs: 60 * 60_000 }]);
 
 /** `fresh` only where the feed may go back to the organiser to sign (#657). */
 async function loadOwned(c: Context<AppEnv>, eventId: string, opts: { fresh?: boolean } = {}) {
@@ -53,7 +62,7 @@ eventCancel.post("/:id/cancel", requireAuth, async (c) => {
     );
   }
 
-  const body = (c.get("body") ?? {}) as { confirmTitle?: unknown };
+  const body = (c.get("body") ?? {}) as { confirmTitle?: unknown; chainCancels?: unknown };
   // Compared the way a person reads it: a title pasted with a non-breaking space
   // or a different Unicode form is the same title.
   const norm = (s: string) => s.normalize("NFC").replace(/\s+/gu, " ").trim();
@@ -61,15 +70,35 @@ eventCancel.post("/:id/cancel", requireAuth, async (c) => {
     return c.json({ ok: false, error: "Type the event name exactly as it appears to confirm" }, 400);
   }
 
-  const result = cancelEvent(
+  // Ledger2 events also cancel on chain, by the organiser key's signatures. Signed
+  // cancels are checked BEFORE the record is written (`cancel-on-chain.ts`).
+  // Its own gas budget, which never refuses the cancellation itself: over it, the
+  // record is written and the chain half waits for "Finish cancelling".
+  const signed = Array.isArray(body.chainCancels) && body.chainCancels.length > 0;
+  const chainAllowed = !signed || chainCancelLimit.peek(parentAddress);
+  if (signed && chainAllowed) chainCancelLimit.record(parentAddress);
+  const outcome = await cancelEventWithChain(
     {
       eventId,
-      by: `organiser:${parentAddress}`,
-      organiserAccount: getStripeAccount(parentAddress)?.stripeAccountId,
-      title: event.title,
+      parent: parentAddress,
+      seriesIds: event.series.map((s) => s.seriesId),
+      chainCancels: body.chainCancels,
+      chainAllowed,
+      record: () =>
+        cancelEvent(
+          {
+            eventId,
+            by: `organiser:${parentAddress}`,
+            organiserAccount: getStripeAccount(parentAddress)?.stripeAccountId,
+            title: event.title,
+          },
+          liveCancelEventDeps,
+        ),
     },
-    liveCancelEventDeps,
+    liveLedger2RelayDeps,
   );
+  if (outcome.kind === "refused") return refusalResponse(c, outcome.refusal);
+  const result = outcome.recorded;
   if (!result.ok) {
     return c.json({ ok: false, error: "The cancellation could not be saved, so nothing has changed. Try again shortly." }, 503);
   }
@@ -78,6 +107,7 @@ eventCancel.post("/:id/cancel", requireAuth, async (c) => {
     data: {
       eventId,
       created: result.created,
+      ...(outcome.chain ? { chain: outcome.chain } : {}),
       progress: cancellationProgress(eventId),
       // The cancellation stands either way - it lives in the server's record. The
       // feed goes back for the organiser to re-sign only when it was read as the
