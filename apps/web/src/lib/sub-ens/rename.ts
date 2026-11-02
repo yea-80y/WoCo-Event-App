@@ -38,3 +38,17 @@ export function canOpenRename(
   if (typeof at === "number" && at <= now) return { open: true };
   return { open: false, retryAt: typeof at === "number" ? at : null };
 }
+
+/**
+ * The same gate asked for one label, right before the claim form mints it.
+ * Binding the CURRENT profile label again is never a change (the server's
+ * `bindProfileName` lets it through ungated), so it is never refused here.
+ */
+export function canMintProfileName(
+  status: ProfileNameStatus | null | undefined,
+  label: string,
+  now: number = Date.now(),
+): RenameGate {
+  if (status?.label && status.label.toLowerCase() === label.toLowerCase().trim()) return { open: true };
+  return canOpenRename(status, now);
+}
