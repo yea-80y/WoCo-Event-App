@@ -4,7 +4,9 @@
  * Three anchors: the type strings are the ledger's typehash strings verbatim
  * (WoCoTicketLedger.sol abf5fb5), every digest equals ethers' EIP-712 hash of the same
  * statement, and the GOLDEN digests below are what the contracts repo asserts against
- * the ledger's own `*Digest` views. Change a golden digest only together with that test.
+ * the ledger's own `*Digest` views (WoCo-Contracts
+ * `test/WoCoTicketLedgerTermsVectors.t.sol`, which sets the same nonces in storage).
+ * Change a golden digest only together with that test.
  */
 
 import { test } from "node:test";
@@ -39,8 +41,8 @@ const CONTRACT_TYPE_STRINGS: Record<keyof typeof LEDGER2_TYPES, string> = {
     "ReseatBearer(bytes32 eventId,uint256 slot,uint256 toSeat,address holder,uint256 nonce,uint256 termsNonce,uint256 seatNonce,uint256 issuedAt,uint256 deadline)",
 };
 
-// Foundry's first CREATE from its default test contract: the contracts-repo test
-// deploys the ledger there on chain 42161, so both sides hash the same domain.
+// The contracts-repo test places the ledger at this address on chain 42161
+// (`deployCodeTo`), so both sides hash the same domain.
 const TARGET = { chainId: 42161, address: "0x5615deb798bb3e4dfa0139dfa1b3d433cc23b72f" };
 const EVENT_ID = `0x${"ab".repeat(32)}`;
 const HOLDER = "0x1111111111111111111111111111111111111111";
