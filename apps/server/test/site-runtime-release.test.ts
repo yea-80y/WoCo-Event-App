@@ -156,6 +156,24 @@ test("an unreadable high-water file accepts nothing, never reads, and turns heal
   }
 });
 
+test("a high-water file that turns unreadable mid-run is never overwritten, and health goes red", async () => {
+  const err = console.error;
+  console.error = () => {};
+  try {
+    let state: number | null | "unreadable" = null;
+    const saved: number[] = [];
+    const cache = createSiteRuntimeReleaseCache(async () => ok(release(3)), () => 0, { load: () => state, save: (v) => (saved.push(v), true) });
+    state = "unreadable";
+    assert.equal(await cache.get(0), null);
+    assert.deepEqual(saved, [], "no save over a file we cannot read");
+    assert.deepEqual([cache.health().ok, cache.health().lastError], [false, "high-water file unreadable"]);
+    state = 3;
+    assert.equal(await cache.get(0), null, "sticky until a restart");
+  } finally {
+    console.error = err;
+  }
+});
+
 test("the high-water file: absent is none, damage is unreadable, a save reads back", async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

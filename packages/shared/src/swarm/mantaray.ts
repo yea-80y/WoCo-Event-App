@@ -8,8 +8,11 @@
  *
  * Node:  key(32, zero) | version hash(31) | ref size(1) | entry(ref size) | fork bitmap(32) | forks
  * Fork:  type(1) | prefix length(1) | prefix(30, zero padded) | child node address(32) | [metadata]
- * Metadata: length(2, BE) | JSON | "\n" padding — bee pads 32 - (2 + len) % 32
- * bytes, a full 32 when already aligned (bee-js pads none there; both read either).
+ * Metadata: length(2, BE) | JSON | "\n" padding, with n = 2 + JSON length: bee
+ * pads to 32 when n < 32, nothing when n is exactly 32, and 32 - n % 32 when
+ * n > 32 (a full 32 at 64, 96...; bee-js pads none there; both read either).
+ * Go's JSON also sorts keys and escapes <, > and &: the metadata written here is
+ * fixed content types and file names, which have none.
  */
 
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
@@ -47,12 +50,13 @@ export function parseMantarayNode(data: Uint8Array): MantarayNodeView {
   if (data.length < 64 + 1 + 32) throw new Error("mantaray: node too short");
   if (data.subarray(0, 32).some((b) => b !== 0)) throw new Error("mantaray: obfuscated node");
   for (let i = 0; i < 31; i++) if (data[32 + i] !== VERSION_02_HASH[i]) throw new Error("mantaray: not a v0.2 node");
+  // Fork records assume 32-byte references, so a node of any other size would misparse.
   const refSize = data[63]!;
-  if (refSize !== 0 && refSize !== REF_BYTES) throw new Error("mantaray: unsupported ref size");
+  if (refSize !== REF_BYTES) throw new Error("mantaray: unsupported ref size");
   let pos = 64;
   const entryBytes = data.subarray(pos, pos + refSize);
   pos += refSize;
-  const entry = refSize && entryBytes.some((b) => b !== 0) ? bytesToHex(entryBytes) : null;
+  const entry = entryBytes.some((b) => b !== 0) ? bytesToHex(entryBytes) : null;
   const bitmap = data.subarray(pos, pos + 32);
   pos += 32;
   const forks: MantarayFork[] = [];
@@ -97,7 +101,8 @@ export function encodeMantarayFork(f: { type: number; prefix: string; ref: strin
   if (f.metadata) {
     const sorted = Object.fromEntries(Object.keys(f.metadata).sort().map((k) => [k, f.metadata![k]]));
     const json = new TextEncoder().encode(JSON.stringify(sorted));
-    const pad = 32 - ((2 + json.length) % 32);
+    const n = 2 + json.length;
+    const pad = n < 32 ? 32 - n : n === 32 ? 0 : 32 - (n % 32);
     const body = json.length + pad;
     if (body > 0xffff) throw new Error("mantaray: metadata too large");
     meta = new Uint8Array(2 + body).fill(0x0a);
@@ -150,4 +155,32 @@ export function encodeMantarayNode(entry: string | null, forks: Uint8Array[]): U
 /** A node's address: the `/bytes` root of its encoding. */
 export function mantarayNodeAddress(node: Uint8Array): string {
   return bytesTreeRoot(node);
+}
+
+/**
+ * The entry (data reference) `path` resolves to under `rootNode`, the way bee
+ * walks a manifest. Every node read is checked against the address its parent
+ * names, so the answer is bound to the root whatever `readNode` returns.
+ */
+export async function resolveMantarayPath(
+  rootNode: Uint8Array,
+  path: string,
+  readNode: (address: string) => Promise<Uint8Array>,
+): Promise<string> {
+  let node = rootNode;
+  let rest = path;
+  for (let depth = 0; depth < 64; depth++) {
+    const fork = parseMantarayNode(node).forks.find((f) => rest.startsWith(f.prefix));
+    if (!fork) throw new Error(`mantaray: no ${path}`);
+    const child = await readNode(fork.ref);
+    if (mantarayNodeAddress(child) !== fork.ref) throw new Error("mantaray: a node does not match its address");
+    rest = rest.slice(fork.prefix.length);
+    if (rest === "") {
+      const entry = parseMantarayNode(child).entry;
+      if (!entry) throw new Error(`mantaray: ${path} has no data`);
+      return entry;
+    }
+    node = child;
+  }
+  throw new Error("mantaray: path too deep");
 }

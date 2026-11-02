@@ -102,22 +102,47 @@ test("admission: identical rebuild admitted; any difference refused", () => {
   assert.equal(mod.admitClientCollection({ kit: kit(), site, urls, received: { ...received, objects: received.objects.slice(1) } }).ok, false);
 });
 
+/** The release v1 nodes on the way to multi-site.html, by address. */
+const NODES = new Map<string, Uint8Array>([
+  [fx.release.root, rootNode],
+  [fx.filesNode.address, hexToBytes(fx.filesNode.data)],
+  [fx.htmlLeaf.address, hexToBytes(fx.htmlLeaf.data)],
+]);
+const templateBytes = new TextEncoder().encode(fx.template);
+
 test("a kit whose root node does not hash to the descriptor's root is refused, and not cached", async () => {
-  let calls = 0;
-  let node = rootNode.slice();
-  node[node.length - 1] ^= 1;
+  let rootReads = 0;
+  let root = rootNode.slice();
+  root[root.length - 1] ^= 1;
   const kits = mod.createSiteRuntimeKits({
-    rootNode: async () => { calls++; return node; },
-    template: async () => fx.template,
+    node: async (_s, a) => {
+      if (a === fx.release.root) { rootReads++; return root; }
+      return NODES.get(a)!;
+    },
+    template: async () => templateBytes,
   });
   const release = { version: 1, roots: { woco: fx.release } } as never;
   await assert.rejects(kits.kit(release, "woco"), /does not match/);
-  node = rootNode;
+  root = rootNode;
   const k = await kits.kit(release, "woco");
   assert.equal(k.version, 1);
+  assert.equal(k.template, fx.template);
   await kits.kit(release, "woco");
-  assert.equal(calls, 2, "a failed load is retried, a good one is cached");
+  assert.equal(rootReads, 2, "a failed load is retried, a good one is cached");
   await assert.rejects(kits.kit(release, "etherna"), /no etherna root/);
+});
+
+test("the template must be the one the signed root names, read through hash-checked nodes", async () => {
+  const release = { version: 1, roots: { woco: fx.release } } as never;
+  const kitWith = (template: Uint8Array, nodes = NODES) =>
+    mod.createSiteRuntimeKits({ node: async (_s, a) => nodes.get(a) ?? new Uint8Array(0), template: async () => template }).kit(release, "woco");
+  const other = new TextEncoder().encode(fx.template.replace("<title>Site</title>", "<title>Other</title>"));
+  await assert.rejects(kitWith(other), /template does not match its root/);
+  const forged = new Map(NODES);
+  const leaf = hexToBytes(fx.htmlLeaf.data).slice();
+  leaf[70] ^= 1; // a different entry, under the address the parent names
+  forged.set(fx.htmlLeaf.address, leaf);
+  await assert.rejects(kitWith(templateBytes, forged), /does not match its address/);
 });
 
 test("objects are stored with /bytes at redundancy 0 on the deploy's batch, root last, each at its computed address", async () => {

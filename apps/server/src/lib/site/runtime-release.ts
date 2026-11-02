@@ -95,13 +95,19 @@ export function createSiteRuntimeReleaseCache(
   let checkedAt: number | null = null;
   let lastError: string | null = null;
   let inflight: Promise<void> | null = null;
-  const floor = highWater.load();
-  if (floor === "unreadable") console.error("[site-runtime] ALARM: site-runtime-high-water.json exists but cannot be read - no release is accepted until it is restored");
+  // Sticky until a restart: an unreadable file is restored with the server stopped,
+  // and is never overwritten meanwhile (a save would replace it with our guess).
+  let unreadable = false;
+  const markUnreadable = () => {
+    if (!unreadable) console.error("[site-runtime] ALARM: site-runtime-high-water.json exists but cannot be read - no release is accepted until it is restored");
+    unreadable = true;
+    lastError = "high-water file unreadable";
+  };
+  if (highWater.load() === "unreadable") markUnreadable();
 
   async function refreshOnce(): Promise<void> {
-    if (floor === "unreadable") {
+    if (unreadable) {
       checkedAt = now();
-      lastError = "high-water file unreadable";
       return;
     }
     const res = await read().catch((e: unknown): RuntimeFeedRead => ({ status: "error", error: e instanceof Error ? e : new Error(String(e)) }));
@@ -130,6 +136,10 @@ export function createSiteRuntimeReleaseCache(
       return;
     }
     const mark = highWater.load();
+    if (mark === "unreadable") {
+      markUnreadable();
+      return;
+    }
     if (typeof mark === "number" && parsed.version < mark) {
       lastError = `read version ${parsed.version} below the high-water mark ${mark}, ignored`;
       return;
@@ -157,7 +167,7 @@ export function createSiteRuntimeReleaseCache(
     },
     health(): SiteRuntimeHealth {
       return {
-        ok: floor !== "unreadable",
+        ok: !unreadable,
         configured: release !== null,
         version: release?.version ?? null,
         commit: release?.commit ?? null,

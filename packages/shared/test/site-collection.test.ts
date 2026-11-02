@@ -122,6 +122,24 @@ test("metadata is written with sorted keys, whatever order it was given in", () 
   assert.equal(bytesToHex(reordered), bytesToHex(leaf.record));
 });
 
+test("metadata padding follows bee: to 32 below it, none at exactly 32, to the next multiple above", () => {
+  const meta = (json: string) => {
+    const rec = encodeMantarayFork({ type: 18, prefix: "a", ref: "00".repeat(32), metadata: JSON.parse(json) });
+    return rec.length - 64; // after the fixed fork part: length(2) + JSON + padding
+  };
+  assert.equal(meta('{"a":"b"}'), 32);
+  // `{"a":"` + x's + `"}` is 8 + x's characters of JSON.
+  assert.equal(meta(`{"a":"${"x".repeat(22)}"}`), 32, "2 + 30 = 32 exactly: no padding");
+  assert.equal(meta(`{"a":"${"x".repeat(23)}"}`), 64);
+  assert.equal(meta(`{"a":"${"x".repeat(54)}"}`), 96, "2 + 62 = 64: a full 32 of padding");
+});
+
+test("a node whose references are not 32 bytes is refused", () => {
+  const n = hexToBytes(fx.manifestLeaf.data).slice();
+  n[63] = 0;
+  assert.throws(() => parseMantarayNode(n), /ref size/);
+});
+
 test("an oversize site is refused", () => {
   const big = { ...site, theme: { ...site.theme, siteDescription: "x".repeat(SITE_HTML_MAX_BYTES) } } as Site;
   assert.throws(() => buildSiteCollection({ site: big, urls, template: fx.template, release, releaseRootNode: rootNode }), /too large/);

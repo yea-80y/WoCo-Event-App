@@ -992,6 +992,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // server's own rebuild must match it exactly; or the server builds the old
     // way, a full copy of the runtime in a tar (#1032 slice 3; the tar retires in slice 4).
     let clientCollection: SiteCollection | null = null;
+    let clientKit: SiteRuntimeKit | null = null;
     let tarData: Buffer<ArrayBuffer> | null = null;
     if (clientBuilt) {
       const received = decodeClientCollection(body.collection);
@@ -1013,6 +1014,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         return c.json({ ok: false, error: verdict.error, code: verdict.code }, 409);
       }
       clientCollection = verdict.collection;
+      clientKit = kit;
     } else {
       const html = await fs.readFile(join(distMultisitePath, "multi-site.html"), "utf-8");
       const config = siteDeployConfig(site, renderUrls);
@@ -1133,6 +1135,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       target,
       note: siteId,
       ...(selection.freeHosted ? { freeHosted: true } : {}),
+      // A browser-built site links the release: a re-stamp of the owner's site stops there.
+      ...(clientKit ? { links: [clientKit.release.root] } : {}),
     });
 
     let feedManifestHash = "";

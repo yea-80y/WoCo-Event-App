@@ -220,7 +220,11 @@ objects, ~3 KB, encoded exactly as bee encodes a `/bzz` upload. It sends them wi
 server rebuilds from its own copy of the release and stores them (`/bytes`, redundancy 0, each at the
 computed address) only if byte-identical, else 409 `COLLECTION_MISMATCH` / `RUNTIME_RELEASE_CHANGED`
 and the builder re-sends for the old build. Off for an account, the collection is ignored. The
-response says `builtBy`. Next: retire the tar path and `dist-multisite` on the VM (slice 4).
+response says `builtBy`; the storage ledger records the linked release root (`links`) so a re-stamp
+of the owner's site stops there. A linked site depends on the platform's release batches (core on
+our bee, `ETHERNA_PLATFORM_BATCH` on Etherna) for its runtime, even when the site itself is on the
+owner's batch: both are in the `postage` health alarms. Next: retire the tar path and
+`dist-multisite` on the VM (slice 4).
 
 ---
 

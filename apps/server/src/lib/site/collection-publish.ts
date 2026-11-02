@@ -18,10 +18,12 @@ import {
   buildSiteCollection,
   sameSiteObjects,
   SITE_HTML_MAX_BYTES,
+  SITE_INDEX_DOCUMENT,
   type SiteCollection,
   type SiteRenderUrls,
 } from "@woco/shared/site/collection";
-import { mantarayNodeAddress } from "@woco/shared/swarm/mantaray";
+import { mantarayNodeAddress, resolveMantarayPath } from "@woco/shared/swarm/mantaray";
+import { bytesTreeRoot } from "@woco/shared/swarm/bytes-tree";
 import type { Site, SiteRuntimeRelease, SiteRuntimeRoot, SiteRuntimeStore } from "@woco/shared";
 import { BEE_URL } from "../../config/swarm.js";
 import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
@@ -62,26 +64,30 @@ async function ethernaAuth(): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${token}` };
 }
 
-/** The live readers: our bee for its root and the template, Etherna for its root. */
+/** The live readers: manifest nodes from the store itself, the template bytes from our bee. */
 export const liveKitReads = {
-  async rootNode(store: SiteRuntimeStore, root: string): Promise<Uint8Array> {
-    const url = store === "etherna" ? `${ETHERNA_FETCH_BASE}/bytes/${root}` : `${BEE_URL}/bytes/${root}`;
+  async node(store: SiteRuntimeStore, address: string): Promise<Uint8Array> {
+    const url = store === "etherna" ? `${ETHERNA_FETCH_BASE}/bytes/${address}` : `${BEE_URL}/bytes/${address}`;
     const headers = store === "etherna" ? await ethernaAuth() : {};
     const r = await fetch(url, { headers, signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
-    if (!r.ok) throw new Error(`release root ${store} ${r.status}`);
-    return readCapped(r, NODE_MAX_BYTES, "release root node");
+    if (!r.ok) throw new Error(`release node ${store} ${r.status}`);
+    return readCapped(r, NODE_MAX_BYTES, "release manifest node");
   },
-  async template(wocoRoot: string): Promise<string> {
+  async template(wocoRoot: string): Promise<Uint8Array> {
     const r = await fetch(`${BEE_URL}/bzz/${wocoRoot}/multi-site.html`, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
     if (!r.ok) throw new Error(`release template ${r.status}`);
-    return new TextDecoder("utf-8", { fatal: true }).decode(await readCapped(r, TEMPLATE_MAX_BYTES, "release template"));
+    return readCapped(r, TEMPLATE_MAX_BYTES, "release template");
   },
 };
 
 /**
  * One kit per store and release root, loaded once. The root node must hash to the
- * root the verified descriptor names; the template is the same build on both
- * stores, read from our bee's copy.
+ * root the verified descriptor names, and the template must hash to the entry
+ * `multi-site.html` resolves to under THAT store's root (each node on the way
+ * checked against its address), so every byte of a kit is the signed release's.
+ * The bytes come from our bee's copy for both stores: the same build. A template
+ * a store erasure-coded would not match a plain `/bytes` hash and fails closed
+ * (single-chunk today, ~400 B, so it does not arise).
  */
 export function createSiteRuntimeKits(reads: typeof liveKitReads = liveKitReads) {
   const cache = new Map<string, Promise<SiteRuntimeKit>>();
@@ -93,8 +99,11 @@ export function createSiteRuntimeKits(reads: typeof liveKitReads = liveKitReads)
       let p = cache.get(key);
       if (!p) {
         p = (async () => {
-          const [rootNode, template] = await Promise.all([reads.rootNode(store, root.root), reads.template(release.roots.woco.root)]);
+          const [rootNode, templateBytes] = await Promise.all([reads.node(store, root.root), reads.template(release.roots.woco.root)]);
           if (mantarayNodeAddress(rootNode) !== root.root) throw new Error(`release ${store} root node does not match its address`);
+          const entry = await resolveMantarayPath(rootNode, SITE_INDEX_DOCUMENT, (a) => reads.node(store, a));
+          if (bytesTreeRoot(templateBytes) !== entry) throw new Error(`release ${store} template does not match its root`);
+          const template = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(templateBytes);
           return { version: release.version, store, release: root, rootNode, template };
         })();
         // A failed load is retried on the next publish, never cached.
