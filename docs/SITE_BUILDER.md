@@ -211,6 +211,14 @@ the frontend deploy key. The server reads the latest descriptor (`GET /api/sites
 `/api/health` `siteRuntime`), checks the update's signature itself, and never accepts a lower
 version than `.data/site-runtime-high-water.json` records.
 
+**One release, both runtimes (descriptor v2, slice 5).** A release carries websites
+(`dist-multisite`, line `site`, index `multi-site.html`) AND single-event pages (`dist-site`, line
+`eventPage`, index `site.html`), built from one commit; the parser refuses a release missing either,
+so a page can never be left on old code while sites move on. Kits per line:
+`GET /api/sites/runtime/kit/:store` (websites) and `GET /api/site/runtime/kit/:store` (event pages).
+Order when the format changes: merge, publish the release from main (the running server reads a
+newer format as malformed and keeps its release), then deploy the server.
+
 **Browser-built sites (slice 3, behind `SITE_CLIENT_PUBLISH`: unset = off, `all`, or a comma list of
 account addresses).** The builder fetches `GET /api/sites/runtime/kit/{woco|etherna}` (the store's
 release root node + template), renders the site with the shared render, and lays out a collection
