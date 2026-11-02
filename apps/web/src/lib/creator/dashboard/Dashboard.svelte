@@ -465,6 +465,8 @@
    * page. null = this browser has no workers; the page opens them itself.
    */
   let opener: OrderOpener | null | undefined;
+  /** The account whose keys the worker holds (auth.seedAddress at hand-over). */
+  let keyedAccount: string | null = null;
   function orderOpener(): OrderOpener | null {
     if (opener === undefined) {
       opener =
@@ -477,7 +479,8 @@
     }
     return opener;
   }
-  $effect(() => () => opener?.lock());
+  // Leaving the page ends the worker, its keys and every run (Fable sign-off M1).
+  $effect(() => () => endOpening());
 
   /**
    * Show a freshly read list. The display map is rebuilt in the same step from
@@ -543,11 +546,15 @@
       }
     }
     if (!secrets) {
+      // No keys on this device now: nothing opened earlier may outlive them.
+      endOpening();
       ordersLocked = true;
       decrypting = false;
       return;
     }
     ordersLocked = false;
+    // Whose keys these are: the worker is keyed for this account only.
+    const account = auth.seedAddress;
 
     // Every generation's order key this device holds (#642, #186): an order is sealed
     // to whichever was current when it was bought. Loaded on first use.
@@ -569,8 +576,10 @@
       if (worker && useWorker) {
         if (!worker.keyedFor(epoch)) {
           const { secretKeys: keys } = await orderKeysOf(secrets);
-          // Locked while the keys were derived: never hand them to a new worker.
-          if (epoch !== openEpoch || destroyed) return;
+          // Locked, left, or another account signed in while the keys were derived:
+          // never hand them to a new worker (Fable sign-off S4).
+          if (epoch !== openEpoch || destroyed || auth.seedAddress !== account) return;
+          keyedAccount = account;
           worker.unlock(epoch, keys);
         }
         // Bound to THIS event and the SLOT's series (order-opener-core.ts).
@@ -629,15 +638,28 @@
     if (auth.hasIdentitySeed && ordersLocked && !decrypting) void decryptCurrent();
   });
   $effect(() => {
-    if (auth.kind === "passkey" && !auth.hasIdentitySeed && (decryptedOrders.size > 0 || decrypting)) {
-      openEpoch++;
-      opener?.lock();
-      opened.clear();
-      decryptedOrders = new Map();
+    // A keyed worker whose every open failed still holds keys (Fable sign-off S3).
+    if (auth.kind === "passkey" && !auth.hasIdentitySeed && (decryptedOrders.size > 0 || decrypting || keyedAccount !== null)) {
+      endOpening();
       ordersLocked = true;
-      decrypting = false;
     }
   });
+  // The worker's keys belong to the account that opened them: signing out, or another
+  // account on this page, ends it and everything it opened - for every login kind.
+  $effect(() => {
+    const account = auth.isConnected ? auth.seedAddress : null;
+    if (keyedAccount !== null && account !== keyedAccount) endOpening();
+  });
+
+  /** Stop any opening run, end the worker, and forget everything opened. */
+  function endOpening(): void {
+    openEpoch++;
+    keyedAccount = null;
+    opener?.lock();
+    opened.clear();
+    decryptedOrders = new Map();
+    decrypting = false;
+  }
 
   /**
    * The browser reads the list itself (#965): rows from the chain and the server's

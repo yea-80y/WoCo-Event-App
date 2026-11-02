@@ -204,9 +204,20 @@ test("Dashboard: opens in the worker, falls back to the page, and a relock stops
   const body = DASH.slice(DASH.indexOf("async function decryptOnce"), DASH.indexOf("// Unlocked - by the panel's tap"));
   assert.match(body, /if \(out\.kind === "unavailable"\) break;/);
   assert.match(body, /if \(out\.kind === "locked" \|\| epoch !== openEpoch\) return;/);
-  assert.match(body, /if \(epoch !== openEpoch\) return;\s*worker\.unlock\(epoch, keys\);/, "never keys a worker after a lock");
-  assert.match(DASH, /openEpoch\+\+;\s*opener\?\.lock\(\);/);
+  assert.match(body, /if \(epoch !== openEpoch\) return;\s*keyedAccount = auth\.seedAddress;\s*worker\.unlock\(epoch, keys\);/, "never keys a worker after a lock");
+  assert.match(DASH, /openEpoch\+\+;\s*keyedAccount = null;\s*opener\?\.lock\(\);/);
   assert.match(DASH, /\$effect\(\(\) => \(\) => opener\?\.lock\(\)\);/, "leaving the page ends the worker");
+});
+
+test("Dashboard: the worker's keys belong to one signed-in account (security review 2026-11-01)", () => {
+  assert.match(DASH, /keyedAccount = auth\.seedAddress;\s*worker\.unlock\(epoch, keys\);/, "the owner is recorded at hand-over");
+  assert.match(
+    DASH,
+    /const account = auth\.isConnected \? auth\.seedAddress : null;\s*if \(keyedAccount !== null && account !== keyedAccount\) endOpening\(\);/,
+    "a sign-out or another account ends the worker, for every login kind",
+  );
+  const locked = DASH.slice(DASH.indexOf("    if (!secrets) {\n      // No keys"), DASH.indexOf("    ordersLocked = false;"));
+  assert.match(locked, /endOpening\(\);/, "no keys on the device now: nothing opened earlier survives");
   assert.match(DASH, /new Worker\(new URL\("\.\/order-opener\.worker\.ts", import\.meta\.url\), \{ type: "module" \}\)/);
 });
 

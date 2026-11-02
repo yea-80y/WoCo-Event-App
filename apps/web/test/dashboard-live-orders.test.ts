@@ -448,7 +448,8 @@ test("the list and its display map change together, and opened details never out
 });
 
 test("locking again clears what was opened", () => {
-  assert.match(DASH, /opened\.clear\(\);\s*decryptedOrders = new Map\(\);\s*ordersLocked = true;/);
+  assert.match(DASH, /endOpening\(\);\s*ordersLocked = true;/);
+  assert.match(DASH, /opened\.clear\(\);\s*decryptedOrders = new Map\(\);\s*decrypting = false;/);
 });
 
 test("polling starts from a real read (or its failure, to retry it), never from the cached paint", () => {
@@ -469,7 +470,7 @@ test("opening runs in steps from the rows on screen, gives the page a turn, and 
   assert.match(body, /await new Promise\(\(resolve\) => setTimeout\(resolve, 0\)\);/);
   const guard = body.indexOf("if (epoch !== openEpoch || destroyed) return;");
   assert.ok(guard > 0 && guard < body.indexOf("opened.put("), "the lock check comes before anything opened is kept");
-  assert.match(DASH, /openEpoch\+\+;\s*opener\?\.lock\(\);\s*opened\.clear\(\);/);
+  assert.match(DASH, /openEpoch\+\+;\s*keyedAccount = null;\s*opener\?\.lock\(\);\s*opened\.clear\(\);/);
 });
 
 test("every way out of an opening run stops showing 'Opening...' (Fable sign-off S5)", () => {

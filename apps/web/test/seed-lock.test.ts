@@ -487,7 +487,9 @@ test("Dashboard: the unlock decrypts once, and a relock hides the details again"
   assert.match(dash, /if \(auth\.hasIdentitySeed && ordersLocked && !decrypting\) void decryptCurrent\(\);/);
   assert.match(dash, /<UnlockPanel subject="Attendee details" action="Show attendees" \/>/);
   // Also mid-run (#965 opens in steps): the run in progress is told to stop and keep nothing.
-  assert.match(dash, /if \(auth\.kind === "passkey" && !auth\.hasIdentitySeed && \(decryptedOrders\.size > 0 \|\| decrypting\)\) \{\s*openEpoch\+\+;\s*opener\?\.lock\(\);\s*opened\.clear\(\);\s*decryptedOrders = new Map\(\);\s*ordersLocked = true;/);
+  assert.match(dash, /if \(auth\.kind === "passkey" && !auth\.hasIdentitySeed && \(decryptedOrders\.size > 0 \|\| decrypting\)\) \{\s*endOpening\(\);\s*ordersLocked = true;/);
+  const end = dash.slice(dash.indexOf("function endOpening(): void {"), dash.indexOf("function endOpening(): void {") + 300);
+  assert.match(end, /openEpoch\+\+;\s*keyedAccount = null;\s*opener\?\.lock\(\);\s*opened\.clear\(\);\s*decryptedOrders = new Map\(\);/);
 });
 
 test("Cancel: the passkey is asked when the form opens, never between the final press and the refunds", () => {
