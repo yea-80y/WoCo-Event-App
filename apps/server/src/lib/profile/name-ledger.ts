@@ -34,6 +34,16 @@
  * code path here deletes a record, and `firstBoundAt` / `lastChangedAt` /
  * `freeCorrectionUsed` outlive any name they refer to.
  *
+ * SCOPED TO THE REGISTRY. Records live in one section per registry
+ * (`subEnsRegistryId()`), and only the section of the registry this server reads
+ * names from is consulted. A registry change therefore starts with no profile
+ * names and no cooldowns: every name on the old registry is gone, and a clock
+ * kept for a name that no longer exists would only stop people claiming a new
+ * one. Before this (2026-11-02) the 10-23 reset needed the file moved aside by
+ * hand. Other sections are kept untouched, never deleted, so switching back
+ * restores them. A name migration that carries names over to a new registry
+ * must carry this section over too, or the roles and clocks start fresh.
+ *
  * MUST survive restarts, but losing it is recoverable and fails OPEN, by design:
  * every cooldown resets and the profile-name refusal at the binding points stops
  * firing until each user re-binds. Nothing a user cannot redo is lost. That is
@@ -44,6 +54,7 @@
 import { readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
+import { subEnsRegistryId } from "../chain/sub-ens-contract.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "profile-names.json");
@@ -70,10 +81,16 @@ interface NameRecord {
   freeCorrectionUsed: boolean;
 }
 
-type Store = Record<string, NameRecord>;
+/** `{chainId}:{registry}` → lowercase parent address → record. */
+type Store = Record<string, Record<string, NameRecord>>;
 
-/** lowercase parent address → record. */
-const byAccount = new Map<string, NameRecord>();
+const byRegistry = new Map<string, Map<string, NameRecord>>();
+/**
+ * Top-level entries that are not a registry section: flat records written
+ * before the scoping (keyed by an address, which has no ":"). They belong to an
+ * unknown registry, so they are never read, and are written back unchanged.
+ */
+let unscoped: Record<string, unknown> = {};
 let loaded = false;
 /** Set when the file EXISTED and could not be read. Surfaced on /api/health. */
 let loadError: string | null = null;
@@ -82,18 +99,33 @@ function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
   try {
-    const raw = JSON.parse(readFileSync(STORE_FILE, "utf-8")) as Store;
-    for (const [account, rec] of Object.entries(raw)) {
-      if (!rec || typeof rec.label !== "string" || !rec.label) continue;
-      byAccount.set(account.toLowerCase(), {
-        label: rec.label.toLowerCase(),
-        active: rec.active !== false,
-        firstBoundAt: Number(rec.firstBoundAt) || 0,
-        lastChangedAt: Number(rec.lastChangedAt) || 0,
-        freeCorrectionUsed: rec.freeCorrectionUsed === true,
-      });
+    const raw = JSON.parse(readFileSync(STORE_FILE, "utf-8")) as unknown;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("not a JSON object");
+    let count = 0;
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!key.includes(":") || !value || typeof value !== "object") {
+        unscoped[key] = value;
+        continue;
+      }
+      const section = new Map<string, NameRecord>();
+      for (const [account, rec] of Object.entries(value as Record<string, NameRecord>)) {
+        if (!rec || typeof rec.label !== "string" || !rec.label) continue;
+        section.set(account.toLowerCase(), {
+          label: rec.label.toLowerCase(),
+          active: rec.active !== false,
+          firstBoundAt: Number(rec.firstBoundAt) || 0,
+          lastChangedAt: Number(rec.lastChangedAt) || 0,
+          freeCorrectionUsed: rec.freeCorrectionUsed === true,
+        });
+      }
+      byRegistry.set(key.toLowerCase(), section);
+      count += section.size;
     }
-    console.log(`[profile-names] loaded ${byAccount.size} profile-name records`);
+    const ignored = Object.keys(unscoped).length;
+    console.log(
+      `[profile-names] loaded ${count} profile-name records across ${byRegistry.size} registries` +
+        (ignored ? ` (${ignored} unscoped entries kept, not read)` : ""),
+    );
   } catch (err) {
     // A missing file is the normal first boot and says nothing.
     if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return;
@@ -134,9 +166,25 @@ export function profileNamesHealth(): { loadFailed: boolean } {
 }
 
 function persist(): void {
-  const out: Store = {};
-  for (const [account, rec] of byAccount) out[account] = rec;
+  const out: Record<string, unknown> = { ...unscoped };
+  for (const [registry, section] of byRegistry) {
+    const records: Store[string] = {};
+    for (const [account, rec] of section) records[account] = rec;
+    out[registry] = records;
+  }
   writeJsonAtomic(STORE_FILE, out, "profile-names");
+}
+
+/** The records of the registry this server reads names from - never another's. */
+function current(): Map<string, NameRecord> {
+  ensureLoaded();
+  const id = subEnsRegistryId();
+  let section = byRegistry.get(id);
+  if (!section) {
+    section = new Map();
+    byRegistry.set(id, section);
+  }
+  return section;
 }
 
 const norm = (s: string): string => s.toLowerCase().trim();
@@ -150,8 +198,7 @@ const norm = (s: string): string => s.toLowerCase().trim();
  * user one confusing refusal, never someone else's name.
  */
 export function profileNameOf(account: string): string | null {
-  ensureLoaded();
-  const rec = byAccount.get(norm(account));
+  const rec = current().get(norm(account));
   return rec && rec.active ? rec.label : null;
 }
 
@@ -188,8 +235,7 @@ export interface NameChangeStatus {
  * rebind of the same label are all ungated.
  */
 export function nameChangeStatus(account: string, now: number = Date.now()): NameChangeStatus {
-  ensureLoaded();
-  const rec = byAccount.get(norm(account));
+  const rec = current().get(norm(account));
   if (!rec) {
     return { label: null, allowed: true, nextChangeAllowedAt: null, freeCorrectionUsed: false };
   }
@@ -217,14 +263,14 @@ export type BindResult =
  * change; the caller turns that into a 409 and writes NOTHING.
  */
 export function bindProfileName(account: string, label: string, now: number = Date.now()): BindResult {
-  ensureLoaded();
+  const records = current();
   const acct = norm(account);
   const lbl = norm(label);
-  const rec = byAccount.get(acct);
+  const rec = records.get(acct);
 
-  // First bind ever — ungated, and it starts both clocks.
+  // First bind ever (on this registry) — ungated, and it starts both clocks.
   if (!rec) {
-    byAccount.set(acct, {
+    records.set(acct, {
       label: lbl,
       active: true,
       firstBoundAt: now,
@@ -268,8 +314,7 @@ export function bindProfileName(account: string, label: string, now: number = Da
  * unbind-then-bind would be a free rename for anyone who noticed.
  */
 export function unbindProfileName(account: string): void {
-  ensureLoaded();
-  const rec = byAccount.get(norm(account));
+  const rec = current().get(norm(account));
   if (!rec || !rec.active) return;
   rec.active = false;
   persist();
@@ -277,7 +322,8 @@ export function unbindProfileName(account: string): void {
 
 /** Test seam only. */
 export function _resetProfileNamesForTests(): void {
-  byAccount.clear();
+  byRegistry.clear();
+  unscoped = {};
   loaded = false;
   loadError = null;
 }

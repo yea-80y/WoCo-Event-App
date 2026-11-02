@@ -11,6 +11,7 @@ import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.
 import { feedRouteFor } from "../swarm/gateways.js";
 import { signAndUploadSoc } from "../swarm/client-soc.js";
 import { retryOnceIfStorageBusy, type StorageBusyRetryOptions } from "./storage-busy.js";
+import { rebuildOnServer, storedSomethingElse } from "./site-deploy-verdict.js";
 
 export interface SiteEventsFull {
   index: SiteEventsIndex;
@@ -66,6 +67,8 @@ export interface DeploySiteResult {
   contentHash: string;
   feedManifestHash: string;
   siteUrl: string;
+  /** "client": the browser's build was admitted (#1032); "server": the old full-copy build. */
+  builtBy?: "client" | "server";
   /** Present when the pointer feed is client-owned — the update we must sign. */
   multisiteFeed?: { nextIndex: number; rootChunkPayloadB64: string };
   /**
@@ -85,17 +88,47 @@ export interface DeploySiteResult {
  * response). The payload is the deployed collection's root chunk, so what the
  * feed serves is exactly what the server reported deploying. A first deploy the
  * server refused as busy (nothing was uploaded) is sent once more after the wait.
+ *
+ * With `parentAddress` (and a site) the browser builds the site on the shared
+ * runtime release first (#1032 slice 3) and the server stores it only if its own
+ * rebuild is identical; refused or unbuildable, the deploy is sent once more for
+ * the server to build the old way. The server decides per account whether to
+ * take the browser's build at all.
  */
 export async function deploySite(
   siteId: string,
-  opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site?: Site },
+  opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site?: Site; parentAddress?: string },
   feedSigner?: ContentFeedSigner | null,
   retry: StorageBusyRetryOptions = {},
 ) {
-  const res = await retryOnceIfStorageBusy(
-    () => authPost<DeploySiteResult>(`/api/sites/${siteId}/deploy`, { ...opts, ...(feedSigner ? { clientFeed: true } : {}) }),
-    retry,
-  );
+  const { parentAddress, ...request } = opts;
+  const clientFeed = feedSigner ? { clientFeed: true } : {};
+  const send = (body: Record<string, unknown>) =>
+    retryOnceIfStorageBusy(() => authPost<DeploySiteResult>(`/api/sites/${siteId}/deploy`, body), retry);
+
+  const built = parentAddress && request.site
+    ? await import("./site-collection.js").then((m) =>
+        m.buildClientSiteCollection({
+          site: request.site!,
+          parentAddress,
+          apiUrl: request.apiUrl,
+          gatewayUrl: request.gatewayUrl,
+          wocoAppUrl: request.wocoAppUrl ?? "https://woco.eth.limo",
+        }),
+      )
+    : null;
+  let res = built
+    ? await send({ ...request, site: built.site, collection: built.body, ...clientFeed })
+    : await send({ ...request, ...clientFeed });
+  if (built && rebuildOnServer(res)) {
+    console.warn(`[site publish] the server refused the browser's build (${res.code}): building on the server instead`);
+    res = await send({ ...request, ...clientFeed });
+  }
+  if (storedSomethingElse(res, built?.root)) {
+    // The server admits only an identical rebuild, so this cannot happen short of
+    // a server fault: never sign a pointer to a site we did not build.
+    throw new Error("The server stored a different site than this browser built");
+  }
   if (res.ok && res.data?.multisiteFeed && feedSigner) {
     const { nextIndex, rootChunkPayloadB64 } = res.data.multisiteFeed;
     const payload = base64ToBytes(rootChunkPayloadB64);

@@ -167,7 +167,11 @@ export function deployHeadLines(site: Site, gatewayUrl: string): string {
   ].filter(Boolean).join("\n");
 }
 
-/** The PWA web manifest a deployed site carries as `manifest.json`. */
+/**
+ * The PWA web manifest a deployed site carries as `manifest.json`. Icon paths are
+ * where the runtime ships them (apps/web/public/icons/ -> the collection's
+ * icons/); they pointed at the root until 2026-11-02, which 404'd on every site.
+ */
 export function sitePwaManifest(site: Site): Record<string, unknown> {
   return {
     name: site.theme.brandName,
@@ -177,8 +181,8 @@ export function sitePwaManifest(site: Site): Record<string, unknown> {
     background_color: site.theme.palette.bg,
     theme_color: site.theme.palette.accent,
     icons: [
-      { src: "./icon-192.png", sizes: "192x192", type: "image/png" },
-      { src: "./icon-512.png", sizes: "512x512", type: "image/png" },
+      { src: "./icons/icon-192.png", sizes: "192x192", type: "image/png" },
+      { src: "./icons/icon-512.png", sizes: "512x512", type: "image/png" },
     ],
   };
 }

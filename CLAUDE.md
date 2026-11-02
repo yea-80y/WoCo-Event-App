@@ -558,7 +558,12 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     binding points stops firing until each user re-binds; nothing is lost that a
     user cannot redo. Note the clock deliberately OUTLIVES the name it refers to:
     nothing deletes a record, or `release old -> mint new -> bind` would read as
-    a first bind and skip the cooldown)
+    a first bind and skip the cooldown. One section PER REGISTRY (`{chainId}:{registry}`),
+    only the current one read: a registry change starts clean by itself, no file to move
+    aside (the 10-23 reset needed that by hand). A migration that carries names over
+    must carry the section over too. ROLLBACK: a build older than 2026-11-02 reads the
+    sectioned file as EMPTY (fails open) and its first bind writes a flat map over it,
+    dropping every section - back the file up before a rollback, restore it rolling forward)
   event-attendees.json (#387 — eventId → attendee email hashes, appended at fulfilment;
     the ONLY server-visible proof a broadcast recipient holds a ticket. Losing it means no
     organiser can tell attendees their event is cancelled, and it CANNOT be rebuilt: the
@@ -610,6 +615,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     Losing it only reopens that window; present-but-unreadable is never overwritten; `/api/health`
     `keyRing` alarms, also when an account stays below its mark for 10 min - remove its entry with
     the server stopped if the recorded generation is wrong)
+  site-runtime-high-water.json (#1032 — the highest site runtime release version accepted, so a
+    restart cannot be handed an older (genuinely signed) release to build browser-built sites on.
+    Losing it only reopens that window. Unreadable = never overwritten, no release accepted (browser
+    builds refused, the old build path unaffected), `/api/health` `siteRuntime` red)
   name-targets.json (feed manifest -> the collection a deploy last baked there: the ONLY thing a site or
     event-page name may show - the CCIP gateway's WoCo-built rule never signs the holder's pointer. Losing it
     fails SAFE: every such name shows the app until republished. Unreadable = never overwritten, every such

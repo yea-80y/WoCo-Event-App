@@ -217,7 +217,10 @@ test("a name claimed for a published site is pointed at once, the way Publish po
   };
   const msb = read("lib/creator/builder/MultiSiteBuilder.svelte");
   assert.match(msb, /onbeforeclaim=\{armClaimPointer\}/);
-  assert.match(msb, /onclaim=\{\(label\) => \{ site\.subEnsLabel = label; void pointClaimedName\(label\); \}\}/);
+  // The owner is remembered first (stored-name-display.test.ts pins that order).
+  const onclaim = msb.match(/onclaim=\{\(label\) => \{([\s\S]*?)\}\}/);
+  assert.ok(onclaim, "the builder's onclaim moved");
+  assert.match(onclaim[1]!, /site\.subEnsLabel = label;\s*void pointClaimedName\(label\);/, "a claimed name is stored and pointed at once");
 
   const arm = fn(msb, "async function armClaimPointer(");
   assert.match(arm, /if \(!feedHash \|\| label === followingName \|\| !auth\.isConnected \|\| !auth\.hasSession \|\| !auth\.isAccountOwner\) return;/, "never published, or already following: nothing to sign for");

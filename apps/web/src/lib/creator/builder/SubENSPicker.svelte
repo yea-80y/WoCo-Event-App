@@ -49,9 +49,13 @@
      * refusal has to land before the user mints a name they cannot bind (#484).
      */
     onbeforerename?: () => Promise<boolean> | boolean;
+    /** Asked right before a NEW name is minted (never for one already owned);
+     *  false stops the mint. The profile checks its rename cooldown here: the
+     *  server only enforces it at bind, after an irreversible mint. */
+    onbeforemint?: (label: string) => Promise<boolean> | boolean;
   }
 
-  let { claimedLabel = $bindable<string | undefined>(undefined), targetHash = '', onclaim, onbeforeclaim, onunlink, stripeConnected, onstripesetup, singleName = false, onbeforerename }: Props = $props();
+  let { claimedLabel = $bindable<string | undefined>(undefined), targetHash = '', onclaim, onbeforeclaim, onunlink, stripeConnected, onstripesetup, singleName = false, onbeforerename, onbeforemint }: Props = $props();
 
   // ── Unlock gate ──────────────────────────────────────────────────────────────
   // ONE rule, the server's (lib/gate/check.ts): a ticket, published events, Stripe
@@ -329,6 +333,17 @@
     if (!auth.hasSession) {
       const ok = await auth.ensureSession();
       if (!ok) return;
+    }
+
+    // After sign-in, not before: a passkey sheet must open from the tap itself,
+    // and this is a network read.
+    if (onbeforemint) {
+      claiming = true;
+      try {
+        if (!(await onbeforemint(rawInput.toLowerCase().trim()))) return;
+      } finally {
+        claiming = false;
+      }
     }
 
     claiming = true;

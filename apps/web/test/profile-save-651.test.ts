@@ -256,13 +256,13 @@ const between = (s: string, from: string, to: string) => {
 };
 
 test("the profile page sends the changed fields, not the whole form", () => {
-  const save = between(page(), "async function saveProfile()", "async function guardRename()");
+  const save = between(page(), "async function saveProfile()", "async function guardRename(");
   assert.match(save, /updateProfile\(changes\b/);
   assert.doesNotMatch(save, /updateProfile\(\{\s*displayName:/);
 });
 
 test("the changes are decided before any signing prompt, so a no-op save asks for nothing", () => {
-  const save = between(page(), "async function saveProfile()", "async function guardRename()");
+  const save = between(page(), "async function saveProfile()", "async function guardRename(");
   const decided = save.indexOf("changedProfileFields(formValues(), formLoaded)");
   const prompt = save.indexOf("ensureContentSigner(");
   assert.ok(decided >= 0 && prompt > decided, "changes must be computed before ensureContentSigner");
@@ -273,7 +273,7 @@ test("the form's baseline is the profile it was filled from, and the text just s
   const init = between(page(), "function initForm()", "formDirty = false;");
   assert.match(init, /const loaded: ProfileFormFields = \{[\s\S]*profile\?\.displayName[\s\S]*\};[\s\S]*formLoaded = loaded;/);
   // A failed avatar upload must not leave the next save diffing against the old profile.
-  const save = between(page(), "async function saveProfile()", "async function guardRename()");
+  const save = between(page(), "async function saveProfile()", "async function guardRename(");
   const rebased = save.indexOf("if (merged) profile = merged;");
   assert.ok(rebased >= 0 && rebased < save.indexOf("uploadAvatar("), "saved text becomes the baseline before the avatar upload");
 });

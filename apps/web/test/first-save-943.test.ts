@@ -496,7 +496,7 @@ test("the editor hands its base to the publish, waits once with a visible state,
 
 test("the profile page retries the feed writes late, shows it, and cancels with the page or account", () => {
   const page = code("lib/components/profile/ProfilePage.svelte");
-  const save = between(page, "async function saveProfile()", "async function guardRename()");
+  const save = between(page, "async function saveProfile()", "async function guardRename(");
   assert.match(save, /const lateRetry: LateRetry = \{ signal: life\.signal, onWait: \(\) => \{ saveWaiting = true; \} \};/);
   assert.match(save, /updateProfile\(changes, undefined, \{ lateRetry \}\)/);
   assert.match(save, /uploadAvatar\(pendingAvatarDataUrl, \{ lateRetry \}\)/);

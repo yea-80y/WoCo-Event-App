@@ -29,6 +29,8 @@
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import { getOwnedSubEns } from "../../api/sub-ens.js";
+  import { rememberOwner } from "../../sub-ens/verify-name.js";
+  import { createNameCheck } from "../../sub-ens/name-check.svelte.js";
   import { describeSubEnsError, subEnsErrorDetail, subEnsErrorFrom } from "../../sub-ens/errors.js";
   import { ApiError } from "../../api/errors.js";
 
@@ -153,10 +155,17 @@
       // Storage refused: the next publish asks once more, nothing worse.
     }
   }
+  // The site config is client-signed and outlives a registry change, so its label is
+  // a claim: the Domain tab says "is yours" and Publish asks for the holder key only
+  // once the chain agrees (same rule as the profile card, 2026-11-02).
+  const siteNameCheck = createNameCheck(() => ({ label: site.subEnsLabel, owner: auth.parent }));
+  const siteNameVerified = $derived(siteNameCheck.verified);
+
   /** A name this publish will point at the site, asked for at the tap (a wallet signs
    *  with the button, as before). */
   const siteNameToPoint = $derived(
     site.subEnsLabel &&
+      siteNameVerified &&
       site.subEnsLabel !== followingName &&
       auth.isAccountOwner &&
       (auth.kind === 'passkey' || auth.kind === 'web3auth')
@@ -481,7 +490,8 @@
       if (feedRes.code === 'STRIPE_VERIFICATION_REQUIRED') throw new StripeVerificationNeeded(feedRes.error);
       if (!feedRes.ok) throw new Error(feedRes.error ?? 'Publish failed');
 
-      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) }, feedSigner, retry);
+      // parentAddress: build the site here on the shared runtime (#1032); the server checks it.
+      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site), parentAddress: auth.parent ?? undefined }, feedSigner, retry);
       publishWaitNote = '';
       if (!deployRes.ok || !deployRes.data) {
         if (deployRes.code === 'BATCH_PURCHASE_REQUIRED') throw new BatchPurchaseNeeded();
@@ -956,7 +966,7 @@
           <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(feedHash)} title="Copy feed hash">Copy</button>
           <span class="feed-hint">← stable · use this for a .eth domain you own</span>
         </div>
-        {#if publishState === 'done' && !site.subEnsLabel}
+        {#if publishState === 'done' && (!site.subEnsLabel || siteNameCheck.state === 'not-owned')}
           <div class="deploy-row">
             <span class="deploy-label">Share</span>
             <button class="deploy-copy" onclick={() => { tab = 'domain'; }}>Get a free .woco.eth domain</button>
@@ -1039,15 +1049,39 @@
           onshopchange={(id) => { siteShopId = id; }}
         />
       {:else if tab === 'domain'}
-        <SubENSPicker
-          bind:claimedLabel={site.subEnsLabel}
-          targetHash={feedHash}
-          onbeforeclaim={armClaimPointer}
-          onclaim={(label) => { site.subEnsLabel = label; void pointClaimedName(label); }}
-          onunlink={() => { site.subEnsLabel = undefined; }}
-          stripeConnected={stripeConnected}
-          onstripesetup={() => { stripeModalOpen = true; }}
-        />
+        {#if siteNameCheck.state === 'checking'}
+          <div class="subens-notice">Checking this site's domain…</div>
+        {:else if siteNameCheck.state === 'unknown'}
+          <div class="subens-notice">
+            Couldn't check this site's domain just now.
+            <button class="subens-notice-btn" onclick={() => siteNameCheck.retry()}>Try again</button>
+          </div>
+        {:else}
+          {#if siteNameCheck.state === 'not-owned' && site.subEnsLabel}
+            <div class="subens-notice subens-notice--warn">
+              <code>{subEnsName(site.subEnsLabel)}</code> isn't registered to this account, so publishing won't point it here.
+              <button class="subens-notice-btn" onclick={() => { site.subEnsLabel = undefined; }}>Remove it from this site</button>
+            </div>
+          {/if}
+          <!-- One-way, not bind: - every picker write already arrives through onclaim /
+               onunlink, and the picker must only ever see a chain-verified label. -->
+          <SubENSPicker
+            claimedLabel={siteNameVerified ? site.subEnsLabel : undefined}
+            targetHash={feedHash}
+            onbeforeclaim={armClaimPointer}
+            onclaim={(label) => {
+              // Every claim path is chain-backed (a sponsor mint to this account, the
+              // /owned list, or a check that returned this account as owner):
+              // remembered first so the tab does not drop to "checking" mid-claim.
+              if (auth.parent) rememberOwner(label, auth.parent);
+              site.subEnsLabel = label;
+              void pointClaimedName(label);
+            }}
+            onunlink={() => { site.subEnsLabel = undefined; }}
+            stripeConnected={stripeConnected}
+            onstripesetup={() => { stripeModalOpen = true; }}
+          />
+        {/if}
         <DomainTab feedHash={feedHash} onpublish={handlePublish}>
           <DomainLinker
             siteId={site.siteId}
@@ -1457,6 +1491,17 @@
     color: var(--text);
     border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
     background: color-mix(in srgb, var(--warning) 8%, transparent);
+  }
+  .subens-notice code { font-family: var(--font-mono); }
+  .subens-notice-btn {
+    margin-left: 0.35rem;
+    font: inherit;
+    color: var(--accent);
+    background: none;
+    border: none;
+    padding: 0;
+    text-decoration: underline;
+    cursor: pointer;
   }
 
   /* A first save waiting out storage's pause: progress, not a failure. */
