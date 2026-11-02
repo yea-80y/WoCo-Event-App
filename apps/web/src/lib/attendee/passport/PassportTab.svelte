@@ -17,7 +17,7 @@
   import PassportTicket from "./PassportTicket.svelte";
   import { passportState } from "./passport-state.svelte.js";
 
-  let { badge }: { badge: BadgeV1 | null } = $props();
+  let { badge, networkBadge = null }: { badge: BadgeV1 | null; networkBadge?: BadgeV1 | null } = $props();
 
   const passport = passportState();
   const tickets = $derived(passport.tickets);
@@ -172,16 +172,26 @@
 
   <section>
     <h2 class="section-label">Stamps</h2>
-    <!-- `value === true` only: a revoked badge is a later version of the same
-         record, and `readBadge` returns it. -->
-    {#if badge?.value === true}
-      <div class="stamp">
-        <CohortStamp epoch={badge.epoch} size={88} />
-        <p class="stamp-text">
-          <strong>{badge.epoch === 0 ? "Early adopter" : `Cohort ${badge.epoch}`}</strong>
-          <span>Signed by WoCo and shown on your profile.</span>
-        </p>
-      </div>
+    <!-- `value === true` only: the display rule is the caller's (`readBadge`). -->
+    {#if badge?.value === true || networkBadge?.value === true}
+      {#if badge?.value === true}
+        <div class="stamp">
+          <CohortStamp epoch={badge.epoch} size={88} />
+          <p class="stamp-text">
+            <strong>{badge.epoch === 0 ? "Early adopter" : `Cohort ${badge.epoch}`}</strong>
+            <span>Signed by WoCo and shown on your profile.</span>
+          </p>
+        </div>
+      {/if}
+      {#if networkBadge?.value === true}
+        <div class="stamp">
+          <CohortStamp kind="network" size={88} />
+          <p class="stamp-text">
+            <strong>Network builder</strong>
+            <span>Someone you invited brought in an organiser of their own. Signed by WoCo.</span>
+          </p>
+        </div>
+      {/if}
     {:else}
       <p class="note">Stamps you earn collect here and show on your profile.</p>
     {/if}
@@ -255,6 +265,7 @@
   }
 
   .stamp { display: flex; align-items: center; gap: 1rem; }
+  .stamp + .stamp { margin-top: 1rem; }
   .stamp-text { display: flex; flex-direction: column; gap: 0.125rem; margin: 0; }
   .stamp-text strong { font-size: 0.9375rem; font-weight: 600; }
   .stamp-text span { font-size: 0.8125rem; color: var(--text-muted); }
