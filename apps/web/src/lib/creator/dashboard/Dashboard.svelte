@@ -29,6 +29,7 @@
   import { BrowserOrders, OrdersStatusUnavailable } from "./browser-orders.js";
   import { canReadLedger, fetchOrderBox, liveBrowserOrdersDeps } from "./browser-orders-live.js";
   import { DetailQueue, type DetailState } from "./detail-queue.js";
+  import { OrderOpener, type OpenerPort } from "./order-opener.js";
   import { withoutSealedOrders } from "../../api/orders-cache.js";
   import type { RequestSigningOptions } from "../../auth/request-session.js";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
@@ -452,8 +453,31 @@
   let decryptChain: Promise<void> = Promise.resolve();
   /** Bumped when the keys lock: an opening run still going stops and keeps nothing. */
   let openEpoch = 0;
-  /** Opened per step, then the page gets a turn: thousands of orders never freeze it. */
+  /** Opened per step when no worker runs, then the page gets a turn. */
   const OPEN_CHUNK = 20;
+  /** Orders per message to the opening worker. */
+  const OPEN_BATCH = 50;
+  /** Rows kept in the page's saved copy of the list (localStorage); none above it. */
+  const ROW_CACHE_MAX = 5_000;
+
+  /**
+   * Opening runs in a worker (order-opener.ts): thousands of orders never freeze the
+   * page. null = this browser has no workers; the page opens them itself.
+   */
+  let opener: OrderOpener | null | undefined;
+  function orderOpener(): OrderOpener | null {
+    if (opener === undefined) {
+      opener =
+        typeof Worker === "undefined"
+          ? null
+          : new OrderOpener(
+              () =>
+                new Worker(new URL("./order-opener.worker.ts", import.meta.url), { type: "module" }) as unknown as OpenerPort,
+            );
+    }
+    return opener;
+  }
+  $effect(() => () => opener?.lock());
 
   /**
    * Show a freshly read list. The display map is rebuilt in the same step from
@@ -531,21 +555,56 @@
       import("../../keyring/order-keys.js"),
       import("@woco/shared/crypto/sealed-box"),
     ]);
-    const { secretKeys } = await orderKeysOf(secrets);
     const epoch = openEpoch;
     opened.markOpened();
 
+    const worker = orderOpener();
+    let useWorker = worker !== null;
+    let pageKeys: Uint8Array[] | null = null;
     for (;;) {
       // Each step from the rows on screen NOW, so an order erased mid-run is never
       // opened; one that would not open is recorded and not retried with this box.
-      const batch = ordersResponse ? opened.unopened(ordersResponse.orders).slice(0, OPEN_CHUNK) : [];
+      const batch = ordersResponse ? opened.unopened(ordersResponse.orders).slice(0, useWorker ? OPEN_BATCH : OPEN_CHUNK) : [];
       if (batch.length === 0) break;
+      if (worker && useWorker) {
+        if (!worker.keyedFor(epoch)) {
+          const { secretKeys: keys } = await orderKeysOf(secrets);
+          // Locked while the keys were derived: never hand them to a new worker.
+          if (epoch !== openEpoch || destroyed) return;
+          worker.unlock(epoch, keys);
+        }
+        // Bound to THIS event and the SLOT's series (order-opener-core.ts).
+        const out = await worker.open(
+          epoch,
+          eventId,
+          batch.map(({ order }, id) => ({ id, seriesId: order.seriesId, box: order.encryptedOrder })),
+        );
+        if (out.kind === "unavailable") {
+          // No worker after all: the rest open on this page.
+          useWorker = false;
+          continue;
+        }
+        // Locked, or left, while this batch ran: keep nothing it opened.
+        if (out.kind === "locked" || epoch !== openEpoch || destroyed) return;
+        const answered = new Map(out.results.map((r) => [r.id, r]));
+        batch.forEach(({ order }, id) => {
+          const r = answered.get(id);
+          // No answer for a box counts as a failure, so a run can never loop on it.
+          if (r?.data !== undefined) opened.put(order, r.data as DecryptedOrder);
+          else opened.fail(order);
+        });
+        if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
+        continue;
+      }
+      // No worker (or it failed to start): open on this page, in steps.
+      const keys = (pageKeys ??= (await orderKeysOf(secrets)).secretKeys);
+      if (epoch !== openEpoch || destroyed) return;
       const results = await Promise.allSettled(
         batch.map(async ({ order }) => {
           // Bound to THIS event and the SLOT's series (the server sets
           // `order.seriesId` from the slot) — never the payload's own seriesId, so
           // an order lifted from another series fails to open instead of showing.
-          return openJsonWithAnyKey<DecryptedOrder>(secretKeys, order.encryptedOrder, orderSealContext(eventId, order.seriesId));
+          return openJsonWithAnyKey<DecryptedOrder>(keys, order.encryptedOrder, orderSealContext(eventId, order.seriesId));
         }),
       );
       // Locked, or left, while this step ran: keep nothing it opened.
@@ -572,6 +631,7 @@
   $effect(() => {
     if (auth.kind === "passkey" && !auth.hasIdentitySeed && (decryptedOrders.size > 0 || decrypting)) {
       openEpoch++;
+      opener?.lock();
       opened.clear();
       decryptedOrders = new Map();
       ordersLocked = true;
@@ -654,7 +714,13 @@
         const data = reader.build((root) => queue.box(root));
         ordersSource = "browser";
         ordersReadError = null;
-        cacheSet(cacheKey.eventOrders(eventId), withoutSealedOrders(data), TTL.EVENT_ORDERS);
+        // Rows only (no boxes), and not past ROW_CACHE_MAX: ~200 KB per 1,000 rows, and the
+        // site's whole storage is ~5 MB. Above it, an older smaller copy would paint wrong.
+        if (data.orders.length <= ROW_CACHE_MAX) {
+          cacheSet(cacheKey.eventOrders(eventId), withoutSealedOrders(data), TTL.EVENT_ORDERS);
+        } else {
+          cacheDel(cacheKey.eventOrders(eventId));
+        }
         return data;
       }
     } catch (err) {

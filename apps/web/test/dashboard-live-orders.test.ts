@@ -469,7 +469,7 @@ test("opening runs in steps from the rows on screen, gives the page a turn, and 
   assert.match(body, /await new Promise\(\(resolve\) => setTimeout\(resolve, 0\)\);/);
   const guard = body.indexOf("if (epoch !== openEpoch || destroyed) return;");
   assert.ok(guard > 0 && guard < body.indexOf("opened.put("), "the lock check comes before anything opened is kept");
-  assert.match(DASH, /openEpoch\+\+;\s*opened\.clear\(\);/);
+  assert.match(DASH, /openEpoch\+\+;\s*opener\?\.lock\(\);\s*opened\.clear\(\);/);
 });
 
 test("every way out of an opening run stops showing 'Opening...' (Fable sign-off S5)", () => {

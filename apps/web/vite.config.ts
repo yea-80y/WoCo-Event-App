@@ -75,6 +75,9 @@ export default defineConfig(({ command, mode }) => {
       // was unaffected. Exact-match regex so `process/browser` itself is untouched.
       alias: [{ find: /^process$/, replacement: 'process/browser' }],
     },
+    // The dashboard's order-opening worker (#965) loads the lattice code lazily, and
+    // only an ES-module worker can split chunks ('iife', the default, cannot).
+    worker: { format: 'es' },
     build: {
       rollupOptions: {
         input: {
