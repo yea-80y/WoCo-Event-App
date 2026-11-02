@@ -73,6 +73,7 @@ import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
+import { siteRuntimeReleases, SITE_RUNTIME_REFRESH_MS } from "./lib/site/runtime-release.js";
 import { missingWebhookSecrets, stripeKeyMode } from "./lib/stripe/key-mode.js";
 import { ticketSalesHealth } from "./lib/stripe/ticket-sales.js";
 import { onStripeVerified } from "./lib/stripe/accounts.js";
@@ -390,6 +391,9 @@ function healthReport() {
     // back to Etherna; `ledger.pending` counts sends not yet seen on our bee.
     // `push` RED: a send still not on our bee 15 min on - Etherna is not pushing.
     ethernaFailover: ethernaFailoverHealth(),
+    // The latest site runtime release (#1032): version, commit and when it was
+    // read. Informational (`ok` always true) until publishing depends on it.
+    siteRuntime: siteRuntimeReleases.health(),
     // The client-SOC relay's limiter (#301). `globalTrippedAt` non-null is the
     // alarm: the per-process ceiling that legitimate traffic never reaches has
     // refused writes with 503 — either an attack on the postage batch or a
@@ -942,6 +946,10 @@ const tickGateway = () => {
 };
 setTimeout(tickGateway, 3 * 60_000).unref();
 setInterval(tickGateway, 5 * 60_000).unref();
+// #1032: keep the latest site runtime release in memory for the route and health.
+const refreshSiteRuntime = () => { void siteRuntimeReleases.get(0); };
+setTimeout(refreshSiteRuntime, 30_000).unref();
+setInterval(refreshSiteRuntime, SITE_RUNTIME_REFRESH_MS).unref();
 // #546: store paid orders whose store failed at fulfilment, and delete unpaid
 // holds past their day.
 setInterval(() => {
