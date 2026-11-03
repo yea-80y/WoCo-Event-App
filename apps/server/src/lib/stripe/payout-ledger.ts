@@ -165,6 +165,12 @@ export function listHeld(): PayoutLedgerEntry[] {
   return Object.values(store).filter((e) => e.status === "held");
 }
 
+/** Every entry, any kind or status - referral earnings read them all (#12). */
+export function listAllEntries(): PayoutLedgerEntry[] {
+  ensureLoaded();
+  return Object.values(store);
+}
+
 /** Every event sale recorded for an event, any status (#644). */
 export function listEntriesForEvent(eventId: string): PayoutLedgerEntry[] {
   ensureLoaded();

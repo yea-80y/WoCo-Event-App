@@ -26,7 +26,16 @@
 
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+import { computeReferralEarnings, recordReferralPayout } from "../lib/campaign/earnings.js";
+import { liveEarningsReads } from "../lib/campaign/earnings-live.js";
+import {
+  activeWithholds,
+  appendJournal,
+  referralJournalHealth,
+  type LiftRecord,
+  type WithholdRecord,
+} from "../lib/campaign/earnings-journal.js";
 import type { AppEnv } from "../types.js";
 import {
   failureHealth,
@@ -473,6 +482,136 @@ ops.post("/payouts/unledgered/:chargeId/resolve", async (c) => {
   if (!sale) return c.json({ ok: false, error: "No open unledgered sale for that charge" }, 404);
   console.log(`[ops] unledgered sale ${chargeId} (${sale.account}) resolved by ${by}: ${reason}`);
   return c.json({ ok: true, data: { resolved: true, account: sale.account, health: unledgeredSalesHealth() } });
+});
+
+// ---------------------------------------------------------------------------
+// Referral earnings (#12) - rules in docs/REFERRAL_EARNINGS.md. These routes
+// move no money: payouts are sent by hand, then recorded here.
+// ---------------------------------------------------------------------------
+
+const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
+const CURRENCY_RE = /^[a-z]{3}$/;
+const TX_HASH_RE = /^0x[0-9a-f]{64}$/;
+const NETWORK_RE = /^[a-z0-9-]{2,32}$/;
+const ASSET_RE = /^[A-Za-z0-9.]{2,16}$/;
+const DECIMAL_RE = /^\d{1,18}(\.\d{1,18})?$/;
+const SESSION_RE = /^cs_[A-Za-z0-9_]{1,200}$/;
+
+function field(body: Record<string, unknown> | null, name: string, max = 300): string {
+  const v = body?.[name];
+  return typeof v === "string" ? v.trim().slice(0, max) : "";
+}
+
+/**
+ * GET /api/ops/referral-earnings[?referrer=0x…]
+ *
+ * Every referrer's statement, derived now: one Stripe read per referred sale.
+ * `dueMinor` is what a payout made now settles.
+ */
+ops.get("/referral-earnings", async (c) => {
+  const referrer = (c.req.query("referrer") || "").toLowerCase();
+  if (referrer && !ADDRESS_RE.test(referrer)) return c.json({ ok: false, error: "`referrer` must be an address" }, 400);
+  const statement = await computeReferralEarnings(liveEarningsReads);
+  const referrers = referrer ? statement.referrers.filter((r) => r.referrer === referrer) : statement.referrers;
+  return c.json({ ok: true, data: { ...statement, referrers, journal: referralJournalHealth() } });
+});
+
+/**
+ * POST /api/ops/referral-earnings/payouts
+ *   { by, referrer, currency, amountMinor, network, asset, sentAmount, txHash, fxRate?, paidAt?, note? }
+ *
+ * Records a stablecoin payout ALREADY SENT to the referrer's own account address.
+ * Refused if `amountMinor` exceeds what is due now (less is fine: the rest stays
+ * owed); the server freezes the payable lines.
+ */
+ops.post("/referral-earnings/payouts", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+  const by = field(body, "by", 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  const referrer = field(body, "referrer").toLowerCase();
+  const currency = field(body, "currency").toLowerCase();
+  const txHash = field(body, "txHash").toLowerCase();
+  const network = field(body, "network");
+  const asset = field(body, "asset");
+  const sentAmount = field(body, "sentAmount");
+  const fxRate = field(body, "fxRate");
+  const paidAt = field(body, "paidAt");
+  const note = field(body, "note");
+  const amountMinor = body?.amountMinor;
+  if (!ADDRESS_RE.test(referrer)) return c.json({ ok: false, error: "`referrer` must be an address" }, 400);
+  if (!CURRENCY_RE.test(currency)) return c.json({ ok: false, error: "`currency` must be an ISO code" }, 400);
+  if (typeof amountMinor !== "number" || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+    return c.json({ ok: false, error: "`amountMinor` must be a positive whole number" }, 400);
+  }
+  if (!TX_HASH_RE.test(txHash)) return c.json({ ok: false, error: "`txHash` must be a transaction hash" }, 400);
+  if (!NETWORK_RE.test(network)) return c.json({ ok: false, error: "`network` is required, e.g. arbitrum-one" }, 400);
+  if (!ASSET_RE.test(asset)) return c.json({ ok: false, error: "`asset` is required, e.g. USDC" }, 400);
+  if (!DECIMAL_RE.test(sentAmount)) return c.json({ ok: false, error: "`sentAmount` must be a decimal amount" }, 400);
+  if (fxRate && !DECIMAL_RE.test(fxRate)) return c.json({ ok: false, error: "`fxRate` must be a decimal" }, 400);
+  if (paidAt && !Number.isFinite(Date.parse(paidAt))) return c.json({ ok: false, error: "`paidAt` must be a date" }, 400);
+  const result = await recordReferralPayout(
+    {
+      referrer,
+      currency,
+      amountMinor,
+      network,
+      asset,
+      sentAmount,
+      txHash,
+      by,
+      ...(fxRate ? { fxRate } : {}),
+      ...(paidAt ? { paidAt: new Date(paidAt).toISOString() } : {}),
+      ...(note ? { note } : {}),
+    },
+    { reads: liveEarningsReads, append: appendJournal, newId: () => `rp_${randomUUID()}` },
+  );
+  if (!result.ok) return c.json({ ok: false, error: result.error }, result.status);
+  console.log(`[ops] referral payout ${result.record.id}: ${amountMinor} ${currency} to ${referrer} (${txHash}) recorded by ${by}`);
+  return c.json({ ok: true, data: { payout: result.record } });
+});
+
+/**
+ * POST /api/ops/referral-earnings/withholds   { by, scope, key, reason }
+ *
+ * Hold back earnings (ToS §9: self-referral, fraudulent sales, a breach):
+ * `referrer` = all of a referrer's, `referee` = those from one organiser's
+ * sales, `sale` = one Checkout Session. Held earnings stay on the statement.
+ */
+ops.post("/referral-earnings/withholds", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+  const by = field(body, "by", 100);
+  const scope = field(body, "scope");
+  const reason = field(body, "reason");
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  if (!reason) return c.json({ ok: false, error: "`reason` is required" }, 400);
+  if (scope !== "referrer" && scope !== "referee" && scope !== "sale") {
+    return c.json({ ok: false, error: "`scope` must be referrer, referee or sale" }, 400);
+  }
+  const key = scope === "sale" ? field(body, "key") : field(body, "key").toLowerCase();
+  if (scope === "sale" ? !SESSION_RE.test(key) : !ADDRESS_RE.test(key)) {
+    return c.json({ ok: false, error: scope === "sale" ? "`key` must be a Checkout Session id" : "`key` must be an address" }, 400);
+  }
+  const record: WithholdRecord = { kind: "withhold", id: `rw_${randomUUID()}`, scope, key, reason, by, at: new Date().toISOString() };
+  if (!appendJournal(record)) return c.json({ ok: false, error: "The payout journal could not be written - nothing was recorded" }, 503);
+  console.log(`[ops] referral withhold ${record.id} (${scope} ${key}) by ${by}: ${reason}`);
+  return c.json({ ok: true, data: { withhold: record } });
+});
+
+/** POST /api/ops/referral-earnings/withholds/:id/lift   { by, reason } */
+ops.post("/referral-earnings/withholds/:id/lift", async (c) => {
+  const withholdId = c.req.param("id");
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+  const by = field(body, "by", 100);
+  const reason = field(body, "reason");
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  if (!reason) return c.json({ ok: false, error: "`reason` is required" }, 400);
+  if (!activeWithholds().some((w) => w.id === withholdId)) {
+    return c.json({ ok: false, error: "No active withhold with that id" }, 404);
+  }
+  const record: LiftRecord = { kind: "lift", id: `rl_${randomUUID()}`, withholdId, reason, by, at: new Date().toISOString() };
+  if (!appendJournal(record)) return c.json({ ok: false, error: "The payout journal could not be written - nothing was recorded" }, 503);
+  console.log(`[ops] referral withhold ${withholdId} lifted by ${by}: ${reason}`);
+  return c.json({ ok: true, data: { lift: record } });
 });
 
 /**
