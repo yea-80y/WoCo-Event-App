@@ -12,4 +12,8 @@ export {
   type BuyerPlan, type Section, type PickRefusal, type SectionSummary, type Direction,
 } from "./buyer.js";
 export { createPicker, pickerCss, type Picker, type PickerOptions, type PickerState } from "./picker.js";
+export {
+  loadSeatMap, type SeatMapSeries, type SeatMapDeps, type SeatMapProblem, type SeatMapSnapshot, type LiveSeatMap,
+} from "./load.js";
+export { parsePlan, PARSE_IN_PAGE_MAX_SEATS } from "./parse.js";
 export type { Level, View, Screen } from "./view.js";
