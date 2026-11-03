@@ -462,10 +462,32 @@ The authoritative list is the `AuthKind` union in `packages/shared/src/auth/type
 | Shown as | Kind | Parent account | State |
 |---|---|---|---|
 | Passkey | `passkey` | ZeroDev Kernel on Arbitrum One. Root validator: ECDSA over a secp256k1 key derived from the passkey's PRF output, moved to WeightedECDSA (every passkey a co-owner) when a second passkey is added (§9) | Live. The only kind that can organise (#768) |
-| Email | `web3auth` | Also a Kernel | Live, on a Web3Auth **devnet** project. Can upgrade in place to a passkey (§9) |
+| Email | `web3auth` | Also a Kernel | Live, on the Web3Auth **sapphire_mainnet** project since 2026-10-22. Can upgrade in place to a passkey (§9) |
 | Wallets | `web3` | MetaMask / WalletConnect EOA | Built, `walletLoginAllowed = false` (#186) |
 | Coinbase | `coinbase` | Coinbase Smart Wallet | Built, `coinbaseLoginAllowed = false` |
 | Zupass | `zupass` | — | In the union, **not implemented** |
+
+**What fixes an email account's address (#1051).** The account is the Kernel v3.1 counterfactual
+(EntryPoint 0.7, index 0) of ONE key: the `privKey` Web3Auth hands the app through
+`CHAIN_NAMESPACES.OTHER` + `private_key` (`web3auth-config.ts`). It is **not** the address the
+Web3Auth dashboard lists for that user (measured 2026-11-03: dashboard `0x85FA…77a4`, WoCo key
+`0x7b15…48c5`, account `0xad85…3bac`); the dashboard cannot be used to find a WoCo account. Change
+any of these and every email account silently becomes a different, empty one - sealed orders,
+issuer identity and content feeds left behind:
+
+- the Web3Auth **client ID** and **network** (`VITE_WEB3AUTH_NETWORK=sapphire_mainnet`);
+- the **login connections** offered (a user's key is per connection, even for the same email);
+- the project's **client secret** on the Web3Auth dashboard;
+- the key route: `CHAIN_NAMESPACES.OTHER` + `private_key`, and **no** `useSFAKey`;
+- the Kernel parameters above.
+
+If one of them moves anyway, `web3auth-identity.ts` stops it on any device that has seen the
+person before: it keeps, per device, who signed in (a SHA-256 tag over client ID, network,
+login method and user id - no raw email) -> the key and account they had, and a known person
+arriving with a different key is refused before any account is opened or written. A new device
+cannot notice (the server deliberately holds no login -> account link), so a changed key is
+caught by the first returning device, and every `@web3auth/*` upgrade still needs a sign-in
+with a known test account before deploy.
 
 **Why wallet login is off for launch.** A wallet account's seed is keccak256 of one fixed
 EIP-712 signature, and a wallet signs whatever a site asks: any page that obtains the same
