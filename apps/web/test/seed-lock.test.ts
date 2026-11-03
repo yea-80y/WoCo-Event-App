@@ -375,8 +375,11 @@ test("passive likes, follows and subjects read by ADDRESS - never a prompt on pa
 
 test("Dashboard: attendee details ask for the passkey only from a tap", () => {
   const dash = read("../src/lib/creator/dashboard/Dashboard.svelte");
-  // decryptCurrent queues runs (live orders); the prompt rule is in the run itself.
-  assert.match(dash, /function decryptCurrent\(prompt = false\): Promise<void> \{\s*const run = decryptChain\.then\(\(\) => decryptOnce\(prompt\)\);/);
+  // decryptCurrent queues runs (live orders); the prompt rule is in the run itself. A quiet
+  // call may join a tap's waiting run (#1061), never the other way round, so no call asks
+  // that was not already going to.
+  assert.match(dash, /function decryptCurrent\(prompt = false\): Promise<void> \{[\s\S]*?const run = decryptChain\.then\(\(\) => \{\s*if \(waitingRun === waiting\) waitingRun = null;\s*return decryptOnce\(prompt\);/);
+  assert.match(dash, /if \(waitingRun && \(waitingRun\.prompt \|\| !prompt\)\) return waitingRun\.run;/);
   // decryptOnce wraps the run (#965: one finally for the busy flag); the prompt rule is in openOrders.
   assert.match(dash, /async function decryptOnce\(prompt: boolean\)[\s\S]*?await openOrders\(prompt\);/);
   const decrypt = body(dash.replace(/\n  }\n/g, "\n}\n"), "async function openOrders(prompt: boolean)");

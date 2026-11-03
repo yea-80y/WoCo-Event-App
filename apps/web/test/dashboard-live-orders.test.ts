@@ -121,6 +121,89 @@ test("locking again forgets everything opened", () => {
   assert.equal(opened.remap([order("a", 2)]).size, 0);
 });
 
+// ── nextUnopened: the run's steps without a walk per step (#1061) ───────────
+
+const list = (n: number, enc = "e") => Array.from({ length: n }, (_, i) => order("a", i + 1, `${enc}${i + 1}`));
+const editions = (steps: Array<{ order: OrderEntry }>) => steps.map((s) => s.order.edition);
+
+test("nextUnopened: the same orders, in the same order, as unopened - in steps", () => {
+  const opened = new OpenedOrders<{ n: number }>();
+  opened.markOpened();
+  const rows = [...list(5), order("a", 6)];
+  opened.put(rows[1], { n: 2 });
+  opened.fail(rows[3]);
+  const seen: number[] = [];
+  for (;;) {
+    const step = opened.nextUnopened(rows, 2);
+    if (step.length === 0) break;
+    seen.push(...editions(step));
+    for (const { order: o } of step) opened.put(o, { n: o.edition });
+  }
+  assert.deepEqual(seen, [1, 3, 5], "skips the opened, the failed and the row with no box");
+  assert.deepEqual(editions(opened.unopened(rows)), []);
+});
+
+test("nextUnopened: a step abandoned midway (worker gone) is offered again", () => {
+  const opened = new OpenedOrders<{ n: number }>();
+  opened.markOpened();
+  const rows = list(4);
+  assert.deepEqual(editions(opened.nextUnopened(rows, 2)), [1, 2]);
+  // Nothing put or failed: the page opens them itself next.
+  assert.deepEqual(editions(opened.nextUnopened(rows, 2)), [1, 2]);
+  opened.put(rows[0], { n: 1 });
+  assert.deepEqual(editions(opened.nextUnopened(rows, 2)), [2, 3], "only what is done is passed");
+});
+
+test("nextUnopened: a new list is walked afresh - an order erased mid-run is never offered", () => {
+  const opened = new OpenedOrders<{ n: number }>();
+  opened.markOpened();
+  const rows = list(4);
+  assert.deepEqual(editions(opened.nextUnopened(rows, 1)), [1]);
+  // A poll lands: order 2 erased (no box), order 3 re-sealed. A NEW array, as the page always makes.
+  const fresh = [rows[0], order("a", 2), order("a", 3, "resealed"), rows[3]];
+  assert.deepEqual(editions(opened.nextUnopened(fresh, 10)), [1, 3, 4]);
+  const step = opened.nextUnopened(fresh, 10);
+  assert.equal(step[1].order.encryptedOrder && (step[1].order.encryptedOrder as { enc: string }).enc, "resealed");
+});
+
+test("nextUnopened: a relock, or a prune, starts the walk again", () => {
+  const opened = new OpenedOrders<{ n: number }>();
+  opened.markOpened();
+  const rows = list(3);
+  for (const { order: o } of opened.nextUnopened(rows, 3)) opened.put(o, { n: 1 });
+  assert.equal(opened.nextUnopened(rows, 3).length, 0);
+  opened.clear();
+  opened.markOpened();
+  assert.deepEqual(editions(opened.nextUnopened(rows, 3)), [1, 2, 3], "after a relock every box is tried again");
+  opened.fail(rows[0]);
+  opened.prune(rows);
+  assert.deepEqual(editions(opened.nextUnopened(rows, 3)), [2, 3], "the same box still would not open");
+  const resealed = [order("a", 1, "new"), rows[1], rows[2]];
+  opened.prune(resealed);
+  assert.deepEqual(editions(opened.nextUnopened(resealed, 3)), [1, 2, 3], "a re-sealed box is tried again");
+});
+
+test("nextUnopened: a 20k-order run walks the list about once, not once per step", () => {
+  const opened = new OpenedOrders<{ n: number }>();
+  opened.markOpened();
+  const rows = list(20_000);
+  let reads = 0;
+  const counted = rows.map((o) =>
+    new Proxy(o, { get: (t, k) => (k === "encryptedOrder" && reads++, Reflect.get(t, k)) }),
+  ) as OrderEntry[];
+  let steps = 0;
+  for (;;) {
+    const step = opened.nextUnopened(counted, 50);
+    if (step.length === 0) break;
+    steps++;
+    for (const { order: o } of step) opened.put(o, { n: 1 });
+  }
+  assert.equal(steps, 400);
+  // One full walk, a few checks per entry as the steps pass it, and its put: ~5 reads a row.
+  // Per-step walks (the old way) were 400 x 20,000 = 8,000,000.
+  assert.ok(reads < 20_000 * 8, `${reads} box reads`);
+});
+
 test("the broadcast tab asks to open orders only when there are boxes to open", () => {
   assert.match(DASH, /\{#if decryptedOrders\.size === 0 && ordersResponse && ordersResponse\.orders\.some\(\(o\) => !!o\.encryptedOrder\)\}/);
 });
@@ -437,8 +520,40 @@ test("a poll opens orders without ever asking", () => {
 
 test("each run opens only what is not open yet", () => {
   const body = fnBody("async function openOrders");
-  assert.match(body, /opened\.unopened\(ordersResponse\.orders\)/);
+  assert.match(body, /opened\.nextUnopened\(ordersResponse\.orders, /);
   assert.doesNotMatch(body, /ordersResponse\.orders\.map\(/);
+});
+
+test("#1061: the list is replaced whole, never changed in place - nextUnopened relies on it", () => {
+  assert.match(DASH, /let ordersResponse = \$state\.raw<EventOrdersResponse \| null>\(null\);/);
+  assert.doesNotMatch(DASH, /ordersResponse[!?]?\.[\w.[\]]+\s*=[^=]/, "no write into the list");
+  assert.doesNotMatch(DASH, /ordersResponse[!?]?\.orders\.(push|pop|shift|unshift|splice|sort|reverse|fill|copyWithin)\(/);
+});
+
+test("#1061: a run shows what it opened at most every SHOW_OPENED_MS, and all of it at the end", () => {
+  const body = fnBody("async function openOrders");
+  assert.doesNotMatch(body, /decryptedOrders = /, "every update goes through showOpened");
+  assert.equal(body.match(/showOpened\(\);/g)?.length, 2, "once per step, on both paths (throttled)");
+  assert.match(body, /\n    showOpened\(true\);\n    decryptError = /, "the run's end shows everything");
+  const show = fnBody("function showOpened");
+  assert.match(show, /if \(!now && performance\.now\(\) - openedShownAt < SHOW_OPENED_MS\) return;/);
+  assert.match(show, /if \(ordersResponse\) decryptedOrders = opened\.remap\(ordersResponse\.orders\);/);
+  // A new list still replaces the display at once: an erased order's details never wait.
+  assert.match(fnBody("function showOrders"), /decryptedOrders = opened\.remap\(fresh\.orders\);/);
+});
+
+test("#1061: a call joins the run still waiting to start, unless it may ask and that one may not", () => {
+  const body = fnBody("function decryptCurrent");
+  assert.match(body, /if \(waitingRun && \(waitingRun\.prompt \|\| !prompt\)\) return waitingRun\.run;/);
+  assert.match(body, /const run = decryptChain\.then\(\(\) => \{\s*if \(waitingRun === waiting\) waitingRun = null;\s*return decryptOnce\(prompt\);/);
+  assert.match(body, /waiting\.run = run;\s*waitingRun = waiting;/);
+});
+
+test("#1061: the list is grouped and indexed once per list, never per render", () => {
+  assert.doesNotMatch(DASH, /groupBySeries\(ordersResponse/);
+  assert.doesNotMatch(DASH, /new Map\(ordersResponse[!?]?\.orders/);
+  assert.match(DASH, /const listIndex = \$derived\.by\(\(\) => \{/);
+  assert.equal(DASH.match(/= listIndex\.position;/g)?.length, 4);
 });
 
 test("the list and its display map change together, and opened details never outlive their box", () => {
@@ -467,7 +582,7 @@ test("opening runs in steps from the rows on screen, gives the page a turn, and 
   // Each step from the live rows: an order erased mid-run is never opened (Fable sign-off S2).
   assert.match(
     body,
-    /const batch = ordersResponse \? opened\.unopened\(ordersResponse\.orders\)\.slice\(0, useWorker \? OPEN_BATCH : OPEN_CHUNK\) : \[\];/,
+    /const batch = ordersResponse \? opened\.nextUnopened\(ordersResponse\.orders, useWorker \? OPEN_BATCH : OPEN_CHUNK\) : \[\];/,
   );
   assert.match(body, /else opened\.fail\(batch\[k\]\.order\);/, "a box that would not open is not retried every run (S6)");
   assert.match(body, /else opened\.fail\(order\);/, "nor one the worker did not open or answer for");

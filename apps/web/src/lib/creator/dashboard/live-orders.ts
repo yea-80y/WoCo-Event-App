@@ -57,6 +57,8 @@ export class OpenedOrders<T> {
   private failed = new Map<string, string>();
   /** Set once orders were opened with the account's keys. */
   private opened = false;
+  /** `nextUnopened`'s place in the list it last walked. */
+  private pending: { from: OrderEntry[]; todo: Array<{ idx: number; order: OrderEntry }>; at: number } | null = null;
 
   /** The display map for `orders` (by position), from what is already open - no keys, no work. */
   remap(orders: OrderEntry[]): Map<number, T> {
@@ -75,14 +77,36 @@ export class OpenedOrders<T> {
   unopened(orders: OrderEntry[]): Array<{ idx: number; order: OrderEntry }> {
     const out: Array<{ idx: number; order: OrderEntry }> = [];
     orders.forEach((order, idx) => {
-      const box = boxId(order);
-      if (!box) return;
-      const key = orderSlotKey(order);
-      if (this.failed.get(key) === box) return;
-      const hit = this.byTicket.get(key);
-      if (!hit || hit.box !== box) out.push({ idx, order });
+      if (this.wants(order)) out.push({ idx, order });
     });
     return out;
+  }
+
+  /**
+   * The next `n` of `unopened(orders)`, without walking the whole list each step (#1061:
+   * at 24k rows, one walk per 50-order step held the page for most of a load). The list
+   * is walked again only when `orders` is a different array: the page never changes a
+   * list in place, so a new array is how an erased or re-sealed order arrives. Entries
+   * come back until they are opened or failed, so a step abandoned midway is offered again.
+   */
+  nextUnopened(orders: OrderEntry[], n: number): Array<{ idx: number; order: OrderEntry }> {
+    if (this.pending?.from !== orders) this.pending = { from: orders, todo: this.unopened(orders), at: 0 };
+    const p = this.pending;
+    while (p.at < p.todo.length && !this.wants(p.todo[p.at].order)) p.at++;
+    const out: Array<{ idx: number; order: OrderEntry }> = [];
+    for (let i = p.at; i < p.todo.length && out.length < n; i++) {
+      if (this.wants(p.todo[i].order)) out.push(p.todo[i]);
+    }
+    return out;
+  }
+
+  /** Has a box, and it is neither open nor one that would not open. */
+  private wants(order: OrderEntry): boolean {
+    const box = boxId(order);
+    if (!box) return false;
+    const key = orderSlotKey(order);
+    if (this.failed.get(key) === box) return false;
+    return this.byTicket.get(key)?.box !== box;
   }
 
   put(order: OrderEntry, data: T): void {
@@ -106,6 +130,7 @@ export class OpenedOrders<T> {
    * re-sealed: opened details never outlive the box they came from.
    */
   prune(orders: OrderEntry[]): void {
+    this.pending = null;
     const live = new Map(orders.map((o) => [orderSlotKey(o), boxId(o)]));
     for (const [key, hit] of this.byTicket) if (live.get(key) !== hit.box) this.byTicket.delete(key);
     for (const [key, box] of this.failed) if (live.get(key) !== box) this.failed.delete(key);
@@ -121,6 +146,7 @@ export class OpenedOrders<T> {
     this.byTicket.clear();
     this.failed.clear();
     this.opened = false;
+    this.pending = null;
   }
 }
 
