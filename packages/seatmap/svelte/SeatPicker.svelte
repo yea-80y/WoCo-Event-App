@@ -64,6 +64,8 @@
   let confirmWheel = $state<number | null>(null);
   let sheetOpen = $state(false);
   let hold = $state<{ expiresAt: string } | null>(null);
+  /** The seats the buyer's last hold named: still theirs while the server's view of it catches up. */
+  let heldSeats = $state<number[]>([]);
   let holding = $state(false);
   let holdError = $state<string | null>(null);
   let expired = $state(false);
@@ -73,13 +75,15 @@
   let root: HTMLDivElement | undefined = $state();
   let picker: Picker | null = null;
   let unsubscribe: (() => void) | null = null;
+  /** Closed before the map finished loading: the load must not start a refresh loop nobody reads. */
+  let destroyed = false;
   let palette = $state.raw<ReturnType<typeof paletteFromCss> | null>(null);
   /** Sections on screen, from the picker: kept fresh by the loader with the picks. */
   let viewSections: readonly number[] = [];
 
   const bp = $derived(map?.plan ?? null);
   const states = $derived<SeatStates | null>(
-    map && snap ? seatStates(map.plan.plan, { chain: snap.chain, organiser: map.organiser, onHold: snap.onHold, mine: hold ? picks : [], bandPrices: map.bandPrices }) : null,
+    map && snap ? seatStates(map.plan.plan, { chain: snap.chain, organiser: map.organiser, onHold: snap.onHold, mine: hold ? picks : heldSeats, bandPrices: map.bandPrices }) : null,
   );
   const summaries = $derived(bp && states && map ? sectionSummaries(bp, states, map.bandPrices) : []);
   const notice = $derived(mapNotice({ problem, sale: states?.sale ?? null, serverOk: snap?.serverOk }));
@@ -97,6 +101,7 @@
     loading = true;
     problem = null;
     const r = await loadMap();
+    if (destroyed) return;
     loading = false;
     if (!r.ok) { problem = r.problem; return; }
     map = r.map;
@@ -126,7 +131,7 @@
       plan: map.plan,
       palette: p,
       id: `seatmap-${series.seriesId}`,
-      label: `Seating plan for ${eventTitle}. Use the arrow keys to move between seats.`,
+      label: `Seating plan for ${eventTitle}. Enter to go to the seats; the arrow keys move between them.`,
       onSeat: onSeat,
       onLevel: (l) => (level = l),
       onView: (sections) => { viewSections = sections; map?.watch({ sections, picks }); },
@@ -166,7 +171,8 @@
 
   // A pick someone else just bought, or that the sale stopped, leaves the order with a note.
   $effect(() => {
-    if (!states || !bp || hold || !picks.length) return;
+    // Nothing is known to be taken while the chain is unread: keep the picks.
+    if (!states || !bp || hold || !picks.length || states.sale === "unknown") return;
     const { kept, lost } = prunePicks(picks, states);
     if (!lost.length) return;
     picks = kept;
@@ -190,6 +196,9 @@
     if (r === "not-free") return;
     const added = r.length > picks.length;
     picks = r;
+    // A seat a ticket once left is sold only if the organiser confirmed it: read its nonce now,
+    // not at the next refresh (the watch is pushed here, the effect that does it runs later).
+    if (added && !snap?.chain?.nonces?.has(k)) { map?.watch({ sections: viewSections, picks: r }); void map?.refresh(); }
     note = null;
     holdError = null;
     picker?.announce(`${added ? "Added" : "Removed"} ${seatText(bp, k)}. ${picks.length ? totalLine(bp, map!.bandPrices, picks, currency) : "No seats chosen."}`);
@@ -226,6 +235,7 @@
       if (r.ok) {
         now = Date.now();
         hold = { expiresAt: r.expiresAt };
+        heldSeats = [...picks];
         sheetOpen = true;
       } else {
         holdError = r.message;
@@ -268,6 +278,7 @@
     return () => { document.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
   });
   onDestroy(() => {
+    destroyed = true;
     unsubscribe?.();
     map?.stop();
     picker?.destroy();

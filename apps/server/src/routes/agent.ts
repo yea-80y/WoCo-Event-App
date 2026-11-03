@@ -42,6 +42,7 @@ import {
 } from "../lib/agent/spend-authority.js";
 import { issuePurchaseIntent, peekPurchaseIntent, deletePurchaseIntent } from "../lib/agent/purchase-intent.js";
 import { clientIp } from "../lib/http/client-ip.js";
+import { seatedSaleRefusal } from "../lib/seating/seated-sale.js";
 
 export const agentRouter = new Hono<AppEnv>();
 
@@ -108,6 +109,9 @@ async function resolveSeriesPayment(eventId: string, seriesId: string): Promise<
   // #644: gated now, while the rail is flagged off, so turning it on cannot
   // reopen sales for a cancelled event.
   if (cancellationGate(eventId) !== "open") return { ok: false, error: "This event has been cancelled", code: 409 };
+  // Allocated seating sells by seat (seated-sale.ts); this rail sells by quantity. Here, so quote and buy both refuse.
+  const seated = seatedSaleRefusal(eventId, seriesId);
+  if (seated) return { ok: false, error: seated.body.error, code: seated.status };
   // No sale until the organiser has confirmed their privacy notice - the card
   // rail's rule (lib/legal/notice-gate.ts), here too so turning this rail on
   // cannot sell past it.
