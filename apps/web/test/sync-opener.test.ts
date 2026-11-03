@@ -177,11 +177,16 @@ test("no workers: opened on the page in steps with a pause, its keys wiped after
   }
 });
 
-test("unbound while opening on the page: locked, keys wiped", async () => {
+test("unbound while opening on the page: no further step is opened, locked, keys wiped", async () => {
   const w = world({ workers: false });
-  const jobs = Array.from({ length: PAGE_CHUNK * 2 }, (_, i) => job(`p${i}@x.com`));
-  w.opener["deps"].pause = async () => void (w.st.bound = false);
+  const jobs = Array.from({ length: PAGE_CHUNK * 3 }, (_, i) => job(`p${i}@x.com`));
+  const page = w.opener["deps"].openOnPage;
+  w.opener["deps"].openOnPage = async (...args) => {
+    w.st.bound = false; // relocked during the first step
+    return page(...args);
+  };
   assert.equal(await w.opener.open("e1", jobs), "locked");
+  assert.equal(w.st.pageKeysSeen.length, PAGE_CHUNK, "the step in progress finishes; no later one starts");
   assert.ok(zeroed(w.st.pageKeysSeen[0]));
 });
 
