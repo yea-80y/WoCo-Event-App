@@ -202,8 +202,10 @@ certificates for `*.woco.eth.limo`, so a new name has no first-open certificate 
 
 SEO metadata (`siteDescription`, `og:*`, `twitter:card`, with `ogImage` set to the logo's Swarm
 ref) is injected at **deploy** time; `MultiSiteApp` then updates the meta description per page at
-runtime. Event pages also get the event's `<title>` at deploy time; a website's `<title>` and any
-canonical are not injected yet (#70) - see SEO_PLAN.md.
+runtime. The `<title>` (brand name; an event page's event title) and, for a page published under a
+WoCo name, `<link rel="canonical">` to that name's address are deploy-time too (#70). The name is
+a render input on both sides, never a chain read, so the admission rebuild stays deterministic -
+see SEO_PLAN.md.
 
 ### Runtime releases (#1032)
 
