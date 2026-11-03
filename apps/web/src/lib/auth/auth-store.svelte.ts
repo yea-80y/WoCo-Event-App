@@ -1834,6 +1834,10 @@ async function init(): Promise<void> {
         // keeps the blob, but a device that only ever restored (never logged in on
         // this tab) still needs its signer resolvable for passive profile reads.
         await _establishFeedSignerEagerly();
+        // A device that only ever restores never passes the sign-in sheet, so it would
+        // have no reference for the key-change guard (#1051) until its next explicit
+        // sign-in. The restore check above has already paired this key with this identity.
+        _recordEmailIdentityIfAbsent(storedSeedAddr!, storedParent!);
       } else if (decision.action === "adopt-without-key") {
         // Web3Auth SDK couldn't init (dev dep-optimizer 504, or a network blip) —
         // a transient failure, NOT a logout. The WoCo session (session key,

@@ -102,6 +102,12 @@ test("sign-in: the check runs after the fast path and before any account is buil
   assert.match(body, /if \(!fastOverride\) \{\s*if \(!who\) throw new Error\(/, "an unreadable identity never passes as a first sign-in");
 });
 
+test("a device that only restores still gets its reference, after the restore pairing check", () => {
+  const adopt = STORE.slice(STORE.indexOf('if (decision.action === "adopt") {'), STORE.indexOf('} else if (decision.action === "adopt-without-key") {'));
+  assert.ok(STORE.indexOf("const decision = decideWeb3AuthRestore({ restore, storedParent, storedSeedAddr });") < STORE.indexOf('if (decision.action === "adopt") {'));
+  assert.match(adopt, /_recordEmailIdentityIfAbsent\(storedSeedAddr!, storedParent!\);/);
+});
+
 test("refusal: ends the Web3Auth session and reaches the person as itself", () => {
   const fn = STORE.slice(STORE.indexOf("async function _refuseChangedEmailKey("), STORE.indexOf("async function _refuseUpgradedEmailLogin("));
   assert.match(fn, /await logoutWeb3Auth\(\);/);
