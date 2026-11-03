@@ -49,6 +49,8 @@ export interface PickerOptions {
   onSeat(k: number): void;
   /** The level of detail changed: the host can say "Tap a section" or "Tap seats". */
   onLevel?(level: Level): void;
+  /** The sections on screen changed (indices into `plan.sections`): what a live map keeps fresh. */
+  onView?(sections: readonly number[]): void;
 }
 
 export interface Picker {
@@ -156,10 +158,15 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
         x: b.x0, y: b.y0, width: b.x1 - b.x0, height: b.y1 - b.y0, rx: 6,
         fill: empty ? p.bg : p.elevated, stroke: empty ? p.line : p.lineStrong, "stroke-width": 1.5, "vector-effect": "non-scaling-stroke",
       }, g);
-      // Text at a constant size on screen, always upright.
+      // Text at a constant size on screen, always upright, and only as much as the block has room for.
+      const w = (b.x1 - b.x0) * view.z, h = (b.y1 - b.y0) * view.z;
+      const roomy = Math.min(w, h) >= 44 && Math.max(w, h) >= 96;
+      const named = Math.min(w, h) >= 18 && Math.max(w, h) >= 52;
+      if (!named) return;
       const t = el("g", { transform: `translate(${(b.x0 + b.x1) / 2} ${(b.y0 + b.y1) / 2})${it.rot ? ` rotate(${-it.rot})` : ""} scale(${scale})`, "pointer-events": "none" }, g);
-      const name = el("text", { y: -3, "text-anchor": "middle", "font-size": 13, "font-weight": 600, fill: empty ? p.muted : p.text, "font-family": p.fontUi }, t);
+      const name = el("text", { y: roomy ? -3 : 4, "text-anchor": "middle", "font-size": roomy ? 13 : 11, "font-weight": 600, fill: empty ? p.muted : p.text, "font-family": p.fontUi }, t);
       name.textContent = sec.name;
+      if (!roomy) return;
       const line = el("text", { y: 13, "text-anchor": "middle", "font-size": 11, fill: p.text2, "font-family": p.fontMono }, t);
       line.textContent = state!.sectionLine(si);
     });
@@ -202,6 +209,7 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
   }
 
   let frame = 0;
+  let lastView = "";
   function render(): void {
     frame = 0;
     if (!screen.w || !screen.h) return;
@@ -213,6 +221,11 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
     syncSeats();
     if (changed || level === "sections") drawBlocks();
     if (changed) o.onLevel?.(level);
+    if (o.onView) {
+      const on = visible(sectionBoxes, view, screen, 0);
+      const key = on.join(",");
+      if (key !== lastView) { lastView = key; o.onView(on); }
+    }
   }
   const schedule = () => { if (!frame) frame = requestAnimationFrame(render); };
 

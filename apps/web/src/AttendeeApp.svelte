@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { router, navigate } from "./lib/router/router.svelte.js";
+  import { router, navigate, replaceRoute } from "./lib/router/router.svelte.js";
   import AttendeeShell from "./lib/layouts/AttendeeShell.svelte";
   import LazyRoute from "./lib/router/LazyRoute.svelte";
   import Home from "./lib/attendee/home/Home.svelte";
@@ -13,6 +13,24 @@
   // round-trips are slow, so the eager graph must stay minimal). Every other
   // route — and its dependency subtree (payments, recovery, shop rail) —
   // downloads on first navigation.
+  /**
+   * A seated ticket type's seat map is a route over its event page. Opened from the
+   * page, closing goes Back (the map was one step); opened from a link or a reload,
+   * closing replaces the address, so Back does not reopen it.
+   */
+  let seatsOpenedHere = false;
+  function openEventSeats(eventId: string, seriesId: string | null): void {
+    if (seriesId) {
+      seatsOpenedHere = true;
+      navigate(`/event/${eventId}/seats/${encodeURIComponent(seriesId)}`);
+    } else if (seatsOpenedHere) {
+      seatsOpenedHere = false;
+      history.back();
+    } else {
+      replaceRoute(`/event/${eventId}`);
+    }
+  }
+
   const loadEventDetail = () => import("./lib/attendee/events/EventDetail.svelte");
   const loadEventPage = () => import("./lib/components/site/EventPage.svelte");
   const loadEventPurchased = () => import("./lib/attendee/events/EventPurchased.svelte");
@@ -72,12 +90,19 @@
             apiUrl: getExternalEventApi(router.params.id),
             onback: () => navigate("/"),
             ondashboard: () => navigate(`/creator/events/${router.params.id}`),
+            seats: router.params.seats,
+            onseats: (seriesId: string | null) => openEventSeats(router.params.id, seriesId),
           }}
         />
       {:else}
         <LazyRoute
           loader={loadEventDetail}
-          props={{ eventId: router.params.id, onback: () => navigate("/") }}
+          props={{
+            eventId: router.params.id,
+            onback: () => navigate("/"),
+            seats: router.params.seats,
+            onseats: (seriesId: string | null) => openEventSeats(router.params.id, seriesId),
+          }}
         />
       {/if}
     {/key}

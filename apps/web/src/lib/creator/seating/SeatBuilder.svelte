@@ -165,7 +165,10 @@
     const view: BuyerView = {
       seatAt: (i, r, p) => runs.find((x) => x.item === i && x.row === r)?.seats[p] ?? -1,
       free: () => true,
+      canPick: () => false,
       picked: () => false,
+      reason: () => null,
+      tabStop: (k) => k === 0,
       label: (k) => {
         const l = seatLabel({ items: plan.items, seats }, k);
         const band = plan.bands[seats[k].b];

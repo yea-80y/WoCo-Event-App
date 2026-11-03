@@ -173,7 +173,7 @@ test("picked seats get their nonce read beside their word; an unconfirmed freed 
   const st = { block: 10n, taken: new Set<number>(), nonces: new Map([[12, 1n]]), seen };
   const r = await loadSeatMap(series, deps(chain(st)));
   assert.ok(r.ok);
-  r.map.watch({ onScreen: [0, 1, 2], picks: [12] });
+  r.map.watch({ sections: [0], picks: [12] });
   await r.map.refresh();
   const last = seen.at(-1)!;
   assert.ok(last.includes("287af508") && last.includes("10173035"), "nonce and word in one batch");

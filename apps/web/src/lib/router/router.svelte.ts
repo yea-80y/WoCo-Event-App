@@ -219,6 +219,11 @@ function matchRoute(pathWithQuery: string): Match {
   const eventPurchasedMatch = path.match(/^\/event\/(.+)\/purchased$/);
   if (eventPurchasedMatch) return { route: "event-purchased", params: { id: eventPurchasedMatch[1] }, surface: "attendee" };
 
+  // A seated ticket type's seat map, over its event page (docs/SEATING.md): the same
+  // route, so the event stays mounted and loaded; Back closes the map.
+  const eventSeatsMatch = path.match(/^\/event\/(.+)\/seats\/([^/]+)$/);
+  if (eventSeatsMatch) return { route: "event", params: { id: eventSeatsMatch[1], seats: eventSeatsMatch[2] }, surface: "attendee" };
+
   // Event detail page is attendee-facing (public) — even for creators viewing their own.
   const eventMatch = path.match(/^\/event\/(.+)$/);
   if (eventMatch) return { route: "event", params: { id: eventMatch[1] }, surface: "attendee" };

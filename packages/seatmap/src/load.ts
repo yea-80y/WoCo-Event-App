@@ -91,8 +91,8 @@ export interface LiveSeatMap {
   snapshot(): SeatMapSnapshot;
   /** Called after every read that changed anything. Returns an unsubscribe. */
   subscribe(fn: (s: SeatMapSnapshot) => void): () => void;
-  /** What to keep fresh: seats on screen and the buyer's picks (their nonces are read too). */
-  watch(seats: { onScreen: readonly number[]; picks: readonly number[] }): void;
+  /** What to keep fresh: the sections on screen and the buyer's picks (their nonces are read too). */
+  watch(seats: { sections: readonly number[]; picks: readonly number[] }): void;
   /** Read now (after a refused hold, or the page coming back into view). */
   refresh(full?: boolean): Promise<void>;
   start(): void;
@@ -316,8 +316,15 @@ export async function loadSeatMap(series: SeatMapSeries, deps: SeatMapDeps): Pro
     organiser,
     snapshot,
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
-    watch({ onScreen, picks }) {
-      watched = { words: [...new Set(onScreen.map((k) => k >> 8))], picks: [...picks] };
+    watch({ sections, picks }) {
+      // A section is a contiguous seat range, so its words are a range too.
+      const ws = new Set<number>();
+      for (const si of sections) {
+        const sec = bp.sections[si];
+        if (!sec) continue;
+        for (let w = sec.first >> 8; w <= (sec.first + sec.count - 1) >> 8; w++) ws.add(w);
+      }
+      watched = { words: [...ws], picks: [...picks] };
     },
     refresh,
     start() {

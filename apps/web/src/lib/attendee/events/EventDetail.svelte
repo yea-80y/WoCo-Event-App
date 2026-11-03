@@ -4,6 +4,8 @@
   import { rememberLabel } from "../../profile/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { getEvent } from "../../api/events.js";
+  import { apiBase } from "../../api/http.js";
+  import { FEATURES } from "@woco/shared";
   import CheckoutNoticeLinks from "./claim/CheckoutNoticeLinks.svelte";
   import ClaimButton from "./ClaimButton.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -27,9 +29,13 @@
   interface Props {
     eventId: string;
     onback?: () => void;
+    /** Allocated seating: the series whose seat map the address opens (docs/SEATING.md). */
+    seats?: string;
+    /** Open a series' seat map (its id), or close it (null). */
+    onseats?: (seriesId: string | null) => void;
   }
 
-  let { eventId, onback }: Props = $props();
+  let { eventId, onback, seats, onseats }: Props = $props();
 
   // Stripe post-purchase redirect — fires synchronously before children (ClaimButton)
   // mount, so the legacy in-page success banner never appears. We send buyers to the
@@ -369,7 +375,7 @@
                   <p class="series-desc">{s.description}</p>
                 {/if}
               </div>
-              {#if isPaid && sale === "active"}
+              {#if isPaid && sale === "active" && !(FEATURES.seatedEventsAllowed && s.seating)}
                 <div class="series-qty">
                   <span class="qty-label">Qty</span>
                   <select
@@ -390,6 +396,19 @@
               <div class="series-sale-status">Opens {formatSaleDate(s.saleStart!)}</div>
             {:else if sale === "past"}
               <div class="series-sale-status">Sales for this ticket have closed</div>
+            {:else if FEATURES.seatedEventsAllowed && s.seating}
+              <!-- Allocated seating: chosen on the plan, not by quantity. Loaded only here. -->
+              {#await import("../../components/seating/SeatedSeries.svelte") then { default: SeatedSeries }}
+                <SeatedSeries
+                  eventId={event.eventId}
+                  eventTitle={event.title}
+                  series={s}
+                  apiUrl={externalApiUrl ?? apiBase}
+                  open={onseats ? seats === s.seriesId : undefined}
+                  onopen={onseats ? () => onseats(s.seriesId) : undefined}
+                  onclose={onseats ? () => onseats(null) : undefined}
+                />
+              {/await}
             {:else}
               <ClaimButton
                 eventId={event.eventId}

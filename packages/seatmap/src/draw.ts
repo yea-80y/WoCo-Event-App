@@ -365,6 +365,29 @@ export function drawThumb(svg: SVGSVGElement, layout: Pick<SeatLayout, "bands" |
   }
 }
 
+/**
+ * A thumbnail that stays cheap at any size: shapes as they are, each block of rows and
+ * each table as its outline (a ticket card shows this before the map opens).
+ */
+export function drawOverviewThumb(svg: SVGSVGElement, layout: Pick<SeatLayout, "bands" | "items">, palette: SeatmapPalette, pad = 24): void {
+  svg.replaceChildren();
+  const cb = unionBox(layout.items);
+  svg.setAttribute("viewBox", `${cb.x0 - pad} ${cb.y0 - pad} ${cb.x1 - cb.x0 + pad * 2} ${cb.y1 - cb.y0 + pad * 2}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  drawDefs(svg, palette);
+  for (const i of drawOrder(layout.items)) {
+    const it = layout.items[i];
+    if (it.kind !== "rows" && it.kind !== "table") {
+      drawItem(svg, it, { mode: "thumb", svgId: svg.id, palette, bands: layout.bands, itemIndex: i });
+      continue;
+    }
+    const b = itemGeometry(it).box;
+    const g = el("g", { transform: `translate(${r2(it.x)} ${r2(it.y)})${it.rot ? ` rotate(${it.rot})` : ""}` }, svg);
+    if (it.kind === "table" && it.shape === "round") el("circle", { r: r2((b.x1 - b.x0) / 2), fill: palette.text2 }, g);
+    else el("rect", { x: r2(b.x0), y: r2(b.y0), width: r2(b.x1 - b.x0), height: r2(b.y1 - b.y0), rx: 6, fill: palette.text2 }, g);
+  }
+}
+
 /** A swatch for band style `k`, as markup (legends, the price list). */
 export function swatchSvg(p: SeatmapPalette, k: number, size = 14): string {
   const st = bandStyle(p, k);
