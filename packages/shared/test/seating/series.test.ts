@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { seriesSeatingRefusal, bandPricesMinor } from "../../src/seating/series.js";
-import { editionBodiesFromCommon, editionBody } from "../../src/edition/common.js";
+import { editionBodiesFromCommon, editionBody, MAX_EDITIONS_PER_EVENT } from "../../src/edition/common.js";
 import { buildEditionTree } from "../../src/edition/merkle.js";
 
 const plan = { bands: [{ id: "b1", name: "Front", style: 0 }, { id: "b2", name: "Back", style: 1 }] };
@@ -49,5 +49,6 @@ test("compact editions refuse anything but an edition body without its number", 
   assert.equal(editionBodiesFromCommon({ ...common, metadata: { price: 1.5 } }, 5), null, "a float");
   assert.equal(editionBodiesFromCommon(common, 0), null);
   assert.equal(editionBodiesFromCommon(common, 1.5), null);
+  assert.equal(editionBodiesFromCommon(common, MAX_EDITIONS_PER_EVENT + 1), null, "past the per-event ceiling");
   assert.equal(editionBodiesFromCommon(null, 5), null);
 });

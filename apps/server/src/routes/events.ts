@@ -21,7 +21,7 @@ import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import type { SeriesManifestBlob, SignedManifestV2 } from "@woco/shared";
-import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x, editionBodiesFromCommon } from "@woco/shared";
+import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x, editionBodiesFromCommon, MAX_EDITIONS_PER_EVENT } from "@woco/shared";
 import { checkSeatedSeries } from "../lib/seating/seated-series.js";
 import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
 import { deleteStripeAccount, getStripeAccount, syncStripeVerdict } from "../lib/stripe/accounts.js";
@@ -252,6 +252,12 @@ events.post("/", requireAuth, async (c) => {
       return c.json({ ok: false, error: `Series ${s.seriesId}: ${boundsRefusal}` }, 400);
     }
   }
+  // Every edition is a Merkle leaf the server hashes, whichever shape it arrives in
+  // (a compact `editionCommon` is a few bytes): bounded before anything else runs.
+  const totalEditions = series.reduce((n, s) => n + (Number.isSafeInteger(s.totalSupply) && s.totalSupply > 0 ? s.totalSupply : Infinity), 0);
+  if (totalEditions > MAX_EDITIONS_PER_EVENT) {
+    return c.json({ ok: false, error: `An event can have at most ${MAX_EDITIONS_PER_EVENT.toLocaleString("en-GB")} tickets` }, 400);
+  }
 
   for (const s of series) {
     // The bodies the manifest commits to: listed, or one body without its number
@@ -379,7 +385,7 @@ events.post("/", requireAuth, async (c) => {
 
   // Rebuild compact series' bodies, and check every series' seating against its
   // manifest (a plan read per seated series: after the Stripe gate, so only an
-  // organiser who may sell causes one).
+  // organiser who may sell causes one). The edition count was bounded up front.
   const fullSeries: Parameters<typeof createEventV2>[0]["series"] = [];
   for (const s of series) {
     const editionBodies = s.editionBodies ?? editionBodiesFromCommon(s.editionCommon, s.totalSupply);

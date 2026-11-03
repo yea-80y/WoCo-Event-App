@@ -180,6 +180,21 @@ test("create refuses a date-only sale open", async () => {
   assert.match(error ?? "", /saleStart must be a date and time with a timezone/);
 });
 
+// Same early-validation stretch of the route: the per-event edition ceiling (a compact
+// `editionCommon` makes a few bytes stand for every edition the server then hashes).
+test("create refuses more editions across its series than the per-event ceiling", async () => {
+  const body = createBody({});
+  body.series = [
+    { ...body.series[0], totalSupply: 100_001 },
+    { ...body.series[0], seriesId: "sr-000000000002", totalSupply: 100_000 },
+  ];
+  const { status, error } = await post(body);
+  assert.equal(status, 400);
+  assert.equal(error, "An event can have at most 200,000 tickets");
+  body.series[0].totalSupply = 100_000;
+  assert.match((await post(body)).error ?? "", /missing signedManifest/, "at the ceiling it goes on");
+});
+
 test("a zoned window gets past the check to the next gate", async () => {
   const { status, error } = await post(
     createBody({ saleStart: "2098-12-01T09:00:00.000Z", saleEnd: "2099-01-01T20:30:00+01:00" }),

@@ -11,8 +11,13 @@ import { hasExactKeys, isIntIn, isPlainRecord } from "../validate.js";
 
 export type EditionCommon = Omit<EditionV1Body, "edition">;
 
-/** Largest series the server rebuilds; the ledger's supply is a uint64, the seat ceiling 200,000. */
-export const MAX_EDITIONS_FROM_COMMON = 1_000_000;
+/**
+ * Most editions one create request may carry, across all its series and in either
+ * shape: a rebuilt list costs the server one Merkle leaf each, so the few bytes of a
+ * common body must not stand for an unbounded amount of work. The seat ceiling
+ * (MAX_PLAN_SEATS) - above any real venue.
+ */
+export const MAX_EDITIONS_PER_EVENT = 200_000;
 
 /** `common` with this edition number, in the body's key order. */
 export function editionBody(common: EditionCommon, edition: number): EditionV1Body {
@@ -25,7 +30,7 @@ export function editionBody(common: EditionCommon, edition: number): EditionV1Bo
  * `metadata` record: they are hashed, never mutated.
  */
 export function editionBodiesFromCommon(common: unknown, count: number): EditionV1Body[] | null {
-  if (!isIntIn(count, 1, MAX_EDITIONS_FROM_COMMON)) return null;
+  if (!isIntIn(count, 1, MAX_EDITIONS_PER_EVENT)) return null;
   if (!isPlainRecord(common) || !hasExactKeys(common, ["format", "seriesId", "metadata", "issuer"])) return null;
   const c = common as unknown as EditionCommon;
   if (!validateEditionV1Body(editionBody(c, 1))) return null;
