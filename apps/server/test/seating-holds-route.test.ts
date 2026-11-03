@@ -95,6 +95,24 @@ test("a quantity hold on a seated series is refused before anything is read", as
   assert.deepEqual(await resp.json(), { ok: false, error: "Tickets for this event are not currently on sale" });
 });
 
+test("the cacheable holds route answers CORS '*', every other route reflects the caller's origin", async () => {
+  const { corsOrigin } = await import("../src/lib/http/cors.js");
+  const at = (path: string) => ({ req: { path } });
+  assert.equal(corsOrigin("https://site-a.example", at(`/api/events/${SEATED.event}/series/${SEATED.series}/held`)), "*");
+  assert.equal(corsOrigin("https://site-a.example", at(`/api/events/${SEATED.event}/series/${SEATED.series}/reserve`)), "https://site-a.example");
+  assert.equal(corsOrigin("https://site-a.example", at(`/api/events/${SEATED.event}/series/${SEATED.series}/held/x`)), "https://site-a.example");
+  assert.equal(corsOrigin("https://site-a.example"), "https://site-a.example");
+  assert.equal(corsOrigin(""), "*");
+});
+
+test("the agent rail refuses a seated series in the one resolver its quote and buy share (wiring)", () => {
+  const src = readFileSync(join(cwd, "src/routes/agent.ts"), "utf-8");
+  const fn = src.slice(src.indexOf("async function resolveSeriesPayment("));
+  const refusal = fn.indexOf("seatedSaleRefusal(eventId, seriesId)");
+  assert.ok(refusal > 0 && refusal < fn.indexOf("await getEvent(eventId)"), "refused before any read");
+  assert.equal((src.match(/resolveSeriesPayment\(eventId, seriesId\)/g) ?? []).length, 2, "quote and buy both resolve through it");
+});
+
 test("create-checkout applies the same refusal (wiring: the quantity checkout cannot sell a seated series)", () => {
   const src = readFileSync(join(cwd, "src/routes/stripe.ts"), "utf-8");
   const gate = src.indexOf("const sale = saleContractFor(eventId, seriesId);");

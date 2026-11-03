@@ -97,6 +97,10 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
   let view: View = { cx: 0, cy: 0, z: 1 };
   let level: Level | null = null;
   let fitted = false;
+  /** Asked for before the first fit (showSeats on open): runs right after it. */
+  let afterFit: (() => void) | null = null;
+  /** What each drawn block last drew from (itemSig): unchanged blocks are not rebuilt on set(). */
+  const sigs = new Map<number, string>();
 
   const live = document.createElement("div");
   live.setAttribute("aria-live", "polite");
@@ -139,6 +143,17 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
     });
     if (old) { old.replaceWith(g); } // keep z-order stable
     drawn.set(i, g);
+    if (state) sigs.set(i, itemSig(i, state));
+  }
+
+  /** Everything a block's drawing depends on that can change (labels hang on static prices; the tab stop moves live). */
+  function itemSig(i: number, s: PickerState): string {
+    const sec = bp.sections[bp.sectionOf[i]];
+    let out = s.locked ? "L" : "U";
+    for (let k = sec.first; k < sec.first + sec.count; k++) {
+      out += s.picks.includes(k) ? "p;" : `${s.free(k) ? "f" : "m"}${s.canPick(k) ? "c" : "x"}${s.reason(k) ?? ""};`;
+    }
+    return out;
   }
 
   function drawBlocks(): void {
@@ -184,7 +199,7 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
   function syncSeats(): void {
     const all = bp.seats <= SEATS_ALWAYS_DRAWN;
     const want = new Set(level !== "seats" ? [] : all ? seatItems : visible(sectionBoxes, view, screen, 0.15).map((si) => bp.sections[si].item));
-    for (const [i, g] of drawn) if (!want.has(i)) { g.remove(); drawn.delete(i); }
+    for (const [i, g] of drawn) if (!want.has(i)) { g.remove(); drawn.delete(i); sigs.delete(i); }
     let added = false;
     for (const i of seatItems) if (want.has(i) && !drawn.has(i)) { drawSeatItem(i); added = true; }
     // Plan order, so items that overlap stack the same way however the buyer got there.
@@ -259,7 +274,7 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
     if (!r.width || !r.height) return;
     const was = screen;
     screen = { w: r.width, h: r.height };
-    if (!fitted) { fitted = true; view = clampView(fitBox(bp.bounds, screen), bp.bounds, screen); render(); return; }
+    if (!fitted) { fitted = true; view = clampView(fitBox(bp.bounds, screen), bp.bounds, screen); render(); const run = afterFit; afterFit = null; run?.(); return; }
     // Keep the zoom relative to the width, so rotating a phone keeps the same part of the room.
     setView({ ...view, z: was.w ? view.z * (screen.w / was.w) : view.z });
   });
@@ -276,6 +291,8 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
   };
 
   svg.addEventListener("pointerdown", (e) => {
+    // A right-click opens a menu and may never send pointerup: never track it, or every later tap reads as a pinch.
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     pointers.set(e.pointerId, local(e));
     cancelAnimationFrame(anim);
     if (pointers.size === 1) {
@@ -317,6 +334,8 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
   };
   svg.addEventListener("pointerup", up);
   svg.addEventListener("pointercancel", up);
+  // Pressed near the edge and released outside, before it moved: no capture, so no pointerup reaches us.
+  svg.addEventListener("pointerleave", (e) => { if (gesture?.kind === "maybe" && pointers.has(e.pointerId)) up(e); });
 
   svg.addEventListener("wheel", (e) => {
     e.preventDefault();
@@ -412,6 +431,13 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
     animateTo(seatsLevel({ ...v, z: Math.max(v.z, zoomForTarget(minTarget)) }));
   }
 
+  function showSeats(seats: readonly number[]): void {
+    // Before the first measure the screen is 0 x 0 and any view computed now is a dot: wait for it.
+    if (!fitted) { afterFit = () => showSeats(seats); return; }
+    const v = showPoints(view, seats.map((k) => bp.points[k]).filter(Boolean), screen, zoomForTarget(minTarget));
+    if (v && (v !== view || levelAt(view) === "sections")) animateTo(seatsLevel(v));
+  }
+
   return {
     set(next) {
       const active = document.activeElement;
@@ -423,15 +449,16 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
         for (let k = 0; stop < 0 && k < bp.seats; k++) if (next.canPick(k)) stop = k;
         if (stop < 0 && bp.seats > 0) stop = 0;
       }
-      for (const i of [...drawn.keys()]) drawSeatItem(i);
+      // Only blocks whose seats look or act differently are rebuilt: a tap changes one block, not all on screen.
+      for (const i of [...drawn.keys()]) {
+        const sg = itemSig(i, next);
+        if (sigs.get(i) !== sg) { sigs.set(i, sg); drawSeatItem(i); }
+      }
       if (level === "sections") drawBlocks();
       if (focusedSeat != null) seatEl(Number(focusedSeat))?.focus();
       schedule();
     },
-    showSeats(seats) {
-      const v = showPoints(view, seats.map((k) => bp.points[k]).filter(Boolean), screen, zoomForTarget(minTarget));
-      if (v && (v !== view || levelAt(view) === "sections")) animateTo(seatsLevel(v));
-    },
+    showSeats,
     showSection,
     fit,
     zoomBy,

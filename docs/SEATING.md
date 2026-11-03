@@ -201,10 +201,12 @@ seated ticket type's card (`apps/web/src/lib/components/seating/SeatedSeries.sve
   on screen (4,000); only on-screen blocks are drawn. On a mid phone (4x CPU throttle, 20,000 seats):
   sections in ~3 s, a section's seats ~0.6 s, best seats ~1 s.
 
-Departures from the consult, for the S3 sign-off: seat nodes stay ~3 per seat (the 4,000-seat draw budget
-bounds the DOM instead of a 2-node seat); the organiser's seat-state feed is read from S6 (its storage
-layout is decided there; until then the plan's held flags); the picker reports taps and the host owns
-picks (`canPick` from the host serves S6's dashboard).
+Departures from the consult, all accepted at the S3 sign-off (Fable 73/73, 2026-11-03, changes applied):
+seat nodes stay ~3 per seat (the 4,000-seat draw budget bounds the DOM; a tap rebuilds only the block it
+changed, ~0.4 s on a 4x-throttled phone at 1,250 seats); the organiser's seat-state feed is read from S6 (its
+storage layout is decided there; until then the plan's held flags); the picker reports taps and the host owns
+picks (`canPick` from the host serves S6's dashboard). Open: #1087 (the parse Worker is cross-origin on
+woco.eth.limo, so plans above 20,000 seats parse on the main thread there).
 
 S4 must (pinned by tests where marked):
 - hold by seat with `{ seats, planDigest }` and refuse a plan other than the pin

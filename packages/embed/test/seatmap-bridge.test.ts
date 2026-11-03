@@ -25,14 +25,15 @@ test("frame messages: exact shapes only, seats sorted, never more than an order 
 });
 
 test("widget messages: exact shapes only", () => {
-  assert.deepEqual(parseWidgetMessage({ v: 1, type: "open", max: 10, clientKey: "abcdefgh-123", canHold: false }), { v: 1, type: "open", max: 10, clientKey: "abcdefgh-123", canHold: false });
+  assert.deepEqual(parseWidgetMessage({ v: 1, type: "open", max: 10, canHold: false }), { v: 1, type: "open", max: 10, canHold: false });
   assert.deepEqual(parseWidgetMessage({ v: 1, type: "hold", expiresAt: "2026-11-03T21:00:00.000Z" })?.type, "hold");
   assert.deepEqual(parseWidgetMessage({ v: 1, type: "refused", seats: [4], message: "Taken" }), { v: 1, type: "refused", seats: [4], message: "Taken" });
   for (const bad of [
-    { v: 1, type: "open", max: 0, clientKey: "abcdefgh", canHold: true },
-    { v: 1, type: "open", max: 11, clientKey: "abcdefgh", canHold: true },
-    { v: 1, type: "open", max: 2, clientKey: "short", canHold: true },
-    { v: 1, type: "open", max: 2, clientKey: "abcdefgh", canHold: "yes" },
+    { v: 1, type: "open", max: 0, canHold: true },
+    { v: 1, type: "open", max: 11, canHold: true },
+    { v: 1, type: "open", max: 2, canHold: "yes" },
+    // The widget's hold key never crosses the bridge.
+    { v: 1, type: "open", max: 2, canHold: true, clientKey: "abcdefgh" },
     { v: 1, type: "hold", expiresAt: "soon" },
     { v: 1, type: "refused", seats: [4], message: "x".repeat(301) },
     { v: 1, type: "picked", seats: [1], planDigest: digest },

@@ -26,15 +26,18 @@ export type FrameMessage =
 
 /** Widget -> frame. */
 export type WidgetMessage =
-  /** How many seats one order may have, the widget's per-browser key, and whether it can hold seats yet. */
-  | { v: 1; type: "open"; max: number; clientKey: string; canHold: boolean }
+  /**
+   * How many seats one order may have, and whether the widget can hold seats yet. The widget's
+   * per-browser hold key stays in the widget (it replaces a buyer's holds); if holds ever move into
+   * the frame, it comes back with a version bump.
+   */
+  | { v: 1; type: "open"; max: number; canHold: boolean }
   /** The hold was placed. */
   | { v: 1; type: "hold"; expiresAt: string }
   /** The hold was refused: these seats are gone, or nothing could be held. */
   | { v: 1; type: "refused"; seats: number[]; message: string };
 
 const DIGEST_RE = /^0x[0-9a-f]{64}$/;
-const KEY_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const keysAre = (o: Record<string, unknown>, keys: string[]) => {
@@ -65,10 +68,10 @@ export function parseWidgetMessage(data: unknown): WidgetMessage | null {
   if (!isRecord(data) || data.v !== SEATMAP_BRIDGE_V) return null;
   switch (data.type) {
     case "open":
-      if (!keysAre(data, ["v", "type", "max", "clientKey", "canHold"])) return null;
+      if (!keysAre(data, ["v", "type", "max", "canHold"])) return null;
       if (!Number.isInteger(data.max) || (data.max as number) < 1 || (data.max as number) > RESERVATION_MAX_QTY) return null;
-      if (typeof data.clientKey !== "string" || !KEY_RE.test(data.clientKey) || typeof data.canHold !== "boolean") return null;
-      return { v: 1, type: "open", max: data.max as number, clientKey: data.clientKey, canHold: data.canHold };
+      if (typeof data.canHold !== "boolean") return null;
+      return { v: 1, type: "open", max: data.max as number, canHold: data.canHold };
     case "hold":
       if (!keysAre(data, ["v", "type", "expiresAt"]) || typeof data.expiresAt !== "string" || Number.isNaN(Date.parse(data.expiresAt))) return null;
       return { v: 1, type: "hold", expiresAt: data.expiresAt };

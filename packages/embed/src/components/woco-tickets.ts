@@ -1060,7 +1060,7 @@ export class WocoTickets extends HTMLElement {
       if (!m) return;
       if (m.type === "ready") {
         // Seat holds are not open yet: the map lets buyers look and choose, not hold.
-        toFrame({ v: 1, type: "open", max: MAX_QTY, clientKey: this.clientKey() ?? crypto.randomUUID(), canHold: false });
+        toFrame({ v: 1, type: "open", max: MAX_QTY, canHold: false });
       } else if (m.type === "cancel") {
         this.closeSeatmap();
       } else if (m.type === "picked") {
