@@ -70,11 +70,11 @@ test("a builds batch the bee does not hold, or cannot use yet, refuses", () => {
   );
 });
 
-test("a builds batch under three days refuses; exactly three days does not", () => {
+test("a builds batch under one day refuses; exactly one day does not", () => {
   const min = batches.BUILD_BATCH_MIN_TTL_SECONDS;
-  assert.equal(min, 3 * DAY);
+  assert.equal(min, 1 * DAY);
   const short = batches.batchProblems([stamp(CORE), stamp(BUILD, { batchTTL: min - 1 })], { build: BUILD, core: CORE });
-  assert.match(short.join(), /expires in 3\.0 days/);
+  assert.match(short.join(), /expires in 1\.0 days/);
   assert.deepEqual(batches.batchProblems([stamp(CORE), stamp(BUILD, { batchTTL: min })], { build: BUILD, core: CORE }), []);
 });
 
