@@ -212,7 +212,8 @@ site.post("/deploy", requireAuth, async (c) => {
     // create, so the page reads GET /api/events/:id?signer=…) and the checked head.
     const kit = await eventPageKit();
     if (!kit) return c.json({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }, 503);
-    const verdict = admitClientEventPage({ kit, config: pageConfig(apiUrl, eventId, gate.signer), head, received });
+    // The name (shape-checked above) is the page's canonical address (#70), rendered alike by the browser.
+    const verdict = admitClientEventPage({ kit, config: pageConfig(apiUrl, eventId, gate.signer), head, name: subEnsLabel, received });
     if (!verdict.ok) {
       console.warn(`[site/deploy] browser-built page refused for ${eventId}: ${verdict.code} (${verdict.error})`);
       return c.json({ ok: false, error: verdict.error, code: verdict.code }, 409);

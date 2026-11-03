@@ -562,6 +562,15 @@ async function run(sessionOpts: SessionOpts = {}, fakeOpts: FakeOpts = {}) {
 // ---------------------------------------------------------------------------
 
 describe("happy path", () => {
+  test("#12: the fee the provenance check proved the sale by is stored on its ledger entry", async () => {
+    const s = session({ wallet: BUYER_WALLET });
+    const f = fakeDeps();
+    const outcome = await fulfilPaidSession(s, PAID_AT, f.deps, "fee_proved");
+    assertInvariant(outcome, s, f);
+    assert.equal(f.held.length, 1);
+    assert.equal(f.held[0].applicationFeeId, "fee_proved");
+  });
+
   test("two tickets: held → minted → bound → hold released → emailed, no refund", async () => {
     const { f, outcome } = await run({ wallet: BUYER_WALLET });
     assert.equal(outcome.kind, "processed");
@@ -576,6 +585,7 @@ describe("happy path", () => {
     assert.equal(f.held[0].grossAmount, 4400);
     assert.equal(f.held[0].paymentIntentId, "pi_1");
     assert.equal(f.held[0].recordedAt, new Date(PAID_AT * 1000).toISOString());
+    assert.equal("applicationFeeId" in f.held[0], false, "no fee id given, none written");
 
     assert.deepEqual(f.minted, [["0xburner0", "0xburner1"]]);
     // First edition bound to the signed-in buyer; the rest stay bearer.
@@ -1411,4 +1421,10 @@ test("the live wiring checks the site's owner against the event's creator", asyn
   const live = readFileSync(new URL("../src/lib/stripe/fulfilment-live.ts", import.meta.url), "utf8");
   assert.match(live, /getSiteTheme: \(siteId, eventId\) => organiserSiteTheme\(siteId, eventId\),/);
   assert.doesNotMatch(live, /import \{[^}]*\bgetSiteTheme\b[^}]*\} from "\.\.\/site\/service\.js"/, "never the unchecked read");
+});
+
+test("#12: the webhook hands fulfilment the fee its provenance check proved the sale by", async () => {
+  const { readFileSync } = await import("node:fs");
+  const route = readFileSync(new URL("../src/routes/stripe.ts", import.meta.url), "utf8");
+  assert.match(route, /fulfilPaidSession\(session, event\.created, liveFulfilmentDeps, verdict\.feeId\)/);
 });

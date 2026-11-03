@@ -16,7 +16,10 @@ import { bytesTreeRoot } from "@woco/shared/swarm/bytes-tree";
 import { MAX_BOX_BYTES, boxFromBytes } from "../src/lib/creator/dashboard/order-box.js";
 
 const enc = new TextEncoder();
-const boxJson = (tag: string, pad = 0) => JSON.stringify({ v: 2, enc: `enc-${tag}`, ct: `ct-${tag}${"0".repeat(pad)}` });
+const hexOf = (s: string) => [...s].map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+/** A box of the exact v2 shape (`isSealedBoxV2`), told apart by its tag; `pad` (even) grows `ct`. */
+const sealedLike = (tag: string, pad = 0) => ({ v: 2, enc: hexOf(tag).padEnd(2240, "0"), ct: (hexOf(tag) + "0".repeat(pad)).padEnd(32, "0") });
+const boxJson = (tag: string, pad = 0) => JSON.stringify(sealedLike(tag, pad));
 const asStored = (json: string) => {
   const bytes = enc.encode(json);
   return { bytes, root: bytesTreeRoot(bytes) };
@@ -24,7 +27,7 @@ const asStored = (json: string) => {
 
 test("the box whose bytes hash to the root is accepted", () => {
   const { bytes, root } = asStored(boxJson("a"));
-  assert.deepEqual(boxFromBytes(root, bytes), { kind: "ok", box: { v: 2, enc: "enc-a", ct: "ct-a" } });
+  assert.deepEqual(boxFromBytes(root, bytes), { kind: "ok", box: sealedLike("a") });
   assert.equal(boxFromBytes(root.toUpperCase(), bytes).kind, "ok", "a root in capitals is the same root");
 });
 
@@ -45,6 +48,20 @@ test("a 16 KB order (four leaves under one intermediate chunk) round-trips", () 
 test("bytes that hash right but are not a sealed order are final", () => {
   for (const raw of [enc.encode("not json"), enc.encode(JSON.stringify({ v: 2, enc: 1, ct: "x" })), new Uint8Array([0xff, 0xfe, 0x7b, 0x7d])]) {
     assert.deepEqual(boxFromBytes(bytesTreeRoot(raw), raw), { kind: "unreadable" });
+  }
+});
+
+test("#1061: only the exact v2 box shape is a sealed order - the same test the worker's replies pass", () => {
+  const good = sealedLike("a");
+  for (const bad of [
+    { ...good, extra: "cleartext riding along" },
+    { ...good, v: 1 },
+    { ...good, enc: good.enc.slice(2) },
+    { ...good, ct: "zz".repeat(16) },
+    { v: 2, enc: good.enc },
+  ]) {
+    const raw = enc.encode(JSON.stringify(bad));
+    assert.deepEqual(boxFromBytes(bytesTreeRoot(raw), raw), { kind: "unreadable" }, JSON.stringify(Object.keys(bad)));
   }
 });
 

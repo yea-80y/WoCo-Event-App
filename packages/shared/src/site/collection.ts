@@ -192,11 +192,13 @@ export function buildSiteCollection(input: {
  * Build a single-event page's collection (#1032 slice 5) on the release's
  * `eventPage` line: the release's shared forks plus the page's own `manifest.json`
  * and `site.html`, which start with different bytes and so sit on the root as two
- * forks with their full names, as bee lays them out. Five objects.
+ * forks with their full names, as bee lays them out. Five objects. `name` is the
+ * WoCo name the page is published under (its canonical, #70), when it has one.
  */
 export function buildEventPageCollection(input: {
   config: EventPageConfig;
   head: EventPageHead | null;
+  name?: string;
   template: string;
   release: SiteRuntimeRoot;
   releaseRootNode: Uint8Array;
@@ -204,7 +206,7 @@ export function buildEventPageCollection(input: {
   const index = SITE_RUNTIME_INDEX_DOCUMENT.eventPage;
   const kept = releaseForks(input.release, input.releaseRootNode, index, [index, "manifest.json"]);
   const enc = new TextEncoder();
-  const html = enc.encode(renderEventPageHtml({ template: input.template, config: input.config, head: input.head }));
+  const html = enc.encode(renderEventPageHtml({ template: input.template, config: input.config, head: input.head, name: input.name }));
   if (html.length > SITE_HTML_MAX_BYTES) throw new Error("page is too large to publish");
   const manifest = enc.encode(JSON.stringify(eventPagePwaManifest(input.head)));
 

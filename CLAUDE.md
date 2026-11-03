@@ -565,6 +565,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     surplus. Losing it costs one full rescan of our fees and re-opens operator resolutions; never pays)
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
+  referral-payout-journal.json (#12 — referral payouts made + withholds, append-only. Losing it
+    forgets every payout, so the next statement offers to pay them all again. Unreadable = never
+    overwritten, payouts refused, `/api/health` `referralEarnings` alarm. docs/REFERRAL_EARNINGS.md)
   marketing-consent.json (Art. 7(1) evidence for checkout opt-ins; unreadable = never overwritten, `/api/health` `marketingConsent` alarm, #882)
   profile-names.json (#464 — which sub-ENS name is an account's PROFILE name, and
     its rename clock. The role is unknowable from chain: a registry says who HOLDS

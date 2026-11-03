@@ -387,6 +387,13 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "campaign/earnings-journal",
+    drive: async () => {
+      const m = await import("../src/lib/campaign/earnings-journal.js");
+      m.appendJournal({ kind: "withhold", id: "rw_1", scope: "sale", key: "cs_1", reason: "test", by: "ops", at: new Date().toISOString() });
+    },
+  },
+  {
     store: "stripe/requirement-nudge",
     drive: async () => {
       const m = await import("../src/lib/stripe/requirement-nudge.js");

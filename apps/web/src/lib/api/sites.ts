@@ -197,8 +197,10 @@ export async function deployEventPage(
   );
   if (!cfg.ok || !cfg.data) return { ok: false, error: cfg.ok ? "The page could not be prepared" : (cfg.error ?? "The page could not be prepared"), feedSigned: false };
   const { config, head } = cfg.data;
+  // The name sent below is also the page's canonical (#70): the server renders it the same.
+  const name = opts.subEnsLabel || undefined;
   const build = () =>
-    import("./site-collection.js").then((m) => m.buildClientEventPageCollection({ apiUrl: opts.apiUrl, config, head }));
+    import("./site-collection.js").then((m) => m.buildClientEventPageCollection({ apiUrl: opts.apiUrl, config, head, name }));
   const send = (body: { runtimeVersion: number; objects: string[] }) =>
     retryOnceIfStorageBusy(
       () =>
@@ -206,7 +208,7 @@ export async function deployEventPage(
           eventId,
           apiUrl: opts.apiUrl,
           gatewayUrl: opts.gatewayUrl,
-          ...(opts.subEnsLabel ? { subEnsLabel: opts.subEnsLabel } : {}),
+          ...(name ? { subEnsLabel: name } : {}),
           ...(feedSigner ? { clientFeed: true } : {}),
           head,
           collection: body,

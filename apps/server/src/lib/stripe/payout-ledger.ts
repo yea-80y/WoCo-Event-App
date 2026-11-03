@@ -62,6 +62,13 @@ export interface PayoutLedgerEntry {
   /** PaymentIntent id; the route to the balance transaction that gives us net. */
   paymentIntentId?: string;
   /**
+   * Our ApplicationFee on this sale (`fee_…`), from the provenance check that
+   * proved the sale ours. Referral earnings read the fee kept from it (#12).
+   * Absent on entries written before it existed: read it via the PaymentIntent's
+   * latest charge instead.
+   */
+  applicationFeeId?: string;
+  /**
    * Minor units actually credited to the connected account: gross minus Stripe
    * processing minus our application fee, minus any refunds. Resolved from the
    * balance transaction and REFRESHED on every sweep while the entry is held —
@@ -156,6 +163,12 @@ export function getEntry(sessionId: string): PayoutLedgerEntry | undefined {
 export function listHeld(): PayoutLedgerEntry[] {
   ensureLoaded();
   return Object.values(store).filter((e) => e.status === "held");
+}
+
+/** Every entry, any kind or status - referral earnings read them all (#12). */
+export function listAllEntries(): PayoutLedgerEntry[] {
+  ensureLoaded();
+  return Object.values(store);
 }
 
 /** Every event sale recorded for an event, any status (#644). */

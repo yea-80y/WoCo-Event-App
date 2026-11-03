@@ -95,6 +95,7 @@ import { createAlarmLog } from "./lib/health/alarm-log.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
+import { referralJournalHealth } from "./lib/campaign/earnings-journal.js";
 import { confirmArmedReferral } from "./lib/campaign/referral-arm.js";
 import {
   startHealthProbes,
@@ -389,6 +390,9 @@ function healthReport() {
     // false` while the key IS set means the key derives an address clients do
     // not read — the boot log names both.
     campaignIssuer: campaignIssuerHealth(),
+    // #12: red when the referral payout journal exists but cannot be read -
+    // payouts are refused until it is restored, or the next would repay them all.
+    referralEarnings: referralJournalHealth(),
     // Where each content-feed family is stamped, as THIS build reads and writes
     // it (#657) - the shared table the frontend is built from too. It is the gate
     // for moving a family: deploy the server, see the row here, then deploy the

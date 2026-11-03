@@ -134,7 +134,12 @@ function sleeper() {
 }
 
 test("our unaltered session is ours", async () => {
-  assert.deepEqual(await classifyPaidSession(session(), ACCT, reads()), { kind: "ours" });
+  assert.deepEqual(await classifyPaidSession(session(), ACCT, reads()), { kind: "ours", feeId: "fee_1" });
+});
+
+test("#12: the ours verdict names the fee that proved it - the one the last charge read returned", async () => {
+  const r = reads({ charges: [FEE_PENDING, { requested: true, feeId: "fee_late" }] });
+  assert.deepEqual(await classifyPaidSession(session(), ACCT, r, sleeper().sleep), { kind: "ours", feeId: "fee_late" });
 });
 
 test("sessions this platform did not create are foreign - never ours, never refunded", async () => {
@@ -173,7 +178,7 @@ test("a Stripe read that fails decides nothing", async () => {
 test("#666: a fee Stripe has not created yet is waited for, and the sale is ours", async () => {
   const r = reads({ charges: [FEE_PENDING, FEE_READY] });
   const { slept, sleep } = sleeper();
-  assert.deepEqual(await classifyPaidSession(session(), ACCT, r, sleep), { kind: "ours" });
+  assert.deepEqual(await classifyPaidSession(session(), ACCT, r, sleep), { kind: "ours", feeId: "fee_1" });
   assert.equal(r.chargeReads, 2);
   assert.deepEqual(slept, [FEE_SETTLE_DELAYS_MS[0]]);
 });
@@ -206,7 +211,7 @@ test("#666: a fee that arrives and is not ours is still foreign", async () => {
 test("#666: a fee our key can read is ours even if the charge does not report requesting one", async () => {
   // Not a state Stripe documents; the point is that the proof outranks the hint.
   const r = reads({ charges: [{ requested: false, feeId: "fee_1" }] });
-  assert.deepEqual(await classifyPaidSession(session(), ACCT, r, sleeper().sleep), { kind: "ours" });
+  assert.deepEqual(await classifyPaidSession(session(), ACCT, r, sleeper().sleep), { kind: "ours", feeId: "fee_1" });
   assert.equal(r.chargeReads, 1);
 });
 
@@ -266,7 +271,7 @@ test("#666: an unexpanded charge is fetched on the same account", async (t) => {
 beforeEach(() => _resetProvenanceCountsForTest());
 
 test("health alarms on a tampered session and only counts foreign ones", () => {
-  noteProvenanceVerdict("cs_a", { kind: "ours" });
+  noteProvenanceVerdict("cs_a", { kind: "ours", feeId: "fee_1" });
   noteProvenanceVerdict("cs_b", { kind: "foreign", reason: "x" });
   assert.deepEqual(checkoutProvenanceHealth(), {
     ok: true,
@@ -290,9 +295,9 @@ test("#666: a session left unverifiable alarms after the seat hold, and a later 
   // Stripe's retry lands and fails again: the clock runs from the FIRST failure.
   noteProvenanceVerdict("cs_x", unverifiable);
   // Other sessions settling leave cs_x alone.
-  noteProvenanceVerdict("cs_y", { kind: "ours" });
+  noteProvenanceVerdict("cs_y", { kind: "ours", feeId: "fee_1" });
   noteProvenanceVerdict("cs_z", { kind: "foreign", reason: "x" });
-  noteProvenanceVerdict("cs_other", { kind: "ours" });
+  noteProvenanceVerdict("cs_other", { kind: "ours", feeId: "fee_1" });
   assert.deepEqual(checkoutProvenanceHealth(), {
     ok: true,
     foreign: 1,
@@ -304,7 +309,7 @@ test("#666: a session left unverifiable alarms after the seat hold, and a later 
   t.mock.timers.tick(1);
   assert.equal(checkoutProvenanceHealth().ok, false);
   assert.equal(checkoutProvenanceHealth().stuck, 1);
-  noteProvenanceVerdict("cs_x", { kind: "ours" });
+  noteProvenanceVerdict("cs_x", { kind: "ours", feeId: "fee_1" });
   const h = checkoutProvenanceHealth();
   assert.equal(h.ok, true);
   assert.equal(h.unresolved, 0);
