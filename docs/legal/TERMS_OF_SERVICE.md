@@ -1,7 +1,7 @@
 # Terms of Service
 
-**Last updated:** 2 November 2026
-**Version:** 1.1
+**Last updated:** 3 November 2026
+**Version:** 1.2
 
 These terms cover **using WoCo as an attendee** — browsing events, buying tickets, holding tickets.
 If you run events, the [Organiser Terms](./ORGANISER_TERMS.md) also apply.
@@ -169,8 +169,8 @@ If you share a referral link and an organiser signs up through it, WoCo pays you
 **This is a launch rate.** WoCo may vary or withdraw it at any time on reasonable notice. That
 includes setting a different rate for different referrers or periods, a maximum you can earn from
 any one referred organiser or in total, and a period after which earnings from a referred organiser
-stop. Any change applies from the date of notice and **does not affect earnings you have already
-accrued**.
+stop. Any change applies from the date given in the notice and **does not affect earnings you have
+already accrued**.
 
 Earnings accrue from the referred organiser's first sale after their referral is confirmed, and are
 calculated from the platform fee WoCo keeps on each sale, net of any fee WoCo returns. A sale's
