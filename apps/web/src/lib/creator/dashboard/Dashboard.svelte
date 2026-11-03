@@ -778,11 +778,18 @@
     rebuildTimer = null;
     browserOrders?.verifier.dispose();
   });
-  // The audience sync reads behind this page, never beside it: a read in progress or a
-  // queue with orders still to fetch holds the sync's own (gateway-share.ts).
-  $effect(() =>
-    registerForeground(() => !destroyed && (ordersLoad !== null || (browserOrders?.queue.progress().waiting ?? 0) > 0)),
-  );
+  /**
+   * This page is reading: a read in progress, or orders still to fetch. A queue stuck
+   * waiting for a fresh erasure answer fetches nothing, so it holds nobody up.
+   */
+  function readingNow(): boolean {
+    if (destroyed) return false;
+    if (ordersLoad !== null) return true;
+    const queue = browserOrders?.queue;
+    return !!queue && queue.progress().waiting > 0 && queue.waitingOn() !== "erasure-check";
+  }
+  // The audience sync reads behind this page, never beside it (gateway-share.ts).
+  $effect(() => registerForeground(readingNow));
 
   /**
    * Boxes arrive one by one: show them in batches, not one repaint per order. A rebuild

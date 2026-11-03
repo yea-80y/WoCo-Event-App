@@ -191,8 +191,14 @@ test("the sync's queue keeps half the allowance and holds behind a foreground re
   assert.match(ORDERS, /export const SYNC_HEADROOM_SHARE = 0\.5;/);
   assert.match(LIVE, /headroomShare: SYNC_HEADROOM_SHARE,\s*holdWhile: foregroundBusy,/);
   assert.match(LIVE, /foregroundBusy,\s*now: Date\.now,/, "and waits for it before the chain read");
-  assert.match(DASH, /registerForeground\(\(\) => !destroyed && \(ordersLoad !== null \|\| \(browserOrders\?\.queue\.progress\(\)\.waiting \?\? 0\) > 0\)\)/);
-  assert.match(DASH, /\$effect\(\(\) =>\s*registerForeground\(/, "unregistered when the page goes (the effect's cleanup)");
+  const reading = fn(DASH, "function readingNow");
+  assert.match(reading, /if \(destroyed\) return false;\s*if \(ordersLoad !== null\) return true;/, "a read in progress holds the sync");
+  assert.match(
+    reading,
+    /return !!queue && queue\.progress\(\)\.waiting > 0 && queue\.waitingOn\(\) !== "erasure-check";/,
+    "orders still to fetch do; a queue stuck on the erasure answer does not",
+  );
+  assert.match(DASH, /\$effect\(\(\) => registerForeground\(readingNow\)\);/, "unregistered when the page goes (the effect's cleanup)");
 });
 
 test("the run holds no key: bound to its account and unlock, read directly, a watcher locks at once, disposed on every way out", () => {
@@ -204,6 +210,8 @@ test("the run holds no key: bound to its account and unlock, read directly, a wa
   );
   assert.match(live, /\$effect\.root\(\(\) => \{\s*\$effect\(\(\) => \{\s*if \(!bound\(\)\) opener\.lock\(\);/);
   assert.match(live, /stillOpen: bound,/);
+  // Sealing needs only the public key: the secret keys derived with it are wiped at once.
+  assert.match(fn(live, "async sealKeys()"), /const keys = await listKeysOf\(secrets, parent\);\s*for \(const k of keys\.secretKeys\) k\.fill\(0\);/);
   assert.match(live, /dispose\(\) \{\s*unwatch\(\);\s*opener\.lock\(\);/);
   // openKeys only probes: no derived key is kept in the run's closure.
   const probe = live.slice(live.indexOf("async openKeys()"), live.indexOf("openOrders:"));

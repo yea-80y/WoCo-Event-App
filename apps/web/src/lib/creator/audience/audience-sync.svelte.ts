@@ -291,6 +291,8 @@ function liveDeps(parent: string, manual: boolean, live: SyncLive): { deps: Sync
         : await auth.getAccountSecrets({ toSeal: true, silent: true }).catch(() => null);
       if (!secrets || !current()) return null;
       const keys = await listKeysOf(secrets, parent);
+      // Sealing needs only the public key: the secret keys derived alongside it are not kept.
+      for (const k of keys.secretKeys) k.fill(0);
       return {
         sealList: (payload) => keys.box.sealBoxJsonCompressed(keys.publicKey, payload, keys.ctx),
         // Asked again right before the upload: a key ring that moved on meanwhile (#186) = no

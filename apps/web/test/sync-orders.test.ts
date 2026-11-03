@@ -313,3 +313,55 @@ test("it says how many of the event's orders have arrived, ending at all of them
   await again.c.advance(10);
   assert.ok(out2()?.rows, "a listener that throws never stops the read");
 });
+
+test("a sold slot with no order reference is lost (final), one per slot, not read again", { timeout: 5000 }, async () => {
+  const none: SlotRead = { owner: "0x1", orderRef: "0x" + "0".repeat(64) };
+  const h = harness([slot("a"), none, none]);
+  const out = await h.start();
+  await h.c.advance(10);
+  const rows = out()?.rows;
+  assert.ok(rows);
+  assert.deepEqual(
+    rows.map((o) => o.lost ?? null),
+    [null, "slot:s1:2", "slot:s1:3"],
+  );
+});
+
+test("an old answer the server will not replace ends the read early: the event fails, not at the cap", { timeout: 5000 }, async () => {
+  const h = harness([slot("a"), slot("b")]);
+  // Both wait behind a long gateway pause, and the server stops answering.
+  h.st.answer = () => ({ kind: "limited", retryAfterMs: 5 * 60_000 });
+  const out = await h.start();
+  await h.c.advance(10);
+  h.st.failStatus = true;
+  await h.c.advance(5 * 60_000 + 3 * 60_000);
+  const res = out();
+  assert.ok(res?.err, "failed well before the 10-minute cap");
+  assert.ok(h.c.now() < DRAIN_CAP_MS);
+  assert.equal(h.counts.disposed, 1);
+
+  // Control: one refusal (the queue's first ask, at 60 s), then answers again - the read goes on and finishes.
+  const ok = harness([slot("a")]);
+  let calls = 0;
+  ok.st.answer = () => (++calls === 1 ? { kind: "limited", retryAfterMs: 5 * 60_000 } : { kind: "ok", box: box("a") });
+  const out2 = await ok.start();
+  await ok.c.advance(10);
+  ok.st.failStatus = true;
+  await ok.c.advance(61_000);
+  assert.equal(ok.log.filter((l) => l.startsWith("status:")).length, 3, "exactly one refused ask so far");
+  ok.st.failStatus = false;
+  await ok.c.advance(5 * 60_000);
+  assert.ok(out2()?.rows?.[0].encryptedOrder, "one refusal is not a stall");
+
+  // Refusals that are not in a row (refused at 60 s, answered at 120 s, refused at 180 s) are
+  // not a stall: the read is still going at 230 s. (A fetch in flight keeps the queue asking every minute.)
+  const gaps = harness([slot("a")]);
+  gaps.st.answer = () => "hang";
+  const out3 = await gaps.start();
+  for (const [until, fail] of [[61_000, true], [121_000, false], [181_000, true], [230_000, false]] as const) {
+    gaps.st.failStatus = fail;
+    await gaps.c.advance(until - gaps.c.now());
+  }
+  assert.equal(gaps.log.filter((l) => l.startsWith("status:")).length, 5, "asked at 0 (twice), 60, 120 and 180 s");
+  assert.equal(out3(), undefined, "the count of refusals starts again after an answer");
+});

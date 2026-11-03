@@ -13,7 +13,10 @@
  *   without a box: transient, so the event is read again next run. The whole read
  *   stops at DRAIN_CAP_MS the same way.
  * - A root that ends missing (a 404 after the recent-sale recheck) or unreadable is
- *   final: its rows come back `lost` (audience-sync.ts `SyncOrder`).
+ *   final: its rows come back `lost` (audience-sync.ts `SyncOrder`); so is a sold slot
+ *   with no order reference at all.
+ * - An answer too old to fetch on, with the server refusing a new one twice in a row,
+ *   ends the read early; the fresh read below then fails the event.
  * - Nothing is handed on for opening under an erasure answer older than
  *   COVERAGE_STALE_MS: a fresh one is read first, and a root it erases loses its box
  *   (the queue forgets it). No fresh answer = this event fails this run.
@@ -39,6 +42,8 @@ export const DRAIN_GRACE_MS = 2 * 60_000;
 export const DRAIN_CAP_MS = 10 * 60_000;
 /** How often a wait looks again. */
 export const DRAIN_TICK_MS = 1_000;
+/** Fresh erasure answers refused in a row, on an answer already too old to fetch on, before the read stops waiting. */
+export const STALLED_AFTER_FAILS = 2;
 /** The sync's queue stops with half the gateway's allowance left, not a quarter: other tabs, the door, the dashboard. */
 export const SYNC_HEADROOM_SHARE = 0.5;
 
@@ -88,6 +93,7 @@ export async function readEventOrders(deps: SyncOrdersDeps): Promise<SyncOrder[]
 
     let coveredAt = read.coverage.at;
     let refreshing: Promise<void> | null = null;
+    let refreshFails = 0;
     const refresh = (): Promise<void> =>
       (refreshing ??= deps.reader
         .loadRows(BACKGROUND)
@@ -95,10 +101,19 @@ export async function readEventOrders(deps: SyncOrdersDeps): Promise<SyncOrder[]
           if (!r) throw new Error("this event's ledger can no longer be read here");
           q.cover(r.coverage);
           coveredAt = r.coverage.at;
+          refreshFails = 0;
+        })
+        .catch((err: unknown) => {
+          refreshFails++;
+          throw err;
         })
         .finally(() => {
           refreshing = null;
         }));
+    // The answer is too old to fetch on and the server has not given a new one twice
+    // running: nothing will move until it does, so stop now rather than at the cap
+    // (Fable sign-off 2026-11-03 #1). The fresh read below then decides.
+    const stalled = () => deps.now() - coveredAt >= COVERAGE_STALE_MS && refreshFails >= STALLED_AFTER_FAILS;
     let changed: (() => void) | null = null;
     const q = (queue = deps.makeQueue({
       // The queue keeps asking while it waits; a failed answer only means it waits longer.
@@ -106,7 +121,7 @@ export async function readEventOrders(deps: SyncOrdersDeps): Promise<SyncOrder[]
       onChange: () => changed?.(),
     }));
     q.cover(read.coverage);
-    await drain(deps, q, deadline, (fn) => (changed = fn));
+    await drain(deps, q, deadline, (fn) => (changed = fn), stalled);
     if (refreshing) await (refreshing as Promise<void>).catch(() => {});
     // Never handed on under an old answer: one fresh read, or this event fails.
     if (deps.now() - coveredAt >= COVERAGE_STALE_MS) await refresh();
@@ -114,8 +129,10 @@ export async function readEventOrders(deps: SyncOrdersDeps): Promise<SyncOrder[]
     return deps.reader.build((root) => q.box(root)).orders.map((o): SyncOrder => {
       if (o.encryptedOrder || o.erased) return o;
       const root = deps.reader.rootOf(o);
-      const state = root ? q.state(root) : undefined;
-      return root && (state === "missing" || state === "unreadable") ? { ...o, lost: root } : o;
+      // A sold slot with no order reference has nothing to fetch, ever: final, as a 404 is.
+      if (root === null) return { ...o, lost: `slot:${o.seriesId}:${o.edition}` };
+      const state = q.state(root);
+      return state === "missing" || state === "unreadable" ? { ...o, lost: root } : o;
     });
   } finally {
     queue?.stop();
@@ -136,7 +153,13 @@ function waitFor(deps: SyncOrdersDeps, ok: () => boolean, deadline: number): Pro
 }
 
 /** Until nothing is queued or fetching and retries had their grace, or the deadline. */
-function drain(deps: SyncOrdersDeps, q: SyncQueue, deadline: number, onChange: (fn: (() => void) | null) => void): Promise<void> {
+function drain(
+  deps: SyncOrdersDeps,
+  q: SyncQueue,
+  deadline: number,
+  onChange: (fn: (() => void) | null) => void,
+  stalled: () => boolean,
+): Promise<void> {
   return new Promise((resolve) => {
     let idleSince: number | null = null;
     let timer: unknown = null;
@@ -164,7 +187,7 @@ function drain(deps: SyncOrdersDeps, q: SyncQueue, deadline: number, onChange: (
       const now = deps.now();
       const p = q.progress();
       tell(p);
-      if (now >= deadline) return finish();
+      if (now >= deadline || stalled()) return finish();
       if (p.waiting === 0 && p.retrying === 0) return finish();
       // The grace runs ONCE, from the first moment only retries were left: a retry going
       // back into the queue does not restart it, or one failing root would hold the read.
