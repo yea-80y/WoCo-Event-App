@@ -205,18 +205,30 @@ export function admitClientCollection(input: {
   });
 }
 
-/** Rebuild a single-event page from the server's own config and the browser's checked head (#1032 slice 5). */
+/**
+ * Rebuild a single-event page from the server's own config, the browser's checked
+ * head and the deploy's checked name (#1032 slice 5, canonical #70).
+ */
 export function admitClientEventPage(input: {
   kit: SiteRuntimeKit;
   config: EventPageConfig;
   head: EventPageHead;
+  name?: string;
   received: { runtimeVersion: number; objects: Uint8Array[] };
 }): CollectionVerdict {
   if (input.kit.line !== "eventPage") throw new Error("an event page is built on the eventPage line");
   return admitBuild({
     kit: input.kit,
     received: input.received,
-    build: () => buildEventPageCollection({ config: input.config, head: input.head, template: input.kit.template, release: input.kit.release, releaseRootNode: input.kit.rootNode }),
+    build: () =>
+      buildEventPageCollection({
+        config: input.config,
+        head: input.head,
+        name: input.name,
+        template: input.kit.template,
+        release: input.kit.release,
+        releaseRootNode: input.kit.rootNode,
+      }),
   });
 }
 

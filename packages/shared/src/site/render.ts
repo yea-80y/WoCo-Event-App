@@ -10,6 +10,8 @@
  * immutable, publicly addressed collection, so every escape below is load-bearing.
  */
 
+import { validateLabel } from "../sub-ens/label.js";
+import { subEnsWebUrl } from "../sub-ens/web.js";
 import type { Site } from "./types.js";
 
 /**
@@ -139,10 +141,47 @@ export function injectBeforeHeadClose(html: string, snippet: string): string {
   return html.replace("</head>", () => `${snippet}\n  </head>`);
 }
 
+/** A runtime template's own `<title>` (multi-site.html says "Site", site.html "Event"). */
+const TEMPLATE_TITLE = /<title\b[^>]*>[^<]*<\/title>/i;
+
+/**
+ * Put an already-escaped `title` in the document's `<title>`: the template's own
+ * is replaced, or one is added before `</head>` when it has none; an empty title
+ * keeps the template's. Written at publish, not only by the runtime, because
+ * crawlers that run no script read the HTML as served (#70). A replacer FUNCTION:
+ * a string would read `$&` or `` $` `` in the title as a pattern.
+ */
+export function withDocumentTitle(html: string, titleEsc: string): string {
+  if (!titleEsc) return html;
+  return TEMPLATE_TITLE.test(html)
+    ? html.replace(TEMPLATE_TITLE, () => `<title>${titleEsc}</title>`)
+    : injectBeforeHeadClose(html, `  <title>${titleEsc}</title>`);
+}
+
+/**
+ * The canonical link for a page published under a WoCo name (#70): the name's
+ * address, so a crawler that finds the page on a gateway or by hash files it under
+ * the name. Taken from the label the page is rendered with, never a chain read:
+ * both sides of the byte-identical admission must derive it alike, and a wrong
+ * label misleads crawlers only about the publisher's own page. Never a gateway
+ * URL (docs/SEO_PLAN.md D2). No label, or one that is not a valid name, gives none.
+ * No `og:url` beside it: a share card follows that one, and until the holder signs
+ * the pointer the name may show nothing.
+ */
+export function canonicalLinkLine(label: string | undefined): string {
+  if (!label || validateLabel(label)) return "";
+  return `  <link rel="canonical" href="${escapeHtmlAttribute(subEnsWebUrl(label))}/">`;
+}
+
+/** A site's name as its head carries it (`<title>`, og:title, twitter:title), escaped. */
+function siteTitleEsc(site: Site): string {
+  return escapeHtmlAttribute(site.theme.brandName?.trim() || "WoCo Site");
+}
+
 /** The SEO + PWA head tags baked into a deployed site. Every interpolation is escaped. */
 export function deployHeadLines(site: Site, gatewayUrl: string): string {
   const desc = site.theme.siteDescription?.trim() ?? "";
-  const brandNameEsc = escapeHtmlAttribute(site.theme.brandName?.trim() || "WoCo Site");
+  const brandNameEsc = siteTitleEsc(site);
   const descEsc = escapeHtmlAttribute(desc);
   const logoRef = site.theme.logoSwarmRef;
   // Organiser logo when set; WoCo brand image (always bundled in the collection) otherwise.
@@ -154,6 +193,7 @@ export function deployHeadLines(site: Site, gatewayUrl: string): string {
   return [
     `  <link rel="manifest" href="./manifest.json">`,
     thumbnailUrl ? `  <link rel="icon" href="${thumbnailUrl}">` : "",
+    canonicalLinkLine(site.subEnsLabel),
     `  <meta name="theme-color" content="${themeColorEsc}">`,
     desc ? `  <meta name="description" content="${descEsc}">` : "",
     `  <meta property="og:type" content="website">`,
@@ -188,12 +228,13 @@ export function sitePwaManifest(site: Site): Record<string, unknown> {
 }
 
 /**
- * A deployed site's HTML: the runtime's template with the `window.SITE_CONFIG`
- * script, then the SEO/PWA head tags, spliced in before `</head>`. `config` is the
- * whole injected object (`site`, `gatewayUrl`, `apiUrl`, `wocoAppUrl`, and
- * `contentGatewayUrl` for Etherna-hosted sites).
+ * A deployed site's HTML: the runtime's template with the site's `<title>` and the
+ * `window.SITE_CONFIG` script, then the SEO/PWA head tags, spliced in before
+ * `</head>`. `config` is the whole injected object (`site`, `gatewayUrl`,
+ * `apiUrl`, `wocoAppUrl`, and `contentGatewayUrl` for Etherna-hosted sites).
  */
 export function renderSiteHtml(input: { template: string; config: unknown; site: Site; gatewayUrl: string }): string {
   const withConfig = injectBeforeHeadClose(input.template, `  ${siteConfigScript(input.config)}`);
-  return injectBeforeHeadClose(withConfig, deployHeadLines(input.site, input.gatewayUrl));
+  const titled = withDocumentTitle(withConfig, siteTitleEsc(input.site));
+  return injectBeforeHeadClose(titled, deployHeadLines(input.site, input.gatewayUrl));
 }
