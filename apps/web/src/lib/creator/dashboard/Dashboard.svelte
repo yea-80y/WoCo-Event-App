@@ -660,6 +660,8 @@
           batch.map(({ order }, id) => ({ id, seriesId: order.seriesId, box: $state.snapshot(order.encryptedOrder) })),
         );
         if (out.kind === "unavailable") {
+          // Locked, or left, meanwhile: stop here, never re-walk and re-derive keys for nothing.
+          if (epoch !== openEpoch || destroyed) return;
           // No worker after all: the rest open on this page.
           useWorker = false;
           continue;

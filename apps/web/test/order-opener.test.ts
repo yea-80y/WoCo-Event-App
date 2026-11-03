@@ -231,7 +231,11 @@ const WORKER = readFileSync(new URL("../src/lib/creator/dashboard/order-opener.w
 
 test("Dashboard: opens in the worker, falls back to the page, and a relock stops and terminates it", () => {
   const body = DASH.slice(DASH.indexOf("async function decryptOnce"), DASH.indexOf("// Unlocked - by the panel's tap"));
-  assert.match(body, /if \(out\.kind === "unavailable"\) \{\s*\/\/[^\n]*\n\s*useWorker = false;\s*continue;/);
+  assert.match(
+    body,
+    /if \(out\.kind === "unavailable"\) \{\s*\/\/[^\n]*\n\s*if \(epoch !== openEpoch \|\| destroyed\) return;\s*\/\/[^\n]*\n\s*useWorker = false;\s*continue;/,
+    "falls back to the page - unless a lock or leaving landed meanwhile (Fable sign-off #1061 fix 2, F2)",
+  );
   assert.match(body, /if \(out\.kind === "locked" \|\| epoch !== openEpoch \|\| destroyed\) return;/);
   assert.match(
     body,
@@ -403,6 +407,63 @@ test("pool: one share answered under an old epoch makes the whole step locked", 
   ports[0].onmessage!({ data: { type: "opened", req: 1, epoch: 1, results: [{ id: 0, data: { old: true } }] } });
   ports[1].onmessage!({ data: { type: "opened", req: 1, epoch: 1, results: [{ id: 1, data: { old: true } }] } });
   assert.deepEqual(await waiting, { kind: "locked" });
+});
+
+// Fable sign-off #1061 fix 2, F1: a step where SOME shares opened and one was locked.
+
+test("pool: one share opened, then a lock before the other answers - the whole step is locked", async () => {
+  const s = spawner(() => fakePort({ hold: true }));
+  const pool = new OrderOpenerPool(s.spawn, () => 2);
+  pool.unlock(1, [new Uint8Array(1)]);
+  const waiting = pool.open(1, "e", jobs(4));
+  await flush();
+  s.made[0].release(); // worker 0 answers its share under epoch 1
+  await flush();
+  pool.lock(); // worker 1 has not answered
+  assert.deepEqual(await waiting, { kind: "locked" }, "worker 0's openings are not kept");
+});
+
+test("pool: a lock while a gone worker's share re-runs - never the first round's openings", async () => {
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    let n = 0;
+    const s = spawner(() => (n++ === 0 ? fakePort({ hold: true }) : refusingPort()));
+    const pool = new OrderOpenerPool(s.spawn, () => 2);
+    pool.unlock(1, [new Uint8Array(1)]);
+    const waiting = pool.open(1, "e", jobs(4));
+    await flush(); // worker 1 refused its share
+    s.made[0].release(); // worker 0 answers round 1
+    await flush();
+    await flush();
+    assert.deepEqual(opensOf(s.made[0]), [2, 2], "round 2 went to worker 0");
+    pool.lock(); // while round 2 is held
+    assert.deepEqual(await waiting, { kind: "locked" });
+  } finally {
+    console.error = quiet;
+  }
+});
+
+test("pool: a lock landing between rounds reads as locked, not as every worker gone (F2)", async () => {
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const ports: OpenerPort[] = [];
+    let n = 0;
+    const pool = new OrderOpenerPool(() => {
+      if (n++ === 1) return refusingPort().port;
+      const port: OpenerPort = { onmessage: null, onerror: null, postMessage: () => {}, terminate: () => {} };
+      ports.push(port);
+      return port;
+    }, () => 2);
+    pool.unlock(1, [new Uint8Array(1)]);
+    const waiting = pool.open(1, "e", jobs(4)); // worker 1 refuses at once
+    ports[0].onmessage!({ data: { type: "opened", req: 1, epoch: 1, results: [{ id: 0, data: {} }, { id: 1, data: {} }] } });
+    pool.lock(); // same turn: before the step asks who is still keyed
+    assert.deepEqual(await waiting, { kind: "locked" }, "the page stops; it does not fall back and derive keys again");
+  } finally {
+    console.error = quiet;
+  }
 });
 
 /** A worker that cannot take an "open" message (as a proxy that will not copy made one). */

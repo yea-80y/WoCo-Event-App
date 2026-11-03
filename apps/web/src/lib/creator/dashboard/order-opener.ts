@@ -161,7 +161,9 @@ export function poolWidth(rows: number, cores: number | undefined): number {
  *   step is "unavailable" and the page opens it itself;
  * - `lock()` locks every worker.
  *
- * How many workers is decided at each unlock, from `wanted()`, and never shrinks.
+ * How many workers is decided at each unlock, from `wanted()`, and never shrinks. A gone
+ * worker never comes back, but a later unlock that wants more starts new ones - at most
+ * POOL_MAX started per pool, ever.
  */
 export class OrderOpenerPool {
   private readonly openers: OrderOpener[] = [];
@@ -187,13 +189,18 @@ export class OrderOpenerPool {
     const want = Math.max(1, Math.min(POOL_MAX, this.wanted()));
     while (this.openers.length < want) this.openers.push(new OrderOpener(this.spawn, this.timeoutMs));
     this.epoch = epoch;
-    for (const o of this.openers) {
-      const copy = secretKeys.map((k) => k.slice());
-      o.unlock(epoch, copy);
-      // OrderOpener overwrites what it is given, except when its worker is gone.
-      for (const k of copy) k.fill(0);
-    }
+    // Every copy made, then the caller's arrays overwritten at once - before any hand-over
+    // can throw, as the single worker did (Fable sign-off #1061 fix 2, F3).
+    const copies = this.openers.map(() => secretKeys.map((k) => k.slice()));
     for (const k of secretKeys) k.fill(0);
+    this.openers.forEach((o, i) => {
+      try {
+        o.unlock(epoch, copies[i]);
+      } finally {
+        // OrderOpener overwrites what it is given, except when its worker is gone.
+        for (const k of copies[i]) k.fill(0);
+      }
+    });
   }
 
   open(epoch: number, eventId: string, jobs: OpenJob[]): Promise<OpenOutcome> {
@@ -222,7 +229,8 @@ export class OrderOpenerPool {
     if (redo.length === 0) return { kind: "opened", results };
     // A worker gave out (it is unusable now, so this ends): its share goes to the rest.
     const rest = this.keyed(epoch);
-    if (rest.length === 0) return { kind: "unavailable" };
+    // None keyed but some still usable: a lock or re-key landed between rounds (F2).
+    if (rest.length === 0) return this.openers.some((o) => o.usable) ? { kind: "locked" } : { kind: "unavailable" };
     const again = await this.spread(rest, epoch, eventId, redo);
     return again.kind === "opened" ? { kind: "opened", results: [...results, ...again.results] } : again;
   }
