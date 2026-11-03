@@ -659,7 +659,7 @@ test("opening runs in steps from the rows on screen, gives the page a turn, and 
   // Each step from the live rows: an order erased mid-run is never opened (Fable sign-off S2).
   assert.match(
     body,
-    /const batch = ordersResponse \? opened\.nextUnopened\(ordersResponse\.orders, useWorker \? OPEN_BATCH : OPEN_CHUNK\) : \[\];/,
+    /const step = worker && useWorker \? OPEN_BATCH \* Math\.max\(1, worker\.width\) : OPEN_CHUNK;\s*const batch = ordersResponse \? opened\.nextUnopened\(ordersResponse\.orders, step\) : \[\];/,
   );
   assert.match(body, /else opened\.fail\(batch\[k\]\.order\);/, "a box that would not open is not retried every run (S6)");
   assert.match(body, /else opened\.fail\(order\);/, "nor one the worker did not open or answer for");

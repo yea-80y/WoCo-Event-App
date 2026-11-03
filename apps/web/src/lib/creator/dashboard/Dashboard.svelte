@@ -29,7 +29,7 @@
   import { BrowserOrders, OrdersStatusUnavailable } from "./browser-orders.js";
   import { canReadLedger, liveBrowserOrdersDeps, liveGatewayFetcher } from "./browser-orders-live.js";
   import { DetailQueue, type DetailState } from "./detail-queue.js";
-  import { OrderOpener, type OpenerPort } from "./order-opener.js";
+  import { OrderOpenerPool, poolWidth, type OpenerPort } from "./order-opener.js";
   import { DETAIL_CSV, listGate, rowDetail, shortfall, type RowDetail } from "./list-completeness.js";
   import { withoutSealedOrders } from "../../api/orders-cache.js";
   import type { RequestSigningOptions } from "../../auth/request-session.js";
@@ -515,26 +515,29 @@
   let openEpoch = 0;
   /** Opened per step when no worker runs, then the page gets a turn. */
   const OPEN_CHUNK = 20;
-  /** Orders per message to the opening worker. */
+  /** Orders per message to each opening worker. */
   const OPEN_BATCH = 50;
   /** Rows kept in the page's saved copy of the list (localStorage); none above it. */
   const ROW_CACHE_MAX = 5_000;
 
   /**
-   * Opening runs in a worker (order-opener.ts): thousands of orders never freeze the
-   * page. null = this browser has no workers; the page opens them itself.
+   * Opening runs in workers (order-opener.ts): thousands of orders never freeze the
+   * page, and a long list splits across several (#1061). null = this browser has no
+   * workers; the page opens them itself.
    */
-  let opener: OrderOpener | null | undefined;
-  /** The account whose keys the worker holds (auth.seedAddress at hand-over). */
+  let opener: OrderOpenerPool | null | undefined;
+  /** The account whose keys the workers hold (auth.seedAddress at hand-over). */
   let keyedAccount: string | null = null;
-  function orderOpener(): OrderOpener | null {
+  function orderOpener(): OrderOpenerPool | null {
     if (opener === undefined) {
       opener =
         typeof Worker === "undefined"
           ? null
-          : new OrderOpener(
+          : new OrderOpenerPool(
               () =>
                 new Worker(new URL("./order-opener.worker.ts", import.meta.url), { type: "module" }) as unknown as OpenerPort,
+              // Sized at each unlock, from the list then on screen.
+              () => poolWidth(ordersResponse?.orders.length ?? 0, navigator.hardwareConcurrency),
             );
     }
     return opener;
@@ -635,7 +638,9 @@
       // Each step from the rows on screen NOW, so an order erased mid-run is never
       // opened (a new list is a new array, walked afresh); one that would not open is
       // recorded and not retried with this box.
-      const batch = ordersResponse ? opened.nextUnopened(ordersResponse.orders, useWorker ? OPEN_BATCH : OPEN_CHUNK) : [];
+      // A step is OPEN_BATCH per keyed worker (one before the first hand-over).
+      const step = worker && useWorker ? OPEN_BATCH * Math.max(1, worker.width) : OPEN_CHUNK;
+      const batch = ordersResponse ? opened.nextUnopened(ordersResponse.orders, step) : [];
       if (batch.length === 0) break;
       if (worker && useWorker) {
         if (!worker.keyedFor(epoch)) {
@@ -655,6 +660,8 @@
           batch.map(({ order }, id) => ({ id, seriesId: order.seriesId, box: $state.snapshot(order.encryptedOrder) })),
         );
         if (out.kind === "unavailable") {
+          // Locked, or left, meanwhile: stop here, never re-walk and re-derive keys for nothing.
+          if (epoch !== openEpoch || destroyed) return;
           // No worker after all: the rest open on this page.
           useWorker = false;
           continue;
