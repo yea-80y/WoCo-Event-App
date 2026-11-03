@@ -31,6 +31,7 @@
   import type { BundleVerifier } from "./bundle-verifier.js";
   import { DetailQueue, type DetailState } from "./detail-queue.js";
   import { OrderOpenerPool, poolWidth, type OpenerPort } from "./order-opener.js";
+  import { registerForeground } from "./gateway-share.js";
   import { DETAIL_CSV, listGate, rowDetail, shortfall, type RowDetail } from "./list-completeness.js";
   import { withoutSealedOrders } from "../../api/orders-cache.js";
   import type { RequestSigningOptions } from "../../auth/request-session.js";
@@ -777,6 +778,11 @@
     rebuildTimer = null;
     browserOrders?.verifier.dispose();
   });
+  // The audience sync reads behind this page, never beside it: a read in progress or a
+  // queue with orders still to fetch holds the sync's own (gateway-share.ts).
+  $effect(() =>
+    registerForeground(() => !destroyed && (ordersLoad !== null || (browserOrders?.queue.progress().waiting ?? 0) > 0)),
+  );
 
   /**
    * Boxes arrive one by one: show them in batches, not one repaint per order. A rebuild

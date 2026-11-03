@@ -23,6 +23,10 @@
  * they are not (another gateway), it keeps to SELF_CAP_PER_MINUTE, or
  * BATCH_SELF_CAP_PER_MINUTE for bundles. A 429 pauses everything.
  *
+ * A BACKGROUND queue (the audience sync's) keeps more headroom (`headroomShare`) and
+ * issues nothing while `holdWhile()` says a foreground read in this tab - an open
+ * dashboard - is using the same per-IP allowance (gateway-share.ts).
+ *
  * NOTHING IS DROPPED SILENTLY. Every root ends ready, missing (404: its storage
  * expired or the chunk was evicted) or unreadable, or keeps retrying - and says
  * which, so a row never shows a blank that looks like data.
@@ -87,6 +91,8 @@ export const BATCH_SELF_CAP_PER_MINUTE = 90;
 export const RETRY_COALESCE_MS = 100;
 /** With a readable budget: stop while less than this share of the allowance is left. */
 export const HEADROOM_SHARE = 0.25;
+/** While `holdWhile()` is true, look again this often. */
+export const HOLD_RECHECK_MS = 1_000;
 export const COVERAGE_REFRESH_MS = 60_000;
 export const COVERAGE_STALE_MS = 90_000;
 /** One more look at a 404 for a sale this recent: storing can lag the sale. */
@@ -113,6 +119,10 @@ export interface DetailQueueDeps {
   wantCoverage(): void;
   /** Something a row shows changed. */
   onChange(): void;
+  /** Stop while less than this share of a readable allowance is left. Default HEADROOM_SHARE. */
+  headroomShare?: number;
+  /** True = issue nothing for now (a foreground read is using the allowance); asked again shortly. */
+  holdWhile?(): boolean;
 }
 
 interface Entry {
@@ -246,6 +256,12 @@ export class DetailQueue {
   private pump(): void {
     if (this.stopped || !this.coverage) return;
     const now = this.deps.now();
+    // Held: no fetch, and no fresh answer asked for either - the age check below runs
+    // again on resume, so a long hold never resumes on an old answer.
+    if (this.busy() && this.deps.holdWhile?.()) {
+      this.wakeAt(now + HOLD_RECHECK_MS, now);
+      return;
+    }
     const age = now - this.coverage.at;
     if (this.busy() && age >= COVERAGE_REFRESH_MS && now - this.askedAt >= COVERAGE_REFRESH_MS) {
       this.askedAt = now;
@@ -411,7 +427,7 @@ export class DetailQueue {
     // A quarter of whatever allowance the gateway names: 250 of the general 1,000/min the
     // rest of the app shares, 30 of the bundle limiter's 120/min. (A fixed floor of 100
     // stopped bundles after 20 a minute - Fable sign-off 2026-11-02 S1.)
-    const floor = Math.ceil(b.limit * HEADROOM_SHARE);
+    const floor = Math.ceil(b.limit * (this.deps.headroomShare ?? HEADROOM_SHARE));
     if (b.remaining < floor) this.pausedUntil = Math.max(this.pausedUntil, now + b.resetMs);
   }
 

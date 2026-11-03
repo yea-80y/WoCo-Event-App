@@ -26,7 +26,17 @@
  *     while the orders were being read is not added;
  *   - the seal key is taken at write time and checked unchanged before the upload;
  *   - one unreadable order, event or check costs only itself;
+ *   - an order that is there but will not open, or whose sealed copy is gone or is
+ *     not a sealed order (`lost`), is counted and not read again until the event
+ *     sells again; one that could not be fetched this time is read again next run;
+ *   - a sale's sealed order is opened once, however many tickets it holds;
+ *   - keys that lock (or an account that changes) part-way stop the run: nothing
+ *     opened is kept, nothing is written, and the hour is not used up;
  *   - nothing is written when nothing changed.
+ *
+ * Orders are read the way the dashboard reads them (#201): rows from the chain, the
+ * server's erasure answer, sealed orders from the gateway, opened in workers. The
+ * live reader is `sync-orders.ts`, the live opener `sync-opener.ts`.
  */
 
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -254,11 +264,31 @@ export function watermarkStore(storage: KeyValue | undefined, parent: string): W
 
 // ── The run ─────────────────────────────────────────────────────────────────
 
+/** One sealed order to open: bound to its event and the SLOT's series, never its payload's own. */
+export interface OpenJob {
+  seriesId: string;
+  box: SealedBoxV2;
+}
+
 /** Opening needs any key this device holds for the account. */
 export interface OpenKeys {
-  openOrder(box: SealedBoxV2, eventId: string, seriesId: string): Promise<DecryptedClaim>;
+  /**
+   * Each job's buyer, in job order; null where its box would not open. "locked" = the
+   * keys locked or the account changed while it ran: nothing it opened may be used.
+   */
+  openOrders(eventId: string, jobs: OpenJob[]): Promise<Array<DecryptedClaim | null> | "locked">;
   openList(box: SealedBoxV2): Promise<MarketingListPayload>;
+  /** Still the account and unlock this run began under. False = the run stops as "locked". */
+  stillOpen(): boolean;
 }
+
+/**
+ * One sold ticket as the sync reads it. `lost` = its order root, when the sealed order
+ * was asked for and is not there (a 404 after the recent-sale recheck: storage expired)
+ * or is not a sealed order. Final either way: counted like an order that will not open,
+ * never a reason to read the event again.
+ */
+export type SyncOrder = OrderEntry & { lost?: string };
 
 /** Sealing needs the CONFIRMED current generation (#186). */
 export interface SealKeys {
@@ -279,7 +309,8 @@ export interface SyncDeps {
   listStamp(): Promise<string | null>;
   /** Sold slots for the event - the cheap call. Throws when it cannot say. */
   orderCount(eventId: string): Promise<number>;
-  getOrders(eventId: string): Promise<OrderEntry[]>;
+  /** Every sold ticket, with its sealed order where it was fetched. Throws when the event cannot be read now. */
+  getOrders(eventId: string): Promise<SyncOrder[]>;
   /** The event's questions. Throws when unreadable. */
   getOrderFields(ev: EventDirectoryEntry): Promise<readonly OrderField[]>;
   check(emails: string[]): Promise<MarketingCheckResult>;
@@ -295,8 +326,6 @@ export interface SyncDeps {
   published?(payload: MarketingListPayload, meta: MarketingListMeta): void;
   watermark: WatermarkStore;
   now(): number;
-  /** Give the page a frame between batches of order opening. */
-  pause?(): Promise<void>;
 }
 
 export type SyncStatus = "ok" | "partial" | "failed" | "locked";
@@ -369,6 +398,8 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
 
   for (const ev of events) {
     if (pastRetention(ev, now)) continue;
+    // Locked (or another account) since the run began: no further read is worth making.
+    if (!keys.stillOpen()) return result("locked", { failedEvents, unreadableOrders });
 
     let n: number;
     try {
@@ -394,17 +425,18 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
       continue;
     }
 
-    let orders: OrderEntry[];
+    let orders: SyncOrder[];
     try {
       orders = await deps.getOrders(ev.eventId);
     } catch {
       failedEvents++;
       continue;
     }
-    // A slot the server could not read, or an order it could not download, is read
-    // again next run. One that downloads but will not open here is not (`unopened`).
-    const incomplete = orders.length < n || orders.some((o) => !o.encryptedOrder && !o.erased);
-    const sealed = orders.filter((o) => o.encryptedOrder);
+    // A slot that could not be read, or an order that could not be fetched this time, is
+    // read again next run. One that is there but will not open here is not (`unopened`),
+    // and neither is one that is lost: reading again would not bring it back.
+    const incomplete = orders.length < n || orders.some((o) => !o.encryptedOrder && !o.erased && !o.lost);
+    const lost = new Set(orders.flatMap((o) => (!o.encryptedOrder && !o.erased && o.lost ? [o.lost] : [])));
 
     let orderFields: readonly OrderField[];
     try {
@@ -415,16 +447,24 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
       continue;
     }
 
-    const claims: DecryptedClaim[] = [];
-    let unopened = 0;
-    for (const [i, order] of sealed.entries()) {
-      try {
-        claims.push(await keys.openOrder(order.encryptedOrder!, ev.eventId, order.seriesId));
-      } catch {
-        unopened++; // sealed to a key this device lacks, or damaged - never the whole event
-      }
-      if (i % 16 === 15) await deps.pause?.();
+    // One box per sale: the slots of a sale's tickets share the same box, opened once.
+    const jobs: OpenJob[] = [];
+    const queued = new Map<SealedBoxV2, Set<string>>();
+    for (const o of orders) {
+      const box = o.encryptedOrder;
+      if (!box) continue;
+      const series = queued.get(box) ?? new Set<string>();
+      if (series.has(o.seriesId)) continue;
+      series.add(o.seriesId);
+      queued.set(box, series);
+      jobs.push({ seriesId: o.seriesId, box });
     }
+    const opened = jobs.length > 0 ? await keys.openOrders(ev.eventId, jobs) : [];
+    // Locked part-way: what was opened is dropped with the run.
+    if (opened === "locked") return result("locked", { failedEvents, unreadableOrders });
+    // A box sealed to a key this device lacks, or damaged, costs only itself.
+    const claims = opened.filter((c): c is DecryptedClaim => c !== null);
+    const unopened = jobs.length - claims.length + lost.size;
     unreadableOrders += unopened;
 
     const emails = [...new Set(lower(claims.map((c) => c.claimerEmail ?? "")).filter(Boolean))];
@@ -469,6 +509,8 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
   // One person across several events is one candidate, merged by the same rule as the list.
   const candidates = applyDrain([], incoming).contacts;
   if (candidates.length === 0) return done({}, stamp);
+  // Locked since the orders were read: the list is not opened and nothing is written.
+  if (!keys.stillOpen()) return result("locked", { failedEvents, unreadableOrders });
 
   const mergeAndWrite = async (fail: (error: string) => SyncResult): Promise<SyncResult | typeof LIST_CHANGED> => {
     if (!deps.stillCurrent()) return fail("You switched accounts, so nothing was added.");

@@ -79,6 +79,14 @@ interface World {
   duringSeal?: (w: World) => void;
   /** Runs right after each check call - "an edit made elsewhere" mid-run. */
   duringCheck?: (w: World) => void;
+  /** Runs inside each openOrders call. */
+  duringOpen?: (w: World) => void;
+  /** openOrders answers "locked": the keys locked while it ran. */
+  lockDuringOpen?: boolean;
+  /** false = the account or its unlock moved since the run began. */
+  keysOpen?: boolean;
+  /** Every box handed to openOrders, in order. */
+  opened: unknown[];
   log: string[];
   writes: Array<{ payload: MarketingListPayload; emails: string[] }>;
 }
@@ -92,6 +100,7 @@ function world(over: Partial<World> = {}): World {
     answer: { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [], keptFields: { "ada@x.com": { eventId: "e1", fieldIds: ["f1", "f2"] } } },
     list: null,
     storage: new Map(),
+    opened: [],
     log: [],
     writes: [],
     ...over,
@@ -110,11 +119,17 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
       w.log.push("openKeys");
       if (w.locked) return null;
       return {
-        async openOrder(box) {
-          const b = box as unknown as Box;
-          if (b.bad) throw new Error("wrong key");
-          return b.claim!;
+        async openOrders(eventId, jobs) {
+          w.log.push(`open:${eventId}:${jobs.length}`);
+          w.opened.push(...jobs.map((j) => j.box));
+          w.duringOpen?.(w);
+          if (w.lockDuringOpen) return "locked";
+          return jobs.map(({ box }) => {
+            const b = box as unknown as Box;
+            return b.bad ? null : b.claim!;
+          });
         },
+        stillOpen: () => w.keysOpen !== false,
         async openList(box) {
           if (w.openListFails) throw new Error("cannot open");
           return structuredClone((box as unknown as Box).sealed!);
@@ -911,6 +926,85 @@ test("a slot the server could not read, or an order it could not download, is re
   const w = world({ orders: { e1: [order({ claimerEmail: "ada@x.com" }), { ...order({}), encryptedOrder: undefined, erased: true }] } });
   await sync(w);
   assert.ok(JSON.parse(w.storage.get("woco:audience-sync:0xorg")!).events.e1);
+});
+
+// ── The browser read (#201) ────────────────────────────────────────────────
+
+/** A ticket whose sealed order is gone for good (404) or is not a sealed order: `lost`, under its root. */
+const lostOrder = (root: string, seriesId = "s1"): OrderEntry & { lost: string } => ({ ...order({}, seriesId), encryptedOrder: undefined, lost: root });
+
+test("a sale's tickets share one sealed order: it is opened once, and counted once if it will not open", async () => {
+  const shared = order({ claimerEmail: "ada@x.com" });
+  const bad = order("bad");
+  const w = world({
+    orders: { e1: [shared, { ...shared, edition: 2 }, { ...shared, edition: 3 }, bad, { ...bad, edition: 5 }] },
+  });
+  const r = await sync(w);
+  assert.deepEqual(w.opened, [shared.encryptedOrder, bad.encryptedOrder], "each box once, in slot order");
+  assert.equal(r.unreadableOrders, 1, "one sale that will not open, not two tickets");
+  assert.equal(r.added, 1);
+});
+
+test("the same box under two series is opened under each: the binding is the slot's series, never shared", async () => {
+  const a = order({ claimerEmail: "ada@x.com" }, "s1");
+  const w = world({ orders: { e1: [a, { ...a, seriesId: "s2", edition: 2 }] } });
+  await sync(w);
+  assert.equal(w.opened.length, 2);
+});
+
+test("a lost order marks its event, counts once per sale, and is not read again until the event sells again", async () => {
+  const w = world({ orders: { e1: [order({ claimerEmail: "ada@x.com" }), lostOrder("r1"), { ...lostOrder("r1"), edition: 3 }, lostOrder("r2")] } });
+  const first = await sync(w);
+  assert.equal(first.unreadableOrders, 2, "two sales lost, three tickets");
+  assert.equal(first.status, "partial");
+  const mark = JSON.parse(w.storage.get("woco:audience-sync:0xorg")!).events.e1;
+  assert.equal(mark.unopened, 2, "covered, with its lost orders remembered");
+  assert.equal(first.added, 1, "the rest of the event is still added");
+  w.now += SYNC_INTERVAL_MS;
+  await sync(w); // settles
+  w.now += SYNC_INTERVAL_MS;
+  w.log.length = 0;
+  const third = await sync(w);
+  assert.ok(!w.log.includes("orders:e1"), "not re-read while the count stands");
+  assert.equal(third.unreadableOrders, 2, "and still reported");
+});
+
+test("a lost order beside one only not fetched yet: the event is read again next run", async () => {
+  const w = world({ orders: { e1: [lostOrder("r1"), { ...order({}), encryptedOrder: undefined }] } });
+  await sync(w);
+  assert.equal(JSON.parse(w.storage.get("woco:audience-sync:0xorg")!).events.e1, undefined);
+});
+
+test("keys that lock while orders are opened: nothing kept, nothing written, nothing marked, status locked", async () => {
+  const w = world({ events: [event("e1"), event("e2")], orders: { e1: [order({ claimerEmail: "ada@x.com" })], e2: [order({ claimerEmail: "bo@x.com" })] }, fields: { e1: [], e2: [] } });
+  w.duringOpen = (x) => {
+    if (x.opened.length === 2) x.lockDuringOpen = true; // the second event's opening
+  };
+  const r = await sync(w);
+  assert.equal(r.status, "locked", "so the hour is not used up (the gate's `counts`)");
+  assert.equal(w.writes.length, 0, "the first event's buyer is not written either");
+  assert.equal(w.storage.size, 0);
+  assert.ok(!w.log.includes("readList"));
+});
+
+test("an account or unlock that moves between events stops the run before the next read", async () => {
+  const w = world({ events: [event("e1"), event("e2")], orders: { e1: [order({ claimerEmail: "ada@x.com" })], e2: [order({ claimerEmail: "bo@x.com" })] }, fields: { e1: [], e2: [] } });
+  w.duringOpen = (x) => void (x.keysOpen = false);
+  const r = await sync(w);
+  assert.equal(r.status, "locked");
+  assert.ok(!w.log.includes("count:e2") && !w.log.includes("orders:e2"), "no read once unbound");
+  assert.equal(w.writes.length, 0);
+  assert.equal(w.storage.size, 0);
+});
+
+test("keys that lock after the orders were opened: the list is never opened, nothing is written", async () => {
+  const w = world();
+  w.duringCheck = (x) => void (x.keysOpen = false);
+  const r = await sync(w);
+  assert.equal(r.status, "locked");
+  assert.ok(!w.log.includes("readList"));
+  assert.ok(!w.log.includes("sealKeys"));
+  assert.equal(w.writes.length, 0);
 });
 
 test("the interval is an hour, kept across reloads; unreadable or future stamps mean run", async () => {

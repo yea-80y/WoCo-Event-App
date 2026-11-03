@@ -13,7 +13,7 @@ import type { MarketingListMeta, MarketingListPayload } from "@woco/shared";
 import { auth } from "../../auth/auth-store.svelte.js";
 import { canOrganise } from "../../auth/organiser-account.js";
 import { getEventSWR, getMyEventsSWR } from "../../api/creator-cache.js";
-import { getEventOrderCount, getEventOrders } from "../../api/events.js";
+import { getEventOrderCount } from "../../api/events.js";
 import {
   checkMarketingEmails,
   getMarketingList,
@@ -21,7 +21,6 @@ import {
   uploadMarketingList,
 } from "../../api/marketing.js";
 import { markAudienceImported } from "../home/onboarding.svelte.js";
-import type { DecryptedClaim } from "./attendee-drain.js";
 import {
   createLock,
   createSyncGate,
@@ -35,6 +34,9 @@ import {
   type SyncResult,
 } from "./audience-sync.js";
 import { listKeysOf } from "./list-keys.js";
+
+/** The live reader and opener, loaded on first use. */
+type SyncLive = typeof import("./sync-live.js");
 
 /** Every write to the sealed list in this tab takes this lock - the Audience screen's saves too. */
 export const withListLock = createLock();
@@ -162,8 +164,19 @@ export function syncAudience(opts: { force?: boolean; manual?: boolean } = {}): 
 
 async function runFor(parent: string, manual: boolean): Promise<SyncResult> {
   audienceSync.running = true;
+  let run: { deps: SyncDeps; dispose(): void } | null = null;
   try {
-    const res = await runAudienceSync(liveDeps(parent, manual));
+    // The reader is loaded on first use; a load that fails is a failed check, never a throw.
+    let live: SyncLive | null = null;
+    try {
+      live = await import("./sync-live.js");
+    } catch {
+      live = null;
+    }
+    if (live) run = liveDeps(parent, manual, live);
+    const res: SyncResult = run
+      ? await runAudienceSync(run.deps)
+      : { status: "failed", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0, error: "Could not load the check." };
     // Logged, never shown off the Audience screen: a background check must not put an error on an unrelated page.
     if (res.status === "failed") console.warn("[audience-sync] check did not finish:", res.error);
     if (res.added > 0) markAudienceImported(parent);
@@ -181,6 +194,8 @@ async function runFor(parent: string, manual: boolean): Promise<SyncResult> {
     if (audienceSync.parent === parent) audienceSync.record = rec;
     return res;
   } finally {
+    // Every worker's keys go with the run, whatever ended it.
+    run?.dispose();
     audienceSync.running = false;
   }
 }
@@ -200,20 +215,49 @@ async function confirmedSecrets(): Promise<{ current: string; all: string[] } | 
   }
 }
 
-function liveDeps(parent: string, manual: boolean): SyncDeps {
+function liveDeps(parent: string, manual: boolean, live: SyncLive): { deps: SyncDeps; dispose(): void } {
   const current = () => auth.isConnected && auth.parent?.toLowerCase() === parent;
-  return {
+  // The keys' account, fixed when the run starts: a relock, sign-out or another sign-in moves one of these.
+  const account = auth.seedAddress;
+  // Read directly before every hand-over and after every step - never through the watcher having run.
+  const bound = () =>
+    current() && account !== null && auth.seedAddress === account && !(auth.kind === "passkey" && !auth.hasIdentitySeed);
+  const opener = live.syncOpener({
+    bound,
+    async keys() {
+      const secrets = await auth.getAccountSecrets();
+      if (!secrets || !bound()) return null;
+      const { orderKeysOf } = await import("../../keyring/order-keys.js");
+      return (await orderKeysOf(secrets)).secretKeys;
+    },
+  });
+  // The workers drop their keys the moment the account or its unlock moves, mid-step too.
+  const unwatch = $effect.root(() => {
+    $effect(() => {
+      if (!bound()) opener.lock();
+    });
+  });
+  const deps: SyncDeps = {
     organiser: parent,
     async openKeys() {
-      // Opening takes whatever this device already holds - no unlock is ever asked for.
+      // A probe only - no unlock is ever asked for, and the run holds no key: opening and
+      // the list each ask again when they need one.
       const secrets = await auth.getAccountSecrets();
-      if (!secrets || !current()) return null;
-      const keys = await listKeysOf(secrets, parent);
-      const { openJsonWithAnyKey } = await import("../../keyring/order-keys.js");
+      if (!secrets || !bound()) return null;
       return {
-        openOrder: (box, eventId, seriesId) =>
-          openJsonWithAnyKey<DecryptedClaim>(keys.secretKeys, box, keys.box.orderSealContext(eventId, seriesId)),
-        openList: (box) => openJsonWithAnyKey<MarketingListPayload>(keys.secretKeys, box, keys.ctx),
+        openOrders: (eventId, jobs) => opener.open(eventId, jobs),
+        async openList(box) {
+          const held = await auth.getAccountSecrets();
+          if (!held || !bound()) throw new Error("Your account locked before your list could be opened.");
+          const keys = await listKeysOf(held, parent);
+          try {
+            const { openJsonWithAnyKey } = await import("../../keyring/order-keys.js");
+            return await openJsonWithAnyKey<MarketingListPayload>(keys.secretKeys, box, keys.ctx);
+          } finally {
+            for (const k of keys.secretKeys) k.fill(0);
+          }
+        },
+        stillOpen: bound,
       };
     },
     async sealKeys() {
@@ -245,9 +289,9 @@ function liveDeps(parent: string, manual: boolean): SyncDeps {
       return (await getMarketingListSummary())?.updatedAt ?? null;
     },
     orderCount: (eventId) => getEventOrderCount(eventId),
-    async getOrders(eventId) {
-      return (await getEventOrders(eventId)).orders;
-    },
+    // In the browser, as the dashboard reads them (#201): never the server's full read,
+    // except for a ledger this browser cannot read (sync-orders.ts).
+    getOrders: (eventId) => live.readOrders(eventId),
     async getOrderFields(ev) {
       const res = await getEventSWR(ev.eventId).refresh();
       if (!res.ok || !res.data) throw new Error(res.error || "Could not read this event's questions.");
@@ -272,6 +316,12 @@ function liveDeps(parent: string, manual: boolean): SyncDeps {
     },
     watermark: watermarkStore(storage(), parent),
     now: Date.now,
-    pause: () => new Promise((resolve) => setTimeout(resolve, 0)),
+  };
+  return {
+    deps,
+    dispose() {
+      unwatch();
+      opener.lock();
+    },
   };
 }
