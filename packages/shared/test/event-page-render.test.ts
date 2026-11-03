@@ -4,7 +4,9 @@
  * from the server's own functions BEFORE the move (an image, none, a failed event
  * read, all-zero and uppercase refs, a trailing-slash gateway, hostile text).
  * #70 then changed ONE line per titled vector: the template's `<title>` became the
- * event's, escaped exactly as its pinned og:title.
+ * event's, escaped exactly as its pinned og:title. It also added a seventh vector,
+ * the first with the page's WoCo name (`label`): the first vector plus one
+ * canonical line.
  */
 
 import test from "node:test";
@@ -20,18 +22,33 @@ import {
   type EventPageHead,
 } from "../src/site/event-page.js";
 
-interface Vector { name: string; template: string; config: EventPageConfig; event: EventPageHead | null; html: string }
+interface Vector { name: string; template: string; config: EventPageConfig; event: EventPageHead | null; label?: string; html: string }
 const vectors: Vector[] = JSON.parse(readFileSync(new URL("./fixtures/event-page-render-vectors.json", import.meta.url), "utf8"));
 
 test("the vectors cover the cases that matter", () => {
-  assert.equal(vectors.length, 6);
+  assert.equal(vectors.length, 7);
+  assert.equal(vectors.filter((v) => v.label).length, 1, "one page is published under a name");
 });
 
 for (const v of vectors) {
   test(`renders exactly as pinned: ${v.name}`, () => {
-    assert.equal(renderEventPageHtml({ template: v.template, config: eventPageDeployConfig(v.config), head: v.event }), v.html);
+    assert.equal(renderEventPageHtml({ template: v.template, config: eventPageDeployConfig(v.config), head: v.event, name: v.label }), v.html);
   });
 }
+
+test("the canonical is the page's WoCo name, and only a valid name (#70)", () => {
+  const v = vectors[0]!;
+  const canonicals = (name: string | undefined) =>
+    [...renderEventPageHtml({ template: v.template, config: eventPageDeployConfig(v.config), head: v.event, name }).matchAll(/<link rel="canonical" href="([^"]*)">/g)].map((m) => m[1]);
+  assert.deepEqual(canonicals("friday-gig"), ["https://friday-gig.woco.eth.limo/"]);
+  for (const bad of [undefined, "", "ab", "Gig", "-gig", "gig-", "a--b", "gig.x", 'a"><script>', "x".repeat(64)]) {
+    assert.deepEqual(canonicals(bad), [], String(bad));
+  }
+  // The template's icon links are stripped; the canonical link is not one of them.
+  const named = renderEventPageHtml({ template: v.template, config: eventPageDeployConfig(v.config), head: v.event, name: "friday-gig" });
+  assert.equal((named.match(/rel="icon"/g) ?? []).length, 1);
+  assert.doesNotMatch(named, /og:url/);
+});
 
 test("the config keeps the server's key order, whatever order it is given in", () => {
   const c = vectors[0]!.config;
