@@ -128,6 +128,16 @@ test("refuses to draw what the chain did not commit", async () => {
   // A plan whose bytes are not the committed digest.
   const other = encodeSeatPlan(freezeSeatPlan(LAYOUT_TEMPLATES.find((t) => t.id === "comedy")!.make()));
   assert.deepEqual(await loadSeatMap(series, deps(chain({ block: 1n, taken: new Set() }), { plan: other })), { ok: false, problem: "mismatch" });
+  // A committed manifest that names the right plan with the wrong seat count.
+  const miscount = {
+    ...body, totalSupply: plan.seats.length + 1,
+    editionTemplate: seatPlanEditionTemplate({ ref: PLAN_REF, digest: planDigest, seats: plan.seats.length + 1 }),
+  };
+  const miscountRef = hex(manifestV2Digest(miscount as never));
+  assert.deepEqual(
+    await loadSeatMap(series, deps(chain({ block: 1n, taken: new Set(), manifestRef: miscountRef }), { manifest: { signedManifest: { body: miscount } } })),
+    { ok: false, problem: "mismatch" },
+  );
   // A manifest with no seat plan, or not a manifest.
   const { editionTemplate: _drop, ...plain } = body;
   assert.deepEqual(await loadSeatMap(series, deps(chain({ block: 1n, taken: new Set() }), { manifest: { signedManifest: { body: plain } } })), { ok: false, problem: "mismatch" });
@@ -183,7 +193,8 @@ test("picked seats get their nonce read beside their word; an unconfirmed freed 
 test("the refresh loop backs off when the RPC says slow down, and reads nothing while hidden", async () => {
   const timers: { fn: () => void; ms: number }[] = [];
   let hidden = false;
-  const st = { block: 1n, taken: new Set<number>(), status: 0 };
+  const seen: string[][] = [];
+  const st = { block: 1n, taken: new Set<number>(), status: 0, seen };
   const d = { ...deps(chain(st)), setTimeout: (fn: () => void, ms: number) => { timers.push({ fn, ms }); return timers.length; }, visible: () => !hidden, random: () => 0.5 };
   const r = await loadSeatMap(series, d);
   assert.ok(r.ok);
@@ -195,8 +206,12 @@ test("the refresh loop backs off when the RPC says slow down, and reads nothing 
   assert.equal(timers.at(-1)!.ms, 40_000, "backed off");
   st.status = 0;
   hidden = true;
-  const seenBefore = timers.length;
+  const timersBefore = timers.length, readsBefore = seen.length;
   await timers.at(-1)!.fn();
-  assert.equal(timers.length, seenBefore + 1, "rescheduled without reading");
+  assert.equal(timers.length, timersBefore + 1, "rescheduled");
+  assert.equal(seen.length, readsBefore, "without reading the chain");
+  hidden = false;
+  await timers.at(-1)!.fn();
+  assert.equal(seen.length, readsBefore + 1, "and reads again once visible");
   r.map.stop();
 });
