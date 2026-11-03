@@ -1,6 +1,6 @@
 # Allocated seating
 
-Status: PLAN (2026-11-03). Nothing below is built yet. Seated events stay off behind
+Status (2026-11-03): S1 and S2 built, the rest planned. Seated events stay off behind
 `seatedEventsAllowed` (`packages/shared/src/features.ts`, UI and server in lockstep) until every
 slice in "Build order" has shipped.
 
@@ -134,9 +134,14 @@ Each slice is one PR. Fable signs off S2, S4, S5 and S6 (server, money path, doo
 
 1. **S1 shared** (built): layout + plan schemas and validation, the walk + golden vectors, geometry, best
    seats, `woco.seatstate.v1`, manifest `seatPlan` link, topics, starting layouts, the flag.
-2. **S2 builder + create**: renderer package, Svelte builder (port of the prototype), plan library feed,
-   the route fork, Prices and publish check; server seated create (re-derive, pin, `registerSeatedEvent`,
-   `seated` + `planDigest` on the registration record).
+2. **S2 builder + create** (built): `@woco/seatmap` renderer, the builder (`apps/web/src/lib/creator/seating/`),
+   the route fork (`AdmissionChoice` in `EventEditor`, so the site builder and `/create` both have it), the
+   seating section (prices, fee, name on tickets); plan upload (`POST /api/seating/plans`); seated create and
+   registration (seatedness from the manifest, `registerSeatedEvent`, `seated` + `planDigest` on the
+   registration record); compact `editionCommon` with a 200,000-editions-per-event ceiling.
+   The LAYOUT LIBRARY moved out to its own slice: a saved layout is a multi-chunk feed, and a large venue's
+   would meet the SOC relay's per-account limits. Until then reuse = templates, plus (next) "start from an
+   earlier event's plan", which needs no new storage: those plans are already content-addressed.
 3. **S3 buyer map**: picker in the app, site runtime and embed; direct Swarm + chain reads; the live
    holds route.
 4. **S4 money path**: per-seat holds, multi-band checkout (`cardOrderAmountsMulti` beside
