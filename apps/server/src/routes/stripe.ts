@@ -45,6 +45,7 @@ import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
 import { chainEventEndMsAt } from "../lib/event/end-date-guard.js";
+import { ledger2SaleStatus, noteChainCancelled } from "../lib/event/ledger2-sale-status.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
@@ -919,9 +920,31 @@ stripe.post("/create-checkout", async (c) => {
   // immutable, so after the first read this is a memo hit (zero RPC). Fails
   // OPEN on a transport error: the #241 feed gate still applies and the
   // contract itself is the final refusal, exactly like the availability read.
+  //
+  // On ledger2 the organiser can extend the cutoff and cancel by signature through
+  // any relay, so both are read FRESH there, never from the memo (#995). Same
+  // fail-open on a transport error; the server's cancellation record above stays
+  // the fail-closed authority. The availability read below starts now, so the
+  // fresh status costs no extra round trip.
+  const onChainRead = getOnChainEventAt(mintTarget, series.onChainEventId).then(
+    (value) => ({ value, error: null as unknown }),
+    (error: unknown) => ({ value: null, error }),
+  );
   let chainEndMs: number | null = null;
   try {
-    chainEndMs = await chainEventEndMsAt(mintTarget, series.onChainEventId);
+    if (mintTarget.version === "ledger2") {
+      const status = await ledger2SaleStatus(mintTarget, series.onChainEventId);
+      if (status?.cancelled) {
+        noteChainCancelled(eventId, series.onChainEventId);
+        return c.json(
+          { ok: false, error: "Tickets for this event are not currently on sale. Please contact the organiser." },
+          409,
+        );
+      }
+      chainEndMs = status?.endMs ?? null;
+    } else {
+      chainEndMs = await chainEventEndMsAt(mintTarget, series.onChainEventId);
+    }
   } catch (err) {
     console.warn("[stripe/create-checkout] chain-end read failed (continuing):", err);
   }
@@ -939,11 +962,10 @@ stripe.post("/create-checkout", async (c) => {
   // supply at mint and the webhook auto-refund is the backstop); the tier
   // count stays undefined on failure, which computeGatePhase fail-safes to
   // holders-only — never a definite 0 that could hold a window open.
-  let onChain: Awaited<ReturnType<typeof getOnChainEventAt>> = null;
-  try {
-    onChain = await getOnChainEventAt(mintTarget, series.onChainEventId);
-  } catch (err) {
-    console.warn("[stripe/create-checkout] availability chain read failed (continuing):", err);
+  const availability = await onChainRead;
+  const onChain: Awaited<ReturnType<typeof getOnChainEventAt>> = availability.value;
+  if (availability.error) {
+    console.warn("[stripe/create-checkout] availability chain read failed (continuing):", availability.error);
   }
 
   // #424 — bind the id to THIS series before charging.

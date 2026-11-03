@@ -16,28 +16,70 @@
  *    client-signed (Phase B) feed the organiser edits with their own key, a
  *    pre-fix edit — still refuses the charge before it happens.
  *
- * The chain end is immutable, so it is memoized forever per (chain, event id):
- * after the first read the sale-time backstop costs ZERO RPCs. Only positive
- * answers are cached — an `EventNotFound` may be a mis-cached id or a wrong
- * chain, and pinning it would make the guard permanently blind there.
+ * Before ledger2 the chain end is immutable, so it is memoized forever per
+ * (chain, event id): after the first read the sale-time backstop costs ZERO RPCs.
+ * A ledger2 end can move later, so it is memoized for a minute (below). Only
+ * positive answers are cached — an `EventNotFound` may be a mis-cached id or a
+ * wrong chain, and pinning it would make the guard permanently blind there.
  */
 
 import {
   getOnChainEventEnd as realGetOnChainEventEnd,
   getOnChainEventEndAt as realGetOnChainEventEndAt,
   getActiveChainId,
+  getEventContractVersion,
   contractKey,
   type EventContractTarget,
 } from "../chain/event-contract.js";
 
-/** `${chainId}:${onChainEventId}` → registered end in epoch MS. */
-const _endMemo = new Map<string, number>();
 /**
- * `${chainId}:${contract}:${onChainEventId}` → registered end in epoch MS. Keyed
- * by contract as well (#563): V2 ids are not domain-separated by contract, so
- * two contracts on one chain can hold the same id with different ends.
+ * LEDGER2 MOVES IT (#995). On ledger2 the organiser can move the cutoff LATER
+ * (`extendSalesEndWithSignature`, through our relay or anyone's), so its end is
+ * remembered for {@link LEDGER2_END_TTL_MS} only, and dropped at once when our relay
+ * lands an extension ({@link invalidateChainEnd}). Staleness errs safe: an
+ * extension only moves the end later, so a stale value refuses a sale the chain
+ * would take (a lost sale for up to a minute), never charges one it would refuse.
+ * The sale path itself does not use this memo on ledger2: it reads the end fresh
+ * with the supply (`lib/event/ledger2-sale-status.ts`). Every earlier version's end
+ * has no setter and stays memoized for good.
  */
-const _endMemoAt = new Map<string, number>();
+export const LEDGER2_END_TTL_MS = 60_000;
+
+interface EndMemo {
+  endMs: number;
+  /** Epoch ms after which it is read again; Infinity for an end that cannot move. */
+  until: number;
+}
+
+/** `${chainId}:${onChainEventId}` → registered end. */
+const _endMemo = new Map<string, EndMemo>();
+/**
+ * `${chainId}:${contract}:${onChainEventId}` → registered end. Keyed by contract
+ * as well (#563): V2 ids are not domain-separated by contract, so two contracts on
+ * one chain can hold the same id with different ends.
+ */
+const _endMemoAt = new Map<string, EndMemo>();
+
+function remember(memo: Map<string, EndMemo>, k: string, endMs: number, movable: boolean, now: number): void {
+  memo.set(k, { endMs, until: movable ? now + LEDGER2_END_TTL_MS : Infinity });
+}
+
+function recall(memo: Map<string, EndMemo>, k: string, now: number): number | undefined {
+  const hit = memo.get(k);
+  if (!hit) return undefined;
+  if (now >= hit.until) {
+    memo.delete(k);
+    return undefined;
+  }
+  return hit.endMs;
+}
+
+/** Our relay moved this registration's cutoff: forget the old one everywhere. */
+export function invalidateChainEnd(contract: EventContractTarget, onChainEventId: string): void {
+  const id = onChainEventId.toLowerCase();
+  _endMemoAt.delete(`${contractKey(contract)}:${id}`);
+  _endMemo.delete(`${contract.chainId}:${id}`);
+}
 
 /** Test seam — production always reads the real contract. */
 export type ChainEndReader = typeof realGetOnChainEventEnd;
@@ -59,14 +101,15 @@ export async function chainEventEndMsAt(
   contract: EventContractTarget,
   onChainEventId: string,
   read: ChainEndReaderAt = realGetOnChainEventEndAt,
+  now: number = Date.now(),
 ): Promise<number | null> {
   const k = `${contractKey(contract)}:${onChainEventId.toLowerCase()}`;
-  const hit = _endMemoAt.get(k);
+  const hit = recall(_endMemoAt, k, now);
   if (hit !== undefined) return hit;
   const endSec = await read(contract, onChainEventId);
   if (endSec === null) return null;
   const endMs = endSec * 1000;
-  _endMemoAt.set(k, endMs);
+  remember(_endMemoAt, k, endMs, contract.version === "ledger2", now);
   return endMs;
 }
 
@@ -80,15 +123,27 @@ export async function chainEventEndMs(
   onChainEventId: string,
   chainId: number = getActiveChainId(),
   read: ChainEndReader = realGetOnChainEventEnd,
+  now: number = Date.now(),
+  /** Skip the memo (still refreshing it): the edit-time guard on a ledger2 contract. */
+  fresh = false,
 ): Promise<number | null> {
   const k = `${chainId}:${onChainEventId.toLowerCase()}`;
-  const hit = _endMemo.get(k);
+  const hit = fresh ? undefined : recall(_endMemo, k, now);
   if (hit !== undefined) return hit;
   const endSec = await read(onChainEventId, chainId);
   if (endSec === null) return null;
   const endMs = endSec * 1000;
-  _endMemo.set(k, endMs);
+  // This form reads the env-selected contract: movable when that is ledger2.
+  remember(_endMemo, k, endMs, defaultIsLedger2(chainId), now);
   return endMs;
+}
+
+function defaultIsLedger2(chainId: number): boolean {
+  try {
+    return getEventContractVersion(chainId) === "ledger2";
+  } catch {
+    return true;
+  }
 }
 
 export type EndDateEditVerdict =
@@ -118,9 +173,15 @@ export async function checkEndDateExtension(args: {
   const ids = args.series.map((s) => s.onChainEventId).filter((id): id is string => !!id);
   if (ids.length === 0) return { ok: true };
 
+  // On ledger2 the organiser has just moved the cutoff (the browser extends it before
+  // this edit), possibly through a send whose receipt our relay never saw: read fresh,
+  // or the edit is refused for up to a minute (Fable sign-off C6). Extensions are rare.
+  let movable = false;
   let ends: Array<number | null>;
   try {
-    ends = await Promise.all(ids.map((id) => chainEventEndMs(id, args.chainId, args.read)));
+    const chainId = args.chainId ?? getActiveChainId();
+    movable = defaultIsLedger2(chainId);
+    ends = await Promise.all(ids.map((id) => chainEventEndMs(id, chainId, args.read, Date.now(), movable)));
   } catch {
     return {
       ok: false,
@@ -134,10 +195,12 @@ export async function checkEndDateExtension(args: {
   if (args.newEndMs > minEnd) {
     return {
       ok: false,
-      error:
-        `${END_DATE_PAST_SALES_CLOSE} (${new Date(minEnd).toISOString()}). Sales close at a fixed ` +
-        "time set when your tickets were created, so a later end date would sell tickets that can't " +
-        "be issued. You can always make it earlier.",
+      error: movable
+        ? `${END_DATE_PAST_SALES_CLOSE} (${new Date(minEnd).toISOString()}). Save the later date from your ` +
+          "event's dashboard, which moves ticket sales with it, then try again."
+        : `${END_DATE_PAST_SALES_CLOSE} (${new Date(minEnd).toISOString()}). Sales close at a fixed ` +
+          "time set when your tickets were created, so a later end date would sell tickets that can't " +
+          "be issued. You can always make it earlier.",
     };
   }
   return { ok: true };

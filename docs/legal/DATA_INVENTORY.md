@@ -460,6 +460,12 @@ PRIVACY_POLICY §8. We revisit the position as guidance on decentralised storage
 > (`lib/attendee-batch/retention.ts`; standing instruction in DPA Annex 3). Anything it cannot be
 > sure of is kept and counted on `/api/health` `orderRetention`. `ORDER_RETENTION_SWEEP` ships as
 > `dry-run`; the period is kept only once it is `live`. The proposal below is history.
+>
+> **The "onchain end" is the event's end as the ORGANISER sets it.** On ledger2 the organiser can
+> move an event's sales cutoff later by signature (a postponement) - at most two years ahead per
+> move, and the move can be repeated. Every retention clock above that counts from the onchain
+> end (order answers, door lists, held tickets) follows it, re-read within a minute. That is the
+> controller's decision about its own event, not a bound WoCo holds.
 
 A stated retention policy is mandatory (Art. 13(2)(a)) and cannot be "indefinite".
 

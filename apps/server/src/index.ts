@@ -81,6 +81,9 @@ import { cancellationsStoreHealth } from "./lib/event/cancellations.js";
 import { cancellationJobHealth, startCancellationRefundJob } from "./lib/stripe/cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "./lib/stripe/cancellation-refunds-live.js";
 import { eventCancel } from "./routes/event-cancel.js";
+import { ledger2RelayRoutes } from "./routes/ledger2-relay.js";
+import { ledger2RelayHealth } from "./lib/health/ledger2-relay-health.js";
+import { relayKeyConflict } from "./lib/chain/ledger2-relay-chain.js";
 import { saleRefundEventsHealth } from "./lib/stripe/sale-refunds.js";
 import { alarmGate } from "./lib/health/alarm-gate.js";
 import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
@@ -255,6 +258,16 @@ if (process.env.NODE_ENV === "production" && !process.env.PAYMENT_QUOTE_SECRET) 
   const conflict = sponsorKeysConflict();
   if (conflict) {
     console.error(`\n[startup] FATAL: ${conflict}.\n  Generate a separate key for each on the server host.\n`);
+    process.exit(1);
+  }
+}
+
+// The ledger2 relay key holds no role and only pays gas; sharing it with any other
+// platform key would let a drained or leaked relay take that key's job down with it.
+{
+  const conflict = relayKeyConflict();
+  if (conflict) {
+    console.error(`\n[startup] FATAL: ${conflict}.\n  Generate a separate key for the ledger2 relay.\n`);
     process.exit(1);
   }
 }
@@ -528,6 +541,14 @@ function healthReport() {
     // outside as "not on sale"; this says why. `mintable` falling with no sales
     // to account for it is the leaked-key signal. Public on-chain data only.
     ticketMinting: ticketMintingHealth(),
+    // Organisers' signed ledger2 changes (capacity, sales cutoff, seat moves, cancel),
+    // submitted by WoCo's relay key. Green and `active: false` until ledger2 is
+    // deployed on the active chain. Then red when the relay key is unset or shared,
+    // its gas is under `LEDGER2_RELAY_MIN_ETH`, Multicall3 or the ledger is not the
+    // code expected, or an event cancelled ON CHAIN is still open in the server's
+    // record (`chainCancelledUnrecorded`: its sales are refused; the organiser
+    // confirms from the dashboard).
+    ledger2Relay: ledger2RelayHealth(),
     // Cross-account issuer claims (#457). One issuing address belongs to one
     // account, but the server sees only addresses and cannot tell a squatter
     // from a client deriving the wrong key — so it refuses the second claimant
@@ -795,6 +816,7 @@ app.route("/api/events", broadcast);
 app.route("/api/events", reservations);
 app.route("/api/events", checkinOrganiser);
 app.route("/api/events", eventCancel);
+app.route("/api/events", ledger2RelayRoutes());
 
 // Door scanner endpoints — authed by X-Door-Pass token, not session delegation
 app.route("/api/checkin", checkin);

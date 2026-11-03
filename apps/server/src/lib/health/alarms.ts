@@ -38,6 +38,7 @@ export interface ThresholdConfig {
   ensParent: { minDays: number; configError?: string };
   subEnsMinting: { sponsorMinEth: string; configError?: string };
   ticketMinting: { minMintable: number; alarmPct: number; sponsorMinEth: string; configError?: string };
+  ledger2Relay: { minEth: string; configError?: string };
 }
 
 export const DEFAULT_PAYMASTER_MIN_ETH = "0.0005";
@@ -87,6 +88,13 @@ export const DEFAULT_TICKET_MINT_ALARM_PCT = 50;
  * 0.02 gwei, roughly 200 single-ticket mints of warning.
  */
 export const DEFAULT_TICKET_SPONSOR_MIN_ETH = "0.0005";
+/**
+ * The ledger2 relay key's floor: it pays for organisers' signed capacity, date and
+ * seat changes and their on-chain cancels. Same figure as the sponsors: ~25M gas at
+ * Arbitrum One's 0.02 gwei, a few hundred relayed changes of warning. Dry, organisers
+ * cannot change those on chain (the server's own cancellation still stops sales).
+ */
+export const DEFAULT_LEDGER2_RELAY_MIN_ETH = "0.0005";
 
 /** A decimal ETH amount, no exponent, at most 18 decimals — `parseEther` fodder. */
 const DECIMAL_ETH = /^\d+(\.\d{1,18})?$/;
@@ -153,7 +161,11 @@ export function readThresholdsFromEnv(env: NodeJS.ProcessEnv): ThresholdConfig {
   const alarmPct = envPct(env, "TICKET_MINT_ALARM_PCT", DEFAULT_TICKET_MINT_ALARM_PCT, ticketInvalid);
   const ticketSponsorMinEth = envEth(env, "TICKET_SPONSOR_MIN_ETH", DEFAULT_TICKET_SPONSOR_MIN_ETH, ticketInvalid);
 
+  const relayInvalid: string[] = [];
+  const relayMinEth = envEth(env, "LEDGER2_RELAY_MIN_ETH", DEFAULT_LEDGER2_RELAY_MIN_ETH, relayInvalid);
+
   return {
+    ledger2Relay: { minEth: relayMinEth, configError: configError(relayInvalid) },
     paymaster: { minEth, configError: configError(pmInvalid) },
     postage: { ttlMinSeconds, utilizationMaxPct, chainLagMaxBlocks, configError: configError(postInvalid) },
     ensParent: { minDays, configError: configError(ensInvalid) },

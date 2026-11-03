@@ -99,7 +99,7 @@ test("no event of any size is loosened — the ceiling stays at the old flat 30"
 test("a non-finite supply collapses to the floor rather than disabling the cap", () => {
   // NaN compares false against everything, so an unguarded clamp would let it
   // through both arms and silently remove the cap — the only fail-OPEN mode this
-  // function has. Unreachable via declaredSupplyOf; pinned so it stays that way.
+  // function has. Unreachable via capSupplyOf; pinned so it stays that way.
   assert.equal(cap.perIpSeatCapForEvent(Number.NaN), store.RESERVATION_MAX_QTY);
   assert.equal(cap.perIpSeatCapForEvent(Number.POSITIVE_INFINITY), store.RESERVATION_MAX_QTY);
   assert.equal(cap.perIpSeatCapForEvent(-1), store.RESERVATION_MAX_QTY);
@@ -115,17 +115,21 @@ test("the cap never decreases as an event gets bigger", () => {
 });
 
 test("declared supply sums the series and shrugs off a malformed one", () => {
-  assert.equal(cap.declaredSupplyOf([{ totalSupply: 50 }, { totalSupply: 150 }]), 200);
-  assert.equal(cap.declaredSupplyOf([]), 0);
+  assert.equal(cap.capSupplyOf([{ totalSupply: 50 }, { totalSupply: 150 }], "ga", null), 200);
+  assert.equal(cap.capSupplyOf([], "ga", null), 0);
   // A bad supply field must not throw or subtract — a seat hold is never
   // refused because of a malformed series.
   assert.equal(
-    cap.declaredSupplyOf([
-      { totalSupply: 100 },
-      { totalSupply: -5 },
-      { totalSupply: Number.NaN },
-      {},
-    ]),
+    cap.capSupplyOf(
+      [
+        { totalSupply: 100 },
+        { totalSupply: -5 },
+        { totalSupply: Number.NaN },
+        {},
+      ],
+      "ga",
+      null,
+    ),
     100,
   );
 });
@@ -239,4 +243,50 @@ test("concurrent reserves on DIFFERENT series of one event cannot exceed the cap
   const granted = results.filter((r) => r.ok).length;
   assert.equal(granted, 1, "exactly one of two racing 6-seat holds may win under a cap of 10");
   assert.ok(store.heldSeatsByIp(IP, EVENT_A) <= 10, "the cap must never be breached by a race");
+});
+
+// ---------------------------------------------------------------------------
+// A ledger2 supply cut
+// ---------------------------------------------------------------------------
+
+test("a cut series counts at its live supply; the other series keep their declared number", () => {
+  const series = [
+    { seriesId: "ga", totalSupply: 1000 },
+    { seriesId: "vip", totalSupply: 100 },
+  ];
+  assert.equal(cap.capSupplyOf([series[0]!], "ga", 40), 40);
+  assert.equal(cap.perIpSeatCapForEvent(cap.capSupplyOf([series[0]!], "ga", 40)), store.RESERVATION_MAX_QTY);
+  assert.equal(cap.capSupplyOf(series, "ga", 40), 140);
+  assert.equal(cap.capSupplyOf(series, "vip", 40), 1040);
+});
+
+test("the live supply only ever tightens the cap", () => {
+  const series = [{ seriesId: "ga", totalSupply: 1000 }];
+  // Above the declared number (the feed is the registered count), unread, or junk:
+  // the declared number stands, so no read can loosen the cap.
+  for (const live of [5000, null, Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    assert.equal(cap.capSupplyOf(series, "ga", live), 1000, String(live));
+  }
+  // A malformed series still contributes nothing, live number or not.
+  assert.equal(cap.capSupplyOf([{ seriesId: "ga", totalSupply: -5 }, {}], "ga", 40), 0);
+});
+
+test("1000 cut to 40: one network holds 10 of the 40, not 30", async () => {
+  const EVENT_A = freshEvent();
+  const [GA] = freshSeries();
+  const series = [{ seriesId: GA, totalSupply: 1000 }];
+  // As the route does: a fresh cap per request, told the live supply by the
+  // availability read. The store must size the cap AFTER that read - sized
+  // before it, every request here would get the declared 30.
+  const reserveOne = (qty: number, clientKey: string) => {
+    const seatCap = cap.seatCapForReserve(series, GA);
+    const liveRead = async () => {
+      seatCap.sawLiveSupply(40);
+      return 40;
+    };
+    return store.reserve(EVENT_A, GA, qty, liveRead, seatCap.cap, undefined, clientKey, IP);
+  };
+  assert.ok((await reserveOne(10, "buyer-1")).ok);
+  const over = await reserveOne(1, "buyer-2");
+  assert.equal(over.ok ? null : over.error, "IpCapExceeded");
 });
