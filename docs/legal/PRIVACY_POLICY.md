@@ -1,7 +1,7 @@
 # Privacy Policy
 
-**Last updated:** 22 October 2026
-**Version:** 1.0
+**Last updated:** 3 November 2026
+**Version:** 1.1
 
 ---
 
@@ -68,6 +68,8 @@ We are the **controller** in our own right for:
 - **likes and follows** — these are public signed statements, written to your own feed on Swarm,
   that you choose to create
 - **payment administration records** — the link between an organiser and their Stripe account
+- **the referral scheme** - who referred whom, the referral payouts we make, and the wallet and
+  transaction each was paid to
 
 ### Where we are not involved at all
 
@@ -90,6 +92,7 @@ See [Stripe's privacy policy](https://stripe.com/privacy).
 | Marketing preference | Your choice at checkout (opted in, or did not opt out), when, and the exact wording shown | You, at checkout |
 | Social | Likes and follows | You, when you use those features |
 | Organiser (if you run events) | Business details, Stripe account link, payout records, sites published | You and Stripe |
+| Referral (if you refer an organiser) | Who you referred and when it was confirmed, your earnings and payouts | Created when an organiser you referred joins and sells |
 
 **We do not collect:** card or bank details, government ID (Stripe collects this from organisers
 directly), location beyond the country level, or special category data — unless an organiser adds a
@@ -112,6 +115,7 @@ if you believe we have.
 | Keep our unsubscribe and suppression records | Legal obligation (PECR) and legitimate interests — we cannot honour your opt-out without remembering it |
 | Prevent fraud, abuse and spam | Legitimate interests — protecting the platform and its users |
 | Operate and improve the service | Legitimate interests — running a functioning platform |
+| Work out and pay referral earnings | Contract - the referral scheme in our Terms (section 9) |
 | Meet accounting and tax obligations | Legal obligation |
 
 Where we rely on legitimate interests, we have considered whether our interest is overridden by your
@@ -275,6 +279,7 @@ We would rather you came to us first, but it is your right either way.
 | Failed ticket-delivery records | Until put right, or 90 days at most. If every attempt to email your ticket fails, we keep your address on a restricted ledger — the one case where we hold an email in plaintext — so a human can still get you the ticket you paid for |
 | Transaction records | 6 years (Companies Act 2006, HMRC) |
 | Organiser sale and payout records | 6 years (Companies Act 2006, HMRC) — what sold, what we released and when. Accounting evidence; it contains no attendee identifier |
+| Referral payout records | 6 years (Companies Act 2006, HMRC) |
 | Security logs and IP records | 30 days. If a log is part of an active security, fraud or abuse investigation we keep it until that closes |
 | On-chain records | Permanent — cannot be deleted |
 
