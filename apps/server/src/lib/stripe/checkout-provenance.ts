@@ -96,7 +96,8 @@ export function verifyCheckoutTag(tag: string | null | undefined, f: CheckoutTag
 // ---------------------------------------------------------------------------
 
 export type ProvenanceVerdict =
-  | { kind: "ours" }
+  /** `feeId`: the ApplicationFee that proved it, kept so the sale's ledger entry can name it (#12). */
+  | { kind: "ours"; feeId: string }
   | { kind: "foreign"; reason: string }
   | { kind: "tampered"; reason: string }
   | { kind: "unverifiable"; reason: string };
@@ -147,6 +148,7 @@ export async function classifyPaidSession(
   if (!piId) return { kind: "foreign", reason: "session has no payment intent" };
 
   let fee: { amount: number; account: string } | null;
+  let feeId: string;
   try {
     let charge = await reads.chargeFeeForPaymentIntent(piId, eventAccount);
     for (const ms of FEE_SETTLE_DELAYS_MS) {
@@ -160,7 +162,8 @@ export async function classifyPaidSession(
         ? { kind: "unverifiable", reason: "application fee not created yet" }
         : { kind: "foreign", reason: "no application fee on the charge" };
     }
-    fee = await reads.retrievePlatformFee(charge.feeId);
+    feeId = charge.feeId;
+    fee = await reads.retrievePlatformFee(feeId);
   } catch (err) {
     return { kind: "unverifiable", reason: err instanceof Error ? err.name : "read failed" };
   }
@@ -180,7 +183,7 @@ export async function classifyPaidSession(
     applicationFee: fee.amount,
     metadata: session.metadata ?? {},
   });
-  return intact ? { kind: "ours" } : { kind: "tampered", reason: "integrity tag does not match the session" };
+  return intact ? { kind: "ours", feeId } : { kind: "tampered", reason: "integrity tag does not match the session" };
 }
 
 // ---------------------------------------------------------------------------
