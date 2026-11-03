@@ -149,6 +149,36 @@ export class OpenedOrders<T> {
   }
 }
 
+/**
+ * Opening runs, one at a time. A run still waiting to start reads the rows on screen
+ * when it starts, which is all a new one would do, so a call joins it: each arriving
+ * bundle asks, and a long load used to stack hundreds of runs (#1061). A tap's run,
+ * which may ask for the passkey, is never covered by a quiet one; a quiet call may
+ * join a tap's, so no call asks that was not already going to.
+ */
+export class RunQueue {
+  private chain: Promise<void> = Promise.resolve();
+  private waiting: { prompt: boolean; run: Promise<void> } | null = null;
+
+  /** `onError` sees every run that throws: the queue keeps moving, never silently. */
+  constructor(private readonly onError: (err: unknown) => void) {}
+
+  enqueue(prompt: boolean, start: (prompt: boolean) => Promise<void>): Promise<void> {
+    if (this.waiting && (this.waiting.prompt || !prompt)) return this.waiting.run;
+    const waiting = { prompt, run: Promise.resolve() };
+    const run = this.chain.then(() => {
+      if (this.waiting === waiting) this.waiting = null;
+      return start(prompt);
+    });
+    waiting.run = run;
+    this.waiting = waiting;
+    // A swallowed throw here hid every attendee's details on 2026-11-02, with nothing
+    // on screen or in the console.
+    this.chain = run.catch((err) => this.onError(err));
+    return run;
+  }
+}
+
 export interface OrdersPollerDeps {
   intervalMs: number;
   /** Sold tickets across the event, from the cheap count. */
