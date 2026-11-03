@@ -7,11 +7,8 @@
  * release it holds, and stores the client's objects only when they are identical,
  * byte for byte: nothing reaches the site origin that the server did not render
  * itself. Admission is a rebuild, not a parse, so there is no manifest parser
- * here for a client to argue with.
- *
- * Behind `SITE_CLIENT_PUBLISH` (unset = off; `all`; or a comma list of account
- * addresses). Off for an account, the deploy ignores the collection and builds
- * the old way.
+ * here for a client to argue with. Since slice 4 it is the only way a site is
+ * published: the server holds no copy of the runtime.
  */
 
 import {
@@ -49,13 +46,6 @@ const READ_TIMEOUT_MS = 20_000;
 /** Six objects, the largest the HTML tree: bounds what a deploy body can make us decode. */
 export const CLIENT_COLLECTION_MAX_OBJECTS = 8;
 export const CLIENT_COLLECTION_MAX_BYTES = SITE_HTML_MAX_BYTES + 64 * 1024;
-
-export function clientPublishAllowed(parentAddress: string, setting = process.env.SITE_CLIENT_PUBLISH): boolean {
-  const s = (setting ?? "").trim().toLowerCase();
-  if (!s) return false;
-  if (s === "all") return true;
-  return s.split(",").map((a) => a.trim()).includes(parentAddress.toLowerCase());
-}
 
 export function storeForTarget(target: "etherna" | "wocoBee"): SiteRuntimeStore {
   return target === "etherna" ? "etherna" : "woco";

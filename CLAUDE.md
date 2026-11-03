@@ -356,9 +356,13 @@ Page, Section union, SiteEventsIndex, SiteDirectory[Entry], SiteRuntimeConfig �
 PUBLISH FLOW (two-step):
 1. `POST /api/sites` → writes Site + SiteEventsIndex feeds atomically; upserts
    SiteDirectoryEntry into the creator's directory feed
-2. `POST /api/sites/:id/deploy` → injects SITE_CONFIG + SEO/PWA meta, tars dist-multisite/,
-   uploads BZZ collection, writes content hash to the per-site feed, auto-whitelists hashes
-   on the gateway, re-upserts the directory entry. Returns `{ contentHash, feedManifestHash, siteUrl }`
+2. `POST /api/sites/:id/deploy` → the BROWSER builds the site on the shared runtime release
+   (`@woco/shared/site/collection`: SITE_CONFIG + SEO/PWA meta rendered, release linked, 6 objects
+   ~3 KB, #1032); the server rebuilds it from its own copy of the release and stores its build only
+   if byte-identical, writes the content hash to the per-site feed, auto-whitelists hashes on the
+   gateway, re-upserts the directory entry. No runtime copy on the server. Returns
+   `{ contentHash, feedManifestHash, siteUrl, runtimeVersion }`. New runtime = a release
+   (`node scripts/publish-site-runtime.cjs`), not a server deploy
 
 AUTH: all write endpoints require the same EIP-712 session delegation used by events. Owner
 is stamped server-side from the verified parentAddress. Save, logo upload and deploy also need a Stripe-verified
@@ -475,10 +479,10 @@ BUILD / DEPLOY:
 - Server start script is `npm run start` (`node --import tsx src/index.ts`), NOT `node dist/index.js`
 - Hono default 404 returns plain text "404 Not Found" — `authPost`'s `resp.json()` throws
   "Unexpected non-whitespace character at position 4". Consider a global 404 JSON handler
-- `build:multisite` → dist-multisite/ (NOT `build:site` → dist-site/). The server reads
-  dist-multisite/ at site-publish time and bakes it into the Swarm collection. It is excluded
-  from the standard deploy sync — run the multisite deploy step (CLAUDE.local.md) whenever the
-  multisite runtime changes, then organisers must re-publish their sites to pick up the bundle
+- `build:multisite` → dist-multisite/ (NOT `build:site` → dist-site/). Websites no longer bake
+  it on the server (#1032): a runtime change ships as a RELEASE (`node scripts/publish-site-runtime.cjs`,
+  real repo, clean main), and a site picks it up when its organiser re-publishes (My Sites says
+  "Update ready"). Single-event pages still bake dist-site on the server (#1032 slice 5)
 - `GET /api/sites/mine` must be registered BEFORE `/:id` in Hono or "mine" matches as a siteId
 - Creator directory upsert is fire-and-forget on both publish and deploy — non-fatal
 - `contracts/` is a NESTED git repo (Foundry project, branch `master`) — commit there

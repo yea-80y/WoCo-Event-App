@@ -26,8 +26,15 @@ import { Hono } from "hono";
 import { TypedDataEncoder, Wallet } from "ethers";
 import { FeedIndex, Topic } from "@ethersphere/bee-js";
 import { Binary } from "cafe-utility";
-import { calculateSocAddress, encodeSpan } from "@woco/shared";
+import { calculateSocAddress } from "@woco/shared";
+import { buildSiteCollection, siteRenderUrls } from "@woco/shared/site/collection";
+import { bytesTreeChunks } from "@woco/shared/swarm/bytes-tree";
+import { parseMantarayNode } from "@woco/shared/swarm/mantaray";
 import { enableFeature } from "./helpers/features.js";
+
+/** Site runtime release v1 as bee encoded it (#1032): what every site deploy links. */
+const RELEASE = JSON.parse(readFileSync(new URL("../../../packages/shared/test/fixtures/site-runtime-release-v1.json", import.meta.url), "utf8"));
+const RELEASE_ROOT_NODE = Binary.hexToUint8Array(RELEASE.rootNode);
 
 enableFeature("walletLoginAllowed");
 
@@ -43,9 +50,9 @@ const PLATFORM_OWNER = new Wallet(PLATFORM_KEY).address.slice(2).toLowerCase();
 
 /** SOC address -> stored SOC (identifier ‖ signature ‖ span ‖ payload). First write wins. */
 const chunks = new Map<string, Uint8Array>();
-/** Content hash -> its root chunk (span ‖ data), as bee serves it from /chunks. */
+/** Content address -> its chunk (span ‖ data), as bee serves it from /chunks. */
 const contents = new Map<string, Uint8Array>();
-/** Collection uploads, per front. */
+/** Site root nodes stored, per front: one per deploy (the root goes up last). */
 const bzzUploads: Array<"bee" | "etherna"> = [];
 
 /** bee's clock, moved by the tests: the skip list is a minute of it. */
@@ -114,19 +121,23 @@ async function socPost(req: IncomingMessage, res: ServerResponse): Promise<void>
   json(res, 201, { reference: addr });
 }
 
-async function bzzPost(req: IncomingMessage, res: ServerResponse, via: "bee" | "etherna"): Promise<void> {
+/** `/bytes`: store the real chunk tree and answer its root, as bee does at redundancy 0. */
+async function bytesPost(req: IncomingMessage, res: ServerResponse, via: "bee" | "etherna"): Promise<void> {
   const body = await readBody(req);
-  bzzUploads.push(via);
-  const data = createHash("sha256").update(body).digest();
-  const reference = createHash("sha256").update(data).update(via).digest("hex");
-  contents.set(reference, Binary.concatBytes(encodeSpan(data.length), new Uint8Array(data)));
-  json(res, 201, { reference });
+  const tree = bytesTreeChunks(body);
+  for (const { address, chunk } of tree) contents.set(address, chunk);
+  try {
+    if (parseMantarayNode(body).forks.some((f) => f.prefix === "m")) bzzUploads.push(via);
+  } catch {
+    // not a manifest node
+  }
+  json(res, 201, { reference: tree.at(-1)!.address });
 }
 
 const bee: Server = createServer(async (req, res) => {
   const path = (req.url ?? "").split("?")[0]!;
   if (req.method === "POST" && path.startsWith("/soc/")) return socPost(req, res);
-  if (req.method === "POST" && path === "/bzz") return bzzPost(req, res, "bee");
+  if (req.method === "POST" && path === "/bytes") return bytesPost(req, res, "bee");
   if (req.method === "POST" && path.startsWith("/feeds/")) return json(res, 201, { reference: "ee".repeat(32) });
   if (req.method === "GET" && path.startsWith("/chunks/")) {
     const addr = path.split("/")[2]!.toLowerCase();
@@ -166,7 +177,7 @@ const bee: Server = createServer(async (req, res) => {
 const etherna: Server = createServer(async (req, res) => {
   const path = (req.url ?? "").split("?")[0]!;
   if (req.method === "POST" && path === "/token") return json(res, 200, { access_token: "t", expires_in: 3600 });
-  if (req.method === "POST" && path === "/bzz") return bzzPost(req, res, "etherna");
+  if (req.method === "POST" && path === "/bytes") return bytesPost(req, res, "etherna");
   if (req.method === "POST" && path.startsWith("/soc/")) return socPost(req, res);
   if (req.method === "POST" && path.includes("/offers")) return json(res, 200, {});
   if (req.method === "POST" && path.startsWith("/feeds/")) return json(res, 201, { reference: "ef".repeat(32) });
@@ -218,9 +229,6 @@ before(async () => {
   dir = mkdtempSync(join(tmpdir(), "woco-site-first-save-"));
   process.chdir(dir);
   mkdirSync(join(dir, ".data"));
-  const template = join(dir, "dist-multisite");
-  mkdirSync(template);
-  writeFileSync(join(template, "multi-site.html"), "<!doctype html><html><head></head><body></body></html>");
 
   shared = await import("@woco/shared");
   ({ ETHERNA_GATEWAY_URL: ETHERNA_URL } = shared);
@@ -232,7 +240,14 @@ before(async () => {
   // No organiser here has a key ring (#186); the anchor is chain, not this fake network.
   (await import("../src/lib/keyring/current-ring.js"))._setCurrentRingDepsForTests({ readAnchor: async () => `0x${"0".repeat(64)}` });
   const sites = await import("../src/routes/sites.js");
-  sites.__sitesDeployTestHooks.setDistMultisitePath(template);
+  // The release a deploy builds against: v1, for whichever store the deploy lands on.
+  sites.__sitesDeployTestHooks.setRuntimeKit(async (store) => ({
+    version: 1,
+    store,
+    release: RELEASE.release,
+    rootNode: RELEASE_ROOT_NODE,
+    template: RELEASE.template,
+  }));
   const { siteRoute } = await import("../src/routes/site.js");
   app = new Hono();
   app.route("/api/sites", sites.sitesRouter);
@@ -307,8 +322,21 @@ function siteFor(siteId: string) {
   let n = 0;
   return shared.newSiteFromTemplate({ siteId, ownerAddress: "0x0", templateId: "pub-venue-v1", idGen: () => `id${n++}` });
 }
+/** The deploy an app sends: the site built in the browser on release v1, as the builder builds it. */
+function deployBody(who: Wallet, siteId: string, gatewayUrl: string) {
+  const site = { ...siteFor(siteId), ownerAddress: who.address.toLowerCase() };
+  const built = buildSiteCollection({
+    site,
+    urls: siteRenderUrls({ apiUrl: PUBLIC_BASE, gatewayUrl, wocoAppUrl: "https://woco.eth.limo" }),
+    template: RELEASE.template,
+    release: RELEASE.release,
+    releaseRootNode: RELEASE_ROOT_NODE,
+  });
+  const objects = built.objects.map((o) => Buffer.from(o.data).toString("base64"));
+  return { body: { apiUrl: PUBLIC_BASE, gatewayUrl, site, collection: { runtimeVersion: 1, objects } }, root: built.root };
+}
 const deploy = (who: Wallet, siteId: string, gatewayUrl: string) =>
-  call(who, `/api/sites/${siteId}/deploy`, { apiUrl: PUBLIC_BASE, gatewayUrl, site: siteFor(siteId) });
+  call(who, `/api/sites/${siteId}/deploy`, deployBody(who, siteId, gatewayUrl).body);
 
 function assertStorageBusy(r: Reply): void {
   assert.equal(r.status, 503, JSON.stringify(r.json));
@@ -514,7 +542,7 @@ test("deploy: a second deploy of the same site while one is running is refused, 
   const held = new Promise<void>((r) => (release = r));
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (String(input).endsWith("/bzz")) await held;
+    if (String(input).endsWith("/bytes")) await held;
     return realFetch(input, init);
   }) as typeof fetch;
   try {
@@ -534,6 +562,54 @@ test("deploy: a second deploy of the same site while one is running is refused, 
 });
 
 // ---------------------------------------------------------------------------
+// Browser-built only (#1032 slice 4)
+// ---------------------------------------------------------------------------
+
+test("deploy: the stored site is the browser's build, linking the release, and the ledger names the link", async () => {
+  const who = await organiser();
+  const siteId = newSiteId();
+  const { body, root } = deployBody(who, siteId, "https://gateway.woco-net.com");
+  const ok = await call(who, `/api/sites/${siteId}/deploy`, body);
+  assert.equal(ok.status, 200, JSON.stringify(ok.json));
+  assert.equal(ok.json.data!.contentHash, root);
+  assert.deepEqual([ok.json.data!.builtBy, ok.json.data!.runtimeVersion], ["client", 1]);
+  const rootChunk = contents.get(root)!;
+  const forks = parseMantarayNode(rootChunk.subarray(8)).forks.map((f) => f.prefix);
+  assert.deepEqual(forks, ["/", "assets/", "icons/", "logo.png", "m"]);
+  // The ledger file: owner -> { usedBytes, uploads[] } (lib/swarm/storage-ledger.ts).
+  const ledger = JSON.parse(readFileSync(join(dir, ".data", "storage-ledger.json"), "utf8")) as Record<string, { uploads: Array<Record<string, unknown>> }>;
+  const rec = Object.values(ledger).flatMap((o) => o.uploads).find((u) => u.ref === root);
+  assert.ok(rec, "the deploy is in the storage ledger");
+  assert.deepEqual(rec.links, [RELEASE.release.root]);
+  assert.ok((rec.bytes as number) < 8192, `a few KB, not a runtime copy (${rec.bytes} B)`);
+  await settle();
+});
+
+test("deploy: an app from before browser-built sites is told to update, and nothing is uploaded", async () => {
+  const who = await organiser();
+  const siteId = newSiteId();
+  const r = await call(who, `/api/sites/${siteId}/deploy`, { apiUrl: PUBLIC_BASE, gatewayUrl: "https://gateway.woco-net.com", site: siteFor(siteId) });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.code, "CLIENT_BUILD_REQUIRED");
+  assert.match(String(r.json.error), /reload the page/);
+  assert.deepEqual(bzzUploads, []);
+});
+
+test("deploy: a build that differs from the server's rebuild is refused before anything is uploaded", async () => {
+  const who = await organiser();
+  const siteId = newSiteId();
+  const { body } = deployBody(who, siteId, "https://gateway.woco-net.com");
+  const html = Buffer.from(body.collection.objects[0]!, "base64");
+  html[html.length - 2] ^= 1;
+  body.collection.objects[0] = html.toString("base64");
+  const r = await call(who, `/api/sites/${siteId}/deploy`, body);
+  assert.equal(r.status, 409);
+  assert.equal(r.json.code, "COLLECTION_MISMATCH");
+  assert.deepEqual(bzzUploads, []);
+  assert.deepEqual(feedHistory(shared.multisiteFeedTopic(siteId)), [], "no pointer moved");
+});
+
+// ---------------------------------------------------------------------------
 // The order, pinned at source for the branches a fake cannot reach offline
 // (client-owned pointers need the organiser's own site SOC on the network).
 // ---------------------------------------------------------------------------
@@ -548,8 +624,9 @@ const src = (rel: string) =>
 test("every pointer branch of the site deploy resolves its index once, before the upload", () => {
   const s = src("../src/routes/sites.ts");
   const route = s.slice(s.indexOf('sitesRouter.post("/:id/deploy"'));
-  const upload = Math.min(route.indexOf("uploadCollectionToEtherna("), route.indexOf("fetch(`${BEE_URL}/bzz`"));
+  const upload = route.indexOf("uploadSiteObjects(");
   assert.ok(upload > 0);
+  assert.equal(route.split("uploadSiteObjects(").length - 1, 1, "one upload path");
   for (const resolver of ["prepareEthernaFeedIndex(", "resolveFeedNextIndex("]) {
     const at = route.indexOf(resolver);
     assert.ok(at > 0 && at < upload, `${resolver} before the upload`);

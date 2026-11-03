@@ -15,17 +15,18 @@ SEO and custom domains: [SEO_PLAN.md](./SEO_PLAN.md) (authoritative).
 
 ```
   BUILDER                  PUBLISH                 DEPLOY                LIVE SITE
-  #/creator/sites in  →  Site JSON written    →  dist-multisite/    →  a BZZ collection
-  the platform app       to Swarm feeds          tarred + uploaded     on Etherna, with
-  (Organiser area)                               with SITE_CONFIG      SITE_CONFIG baked in
-                                                 injected              (no server at load)
+  #/creator/sites in  →  Site JSON written    →  built IN THE        →  a BZZ collection
+  the platform app       to Swarm feeds          BROWSER on the         linking the release,
+  (Organiser area)                               runtime release,       SITE_CONFIG baked in
+                                                 checked by server      (no server at load)
 ```
 
 Two things follow from "no server at page load", and they explain most of the design:
 
-1. **The runtime bundle is baked into every published site.** `dist-multisite/` is tarred into
-   the collection at deploy time. A change to the site runtime therefore reaches nobody until each
-   organiser **re-publishes**.
+1. **Each site links the runtime release it was published on.** The runtime (`dist-multisite/`)
+   is published once per release and every site links it (see "Runtime releases" below). A change
+   to the site runtime therefore reaches a site when its organiser **re-publishes** (My Sites
+   says "Update ready").
 2. **Configuration is injected, not fetched.** `window.SITE_CONFIG` (`SiteRuntimeConfig` in the
    schema) is written into the HTML at deploy time.
 
@@ -78,10 +79,12 @@ POST /api/sites
     per-event creatorFeedSigner consumed on the claim/payment path
   · upserts a SiteDirectoryEntry into the creator's directory feed
 
-POST /api/sites/:id/deploy
-  · injects SITE_CONFIG + SEO/PWA meta into the HTML
-  · tars dist-multisite/, uploads it as a BZZ collection (Etherna:
-    the owner's own batch, else the shared platform batch as free hosting)
+POST /api/sites/:id/deploy   (body carries the browser's build: `collection`)
+  · rebuilds the site (SITE_CONFIG + SEO/PWA meta, release linked) from its
+    own inputs and its own copy of the release; refuses unless the browser's
+    six objects are byte-identical; an app without a build gets CLIENT_BUILD_REQUIRED
+  · stores its build with /bytes (Etherna: the owner's own batch, else the
+    shared platform batch as free hosting)
   · advances the per-site pointer feed (client-signed when the site is)
   · registers Etherna offers (anonymous reads) and whitelists the hashes
     on the WoCo gateway
@@ -179,9 +182,8 @@ superseded refs stay in the ledger because they are still the garbage-collection
 are not re-charged. A dead platform batch refuses the deploy (503, #610) rather than stamping into
 a void.
 
-That quota is the reason a stale `dist-multisite/` matters more than it looks: the deploy step
-tars the **whole** directory, so dead hashed chunks from previous builds get baked into every
-organiser's collection and charged against their quota.
+Since #1032 a site is ~3 KB of its own objects (the runtime it links is the platform's storage,
+recorded as `links` in the ledger), so the quota is no longer spent on runtime copies.
 
 Addressing options, in ascending order of niceness:
 
@@ -201,10 +203,10 @@ SEO metadata (`siteDescription`, `og:*`, `twitter:card`, with `ogImage` set to t
 ref) is injected at **deploy** time; `MultiSiteApp` then updates the meta description per page at
 runtime. Not injected yet: `<title>` and a canonical (#70) - see SEO_PLAN.md.
 
-### Runtime releases (#1032, in progress)
+### Runtime releases (#1032)
 
-Today every deploy copies the whole runtime (~9 MB) into the site. The replacement: the runtime is
-published ONCE per release (`node scripts/publish-site-runtime.cjs`, real repo, clean main) to our
+A site does not carry the runtime (~9 MB); it links a release. The runtime is published ONCE per
+release (`node scripts/publish-site-runtime.cjs`, real repo, clean main) to our
 bee on the core batch and to the Etherna platform batch, and a signed descriptor
 (`packages/shared/src/site/runtime-release.ts`) is written to the `woco-site-runtime-v1` feed under
 the frontend deploy key. The server reads the latest descriptor (`GET /api/sites/runtime`,
@@ -219,23 +221,22 @@ so a page can never be left on old code while sites move on. Kits per line:
 Order when the format changes: merge, publish the release from main (the running server reads a
 newer format as malformed and keeps its release), then deploy the server.
 
-**Browser-built sites (slice 3, behind `SITE_CLIENT_PUBLISH`: unset = off, `all`, or a comma list of
-account addresses).** The builder fetches `GET /api/sites/runtime/kit/{woco|etherna}` (the store's
+**Every site is browser-built (slices 3-4).** The builder fetches `GET /api/sites/runtime/kit/{woco|etherna}` (the store's
 release root node + template), renders the site with the shared render, and lays out a collection
 that copies the release's `/`, `assets/`, `icons/` and `logo.png` fork records and adds its own
 `multi-site.html` + `manifest.json` (`@woco/shared/site/collection`, loaded only on publish): six
 objects, ~3 KB, encoded exactly as bee encodes a `/bzz` upload. It sends them with the deploy; the
 server rebuilds from its own copy of the release and stores them (`/bytes`, redundancy 0, each at the
-computed address) only if byte-identical, else 409 `COLLECTION_MISMATCH` / `RUNTIME_RELEASE_CHANGED`
-and the builder re-sends for the old build. Off for an account, the collection is ignored. The
-response says `builtBy` and, for a browser build, `runtimeVersion`, which the creator directory entry
-also carries (cleared by a server build); My Sites shows "Update ready" on a site behind the latest
-release (slice 4a). Every `deploySite` caller passes the account address, so the key-rotation
-redeploy and the shop editor build in the browser too. The storage ledger records the linked release root (`links`) so a re-stamp
-of the owner's site stops there. A linked site depends on the platform's release batches (core on
-our bee, `ETHERNA_PLATFORM_BATCH` on Etherna) for its runtime, even when the site itself is on the
-owner's batch: both are in the `postage` health alarms. Next: retire the tar path and
-`dist-multisite` on the VM (slice 4).
+computed address) only if byte-identical, else 409 `COLLECTION_MISMATCH` (shown as an error) or
+`RUNTIME_RELEASE_CHANGED` (the builder rebuilds once on the new release). A deploy with no build
+(an app from before) is refused 400 `CLIENT_BUILD_REQUIRED`; the server keeps no runtime copy. The
+response says `runtimeVersion`, which the creator directory entry also carries; My Sites shows
+"Update ready" on a site behind the latest release. Every `deploySite` caller (builder, key-rotation
+redeploy, shop editor) builds in the browser. The storage ledger records the linked release root
+(`links`) so a re-stamp of the owner's site stops there. A linked site depends on the platform's
+release batches (core on our bee, `ETHERNA_PLATFORM_BATCH` on Etherna) for its runtime, even when
+the site itself is on the owner's batch: both are in the `postage` health alarms. Next: single-event
+pages on the same rails (slice 5).
 
 ---
 
