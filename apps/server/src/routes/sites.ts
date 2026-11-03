@@ -54,6 +54,7 @@ import {
   siteEventsIndexTopic,
   multisiteFeedTopic,
   SITE_SCHEMA_VERSION,
+  validateLabel,
 } from "@woco/shared";
 import type { Site, SitePointer, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, ContactFormSection, EventFeed, EventDirectoryEntry, Hex0x } from "@woco/shared";
 import { getFromAddress } from "../lib/email/client.js";
@@ -918,6 +919,12 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const received = decodeClientCollection(body.collection);
     if (!received || !body.site || body.site.siteId !== siteId) {
       return c.json({ ok: false, error: "Malformed site collection", code: "COLLECTION_MISMATCH" }, 400);
+    }
+    // The label is the site's canonical address (#70) and the name checked after
+    // the upload: a name, or none - as the event-page deploy requires (site.ts).
+    const label: unknown = body.site.subEnsLabel;
+    if (label !== undefined && (typeof label !== "string" || validateLabel(label))) {
+      return c.json({ ok: false, error: "subEnsLabel is not a valid name" }, 400);
     }
     // The server stamps the owner; the browser rendered with the same stamp.
     const site: Site = { ...body.site, ownerAddress: parentAddress };

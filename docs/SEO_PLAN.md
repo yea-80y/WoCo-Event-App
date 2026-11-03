@@ -9,12 +9,14 @@ Issue #55 (schema.org/Event ld+json) predates this doc and is folded in below.
   canonical, no JSON-LD, no robots.txt or sitemap. #67, #68, #69, #70, #71, #72, #73 are open.
   #55 is **closed**, but JSON-LD is still set only client-side at runtime (`lib/seo/head.ts`
   callers) - the deploy-time half folds into #70.
-- **2026-11-03:** event pages now carry the event's `<title>` from deploy time (#70's first
-  piece, `withEventPageHead`). Websites' `<title>` and every canonical are still open.
-- **Sub-ENS is live in the website builder** (Domain tab, `SubENSPicker`), and was never removed
-  from the code (it has been there since 2026-05-30). D3's condition - "return together with
-  canonical injection, not before" - is therefore not met: the duplicate-URL problem D3 named
-  exists today. See the D1 note.
+- **2026-11-03:** #70 at deploy time: every page's `<title>` (event title; website brand
+  name), and a canonical on any page published under a WoCo name
+  (`https://{label}.woco.eth.limo/`, `canonicalLinkLine` in `render.ts`). Pages reach both when
+  next republished. Not yet: custom domains in the canonical (needs an explicit "primary
+  domain" setting, and event domains a contentHash refresh first), `og:url`.
+- **Sub-ENS is live in the website builder** (Domain tab, `SubENSPicker`). D3's condition -
+  "return together with canonical injection" - is met for names since #70; a page with no name
+  emits no canonical.
 - Sites and event pages are stored on Etherna (#617); a sub-ENS name follows the site's feed
   manifest, so the name's URL is stable across republishes. eth.limo holds wildcard
   certificates for `*.woco.eth.limo`, so a new name opens with no certificate wait.
@@ -246,8 +248,9 @@ Rules for new work. Existing deploys do not meet them yet (#70, #55, #73).
 - **SEO tags are injected into HTML at deploy time, never at runtime.** Sites are
   client-rendered SPAs; Google renders JS on a slower second pass and social scrapers and
   non-Google crawlers do not render at all. Covers `<title>`, description, canonical, JSON-LD.
-- **Every deployed page emits a canonical** pointing at its primary URL (custom domain if
-  linked, else the deploy URL). This is what stops multi-URL dilution permanently.
+- **Every deployed page with a stable address emits a canonical** pointing at it (its WoCo
+  name today; an organiser-chosen primary domain once that setting exists). Never a gateway
+  or bzz URL (D2): a page with neither emits none. This is what stops multi-URL dilution.
 - **Use normalised values** (`normaliseTags` / `normaliseGeo`), never raw creator input, in
   structured data.
 

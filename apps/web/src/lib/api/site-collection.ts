@@ -111,12 +111,14 @@ export type ClientEventPageBuild =
 /**
  * Build a single-event page (#1032 slice 5) on the release's `eventPage` line,
  * on Etherna where event pages live, with the config the server said it bakes
- * (`GET /api/site/:eventId/page-config`) and the head this browser chose.
+ * (`GET /api/site/:eventId/page-config`), the head this browser chose and the
+ * name the deploy sends (the page's canonical, #70).
  */
 export async function buildClientEventPageCollection(input: {
   apiUrl: string;
   config: EventPageConfig;
   head: EventPageHead;
+  name?: string;
 }): Promise<ClientEventPageBuild> {
   const read = await readKit(input.apiUrl, "etherna", "eventPage");
   if (!read.ok) return read;
@@ -125,6 +127,7 @@ export async function buildClientEventPageCollection(input: {
     const built = buildEventPageCollection({
       config: input.config,
       head: input.head,
+      name: input.name,
       template: kit.template,
       release: kit.release,
       releaseRootNode: fromBase64(kit.rootNode),

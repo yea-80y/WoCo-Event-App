@@ -117,6 +117,23 @@ test("an event page is built on the event-page kit, uncached, exactly as the ser
   assert.equal(r.built.body.runtimeVersion, 2);
 });
 
+test("an event page's name is built in as the server builds it (#70), and deployEventPage sends the name it built with", async () => {
+  serve(() => ({ ok: true, data: pageKit }));
+  const head = { title: "Friday Gig" };
+  const r = await buildClientEventPageCollection({ apiUrl: "https://events-api.woco-net.com", config: pageConfig, head, name: "friday-gig" });
+  assert.ok(r.ok, JSON.stringify(r));
+  const build = (name?: string) =>
+    buildEventPageCollection({ config: pageConfig, head, name, template: pageFx.template, release: pageFx.release, releaseRootNode: Buffer.from(pageFx.rootNode, "hex") });
+  assert.equal(r.built.root, build("friday-gig").root);
+  assert.notEqual(r.built.root, build().root, "the name changes the page");
+  // One variable feeds both the build and the deploy body, so they cannot disagree.
+  const src = readFileSync(new URL("../src/lib/api/sites.ts", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("export async function deployEventPage"));
+  assert.match(fn, /buildClientEventPageCollection\(\{ apiUrl: opts\.apiUrl, config, head, name \}\)/);
+  assert.match(fn, /\.\.\.\(name \? \{ subEnsLabel: name \} : \{\}\)/);
+  assert.ok(!/subEnsLabel: opts\.subEnsLabel/.test(fn), "the body never takes the label from anywhere else");
+});
+
 test("an event page with no kit, or a website kit offered for it, is not built", async () => {
   const warn = console.warn;
   console.warn = () => {};
