@@ -521,8 +521,8 @@ ops.get("/referral-earnings", async (c) => {
  *   { by, referrer, currency, amountMinor, network, asset, sentAmount, txHash, fxRate?, paidAt?, note? }
  *
  * Records a stablecoin payout ALREADY SENT to the referrer's own account address.
- * Refused unless `amountMinor` equals what is due now; the server freezes the
- * lines it settles.
+ * Refused if `amountMinor` exceeds what is due now (less is fine: the rest stays
+ * owed); the server freezes the payable lines.
  */
 ops.post("/referral-earnings/payouts", async (c) => {
   const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;

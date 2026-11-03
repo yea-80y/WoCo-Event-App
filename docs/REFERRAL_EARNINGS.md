@@ -18,9 +18,9 @@ Every statement is computed on request from:
 - A sale earns if it is a ticket sale (never shop, never reconciliation) made at or after its organiser's `confirmedAt`.
 - Base = the platform fee WoCo kept on it, in the fee's currency. Never the charge amount.
 - Share = the schedule entry in force on the SALE date. A change is a new entry from the date in its notice, so it never touches earnings already accrued.
-- Payable when: the organiser's payout is `released` with a positive net, the event is over (`releaseAfter` passed, and not the 14-day no-date fallback), and Stripe reads that payout `paid`. Before that: pending.
-- Earns nothing (owner 2026-11-03): refunded in full, chargeback lost, fee returned in full. An open dispute is pending, not zero. A partial refund that keeps the fee earns the full fee.
-- Withholds (§9: self-referral, fraud, breach) hold a referrer, a referee or one sale. Held earnings stay on the statement; a lift releases them.
+- Payable when: the organiser's sale is `released`, the event is over (`releaseAfter` passed, and not the 14-day no-date fallback), and Stripe reads that payout `paid`, or the ledger settled it with no payout (`settle_…`). Before that: pending. A release with a negative net (a debt) still earns if the rules below say so.
+- Earns nothing (owner 2026-11-03): refunded in full (a ledger `void` for no net proceeds is the same case), chargeback lost, fee returned in full. An open dispute is pending, not zero; a won one earns. A partial refund that keeps the fee earns the full fee, even one above the organiser's net.
+- Withholds (§9: self-referral, fraud, breach) hold a referrer, a referee or one sale. Held earnings stay on the statement; a lift releases them. A withhold on a sale already paid for acts as a reversal (below).
 - Exact per sale (minor units x 10 000), summed, rounded down once per payout. The remainder stays owed.
 - A reversal after a payout leaves the balance negative. It is netted against later earnings and never clawed back (owner 2026-11-03). Rare: payouts follow the event, so only a late chargeback can do it.
 - Anything unreadable (a confirmation, a fee, a payout) is pending and listed in `diagnostics`, never a guess.
@@ -29,7 +29,7 @@ Every statement is computed on request from:
 
 1. `GET /api/ops/referral-earnings` - each referrer's `dueMinor` per currency, with lines and diagnostics.
 2. Send the stablecoin to the referrer's own account address (the confirmation's `referrer`) on the network you told them about.
-3. `POST /api/ops/referral-earnings/payouts` with `referrer, currency, amountMinor` (= `dueMinor`), `network, asset, sentAmount, txHash, by`. Refused if the amount is not what is due now, the transaction is already recorded, or the journal is unreadable. The server freezes the lines it settles.
+3. `POST /api/ops/referral-earnings/payouts` with `referrer, currency, amountMinor` (what you sent, normally `dueMinor`), `network, asset, sentAmount, txHash, by`. Refused if the amount exceeds what is due now (less is fine - the rest stays owed), the transaction is already recorded, or the journal is unreadable. The server freezes the payable lines.
 
 Withhold: `POST /api/ops/referral-earnings/withholds {by, scope, key, reason}`; lift: `POST .../withholds/:id/lift {by, reason}`.
 

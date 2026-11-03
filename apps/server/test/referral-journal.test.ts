@@ -48,6 +48,9 @@ describe("a journal file that cannot be read", () => {
     ["truncated JSON", `{"entries": [{"kind": "pay`],
     ["JSON null", "null"],
     ["no entries array", `{"entries": {}}`],
+    ["a payout with no transaction", `{"entries": [{"kind": "payout", "id": "rp_1", "referrer": "0xa", "currency": "gbp", "amountMinor": 12}]}`],
+    ["a payout with no amount", `{"entries": [{"kind": "payout", "id": "rp_1", "referrer": "0xa", "currency": "gbp", "txHash": "0x1"}]}`],
+    ["an unknown kind", `{"entries": [{"kind": "adjustment", "id": "ra_1"}]}`],
   ] as const) {
     test(`${name}: never overwritten, every write refused, health red`, () => {
       writeFileSync(file, contents);

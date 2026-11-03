@@ -16,7 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeJsonAtomic } from "../marketing/persist.js";
+import { recordRefusedWrite, writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const JOURNAL_FILE = join(DATA_DIR, "referral-payout-journal.json");
@@ -89,6 +89,28 @@ let entries: JournalEntry[] = [];
 let loaded = false;
 let fileUnreadable: string | null = null;
 
+const str = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+
+/** The fields the statement and the payout checks read; anything else is audit. */
+function isEntry(e: unknown): e is JournalEntry {
+  if (!e || typeof e !== "object") return false;
+  const o = e as Record<string, unknown>;
+  if (!str(o.id)) return false;
+  switch (o.kind) {
+    case "payout":
+      return (
+        str(o.referrer) && str(o.currency) && str(o.txHash) &&
+        typeof o.amountMinor === "number" && Number.isSafeInteger(o.amountMinor) && o.amountMinor > 0
+      );
+    case "withhold":
+      return (o.scope === "referrer" || o.scope === "referee" || o.scope === "sale") && str(o.key);
+    case "lift":
+      return str(o.withholdId);
+    default:
+      return false;
+  }
+}
+
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
@@ -104,6 +126,10 @@ function ensureLoaded(): void {
   try {
     const parsed = JSON.parse(raw) as { entries?: unknown };
     if (!parsed || !Array.isArray(parsed.entries)) throw new Error("no entries array");
+    const bad = parsed.entries.findIndex((e) => !isEntry(e));
+    // One malformed entry makes the whole file unreadable: a payout read as
+    // anything less than it was would be offered again.
+    if (bad !== -1) throw new Error(`entry ${bad} is not a journal entry`);
     entries = parsed.entries as JournalEntry[];
     console.log(`[referral-journal] Loaded ${entries.length} entries`);
   } catch (err) {
@@ -133,7 +159,7 @@ export function journalReadable(): boolean {
  */
 export function appendJournal(entry: JournalEntry): boolean {
   ensureLoaded();
-  if (fileUnreadable) return false;
+  if (fileUnreadable) return recordRefusedWrite(JOURNAL_FILE, "referral-journal");
   const next = [...entries, entry];
   if (!writeJsonAtomic(JOURNAL_FILE, { entries: next }, "referral-journal", { pretty: true })) return false;
   entries = next;

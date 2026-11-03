@@ -11,7 +11,8 @@
  *  - the base is the platform fee WoCo kept: the ApplicationFee's `amount` less
  *    `amount_refunded`, in the fee's currency - NEVER the charge amount;
  *  - it is payable once the event is over AND the organiser's payout reads
- *    `paid` at Stripe; until then it is pending;
+ *    `paid` at Stripe (or the ledger settled it with no payout); until then it
+ *    is pending;
  *  - a sale refunded in full, or a chargeback lost, earns nothing (owner
  *    2026-11-03), even though WoCo keeps its fee on both; an open dispute is
  *    pending, never zero;
@@ -31,6 +32,8 @@ import { activeWithholds, type JournalEntry, type PayoutRecord } from "./earning
 
 /** Minor units x this = a numerator. */
 export const NUMERATOR_SCALE = 10_000;
+/** The id payout-release.ts gives a release settled on the ledger with no Stripe payout. */
+const LEDGER_SETTLEMENT_PREFIX = "settle_";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The Stripe facts one sale's earning is computed from. */
@@ -241,14 +244,11 @@ export async function computeReferralEarnings(reads: EarningsReads, now: Date = 
       line.reason = "organiser not paid yet";
       continue;
     }
+    // Only "is it resolved": a negative net is a debt release (a refund above
+    // the organiser's net, a dispute's withdrawal), and the zero rules above
+    // already decide from Stripe whether the sale still earns.
     if (typeof entry.netAmount !== "number") {
       line.reason = "organiser payout amount not resolved";
-      continue;
-    }
-    if (entry.netAmount <= 0) {
-      line.state = "zero";
-      line.numerator = 0;
-      line.reason = "released as a debt, not a sale";
       continue;
     }
     if (isFallbackRelease(entry)) {
@@ -264,15 +264,19 @@ export async function computeReferralEarnings(reads: EarningsReads, now: Date = 
       line.reason = "released with no payout id";
       continue;
     }
-    let ps = payoutStatuses.get(entry.payoutId);
-    if (!ps) {
-      ps = await reads.payoutStatus(entry.payoutId, entry.stripeAccountId);
-      payoutStatuses.set(entry.payoutId, ps);
-      if (ps === "failed" || ps === "canceled") diagnostics.failedPayouts.push(entry.payoutId);
-    }
-    if (ps !== "paid") {
-      line.reason = `organiser payout ${ps}`;
-      continue;
+    // payout-release.ts settles sales against a debt or shortfall with no Stripe
+    // payout (`settle_…`): the money is final, there is nothing to read.
+    if (!entry.payoutId.startsWith(LEDGER_SETTLEMENT_PREFIX)) {
+      let ps = payoutStatuses.get(entry.payoutId);
+      if (!ps) {
+        ps = await reads.payoutStatus(entry.payoutId, entry.stripeAccountId);
+        payoutStatuses.set(entry.payoutId, ps);
+        if (ps === "failed" || ps === "canceled") diagnostics.failedPayouts.push(entry.payoutId);
+      }
+      if (ps !== "paid") {
+        line.reason = `organiser payout ${ps}`;
+        continue;
+      }
     }
     const withhold = withheldBy(withholds, referrer, referee, entry.sessionId);
     if (withhold) {
@@ -290,7 +294,7 @@ export async function computeReferralEarnings(reads: EarningsReads, now: Date = 
 export interface PayoutInput {
   referrer: string;
   currency: string;
-  /** Must equal the statement's `dueMinor` for this referrer and currency, recomputed now. */
+  /** What was sent, minor units; at most the statement's `dueMinor`, recomputed now. */
   amountMinor: number;
   network: string;
   asset: string;
@@ -309,8 +313,8 @@ export type PayoutResult =
 let payoutQueue: Promise<unknown> = Promise.resolve();
 
 /**
- * Record a payout the operator has ALREADY sent. The amount is checked against
- * a statement recomputed now, and the lines it settles are frozen into the
+ * Record a payout the operator has ALREADY sent. The amount may not exceed a
+ * statement recomputed now, and the payable lines are frozen into the
  * record by the server, never taken from the request. One at a time, so two
  * requests cannot both settle the same balance.
  */
@@ -339,15 +343,18 @@ async function recordOne(
   const s = statement.referrers.find((r) => r.referrer === input.referrer && r.currency === input.currency);
   const due = s?.dueMinor ?? 0;
   if (!s || due <= 0) return { ok: false, status: 409, error: "Nothing is due to that referrer in that currency" };
-  if (input.amountMinor !== due) {
-    return { ok: false, status: 409, error: `Amount differs from what is due now (${due})` };
+  // Only an over-payment is refused. A line can turn payable between the send
+  // and this record (a payout reaching `paid`, a lift); paying less than is due
+  // now is always safe, the rest stays owed.
+  if (input.amountMinor > due) {
+    return { ok: false, status: 409, error: `Amount exceeds what is due now (${due})` };
   }
   const record: PayoutRecord = {
     kind: "payout",
     id: deps.newId(),
     referrer: input.referrer,
     currency: input.currency,
-    amountMinor: due,
+    amountMinor: input.amountMinor,
     toAddress: input.referrer,
     network: input.network,
     asset: input.asset,

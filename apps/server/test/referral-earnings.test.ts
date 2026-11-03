@@ -224,9 +224,22 @@ describe("payable only once the event is over and the organiser is paid", () => 
     assert.equal(f.counts.payout, 1);
   });
 
-  test("released as a debt (net below zero): zero; net not resolved yet: pending", async () => {
-    assert.equal((await lineFor({ entries: [entry({ netAmount: -100 })] }))?.state, "zero");
+  test("released as a debt (net below zero) still earns on the fee kept; net not resolved yet: pending", async () => {
+    const debt = await lineFor({ entries: [entry({ netAmount: -100 })] });
+    assert.equal(debt?.state, "payable");
+    assert.equal(debt?.numerator, 30 * 4000);
     assert.equal((await lineFor({ entries: [entry({ netAmount: undefined })] }))?.state, "pending");
+  });
+
+  test("released on the ledger with no Stripe payout (settle_…): paid, nothing read", async () => {
+    const f = fake({ entries: [entry({ payoutId: "settle_acct_referee_gbp_1" })] });
+    const s = await computeReferralEarnings(f.reads, NOW);
+    assert.equal(s.referrers[0].lines[0].state, "payable");
+    assert.equal(f.counts.payout, 0);
+  });
+
+  test("the event's release instant itself is payable", async () => {
+    assert.equal((await lineFor({ entries: [entry({ releaseAfter: NOW.toISOString() })] }))?.state, "payable");
   });
 });
 
@@ -240,6 +253,23 @@ describe("refunds and disputes (owner 2026-11-03: a reversed sale earns nothing)
     const l = await lineFor({ sales: { cs_1: { status: "found", facts: facts({ chargeRefunded: 500 }) } } });
     assert.equal(l?.state, "payable");
     assert.equal(l?.numerator, 30 * 4000);
+  });
+
+  test("refunded in part above the organiser's net, fee kept: still earns the full fee", async () => {
+    const l = await lineFor({
+      entries: [entry({ netAmount: -30 })],
+      sales: { cs_1: { status: "found", facts: facts({ chargeRefunded: 1950 }) } },
+    });
+    assert.equal(l?.state, "payable");
+    assert.equal(l?.numerator, 30 * 4000);
+  });
+
+  test("a dispute won after its withdrawal was released as a debt: earns", async () => {
+    const l = await lineFor({
+      entries: [entry({ netAmount: -100 })],
+      sales: { cs_1: { status: "found", facts: facts({ disputes: ["won"] }) } },
+    });
+    assert.equal(l?.state, "payable");
   });
 
   for (const status of ["needs_response", "under_review", "warning_needs_response", "warning_under_review"]) {
@@ -365,6 +395,11 @@ describe("withholds (ToS §9: self-referral, fraud, a breach)", () => {
     assert.equal(lines.find((l) => l.sessionId === "cs_2")?.state, "payable");
   });
 
+  test("a withhold on a sale not yet payable reads pending until it would be payable", async () => {
+    const s = await statementFor({ entries: [entry({ status: "held" })], journal: [withhold("referrer", REFERRER)] });
+    assert.equal(s.referrers[0].lines[0].state, "pending");
+  });
+
   test("a lift restores what the withhold held", async () => {
     const s = await statementFor({
       journal: [withhold("referrer", REFERRER), { kind: "lift", id: "rl_1", withholdId: "rw_1", reason: "cleared", by: "ops", at: "2026-12-02T00:00:00.000Z" }],
@@ -411,11 +446,33 @@ describe("recording a payout", () => {
     );
   });
 
-  test("an amount other than what is due now is refused, and nothing is written", async () => {
+  test("more than is due now is refused, and nothing is written", async () => {
     const f = fake();
     const r = await recordReferralPayout(payoutInput({ amountMinor: 13 }), { ...f, now: () => NOW });
-    assert.deepEqual(r, { ok: false, status: 409, error: "Amount differs from what is due now (12)" });
+    assert.deepEqual(r, { ok: false, status: 409, error: "Amount exceeds what is due now (12)" });
     assert.equal(f.journal.length, 0);
+  });
+
+  test("less than is due is recorded as sent, and the rest stays owed", async () => {
+    const f = fake();
+    const r = await recordReferralPayout(payoutInput({ amountMinor: 11 }), { ...f, now: () => NOW });
+    assert.equal((r as { ok: true; record: PayoutRecord }).record.amountMinor, 11);
+    const after = await computeReferralEarnings(f.reads, NOW);
+    assert.equal(after.referrers[0].owedNumerator, 10_000);
+    assert.equal(after.referrers[0].dueMinor, 1);
+  });
+
+  test("a payout whose computation throws does not block the next one", async () => {
+    const f = fake();
+    const first = f.reads.confirmation;
+    let calls = 0;
+    f.reads.confirmation = async (organiser) => {
+      if (calls++ === 0) throw new Error("swarm down");
+      return first(organiser);
+    };
+    await assert.rejects(recordReferralPayout(payoutInput({ txHash: TX(1) }), { ...f, now: () => NOW }), /swarm down/);
+    const second = await recordReferralPayout(payoutInput({ txHash: TX(2) }), { ...f, now: () => NOW });
+    assert.equal(second.ok, true);
   });
 
   test("the same transaction cannot be recorded twice", async () => {
