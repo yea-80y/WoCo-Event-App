@@ -13,6 +13,7 @@ export {
   type PlanSeat, type SeatPlan, type SeatRef, type SeatLabel, type SeatPlanProblem,
 } from "./plan.js";
 export { seatPlanEditionTemplate, seatPlanTemplateOf, type SeatPlanTemplate } from "./template.js";
+export { seriesSeatingRefusal, bandPricesMinor, priceMinor } from "./series.js";
 export {
   SEAT_STATE_FORMAT, heldBytes, encodeHeld, decodeHeld, validateSeatState, buildSeatState, seatStateView,
   organiserAllowsSale,

@@ -20,8 +20,9 @@ import { RegistrationRebindError, RegistryUnreadableError } from "../lib/event/o
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
-import type { SeriesManifestBlob } from "@woco/shared";
-import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x } from "@woco/shared";
+import type { SeriesManifestBlob, SignedManifestV2 } from "@woco/shared";
+import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x, editionBodiesFromCommon } from "@woco/shared";
+import { checkSeatedSeries } from "../lib/seating/seated-series.js";
 import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
 import { deleteStripeAccount, getStripeAccount, syncStripeVerdict } from "../lib/stripe/accounts.js";
 import { currencyAllowedFor } from "../lib/stripe/currency-policy.js";
@@ -253,8 +254,11 @@ events.post("/", requireAuth, async (c) => {
   }
 
   for (const s of series) {
-    if (!s.signedManifest || !s.editionBodies?.length) {
-      return c.json({ ok: false, error: `Series ${s.seriesId}: missing signedManifest or editionBodies` }, 400);
+    // The bodies the manifest commits to: listed, or one body without its number
+    // that the server rebuilds (editionBodiesFromCommon) - never both.
+    if (!s.signedManifest || (s.editionBodies === undefined) === (s.editionCommon === undefined)
+        || (s.editionBodies !== undefined && !s.editionBodies.length)) {
+      return c.json({ ok: false, error: `Series ${s.seriesId}: missing signedManifest, or not exactly one of editionBodies and editionCommon` }, 400);
     }
     // Closed-schema dispatch: a legacy `woco.manifest.v1` payload fails HERE,
     // whole, with a nameable error — the v1 cutoff on the live create rail.
@@ -373,6 +377,28 @@ events.post("/", requireAuth, async (c) => {
     }
   }
 
+  // Rebuild compact series' bodies, and check every series' seating against its
+  // manifest (a plan read per seated series: after the Stripe gate, so only an
+  // organiser who may sell causes one).
+  const fullSeries: Parameters<typeof createEventV2>[0]["series"] = [];
+  for (const s of series) {
+    const editionBodies = s.editionBodies ?? editionBodiesFromCommon(s.editionCommon, s.totalSupply);
+    if (!editionBodies) {
+      return c.json({ ok: false, error: `Series ${s.seriesId}: editionCommon is not a valid edition body` }, 400);
+    }
+    const seated = await checkSeatedSeries({
+      totalSupply: s.totalSupply,
+      manifestBody: s.signedManifest.body,
+      ...(s.seating !== undefined ? { seating: s.seating } : {}),
+      ...(s.payment ? { payment: s.payment } : {}),
+    });
+    if (seated.kind === "refused") {
+      return c.json({ ok: false, error: `Series ${s.seriesId}: ${seated.error}` }, seated.status);
+    }
+    const { editionCommon: _common, editionBodies: _bodies, seating, ...rest } = s;
+    fullSeries.push({ ...rest, editionBodies, ...(seated.kind === "seated" && seating ? { seating } : {}) });
+  }
+
   let imageData: Uint8Array;
   try {
     const raw = image.includes(",") ? image.split(",")[1] : image;
@@ -421,7 +447,7 @@ events.post("/", requireAuth, async (c) => {
         creatorAddress: parentAddress.toLowerCase() as Hex0x,
         issuer: body.issuerBinding.issuer,
         imageData,
-        series,
+        series: fullSeries,
         encryptionPublicKey,
         orderFields,
         claimMode,
@@ -1020,6 +1046,40 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const endSec = Math.floor(new Date(feed.endDate).getTime() / 1000);
   const eventEndTs = Math.max(Number.isFinite(endSec) ? endSec : 0, nowSec + 3600);
 
+  // Allocated seating (docs/SEATING.md). A series whose feed carries seat prices is
+  // checked against its MANIFEST, re-read here and held to the digest that goes on
+  // chain: the plan it names must load, match and carry those prices, and the series
+  // registers seated with that plan recorded. A feed without seat prices registers as
+  // general admission whatever its manifest says (the organiser's own feed is the
+  // only way to drop them); nothing downstream reads seatedness from the manifest -
+  // the registry record and the ledger decide.
+  let seating: { planDigest: string } | undefined;
+  if (series.seating !== undefined) {
+    let manifestBody: SignedManifestV2["body"];
+    try {
+      const blob = JSON.parse(await downloadFromBytes(series.swarmManifestRef)) as SeriesManifestBlob;
+      if (!validateSignedManifestV2(blob.signedManifest)
+          || bytesToHex0x(manifestV2Digest(blob.signedManifest.body)).toLowerCase() !== manifestRef.toLowerCase()) {
+        return c.json({ ok: false, error: REGISTER_REFUSALS.unsupportedFormat }, 400);
+      }
+      manifestBody = blob.signedManifest.body;
+    } catch {
+      return c.json({ ok: false, error: REGISTER_REFUSALS.didNotLoad }, 503);
+    }
+    const verdict = await checkSeatedSeries({
+      totalSupply: series.totalSupply,
+      manifestBody,
+      seating: series.seating,
+      ...(series.payment ? { payment: series.payment } : {}),
+    });
+    if (verdict.kind === "refused") return c.json({ ok: false, error: verdict.error }, verdict.status);
+    if (verdict.kind !== "seated") return c.json({ ok: false, error: "Seat prices were sent without a seating plan" }, 400);
+    if (getDefaultEventContract()?.version !== "ledger2") {
+      return c.json({ ok: false, error: "Seated events are not available on this network yet" }, 409);
+    }
+    seating = { planDigest: verdict.template.digest };
+  }
+
   // Ledger2 registers the organiser KEY beside the organiser: the key that signs the
   // event's terms from then on. Our sponsor wallet names it on chain only once it has
   // signed for this account at its current keys; the key itself never leaves the browser.
@@ -1061,6 +1121,7 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
       },
       ...(feed.creatorFeedSigner ? { signerHint: feed.creatorFeedSigner } : {}),
       ...(series.onChainEventId ? { feedOnChainEventId: series.onChainEventId } : {}),
+      ...(seating ? { seating } : {}),
     });
   } catch (err) {
     console.error("[api] register-on-chain error:", err);

@@ -77,6 +77,9 @@ export interface RegisterEventParams {
    *  the organiser, checked by the route (`lib/event/organiser-key.ts`). Ignored
    *  by every earlier version. */
   organiserKey?: string;
+  /** LEDGER2 ONLY: register with `registerSeatedEvent` (`supply` seats). Refused on
+   *  any other version - no earlier contract has seats. */
+  seated?: boolean;
 }
 
 /** A ledger2 registration with no proven organiser key: the client must send one. */
@@ -747,6 +750,9 @@ async function registerOn(
       if (!v2Params.organiserKey) throw new OrganiserKeyRequiredError();
       organiserKey = v2Params.organiserKey;
     }
+    if (v2Params.seated && version !== "ledger2") {
+      throw new Error(`registerEventOnChain: chain ${chainId} runs ${version}, which has no seats`);
+    }
     const { registerEventLedger } = await import("./event-contract-ledger.js");
     return registerEventLedger(
       v2Params.organiser,
@@ -759,7 +765,11 @@ async function registerOn(
       chainId,
       onTxSent,
       onTxReserved,
+      v2Params.seated === true,
     );
+  }
+  if (v2Params?.seated) {
+    throw new Error(`registerEventOnChain: chain ${chainId} runs ${version}, which has no seats`);
   }
 
   if (version === "v2") {

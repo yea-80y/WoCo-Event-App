@@ -144,6 +144,8 @@ const LEDGER2_ADMIN_ABI = [
  */
 const LEDGER2_REGISTER_ABI = [
   "function registerEvent(address organiser, address organiserKey, uint64 supply, bytes32 manifestRef, uint64 eventEndTs) returns (bytes32 eventId)",
+  // Same arguments and the same `Registered` log, plus `Seated(eventId)`: `supply` seats.
+  "function registerSeatedEvent(address organiser, address organiserKey, uint64 supply, bytes32 manifestRef, uint64 eventEndTs) returns (bytes32 eventId)",
   "event Registered(bytes32 indexed eventId, address indexed organiser, address indexed registrant, uint64 supply, bytes32 manifestRef, uint64 eventEndTs)",
   "event OrganiserKeySet(bytes32 indexed eventId, address indexed previous, address indexed key)",
 ];
@@ -699,12 +701,15 @@ export async function registerEventLedger(
   chainId: number,
   onTxSent?: (tx: { txHash: string; nonce: number; chainId: number }) => void,
   onTxReserved?: (r: { nonce: number; chainId: number }) => void,
+  /** `registerSeatedEvent` (ledger2 only: needs `organiserKey`). */
+  seated = false,
 ): Promise<{ onChainEventId: string; txHash: string }> {
+  if (seated && !organiserKey) throw new Error("registerEventLedger: a seated event needs ledger2 and its organiser key");
   const wallet   = new Wallet(sponsorPk, getProvider(chainId));
   const contract = new Contract(contractAddress, organiserKey ? LEDGER2_REGISTER_ABI : LEDGER_REGISTER_ABI, wallet);
 
   console.log(
-    `[sponsor ledger] registerEvent organiser=${organiser}${organiserKey ? ` key=${organiserKey}` : ""} ` +
+    `[sponsor ledger] ${seated ? "registerSeatedEvent" : "registerEvent"} organiser=${organiser}${organiserKey ? ` key=${organiserKey}` : ""} ` +
     `supply=${supply} eventEndTs=${eventEndTs} manifestRef=${manifestRef.slice(0, 10)}… chain=${chainId}`,
   );
 
@@ -715,6 +720,7 @@ export async function registerEventLedger(
       // send (#318). Inside the closure so a nonce re-sync retry re-journals
       // the corrected nonce.
       onTxReserved?.({ nonce: o.nonce, chainId });
+      if (seated) return contract.registerSeatedEvent(organiser, organiserKey, supply, manifestRef, eventEndTs, o);
       return organiserKey
         ? contract.registerEvent(organiser, organiserKey, supply, manifestRef, eventEndTs, o)
         : contract.registerEvent(organiser, supply, manifestRef, eventEndTs, o);

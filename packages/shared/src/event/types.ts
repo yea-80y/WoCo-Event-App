@@ -3,6 +3,7 @@ import type { OrderField } from "../crypto/types.js";
 import type { SealedBoxV2 } from "../crypto/sealed-box-shape.js";
 import type { ObjectGate, ObjectGateGroup } from "../object/types.js";
 import type { SignedManifestV2, EditionV1Body } from "../edition/types.js";
+import type { EditionCommon } from "../edition/common.js";
 import type { IssuerBindingV1 } from "../crypto/issuing.js";
 import type { MarketingMode } from "../legal/consent.js";
 
@@ -356,6 +357,18 @@ export interface SeriesSummary {
    *  to hold the gating object on-chain. May be a single ObjectGate (legacy) or a
    *  ObjectGateGroup (multi-object any/all). Use normalizeGate() to upcast. */
   gate?: ObjectGate | ObjectGateGroup;
+  /** Allocated seating (docs/SEATING.md): present on a seated series only. */
+  seating?: SeriesSeating;
+}
+
+/**
+ * A seated series' prices. Its seats are not here: the series' manifest names the
+ * plan (`editionTemplate.seatPlan`, committed on chain by `manifestRef`), and each
+ * seat names its band there. This is band id -> price, one entry per plan band, in
+ * `payment.currency`; `payment.price` is the lowest, so listings say "from".
+ */
+export interface SeriesSeating {
+  bands: { id: string; price: string }[];
 }
 
 /**
@@ -420,8 +433,14 @@ export interface CreateEventV3Request {
     totalSupply: number;
     /** Client-built, personal-signed by the creator's derived issuing key. */
     signedManifest: SignedManifestV2;
-    /** The edition bodies committed by the manifest's Merkle root, edition order. */
-    editionBodies: EditionV1Body[];
+    /** The edition bodies committed by the manifest's Merkle root, edition order.
+     *  Either these or `editionCommon`. */
+    editionBodies?: EditionV1Body[];
+    /** Every edition body but its number: the server rebuilds editions 1..totalSupply
+     *  from it (`editionBodiesFromCommon`), so a large series is one body on the wire. */
+    editionCommon?: EditionCommon;
+    /** Seated series only: band prices (see `SeriesSeating`). */
+    seating?: SeriesSeating;
     wave?: string;
     saleStart?: string;
     saleEnd?: string;
