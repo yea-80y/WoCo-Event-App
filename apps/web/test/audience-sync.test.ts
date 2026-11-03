@@ -27,7 +27,10 @@ import {
   SETTLE_MS,
   STALE_MS,
   SYNC_INTERVAL_MS,
+  LEASE_BEAT_MS,
+  LEASE_STALE_MS,
   type SyncDeps,
+  type SyncProgress,
   type SyncResult,
 } from "../src/lib/creator/audience/audience-sync.js";
 
@@ -79,6 +82,14 @@ interface World {
   duringSeal?: (w: World) => void;
   /** Runs right after each check call - "an edit made elsewhere" mid-run. */
   duringCheck?: (w: World) => void;
+  /** Runs inside each openOrders call. */
+  duringOpen?: (w: World) => void;
+  /** openOrders answers "locked": the keys locked while it ran. */
+  lockDuringOpen?: boolean;
+  /** false = the account or its unlock moved since the run began. */
+  keysOpen?: boolean;
+  /** Every box handed to openOrders, in order. */
+  opened: unknown[];
   log: string[];
   writes: Array<{ payload: MarketingListPayload; emails: string[] }>;
 }
@@ -92,6 +103,7 @@ function world(over: Partial<World> = {}): World {
     answer: { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [], keptFields: { "ada@x.com": { eventId: "e1", fieldIds: ["f1", "f2"] } } },
     list: null,
     storage: new Map(),
+    opened: [],
     log: [],
     writes: [],
     ...over,
@@ -110,11 +122,18 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
       w.log.push("openKeys");
       if (w.locked) return null;
       return {
-        async openOrder(box) {
-          const b = box as unknown as Box;
-          if (b.bad) throw new Error("wrong key");
-          return b.claim!;
+        async openOrders(eventId, jobs, progress) {
+          w.log.push(`open:${eventId}:${jobs.length}`);
+          w.opened.push(...jobs.map((j) => j.box));
+          w.duringOpen?.(w);
+          if (w.lockDuringOpen) return "locked";
+          progress?.(jobs.length);
+          return jobs.map(({ box }) => {
+            const b = box as unknown as Box;
+            return b.bad ? null : b.claim!;
+          });
         },
+        stillOpen: () => w.keysOpen !== false,
         async openList(box) {
           if (w.openListFails) throw new Error("cannot open");
           return structuredClone((box as unknown as Box).sealed!);
@@ -144,10 +163,11 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
       if (o === "throw" || !o) throw new Error("count unavailable");
       return w.counts?.[id] ?? o.length;
     },
-    async getOrders(id) {
+    async getOrders(id, progress) {
       w.log.push(`orders:${id}`);
       const o = w.orders[id];
       if (o === "throw" || !o) throw new Error("orders unavailable");
+      progress?.(o.length, o.length);
       return o;
     },
     async getOrderFields(ev) {
@@ -913,6 +933,85 @@ test("a slot the server could not read, or an order it could not download, is re
   assert.ok(JSON.parse(w.storage.get("woco:audience-sync:0xorg")!).events.e1);
 });
 
+// ── The browser read (#201) ────────────────────────────────────────────────
+
+/** A ticket whose sealed order is gone for good (404) or is not a sealed order: `lost`, under its root. */
+const lostOrder = (root: string, seriesId = "s1"): OrderEntry & { lost: string } => ({ ...order({}, seriesId), encryptedOrder: undefined, lost: root });
+
+test("a sale's tickets share one sealed order: it is opened once, and counted once if it will not open", async () => {
+  const shared = order({ claimerEmail: "ada@x.com" });
+  const bad = order("bad");
+  const w = world({
+    orders: { e1: [shared, { ...shared, edition: 2 }, { ...shared, edition: 3 }, bad, { ...bad, edition: 5 }] },
+  });
+  const r = await sync(w);
+  assert.deepEqual(w.opened, [shared.encryptedOrder, bad.encryptedOrder], "each box once, in slot order");
+  assert.equal(r.unreadableOrders, 1, "one sale that will not open, not two tickets");
+  assert.equal(r.added, 1);
+});
+
+test("the same box under two series is opened under each: the binding is the slot's series, never shared", async () => {
+  const a = order({ claimerEmail: "ada@x.com" }, "s1");
+  const w = world({ orders: { e1: [a, { ...a, seriesId: "s2", edition: 2 }] } });
+  await sync(w);
+  assert.equal(w.opened.length, 2);
+});
+
+test("a lost order marks its event, counts once per sale, and is not read again until the event sells again", async () => {
+  const w = world({ orders: { e1: [order({ claimerEmail: "ada@x.com" }), lostOrder("r1"), { ...lostOrder("r1"), edition: 3 }, lostOrder("r2")] } });
+  const first = await sync(w);
+  assert.equal(first.unreadableOrders, 2, "two sales lost, three tickets");
+  assert.equal(first.status, "partial");
+  const mark = JSON.parse(w.storage.get("woco:audience-sync:0xorg")!).events.e1;
+  assert.equal(mark.unopened, 2, "covered, with its lost orders remembered");
+  assert.equal(first.added, 1, "the rest of the event is still added");
+  w.now += SYNC_INTERVAL_MS;
+  await sync(w); // settles
+  w.now += SYNC_INTERVAL_MS;
+  w.log.length = 0;
+  const third = await sync(w);
+  assert.ok(!w.log.includes("orders:e1"), "not re-read while the count stands");
+  assert.equal(third.unreadableOrders, 2, "and still reported");
+});
+
+test("a lost order beside one only not fetched yet: the event is read again next run", async () => {
+  const w = world({ orders: { e1: [lostOrder("r1"), { ...order({}), encryptedOrder: undefined }] } });
+  await sync(w);
+  assert.equal(JSON.parse(w.storage.get("woco:audience-sync:0xorg")!).events.e1, undefined);
+});
+
+test("keys that lock while orders are opened: nothing kept, nothing written, nothing marked, status locked", async () => {
+  const w = world({ events: [event("e1"), event("e2")], orders: { e1: [order({ claimerEmail: "ada@x.com" })], e2: [order({ claimerEmail: "bo@x.com" })] }, fields: { e1: [], e2: [] } });
+  w.duringOpen = (x) => {
+    if (x.opened.length === 2) x.lockDuringOpen = true; // the second event's opening
+  };
+  const r = await sync(w);
+  assert.equal(r.status, "locked", "so the hour is not used up (the gate's `counts`)");
+  assert.equal(w.writes.length, 0, "the first event's buyer is not written either");
+  assert.equal(w.storage.size, 0);
+  assert.ok(!w.log.includes("readList"));
+});
+
+test("an account or unlock that moves between events stops the run before the next read", async () => {
+  const w = world({ events: [event("e1"), event("e2")], orders: { e1: [order({ claimerEmail: "ada@x.com" })], e2: [order({ claimerEmail: "bo@x.com" })] }, fields: { e1: [], e2: [] } });
+  w.duringOpen = (x) => void (x.keysOpen = false);
+  const r = await sync(w);
+  assert.equal(r.status, "locked");
+  assert.ok(!w.log.includes("count:e2") && !w.log.includes("orders:e2"), "no read once unbound");
+  assert.equal(w.writes.length, 0);
+  assert.equal(w.storage.size, 0);
+});
+
+test("keys that lock after the orders were opened: the list is never opened, nothing is written", async () => {
+  const w = world();
+  w.duringCheck = (x) => void (x.keysOpen = false);
+  const r = await sync(w);
+  assert.equal(r.status, "locked");
+  assert.ok(!w.log.includes("readList"));
+  assert.ok(!w.log.includes("sealKeys"));
+  assert.equal(w.writes.length, 0);
+});
+
 test("the interval is an hour, kept across reloads; unreadable or future stamps mean run", async () => {
   assert.equal(SYNC_INTERVAL_MS, 60 * 60_000);
   let now = 0;
@@ -987,6 +1086,111 @@ test("throttle: once per window per tab, never two at once, forced by Check now"
   now += SYNC_INTERVAL_MS;
   await gate.run(false, async () => (runs++, ok()));
   assert.equal(runs, 3);
+});
+
+/** A gate over one shared storage (one device), as each tab or reload makes it; `beats` runs the refresh timers. */
+function deviceGates() {
+  let now = 0;
+  const box = new Map<string, number | null>();
+  const slot = (k: string) => ({ read: () => box.get(k) ?? null, write: (t: number | null) => void box.set(k, t) });
+  const beats = new Set<() => void>();
+  const gate = () =>
+    createSyncGate<SyncResult>({
+      minIntervalMs: SYNC_INTERVAL_MS,
+      now: () => now,
+      counts: (r) => r.status !== "locked",
+      stamp: slot("start"),
+      lease: slot("running"),
+      every: (_ms, fn) => {
+        beats.add(fn);
+        return () => beats.delete(fn);
+      },
+    });
+  const ok = async (): Promise<SyncResult> => ({ status: "ok", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0 });
+  const never = () => new Promise<SyncResult>(() => {});
+  return {
+    gate,
+    ok,
+    never,
+    box,
+    beats,
+    at: (t: number) => void (now = t),
+    tick: () => beats.forEach((fn) => fn()),
+  };
+}
+
+test("a check cut short (its tab closed) does not use up the hour: the next visit runs once its mark goes stale", async () => {
+  const d = deviceGates();
+  assert.ok(d.gate().run(false, d.never), "the check starts - and its tab closes mid-run");
+  assert.equal(d.box.get("start") ?? null, null, "nothing says a check happened this hour");
+  d.at(LEASE_STALE_MS - 1);
+  assert.equal(d.gate().run(false, d.ok), null, "a reload right away waits: the mark looks like a check still running");
+  d.at(LEASE_STALE_MS);
+  assert.ok(d.gate().run(false, d.ok), "once the mark is stale the next visit runs, an hour early");
+});
+
+test("another tab checking: a background run waits while its mark is refreshed; Check now does not; the mark clears at the end", async () => {
+  const d = deviceGates();
+  let finish!: () => void;
+  const tabA = d.gate().run(false, () => new Promise<SyncResult>((res) => (finish = () => res({ status: "ok", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0 }))));
+  assert.ok(tabA);
+  d.at(LEASE_STALE_MS - 1);
+  d.tick(); // tab A's refresh, every LEASE_BEAT_MS
+  d.at(LEASE_STALE_MS + LEASE_BEAT_MS);
+  assert.equal(d.gate().run(false, d.ok), null, "a refreshed mark keeps tab B waiting past LEASE_STALE_MS");
+  const forced = d.gate().run(true, d.ok);
+  assert.ok(forced, "Check now in tab B goes ahead");
+  await forced;
+  finish();
+  await tabA;
+  assert.equal(d.box.get("running") ?? null, null, "cleared when tab A's check ends");
+  assert.equal(d.beats.size, 0, "and no refresh left running");
+  assert.equal(d.box.get("start"), 0, "the hour counts from tab A's start, written as it ended");
+});
+
+test("the hour is written when a check that counts ends - with its start - and never for a locked one", async () => {
+  const d = deviceGates();
+  d.at(1_000);
+  let finish!: (r: SyncResult) => void;
+  const run = d.gate().run(false, () => new Promise<SyncResult>((res) => (finish = res)));
+  assert.equal(d.box.get("start") ?? null, null, "not at the start");
+  d.at(90_000);
+  finish({ status: "failed", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0, error: "x" });
+  await run;
+  assert.equal(d.box.get("start"), 1_000, "a failed check counts, from when it started");
+  d.at(1_000 + SYNC_INTERVAL_MS);
+  await d.gate().run(false, async () => ({ status: "locked", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0 }));
+  assert.equal(d.box.get("start"), 1_000, "a locked one never writes it");
+  assert.equal(d.box.get("running") ?? null, null);
+});
+
+test("the status line while a check runs: which event, and how far - plain words, spaced hyphen", () => {
+  const p = (over: Partial<SyncProgress>): SyncProgress => ({ title: "30k Event", phase: "downloading", done: 0, total: 0, ...over });
+  assert.equal(describeSync(null, true, T0, p({})).text, "Checking 30k Event for new buyers…");
+  assert.equal(
+    describeSync(null, true, T0, p({ done: 12_400, total: 20_000 })).text,
+    "Checking 30k Event for new buyers - downloading orders (12,400 of 20,000)…",
+  );
+  assert.equal(
+    describeSync(null, true, T0, p({ phase: "reading", done: 8_000, total: 20_000 })).text,
+    "Checking 30k Event for new buyers - reading orders (8,000 of 20,000)…",
+  );
+  assert.equal(describeSync(null, false, T0, p({ done: 1, total: 2 })).text, "Not checked on this device yet.", "progress is shown only while running");
+  assert.doesNotMatch(describeSync(null, true, T0, p({ done: 1, total: 2 })).text, /[–—]/);
+});
+
+test("a run says which event it is on and how far, and a listener that throws never stops it", async () => {
+  const w = world({ orders: { e1: [order({ claimerEmail: "ada@x.com" }), order({ claimerEmail: "bo@x.com" })] } });
+  const seen: SyncProgress[] = [];
+  const r = await sync(w, { onProgress: (p) => void seen.push(p) });
+  assert.equal(r.status, "ok");
+  assert.deepEqual(
+    seen.map((p) => `${p.title}:${p.phase}:${p.done}/${p.total}`),
+    ["Event e1:downloading:0/0", "Event e1:downloading:2/2", "Event e1:reading:0/2", "Event e1:reading:2/2"],
+  );
+  const loud = world();
+  const r2 = await sync(loud, { onProgress: () => { throw new Error("listener broke"); } });
+  assert.equal(r2.added, 1);
 });
 
 test("throttle: a locked run does not use up the window; a failed one does", async () => {

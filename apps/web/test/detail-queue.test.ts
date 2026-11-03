@@ -29,6 +29,8 @@ import {
   type BatchResult,
   type Coverage,
   type FetchResult,
+  type DetailQueueDeps,
+  HOLD_RECHECK_MS,
 } from "../src/lib/creator/dashboard/detail-queue.js";
 
 const flush = () => new Promise<void>((r) => setImmediate(r));
@@ -64,7 +66,7 @@ function clock() {
 }
 
 /** A queue over a fake gateway: fetches wait until the test answers them, unless `auto` is set. */
-function harness() {
+function harness(over: Partial<Pick<DetailQueueDeps, "headroomShare" | "holdWhile">> = {}) {
   const c = clock();
   const calls: string[] = [];
   const open = new Map<string, Array<(r: FetchResult) => void>>();
@@ -102,6 +104,7 @@ function harness() {
     random: () => 0,
     wantCoverage: () => void h.wants++,
     onChange: () => {},
+    ...over,
   });
   return h;
 }
@@ -268,6 +271,52 @@ test("a small dedicated allowance (the bundle limiter's 120) keeps a quarter, no
   assert.equal(h.calls.length, CONCURRENCY + 1, "below a quarter: paused until the reset");
   await h.c.advance(5_000);
   assert.equal(h.calls.length, CONCURRENCY + 2);
+});
+
+test("a background queue (the audience sync's) keeps half the allowance spare; the default keeps a quarter", async () => {
+  const budget = { limit: 300, remaining: 149, resetMs: 5_000 };
+  const bg = harness({ headroomShare: 0.5 });
+  bg.q.cover(cov(1, 0, roots(CONCURRENCY + 2)));
+  await flush();
+  await bg.answer("r0", { kind: "ok", box: box("0"), budget });
+  assert.equal(bg.calls.length, CONCURRENCY, "149 of 300 left: below half, paused until the reset");
+  await bg.c.advance(5_000);
+  assert.equal(bg.calls.length, CONCURRENCY + 1);
+
+  const fg = harness();
+  fg.q.cover(cov(1, 0, roots(CONCURRENCY + 2)));
+  await flush();
+  await fg.answer("r0", { kind: "ok", box: box("0"), budget });
+  assert.equal(fg.calls.length, CONCURRENCY + 1, "the dashboard's queue keeps going at the same budget");
+});
+
+test("held while a foreground read is busy: nothing fetched, no answer asked for; resumed only on a fresh answer", async () => {
+  let busy = true;
+  const h = harness({ holdWhile: () => busy });
+  h.q.cover(cov(1, 0, roots(3)));
+  await flush();
+  assert.equal(h.calls.length, 0, "held from the first fetch");
+  await h.c.advance(COVERAGE_STALE_MS + 30_000);
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.wants, 0, "no erasure answer asked for while held");
+  busy = false;
+  await h.c.advance(HOLD_RECHECK_MS);
+  assert.equal(h.calls.length, 0, "the answer went old during the hold: nothing fetched on it");
+  assert.equal(h.wants, 1, "a fresh one is asked for instead");
+  h.q.cover(cov(2, h.c.now(), roots(3)));
+  await flush();
+  assert.equal(h.calls.length, 3);
+});
+
+test("a hold that ends while the answer is still fresh resumes at once", async () => {
+  let busy = true;
+  const h = harness({ holdWhile: () => busy });
+  h.q.cover(cov(1, 0, roots(2)));
+  await h.c.advance(10_000);
+  assert.equal(h.calls.length, 0);
+  busy = false;
+  await h.c.advance(HOLD_RECHECK_MS);
+  assert.equal(h.calls.length, 2);
 });
 
 test("with no readable budget it keeps to the self cap per minute", async () => {
