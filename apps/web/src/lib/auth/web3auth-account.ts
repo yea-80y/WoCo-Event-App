@@ -10,6 +10,8 @@
 
 import { buildWeb3AuthOptions, extractRawPrivateKey } from "./web3auth-config";
 import { buildEnv } from "../build-env.js";
+import { resolveWeb3AuthNetwork } from "./web3auth-network.js";
+import { identityFromUserInfo, type Web3AuthIdentity } from "./web3auth-identity.js";
 import {
   markWeb3AuthSessionEstablished,
   clearWeb3AuthSessionFlag,
@@ -694,6 +696,27 @@ export async function restoreWeb3AuthSession(): Promise<Web3AuthRestore> {
     // Initialised but couldn't pull the key (provider glitch) — transient too.
     console.debug("[web3auth] restore: key extract threw (transient):", e);
     return { status: "unavailable" };
+  }
+}
+
+/**
+ * Who is signed in to Web3Auth on this page right now, and under which project: what
+ * the key-change guard keys its record on (#1051). null when nothing is signed in or
+ * the SDK names no one - the caller decides what that means.
+ */
+export async function currentWeb3AuthIdentity(): Promise<{
+  identity: Web3AuthIdentity;
+  project: { clientId: string; network: string };
+} | null> {
+  const clientId = buildEnv(() => import.meta.env.VITE_WEB3AUTH_CLIENT_ID as string | undefined);
+  if (!_instance?.userIdentityInfo || !clientId) return null;
+  try {
+    const network = resolveWeb3AuthNetwork(buildEnv(() => import.meta.env.VITE_WEB3AUTH_NETWORK as string | undefined));
+    const identity = identityFromUserInfo(await _instance.userIdentityInfo());
+    return identity ? { identity, project: { clientId, network } } : null;
+  } catch (e) {
+    console.warn("[web3auth] could not read who is signed in:", e);
+    return null;
   }
 }
 

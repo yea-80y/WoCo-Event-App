@@ -32,6 +32,7 @@ export type SignInStep =
   | "tombstone" // this key was upgraded to a passkey on this device
   | "lookup" // a recovered account's preserved address
   | "owner" // the preserved account's on-chain owner
+  | "identity" // who signed in, for the key-change guard (#1051)
   | "kernel" // building the account (chunk download + RPC)
   | "signer" // is this key still on the account's list
   | "switch" // clearing another account's state
