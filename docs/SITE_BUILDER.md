@@ -35,7 +35,8 @@ Template, Brand, Pages, Navigation, Events, Domain; Shop only when `shopAllowed`
 `#/build` is a legacy alias of `#/creator/sites`.
 
 The single-event page builder (`SiteBuilder.svelte`, `POST /api/site/deploy`) is a separate path with
-its own baked bundle, `dist-site/`; it is not covered here.
+its own runtime, `dist-site/`, built in the browser the same way (see "Single-event pages" under
+Runtime releases); its editor is not covered here.
 
 ---
 
@@ -235,8 +236,17 @@ response says `runtimeVersion`, which the creator directory entry also carries; 
 redeploy, shop editor) builds in the browser. The storage ledger records the linked release root
 (`links`) so a re-stamp of the owner's site stops there. A linked site depends on the platform's
 release batches (core on our bee, `ETHERNA_PLATFORM_BATCH` on Etherna) for its runtime, even when
-the site itself is on the owner's batch: both are in the `postage` health alarms. Next: single-event
-pages on the same rails (slice 5).
+the site itself is on the owner's batch: both are in the `postage` health alarms.
+
+**Single-event pages (slice 5).** Same rails on the `eventPage` line, Etherna only. The builder asks
+`GET /api/site/:eventId/page-config` (creator only) for the exact config the server bakes (its own
+API base, Etherna, the feed signer pinned at create) and a suggested head (the event's title and
+image), builds on `GET /api/site/runtime/kit/etherna` (`buildEventPageCollection`: the release's
+shared forks + its own `manifest.json` and `site.html`, five objects, ~2.6 KB) and sends the build
+with the head it rendered. The server checks the head's format only (`parseEventPageHead`; the event
+is the organiser's own signed data, so it reads nothing of it to admit), rebuilds from its own config
+and stores only an identical build. The browser signs the page feed's update over the root node it
+built itself (the response no longer carries a root chunk). No build = 400 `CLIENT_BUILD_REQUIRED`.
 
 ---
 

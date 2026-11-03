@@ -27,6 +27,7 @@ import {
 import { isEthernaGatewayUrl, isWocoGatewayUrl, WOCO_GATEWAY_URL } from "../swarm/feed-routes.js";
 import { isSiteRuntimeFileType, SITE_RUNTIME_INDEX_DOCUMENT, type SiteRuntimeRoot, type SiteRuntimeStore } from "./runtime-release.js";
 import { renderSiteHtml, sitePwaManifest } from "./render.js";
+import { eventPagePwaManifest, renderEventPageHtml, type EventPageConfig, type EventPageHead } from "./event-page.js";
 import type { Site } from "./types.js";
 
 export const SITE_INDEX_DOCUMENT = SITE_RUNTIME_INDEX_DOCUMENT.site;
@@ -185,6 +186,41 @@ export function buildSiteCollection(input: {
   if (rootNode.length > 4096) throw new Error("site runtime: root node does not fit one chunk");
   const root = storedObject(rootNode);
   return { root: root.address, rootNode, objects: [htmlObj, manifestObj, htmlLeaf, manifestLeaf, filesNode, root] };
+}
+
+/**
+ * Build a single-event page's collection (#1032 slice 5) on the release's
+ * `eventPage` line: the release's shared forks plus the page's own `manifest.json`
+ * and `site.html`, which start with different bytes and so sit on the root as two
+ * forks with their full names, as bee lays them out. Five objects.
+ */
+export function buildEventPageCollection(input: {
+  config: EventPageConfig;
+  head: EventPageHead | null;
+  template: string;
+  release: SiteRuntimeRoot;
+  releaseRootNode: Uint8Array;
+}): SiteCollection {
+  const index = SITE_RUNTIME_INDEX_DOCUMENT.eventPage;
+  const kept = releaseForks(input.release, input.releaseRootNode, index, [index, "manifest.json"]);
+  const enc = new TextEncoder();
+  const html = enc.encode(renderEventPageHtml({ template: input.template, config: input.config, head: input.head }));
+  if (html.length > SITE_HTML_MAX_BYTES) throw new Error("page is too large to publish");
+  const manifest = enc.encode(JSON.stringify(eventPagePwaManifest(input.head)));
+
+  const htmlObj = storedObject(html);
+  const manifestObj = storedObject(manifest);
+  const htmlLeaf = storedObject(encodeMantarayNode(htmlObj.address, []));
+  const manifestLeaf = storedObject(encodeMantarayNode(manifestObj.address, []));
+  const valueType = MANTARAY_TYPE_VALUE | MANTARAY_TYPE_METADATA;
+  const rootNode = encodeMantarayNode(null, [
+    ...kept,
+    encodeMantarayFork({ type: valueType, prefix: "manifest.json", ref: manifestLeaf.address, metadata: { "Content-Type": MANIFEST_TYPE, Filename: "manifest.json" } }),
+    encodeMantarayFork({ type: valueType, prefix: index, ref: htmlLeaf.address, metadata: { "Content-Type": HTML_TYPE, Filename: index } }),
+  ]);
+  if (rootNode.length > 4096) throw new Error("site runtime: root node does not fit one chunk");
+  const root = storedObject(rootNode);
+  return { root: root.address, rootNode, objects: [htmlObj, manifestObj, htmlLeaf, manifestLeaf, root] };
 }
 
 /** True when `received` is exactly `expected.objects`: same count, order and bytes. */

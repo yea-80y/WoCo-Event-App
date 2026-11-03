@@ -8,8 +8,8 @@
  * Every website is published this way; a failure here is the publish's answer.
  */
 
-import type { Site, SiteRuntimeRoot, SiteRuntimeStore } from "@woco/shared";
-import { buildSiteCollection, siteRenderUrls, siteStoreForGateway } from "@woco/shared/site/collection";
+import type { EventPageConfig, EventPageHead, Site, SiteRuntimeLine, SiteRuntimeRoot, SiteRuntimeStore } from "@woco/shared";
+import { buildEventPageCollection, buildSiteCollection, siteRenderUrls, siteStoreForGateway } from "@woco/shared/site/collection";
 
 interface RuntimeKit {
   version: number;
@@ -45,14 +45,17 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
+/** Each runtime line's kit route: websites under /api/sites, single-event pages under /api/site. */
+const KIT_ROUTE: Record<SiteRuntimeLine, string> = { site: "/api/sites/runtime/kit", eventPage: "/api/site/runtime/kit" };
+
 /**
  * The kit for one store, never from the HTTP cache: the route allows a minute's
  * caching, and the one rebuild after RUNTIME_RELEASE_CHANGED must see the new release.
  */
-async function readKit(apiUrl: string, store: SiteRuntimeStore): Promise<{ ok: true; kit: RuntimeKit } | { ok: false; error: string; code?: string }> {
+async function readKit(apiUrl: string, store: SiteRuntimeStore, line: SiteRuntimeLine = "site"): Promise<{ ok: true; kit: RuntimeKit } | { ok: false; error: string; code?: string }> {
   let res: Response;
   try {
-    res = await fetch(`${new URL(apiUrl).origin}/api/sites/runtime/kit/${store}`, { cache: "no-store" });
+    res = await fetch(`${new URL(apiUrl).origin}${KIT_ROUTE[line]}/${store}`, { cache: "no-store" });
   } catch {
     return { ok: false, error: OFFLINE };
   }
@@ -91,5 +94,47 @@ export async function buildClientSiteCollection(input: {
     // A kit that does not match its own release, or a site too large to publish.
     console.warn("[site publish] building in the browser failed:", e);
     return { ok: false, error: e instanceof Error && /too large/.test(e.message) ? "This website is too large to publish." : OFFLINE };
+  }
+}
+
+export interface ClientEventPageCollection {
+  root: string;
+  /** The root node the page feed's update carries: signed here, never taken from the server. */
+  rootNode: Uint8Array;
+  body: { runtimeVersion: number; objects: string[] };
+}
+
+export type ClientEventPageBuild =
+  | { ok: true; built: ClientEventPageCollection }
+  | { ok: false; error: string; code?: string };
+
+/**
+ * Build a single-event page (#1032 slice 5) on the release's `eventPage` line,
+ * on Etherna where event pages live, with the config the server said it bakes
+ * (`GET /api/site/:eventId/page-config`) and the head this browser chose.
+ */
+export async function buildClientEventPageCollection(input: {
+  apiUrl: string;
+  config: EventPageConfig;
+  head: EventPageHead;
+}): Promise<ClientEventPageBuild> {
+  const read = await readKit(input.apiUrl, "etherna", "eventPage");
+  if (!read.ok) return read;
+  const kit = read.kit;
+  try {
+    const built = buildEventPageCollection({
+      config: input.config,
+      head: input.head,
+      template: kit.template,
+      release: kit.release,
+      releaseRootNode: fromBase64(kit.rootNode),
+    });
+    return {
+      ok: true,
+      built: { root: built.root, rootNode: built.rootNode, body: { runtimeVersion: kit.version, objects: built.objects.map((o) => toBase64(o.data)) } },
+    };
+  } catch (e) {
+    console.warn("[event page publish] building in the browser failed:", e);
+    return { ok: false, error: e instanceof Error && /too large/.test(e.message) ? "This event page is too large to publish." : OFFLINE };
   }
 }

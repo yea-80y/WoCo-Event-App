@@ -12,6 +12,7 @@
  */
 
 import {
+  buildEventPageCollection,
   buildSiteCollection,
   sameSiteObjects,
   SITE_HTML_MAX_BYTES,
@@ -21,7 +22,7 @@ import {
 import { mantarayNodeAddress, resolveMantarayPath } from "@woco/shared/swarm/mantaray";
 import { bytesTreeRoot } from "@woco/shared/swarm/bytes-tree";
 import { SITE_RUNTIME_INDEX_DOCUMENT } from "@woco/shared";
-import type { Site, SiteRuntimeLine, SiteRuntimeRelease, SiteRuntimeRoot, SiteRuntimeStore } from "@woco/shared";
+import type { EventPageConfig, EventPageHead, Site, SiteRuntimeLine, SiteRuntimeRelease, SiteRuntimeRoot, SiteRuntimeStore } from "@woco/shared";
 import type { Context } from "hono";
 import { BEE_URL } from "../../config/swarm.js";
 import { siteRuntimeReleases } from "./runtime-release.js";
@@ -165,6 +166,31 @@ export type CollectionVerdict =
   | { ok: true; collection: SiteCollection }
   | { ok: false; code: "RUNTIME_RELEASE_CHANGED" | "COLLECTION_MISMATCH"; error: string };
 
+/**
+ * The one admission rule for every page kind: the server's own `build` (from its
+ * own inputs and kit) must equal the client's objects byte for byte, and only the
+ * server's build is returned for storing.
+ */
+export function admitBuild(input: {
+  kit: SiteRuntimeKit;
+  received: { runtimeVersion: number; objects: Uint8Array[] };
+  build: () => SiteCollection;
+}): CollectionVerdict {
+  if (input.received.runtimeVersion !== input.kit.version) {
+    return { ok: false, code: "RUNTIME_RELEASE_CHANGED", error: `the site runtime is now v${input.kit.version}` };
+  }
+  let expected: SiteCollection;
+  try {
+    expected = input.build();
+  } catch (e) {
+    return { ok: false, code: "COLLECTION_MISMATCH", error: e instanceof Error ? e.message : "page could not be built" };
+  }
+  if (!sameSiteObjects(expected, input.received.objects)) {
+    return { ok: false, code: "COLLECTION_MISMATCH", error: "the uploaded page differs from the server's build" };
+  }
+  return { ok: true, collection: expected };
+}
+
 /** Rebuild the site from the server's own inputs; admit the client's objects only if identical. */
 export function admitClientCollection(input: {
   kit: SiteRuntimeKit;
@@ -172,19 +198,26 @@ export function admitClientCollection(input: {
   urls: SiteRenderUrls;
   received: { runtimeVersion: number; objects: Uint8Array[] };
 }): CollectionVerdict {
-  if (input.received.runtimeVersion !== input.kit.version) {
-    return { ok: false, code: "RUNTIME_RELEASE_CHANGED", error: `the site runtime is now v${input.kit.version}` };
-  }
-  let expected: SiteCollection;
-  try {
-    expected = buildSiteCollection({ site: input.site, urls: input.urls, template: input.kit.template, release: input.kit.release, releaseRootNode: input.kit.rootNode });
-  } catch (e) {
-    return { ok: false, code: "COLLECTION_MISMATCH", error: e instanceof Error ? e.message : "site could not be built" };
-  }
-  if (!sameSiteObjects(expected, input.received.objects)) {
-    return { ok: false, code: "COLLECTION_MISMATCH", error: "the uploaded site differs from the server's build" };
-  }
-  return { ok: true, collection: expected };
+  return admitBuild({
+    kit: input.kit,
+    received: input.received,
+    build: () => buildSiteCollection({ site: input.site, urls: input.urls, template: input.kit.template, release: input.kit.release, releaseRootNode: input.kit.rootNode }),
+  });
+}
+
+/** Rebuild a single-event page from the server's own config and the browser's checked head (#1032 slice 5). */
+export function admitClientEventPage(input: {
+  kit: SiteRuntimeKit;
+  config: EventPageConfig;
+  head: EventPageHead;
+  received: { runtimeVersion: number; objects: Uint8Array[] };
+}): CollectionVerdict {
+  if (input.kit.line !== "eventPage") throw new Error("an event page is built on the eventPage line");
+  return admitBuild({
+    kit: input.kit,
+    received: input.received,
+    build: () => buildEventPageCollection({ config: input.config, head: input.head, template: input.kit.template, release: input.kit.release, releaseRootNode: input.kit.rootNode }),
+  });
 }
 
 /**
@@ -208,6 +241,10 @@ export async function uploadSiteObjects(
         "Content-Type": "application/octet-stream",
         "Swarm-Postage-Batch-Id": batchId,
         "Swarm-Redundancy-Level": "0",
+        // Bee defaults an upload to DEFERRED: it returns once the node holds the
+        // chunks and pushes them in the background, so every other reader waits.
+        // Measured 2026-09-21 on 5 MB collections: 326 s deferred vs 171 s
+        // without until the page opened from our bee (#613).
         "Swarm-Deferred-Upload": "false",
       },
       body: o.data as unknown as BodyInit,

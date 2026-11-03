@@ -31,8 +31,9 @@ import {
   jsonForInlineScript,
   resolveDeployApiUrl,
   resolveDeployUrls,
-  withEventPageHead,
 } from "../src/lib/site/deploy-config.js";
+// Moved to shared with the rest of the event-page render (#1032 slice 5).
+import { withEventPageHead } from "@woco/shared";
 
 const LINE_SEPARATOR = String.fromCharCode(0x2028);
 const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
