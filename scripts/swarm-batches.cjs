@@ -8,11 +8,14 @@
  *     fills with old builds, buy a new one, set it here and deploy: only old
  *     builds go with the old batch.
  *
- * The server's /api/health watches the core batch only, so a deploy checks both
- * against the bee's own /stamps before it uploads anything.
+ * A deploy checks both against the bee's own /stamps before it uploads anything.
+ * After it, /api/health `postage.builds` watches the batch the LIVE app is on
+ * (named in its index.html) and alarms under two days, so this floor only has
+ * to keep a deploy off a batch about to die. One day (owner 2026-11-03: short,
+ * cheap builds batches - one filled in a day).
  */
 
-const BUILD_BATCH_MIN_TTL_SECONDS = 3 * 86_400;
+const BUILD_BATCH_MIN_TTL_SECONDS = 1 * 86_400;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 const short = (id) => id.slice(0, 8);

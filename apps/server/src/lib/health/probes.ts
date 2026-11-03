@@ -45,6 +45,7 @@ import {
   sponsorKeysConflict,
 } from "../chain/sub-ens-contract.js";
 import { BEE_URL, POSTAGE_BATCH_ID } from "../../config/swarm.js";
+import { getApexContenthash } from "../chain/sub-ens-apex.js";
 import { readEthernaStamp } from "../etherna/batches.js";
 import {
   type Check,
@@ -119,6 +120,17 @@ let paymasterReading = empty<bigint>();
 let beeReading = empty<StampReading & { immutable: boolean | null }>();
 let chainstateReading = empty<{ block: number; chainTip: number }>();
 let ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+/**
+ * The builds batch the LIVE app is stamped on, named by the deploy in the app's
+ * index.html (`<meta name="woco-build-batch">`, scripts/upload-to-swarm-feed.cjs),
+ * and its stamp. Nothing else watches it: the deploy's own floor only runs when
+ * someone deploys, and when this batch dies the app's files go with it.
+ */
+let buildsState: { batchId: string | null; reason: string | null; reading: Reading<StampReading & { immutable: boolean | null }> } = {
+  batchId: null,
+  reason: null,
+  reading: empty(),
+};
 /**
  * The last POSITIVE Etherna reading (a parsed stamp or a 404), for the router's
  * liveness guard (#610). Kept apart from `ethernaReading` because a failed read
@@ -251,6 +263,8 @@ export interface HealthReaders {
   ticketMintPolicy(): Promise<TicketMintPolicy>;
   /** The ticket sponsor's ETH on the active events chain. Throws when no key is set. */
   ticketSponsorBalance(): Promise<bigint>;
+  /** The live app's index.html from our bee; null when the app's manifest is not configured. */
+  appIndexHtml?(): Promise<string | null>;
 }
 
 const ENTRY_POINT_ABI = ["function balanceOf(address account) view returns (uint256)"];
@@ -356,6 +370,13 @@ export const liveReaders: HealthReaders = {
   chainstate: () => beeGet("/chainstate", "bee chainstate"),
   ethernaStamp: (batchId) => readEthernaStamp(batchId, TIMEOUT_MS) as Promise<Record<string, unknown>>,
   beeBatch: (batchId) => beeGet(`/batches/${batchId}`, "bee batch"),
+  appIndexHtml: async () => {
+    const apex = getApexContenthash();
+    if (!apex) return null;
+    const res = await fetch(`${BEE_URL}/bzz/${apex}/`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    if (!res.ok) throw new HttpStatusError(res.status, "app index.html");
+    return res.text();
+  },
   // labelhash = keccak256 of the LABEL alone ("woco"), never the namehash of
   // "woco.eth" — BaseRegistrar is keyed by the former and would answer 0, the
   // "not registered" alarm, for the latter.
@@ -620,6 +641,93 @@ function chainCheck(): ChainCheck {
   };
 }
 
+/** Under this the live app's builds batch is red: two days, so a weekend is covered. */
+export const BUILD_BATCH_ALARM_SECONDS = 2 * 86_400;
+
+const BUILD_BATCH_META = /<meta\s+name="woco-build-batch"\s+content="([0-9a-fA-F]{64})"\s*\/?>/;
+
+/** The builds batch a deployed index.html names, lowercase; null when it names none. */
+export function buildBatchFromIndexHtml(html: string): string | null {
+  return BUILD_BATCH_META.exec(html)?.[1]?.toLowerCase() ?? null;
+}
+
+async function refreshBuilds(readers: HealthReaders): Promise<void> {
+  if (!readers.appIndexHtml) {
+    buildsState = { batchId: null, reason: "no reader for the live app", reading: empty() };
+    return;
+  }
+  let html: string | null;
+  try {
+    html = await readers.appIndexHtml();
+  } catch (err) {
+    // Keep the batch last named: a failed read of the page is not news about the batch.
+    buildsState = { ...buildsState, reason: "the live app's index.html could not be read", reading: failed(err) };
+    return;
+  }
+  if (html === null) {
+    buildsState = { batchId: null, reason: "SUB_ENS_APEX_CONTENTHASH not set: the live app is not known", reading: empty() };
+    return;
+  }
+  const batchId = buildBatchFromIndexHtml(html);
+  if (!batchId) {
+    buildsState = { batchId: null, reason: "the live app names no builds batch (deployed before this check)", reading: empty() };
+    return;
+  }
+  let reading: Reading<StampReading & { immutable: boolean | null }>;
+  try {
+    const parsed = parseStamp(await readers.beeStamp(batchId));
+    reading = parsed ? { at: Date.now(), value: parsed, error: null, detail: null } : unparsed();
+  } catch (err) {
+    reading = isNotFound(err) ? gone(err) : failed(err);
+  }
+  buildsState = { batchId, reason: null, reading };
+}
+
+export interface BuildsSection {
+  ok: Verdict;
+  /** Short label of the batch the live app names; null when it names none. */
+  batch: string | null;
+  batchTTL: number | null;
+  batchTTLDays: number | null;
+  usable: boolean | null;
+  minTtlSeconds: number;
+  checkedAt: string | null;
+  reason?: string;
+}
+
+function buildsSection(): BuildsSection {
+  const { batchId, reason, reading } = buildsState;
+  const base = {
+    batch: batchId ? batchLabel(batchId) : null,
+    batchTTL: null,
+    batchTTLDays: null,
+    usable: null,
+    minTtlSeconds: BUILD_BATCH_ALARM_SECONDS,
+    checkedAt: reading.at === null ? null : new Date(reading.at).toISOString(),
+  };
+  if (reading.value === null) {
+    // 404 for the batch the live app is on = expired: red, never unknown.
+    return { ...base, ok: reading.gone ? false : null, reason: reading.error ?? reason ?? "not read yet" };
+  }
+  const { batchTTL, usable } = reading.value;
+  const ok = usable && batchTTL >= BUILD_BATCH_ALARM_SECONDS;
+  const days = Math.round((batchTTL / 86_400) * 100) / 100;
+  return {
+    ...base,
+    batchTTL,
+    batchTTLDays: days,
+    usable,
+    ok,
+    ...(ok
+      ? {}
+      : {
+          reason: !usable
+            ? "the live app's builds batch is not usable"
+            : `the live app's builds batch expires in ${days} days - deploy on a new builds batch, or top it up`,
+        }),
+  };
+}
+
 export async function refreshPostage(
   readers: HealthReaders = liveReaders,
   log: Logger = console.warn,
@@ -681,7 +789,10 @@ export async function refreshPostage(
     }
   }
 
+  await refreshBuilds(readers);
+
   const section = postageHealth();
+  noteVerdict("postage.builds", section.builds, log, buildsState.reading.detail);
   noteVerdict("postage.bee.ttl", section.bee.checks.ttl, log, beeReading.detail);
   noteVerdict("postage.bee.utilization", section.bee.checks.utilization, log, beeReading.detail);
   noteVerdict("postage.bee.usable", section.bee.checks.usable, log, beeReading.detail);
@@ -872,6 +983,8 @@ export interface PostageSection {
   checkedAt: string | null;
   thresholds: { ttlMinSeconds: number; utilizationMaxPct: number; chainLagMaxBlocks: number };
   bee: StampSection;
+  /** The builds batch the live app is stamped on - see `buildsState`. */
+  builds: BuildsSection;
   chain: Check & { block: number | null; chainTip: number | null; lag: number | null };
   etherna: StampSection & { configured: boolean; checkedAt: string | null; stale: boolean; chain: ChainCheck };
   configError?: string;
@@ -969,7 +1082,11 @@ export function postageHealth(now: number = Date.now()): PostageSection {
   // "not applicable", not "could not be read", and folding it in would pin
   // `postage.ok` to null forever on a bee-only deployment — an alarm that is
   // permanently unknown is an alarm nobody watches.
-  const checks: Array<{ ok: Verdict }> = [bee, chain, ...(configured ? [etherna] : [])];
+  // The builds check joins the roll-up only once it has a verdict: before the
+  // first deploy that names its batch it is unknown, and must not pin
+  // `postage.ok` to null. Its own `ok: false` pages either way (alarm-gate walks).
+  const builds = buildsSection();
+  const checks: Array<{ ok: Verdict }> = [bee, chain, ...(configured ? [etherna] : []), ...(builds.ok === null ? [] : [builds])];
 
   return {
     ok: combine(checks),
@@ -977,6 +1094,7 @@ export function postageHealth(now: number = Date.now()): PostageSection {
     checkedAt: beeReading.at === null ? null : new Date(beeReading.at).toISOString(),
     thresholds,
     bee,
+    builds,
     chain,
     etherna,
     ...(cfg.configError ? { configError: cfg.configError } : {}),
@@ -1296,6 +1414,7 @@ export function __resetHealthProbes(): void {
   beeReading = empty<StampReading & { immutable: boolean | null }>();
   chainstateReading = empty<{ block: number; chainTip: number }>();
   ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+  buildsState = { batchId: null, reason: null, reading: empty() };
   ethernaVerdict = null;
   chainAbsence = null;
   platformBatchOnChain = { at: null, listed: null, confirmed: false, batchTTL: null, reason: null };
