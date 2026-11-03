@@ -61,6 +61,11 @@ test("the page title is the event's, kept from the template only when there is n
   assert.deepEqual(titleOf(render({ title: "   " })), ["Event"]);
   const untitled = v.template.replace("<title>Event</title>", "");
   assert.deepEqual(titleOf(render({ title: "Gig" }, untitled)), ["Gig"], "a template without one gets one");
+  for (const t of [`<title lang="en">Event</title>`, `<title >Event</title>`, `<TITLE>Event</TITLE>`]) {
+    const out = render({ title: "Gig" }, v.template.replace("<title>Event</title>", t));
+    assert.equal(out.match(/<title\b/gi)?.length, 1, t);
+    assert.deepEqual(titleOf(out), ["Gig"], t);
+  }
   assert.ok(render({ title: "Gig" }, untitled).indexOf("<title>Gig</title>") < render({ title: "Gig" }, untitled).indexOf("</head>"));
 
   // Rendered live, not read from the fixture: hostile text stays inside one title.

@@ -59,7 +59,7 @@ function stripTrailingSlash(raw: string): string {
 }
 
 /** The runtime template's own `<title>` (site.html says "Event"). */
-const TEMPLATE_TITLE = /<title>[^<]*<\/title>/i;
+const TEMPLATE_TITLE = /<title\b[^>]*>[^<]*<\/title>/i;
 
 /**
  * The title, icon + share tags baked into a single-event page. The event's own image
