@@ -7,6 +7,7 @@
   import ShopOrderScreen from './lib/attendee/shop/ShopOrderScreen.svelte';
   import OrganiserNotice from './lib/legal/OrganiserNotice.svelte';
   import { accentInk } from './lib/utils/accent-ink.js';
+  import { setTitle } from './lib/seo/head.js';
   // True when config arrives via the builder preview channel (localStorage
   // handoff or postMessage) rather than the baked-at-deploy SITE_CONFIG. Only
   // preview contexts keep listening for config messages — a deployed site must
@@ -120,8 +121,6 @@
     root.style.setProperty('--radius-md', radius === 'lg' ? '12px' : radius === 'md' ? '8px' : '6px');
     root.style.setProperty('--radius-lg', radius === 'lg' ? '18px' : radius === 'md' ? '12px' : '8px');
 
-    document.title = site.theme.brandName;
-
     const logoNavH: Record<string, string> = { sm: '28px', md: '44px', lg: '68px', xl: '100px' };
     const logoIntroH: Record<string, string> = {
       sm: 'clamp(80px,  15vh, 180px)',
@@ -231,7 +230,10 @@
     if (!site || route.type !== 'page') return;
     const page = currentPage(route.slug);
     if (page) {
-      document.title = page.title ?? site.theme.brandName;
+      // The home page is the site itself; any other is "{page} | {brand}" (#70). The
+      // published HTML already carries the brand name for crawlers that run no script.
+      const brand = site.theme.brandName;
+      setTitle(page.slug === '/' || !page.title ? brand : page.title, brand);
       const desc = page.metaDescription || site.theme.siteDescription || '';
       let metaDesc = document.querySelector<HTMLMetaElement>('meta[name="description"]');
       if (!metaDesc) {
