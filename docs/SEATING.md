@@ -49,12 +49,18 @@ Design consult 2026-11-03 (Fable, 59/59) on prototype v3.1, reconciled with Opus
 
 | What | Where | Signed by | Changes after publish |
 |---|---|---|---|
-| Plan library (layouts, band names, no prices) | `woco/seating/plans/{address}` + one doc per plan | organiser feed signer | yes, never touches live events |
+| Layout library (`woco.seatlayout.v1`, band names, no prices) | `woco/seating/layouts/{address}` index + `woco/seating/layout/{address}/{id}` | organiser feed signer | yes, never touches live events |
 | Event plan (items, bands, canonical seat list) | content-addressed blob, `woco.seatplan.v1` | committed by the manifest digest | never |
 | Band prices | event feed, beside `series.payment` | organiser feed signer | no (fixed at publish, as today) |
 | Held seats + confirmed seat nonces | `woco/event/{eventId}/seats`, `woco.seatstate.v1` | organiser feed signer | yes |
 | Who holds which seat | ledger2 `seatOf` / `seatWord` | chain | by organiser-signed moves only |
 | 10-minute holds | server reservation store | server | ephemeral |
+
+Code: `packages/shared/src/seating/` (import `@woco/shared/seating/index`): layout.ts, plan.ts (the walk,
+freeze, bytes, digest, parse), template.ts (manifest link), state.ts, geometry.ts, best.ts, topics.ts,
+templates.ts (starting layouts). Every number is an integer, so all three formats are statement-safe JSON.
+Ceilings: 200,000 seats a plan (structural, not a product limit), 8 bands, 12 MiB a plan blob (a 200,000-seat
+plan measures 8.5 MB).
 
 Seat-list rules: canonical walk of the plan, versioned, golden vectors; label parts structured
 (`{ section, row, seat, table }`), never a pre-rendered string; `accessible: false`, never `null`
@@ -126,14 +132,15 @@ seat on a plan you draw". Both choices are drawn by the seat renderer, not icons
 
 Each slice is one PR. Fable signs off S2, S4, S5 and S6 (server, money path, door, signing).
 
-1. **S1 shared**: seat-plan schema + validation, canonical walk + golden vectors, geometry, best seats,
-   `woco.seatstate.v1`, `cardOrderAmountsMulti`, manifest `seatPlan` validation, topics, the flag.
+1. **S1 shared** (built): layout + plan schemas and validation, the walk + golden vectors, geometry, best
+   seats, `woco.seatstate.v1`, manifest `seatPlan` link, topics, starting layouts, the flag.
 2. **S2 builder + create**: renderer package, Svelte builder (port of the prototype), plan library feed,
    the route fork, Prices and publish check; server seated create (re-derive, pin, `registerSeatedEvent`,
    `seated` + `planDigest` on the registration record).
 3. **S3 buyer map**: picker in the app, site runtime and embed; direct Swarm + chain reads; the live
    holds route.
-4. **S4 money path**: per-seat holds, multi-band checkout, hold extension + expiry handler, seated mint,
+4. **S4 money path**: per-seat holds, multi-band checkout (`cardOrderAmountsMulti` beside
+   `cardOrderAmounts`, reviewed with the checkout that uses it), hold extension + expiry handler, seated mint,
    receipt parsing, revert decoding, seat in the sale record and email.
 5. **S5 door + tickets**: door pack `seats[]`, scanner refusal + label, seat on the passport and ticket page.
 6. **S6 dashboard**: held / release, seat moves through the relay, confirm freed seats, relay refusals.
