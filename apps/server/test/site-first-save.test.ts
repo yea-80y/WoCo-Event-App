@@ -823,7 +823,17 @@ test("event page: the suggested head adds the description and facts only for an 
   const online = suggestedHead(feedEvent({ geo: { online: true } }), true);
   assert.deepEqual([online.description, online.ld], ["Live music every Friday", undefined]);
   // Nothing to say: the head is today's.
-  assert.deepEqual(suggestedHead(feedEvent({ tagline: "", description: "", startDate: "x" }), true), { title: "Friday Gig", imageHash: "ab".repeat(32) });
+  const plain = { title: "Friday Gig", imageHash: "ab".repeat(32) };
+  assert.deepEqual(suggestedHead(feedEvent({ tagline: "", description: "", startDate: "x" }), true), plain);
+  // Data the projection throws on (fee arithmetic past a safe integer; a mistyped
+  // organiser-signed feed): the plain head, never a failed page-config.
+  const { ACCEPTED_COVER_FEE_RATES } = await import("@woco/shared");
+  const absurd = feedEvent({ series: [{
+    seriesId: "s1", name: "GA", description: "", totalSupply: 10, price: 0,
+    payment: { price: "1e400", currency: "GBP", recipientAddress: "0x0", acceptedChains: [], escrow: false, feePassedToCustomer: true, coverFees: ACCEPTED_COVER_FEE_RATES[0] },
+  }] });
+  assert.deepEqual(suggestedHead(absurd, true), plain);
+  assert.deepEqual(suggestedHead(feedEvent({ tagline: 7, series: [{ name: 5, saleStart: 9 }] }), true), plain);
 });
 
 test("event page: a build with the facts is admitted; one that dropped or changed them is refused before any upload (#55)", async () => {

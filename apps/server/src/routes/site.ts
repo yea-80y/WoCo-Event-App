@@ -87,12 +87,18 @@ export function suggestedHead(event: EventFeed | null, facts = false): EventPage
   const ref = (event?.imageHash ?? "").toLowerCase();
   const base: EventPageHead = /^[0-9a-f]{64}$/.test(ref) && !/^0+$/.test(ref) ? { title, imageHash: ref } : { title };
   if (!facts || !event) return base;
-  const head: EventPageHead = { ...base };
-  const description = eventMetaDescription(event, EVENT_DESCRIPTION_MAX - 1);
-  if (description) head.description = description;
-  const ld = eventLdFacts(event);
-  if (ld) head.ld = ld;
-  return parseEventPageHead(head) ? head : base;
+  // The feed is the organiser's own signed data with no shape check on read, and fee
+  // arithmetic throws on an absurd price: any throw here means the plain head.
+  try {
+    const head: EventPageHead = { ...base };
+    const description = eventMetaDescription(event, EVENT_DESCRIPTION_MAX - 1);
+    if (description) head.description = description;
+    const ld = eventLdFacts(event);
+    if (ld) head.ld = ld;
+    return parseEventPageHead(head) ? head : base;
+  } catch {
+    return base;
+  }
 }
 
 /** The kit an event-page deploy builds against: the held release's `eventPage` line on Etherna. */
