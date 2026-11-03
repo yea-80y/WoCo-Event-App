@@ -464,8 +464,6 @@ const RAW_WRITE = /\b(writeFileSync|appendFileSync|writeFile|appendFile|openSync
 const ALLOWED: Record<string, string> = {
   "lib/marketing/persist.ts": "the implementation — openSync + fchmod IS the guarantee",
   "lib/email/broadcast-jobs.ts": "sealed recipient chunks are ciphertext, not JSON, and pass mode 0600 explicitly",
-  "routes/site.ts": "stages a deploy tar under /tmp; nothing under .data",
-  "routes/sites.ts": "stages a deploy tar under /tmp; nothing under .data",
 };
 
 /** Comments talk about `writeFileSync` a lot; only code counts. */

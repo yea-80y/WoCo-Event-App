@@ -99,10 +99,11 @@ npm run build:scanner     # → apps/web/dist-scanner/     door-scanner PWA
 npm run build:registry    # → apps/registry/dist/         World Computer Registry UI
 ```
 
-`build:site` and `build:multisite` produce **different** bundles, and both are live. The server
-bakes `dist-multisite/` into every published website (`routes/sites.ts`) and `dist-site/` into
-every published event page (`routes/site.ts`). Building the wrong one is a recurring mistake,
-and a change to shared site code (checkout, sealing, auth) needs both.
+`build:site` and `build:multisite` produce **different** bundles, and both are live: websites link
+`dist-multisite/`, single-event pages link `dist-site/`. Neither is baked on the server: ONE runtime
+release carries both (`node scripts/publish-site-runtime.cjs`, real repo, clean main, #1032), so a
+change to shared site code (checkout, sealing, auth) ships by publishing a release, and reaches a
+page when its organiser re-publishes.
 
 ---
 
@@ -258,7 +259,7 @@ The Rust/WASM Stylus like-aggregator, superseded along with the EAS social rail,
 |---|---|
 | `Vite base` not `'./'` | Absolute paths break under Swarm `/bzz/` URLs. |
 | Publishing from a local dev server | It writes to the **production** feeds. |
-| Rebuilding `dist-site` instead of `dist-multisite` (or the reverse) | Websites bake `dist-multisite`, event pages bake `dist-site`. The one you skipped does not change, and organisers must re-publish to pick up either. |
+| Shipping a site-runtime change by deploying the server | Websites and event pages link a published runtime RELEASE (both bundles, one commit): publish one with `node scripts/publish-site-runtime.cjs`, then organisers re-publish to pick it up. |
 | `npm run check` as the full typecheck | It skips the server. Run `npm run build:server` too. |
 | `docker compose restart` after an env change | Reuses the env the container was *created* with and silently ignores `env_file` changes. Use `up -d`. |
 | Deploying an empty gateway whitelist | Real data starts reading as **absent**, and absent looks clean to the erasure guards. |

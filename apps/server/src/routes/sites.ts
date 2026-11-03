@@ -2,11 +2,6 @@ import { AccountKeysChangedError, AccountKeysUnavailableError, assertCurrentKeys
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { FeedIndex, Topic, Reference } from "@ethersphere/bee-js";
-import { promises as fs } from "node:fs";
-import { existsSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { requireAuth } from "../middleware/auth.js";
 import { cancellationGate } from "../lib/event/cancellations.js";
 import { getEvent, getCreatorEvents } from "../lib/event/service.js";
@@ -17,11 +12,9 @@ import {
   resolveDeployUrls,
   isSafeIdParam,
 } from "../lib/site/deploy-config.js";
-import { renderSiteHtml, sitePwaManifest } from "@woco/shared";
-import { siteDeployConfig, type SiteCollection } from "@woco/shared/site/collection";
+import type { SiteRuntimeStore } from "@woco/shared";
 import {
   admitClientCollection,
-  clientPublishAllowed,
   decodeClientCollection,
   serveRuntimeKit,
   siteRuntimeKits,
@@ -49,9 +42,10 @@ import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js
 
 /** Per-owner byte cap for free-hosted (shared platform batch) website deploys.
  *  Quota counts each site's LATEST deploy only (republish supersedes — see
- *  storage-ledger.ts), so 100MB ≈ 10 live sites at the ~8-10MB tar size. */
+ *  storage-ledger.ts). A site links the shared runtime (#1032), so a deploy is a
+ *  few KB of its own and the cap now meters the site's own objects only. */
 const FREE_HOSTING_QUOTA_BYTES = Number(process.env.FREE_HOSTING_QUOTA_BYTES) || 100 * 1024 * 1024;
-import { getEthernaBee, uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedIndex, fetchEthernaRootChunk } from "../lib/etherna/upload.js";
+import { getEthernaBee, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedIndex, fetchEthernaRootChunk } from "../lib/etherna/upload.js";
 import { isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from "../lib/swarm/storage-busy.js";
 import { beginDeploy, CLIENT_POINTER_HOLD_MS, DEPLOY_IN_PROGRESS_CODE, DEPLOY_IN_PROGRESS_MESSAGE } from "../lib/site/deploy-guard.js";
 import {
@@ -68,22 +62,32 @@ import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
 import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
-import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
+import { BEE_CALL_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { companyFooterHtml } from "../lib/email/company-footer.js";
 import { freshWrittenEventsIndex, readEventsIndexForWrite, rememberWrittenEventsIndex, withEventsIndexLock } from "../lib/site/events-index.js";
-import { CONTROL_JSON_MAX_BYTES, SWARM_CHUNK_MAX_BYTES, errorSnippet, readCapped, readCappedJson } from "../lib/http/read-capped.js";
+import { SWARM_CHUNK_MAX_BYTES, readCapped } from "../lib/http/read-capped.js";
 
 const sitesRouter = new Hono();
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multisite");
-let distMultisitePath = DIST_MULTISITE_PATH;
+/** What an app from before browser-built sites sees (#1032 slice 4). */
+const CLIENT_BUILD_REQUIRED_MESSAGE = "This version of the app can no longer publish websites - reload the page to update it, then publish again.";
 
-/** Tests only — deploy from a template directory of the test's own. */
+/** The kit a deploy builds against: the held release's, for the deploy's store. */
+async function liveRuntimeKit(store: SiteRuntimeStore): Promise<SiteRuntimeKit | null> {
+  const release = await siteRuntimeReleases.get();
+  if (!release) return null;
+  return siteRuntimeKits.kit(release, "site", store).catch((e: unknown) => {
+    console.warn(`[sites/deploy] site runtime kit unavailable: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  });
+}
+let runtimeKitFor = liveRuntimeKit;
+
+/** Tests only — build against a kit of the test's own. */
 export const __sitesDeployTestHooks = {
-  setDistMultisitePath(path: string | null): void {
-    distMultisitePath = path ?? DIST_MULTISITE_PATH;
+  setRuntimeKit(kit: ((store: SiteRuntimeStore) => Promise<SiteRuntimeKit | null>) | null): void {
+    runtimeKitFor = kit ?? liveRuntimeKit;
   },
 };
 
@@ -237,18 +241,6 @@ async function siteFeedDestFromDirectory(ownerAddress: string, siteId: string): 
   }
 }
 
-function spawnPromise(cmd: string, args: string[]): Promise<void> {
-  return new Promise((res, rej) => {
-    const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
-    proc.on("close", (code) => {
-      if (code === 0) res();
-      else rej(new Error(`${cmd} exited ${code}: ${stderr.slice(0, 300)}`));
-    });
-    proc.on("error", rej);
-  });
-}
 
 export function buildContactHtml(name: string, email: string, message: string, siteName: string): string {
   return `<!DOCTYPE html><html><body style="font-family:system-ui,sans-serif;max-width:600px;margin:40px auto;padding:0 20px;color:#111">
@@ -871,8 +863,6 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
   const refusal = await websiteStorageRefusal(parentAddress);
   if (refusal) return c.json(refusal, 403);
 
-  let tmpDir: string | null = null;
-  let tarPath: string | null = null;
   let endDeploy: ((holdMs?: number) => void) | null = null;
   let holdAfterMs = 0;
 
@@ -892,12 +882,11 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     if (!resolvedUrls.ok) return c.json({ ok: false, error: resolvedUrls.error }, 400);
     const { apiUrl, gatewayUrl, wocoAppUrl } = resolvedUrls.urls;
 
-    // Prefer the site config sent by the client — avoids a Swarm re-read immediately
-    // after publishSite (deferred writes can have a brief propagation window).
-    // Fall back to Swarm read for direct API calls. Always stamp ownerAddress server-side.
-    // Either way, an EXISTING siteId may only be deployed by its owner — without
-    // this gate the body.site fast path would let any authenticated user overwrite
-    // another site's woco-multisite feed and re-point its custom domains.
+    // The site is the one the client rendered (`body.site`, below; #1032 the
+    // browser builds it), owner stamped server-side. An EXISTING siteId may only
+    // be deployed by its owner — without this gate the body.site path would let
+    // any authenticated user overwrite another site's woco-multisite feed and
+    // re-point its custom domains.
     // As on publish: "unavailable" is not "unclaimed" (#181). This gate is the
     // only thing standing between the body.site fast path and a caller taking over
     // another site's woco-multisite feed, which is what the custom domains resolve
@@ -921,24 +910,17 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     endDeploy = beginDeploy(`site:${siteId}`);
     if (!endDeploy) return c.json({ ok: false, error: DEPLOY_IN_PROGRESS_MESSAGE, code: DEPLOY_IN_PROGRESS_CODE }, 409);
 
-    // A browser-built site (#1032 slice 3) needs no runtime copy on this server.
-    const clientBuilt = body.collection !== undefined && clientPublishAllowed(parentAddress);
-    if (!clientBuilt && !existsSync(distMultisitePath)) {
-      return c.json({
-        ok: false,
-        error: "Site template not on server. Run `npm run build:web` then rsync apps/web/dist-multisite/ to server.",
-      }, 503);
+    // Every site is built in the browser on the shared runtime release (#1032);
+    // this server only checks that build. An app from before that sends none.
+    if (body.collection === undefined) {
+      return c.json({ ok: false, error: CLIENT_BUILD_REQUIRED_MESSAGE, code: "CLIENT_BUILD_REQUIRED" }, 400);
     }
-
-    let site: Site;
-    if (body.site && body.site.siteId === siteId) {
-      site = { ...body.site, ownerAddress: parentAddress };
-    } else {
-      if (published.status !== "found") {
-        return c.json({ ok: false, error: "Site not found — publish first" }, 404);
-      }
-      site = published.site;
+    const received = decodeClientCollection(body.collection);
+    if (!received || !body.site || body.site.siteId !== siteId) {
+      return c.json({ ok: false, error: "Malformed site collection", code: "COLLECTION_MISMATCH" }, 400);
     }
+    // The server stamps the owner; the browser rendered with the same stamp.
+    const site: Site = { ...body.site, ownerAddress: parentAddress };
 
     let selection;
     try {
@@ -967,60 +949,18 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // always fetches event images from WoCo Bee regardless of site host.
     const renderUrls = { apiUrl, gatewayUrl, wocoAppUrl, ...(target === "etherna" ? { contentGatewayUrl: "https://gateway.woco-net.com" } : {}) };
 
-    // Either the browser built the site, linking the shared runtime, and the
-    // server's own rebuild must match it exactly; or the server builds the old
-    // way, a full copy of the runtime in a tar (#1032 slice 3; the tar retires in slice 4).
-    let clientCollection: SiteCollection | null = null;
-    let clientKit: SiteRuntimeKit | null = null;
-    let tarData: Buffer<ArrayBuffer> | null = null;
-    if (clientBuilt) {
-      const received = decodeClientCollection(body.collection);
-      if (!received || !body.site || body.site.siteId !== siteId) {
-        return c.json({ ok: false, error: "Malformed site collection", code: "COLLECTION_MISMATCH" }, 400);
-      }
-      const release = await siteRuntimeReleases.get();
-      let kit: SiteRuntimeKit | null = null;
-      if (release) {
-        kit = await siteRuntimeKits.kit(release, "site", storeForTarget(target)).catch((e: unknown) => {
-          console.warn(`[sites/deploy] site runtime kit unavailable: ${e instanceof Error ? e.message : String(e)}`);
-          return null;
-        });
-      }
-      if (!kit) return c.json({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }, 503);
-      const verdict = admitClientCollection({ kit, site, urls: renderUrls, received });
-      if (!verdict.ok) {
-        console.warn(`[sites/deploy] client-built site refused for ${siteId}: ${verdict.code} (${verdict.error})`);
-        return c.json({ ok: false, error: verdict.error, code: verdict.code }, 409);
-      }
-      clientCollection = verdict.collection;
-      clientKit = kit;
-    } else {
-      const html = await fs.readFile(join(distMultisitePath, "multi-site.html"), "utf-8");
-      const config = siteDeployConfig(site, renderUrls);
-
-      const ts = Date.now();
-      tmpDir = `/tmp/woco-multisite-${ts}`;
-      tarPath = `/tmp/woco-multisite-${ts}.tar`;
-
-      // The shared render (packages/shared/src/site/render.ts): the same bytes the
-      // browser's publish produces (#1032).
-      const manifest = sitePwaManifest(site);
-      const injectedWithPwa = renderSiteHtml({ template: html, config, site, gatewayUrl });
-
-      await fs.cp(distMultisitePath, tmpDir, { recursive: true });
-      await fs.writeFile(join(tmpDir, "multi-site.html"), injectedWithPwa, "utf-8");
-      await fs.writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
-
-      // No woco-embed.js in the collection: nothing in a site can load it. Pasted
-      // embed HTML stopped rendering with #212 (providers are rebuilt iframes from
-      // an allowlist), and the ticket widget loads from the API (/embed/woco-embed.js).
-
-      await spawnPromise("tar", ["-cf", tarPath, "-C", tmpDir, "."]);
-      tarData = await fs.readFile(tarPath);
+    // The browser built the site, linking the shared runtime release; the server
+    // rebuilds it from its own inputs and its own copy of the release, and stores
+    // ITS build, only when the browser's is byte-identical (lib/site/collection-publish.ts).
+    const kit = await runtimeKitFor(storeForTarget(target));
+    if (!kit) return c.json({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }, 503);
+    const verdict = admitClientCollection({ kit, site, urls: renderUrls, received });
+    if (!verdict.ok) {
+      console.warn(`[sites/deploy] browser-built site refused for ${siteId}: ${verdict.code} (${verdict.error})`);
+      return c.json({ ok: false, error: verdict.error, code: verdict.code }, 409);
     }
-    const deployBytes = clientCollection
-      ? clientCollection.objects.reduce((n, o) => n + o.data.length, 0)
-      : tarData!.length;
+    const collection = verdict.collection;
+    const deployBytes = collection.objects.reduce((n, o) => n + o.data.length, 0);
 
     // Free-hosted deploys share the platform batch, so cap what each owner can
     // put on it. Checked against the storage ledger BEFORE spending postage.
@@ -1067,42 +1007,11 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
           }
         : { rail: "woco", nextIndex: await resolveFeedNextIndex(topic, feedOwnerSigner ?? owner.toHex(), "woco") };
 
-    let contentHash: string;
-    if (clientCollection) {
-      // Six small objects; everything else is linked from the release, which is
-      // already stored (and offered on Etherna: a site root's offer serves it, slice 0).
-      await uploadSiteObjects(target, batchId, clientCollection);
-      contentHash = clientCollection.root;
-      if (target === "etherna") await registerEthernaOffer(contentHash);
-    } else if (target === "etherna") {
-      contentHash = await uploadCollectionToEtherna({
-        batchId,
-        tarData: tarData!,
-        indexDocument: "multi-site.html",
-      });
-      await registerEthernaOffer(contentHash);
-    } else {
-      const uploadResp = await fetch(`${BEE_URL}/bzz`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-tar",
-          "Swarm-Postage-Batch-Id": batchId,
-          "Swarm-Index-Document": "multi-site.html",
-          "Swarm-Error-Document": "multi-site.html",
-          "Swarm-Collection": "true",
-        },
-        // @ts-ignore — Node 18 fetch doesn't expose duplex in type defs
-        duplex: "half",
-        body: tarData!,
-        signal: AbortSignal.timeout(BEE_COLLECTION_TIMEOUT_MS),
-      });
-
-      if (!uploadResp.ok) {
-        throw new Error(`Swarm upload failed ${uploadResp.status}: ${await errorSnippet(uploadResp, 300)}`);
-      }
-
-      ({ reference: contentHash } = await readCappedJson<{ reference: string }>(uploadResp, CONTROL_JSON_MAX_BYTES, "bzz upload"));
-    }
+    // Six small objects; everything else is linked from the release, which is
+    // already stored (and on Etherna a site root's offer serves it, slice 0).
+    await uploadSiteObjects(target, batchId, collection);
+    const contentHash = collection.root;
+    if (target === "etherna") await registerEthernaOffer(contentHash);
 
     // Every deploy lands in the storage ledger regardless of batch: it is both
     // the quota meter and the per-owner migration manifest (re-stamp walks it).
@@ -1114,8 +1023,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       target,
       note: siteId,
       ...(selection.freeHosted ? { freeHosted: true } : {}),
-      // A browser-built site links the release: a re-stamp of the owner's site stops there.
-      ...(clientKit ? { links: [clientKit.release.root] } : {}),
+      // The site links the release: a re-stamp of the owner's site stops there.
+      links: [kit.release.root],
     });
 
     let feedManifestHash = "";
@@ -1297,9 +1206,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       feedHash: feedManifestHash || undefined,
       deployedUrl: siteUrl,
       publishedAt: Date.now(),
-      // Present on every deploy so a server build (a full copy) clears an older
-      // link: the entry is merged over, and an absent key would keep it.
-      runtimeVersion: clientKit?.version,
+      // The runtime release this deploy linked: My Sites offers an update when behind.
+      runtimeVersion: kit.version,
     } satisfies SiteDirectoryEntry).catch((e) =>
       console.warn("[sites/deploy] creator directory upsert failed:", e)
     );
@@ -1311,9 +1219,10 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         feedManifestHash,
         siteUrl,
         // Which side built the site: "client" = the browser's collection, admitted (#1032).
-        builtBy: clientCollection ? "client" : "server",
-        // The runtime release a browser build linked (#1032): the builder's update prompt.
-        ...(clientKit ? { runtimeVersion: clientKit.version } : {}),
+        // Every site is browser-built now; kept for apps that read it (#1032).
+        builtBy: "client" as const,
+        // The runtime release the site linked: the builder's update prompt.
+        runtimeVersion: kit.version,
         // Present only when the pointer feed is client-owned: the caller signs
         // the sequence-feed update SOC (beeFeedUpdateIdentifier) with this.
         ...(multisiteFeed ? { multisiteFeed } : {}),
@@ -1332,8 +1241,6 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     return c.json({ ok: false, error: e instanceof Error ? e.message : "Deploy failed" }, 500);
   } finally {
     endDeploy?.(holdAfterMs);
-    if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    if (tarPath) await fs.unlink(tarPath).catch(() => {});
   }
 });
 

@@ -44,8 +44,12 @@ export const SITE_RUNTIME_REFRESH_MS = 10 * 60_000;
 const READ_TIMEOUT_MS = 20_000;
 
 export interface SiteRuntimeHealth {
-  /** False only when the high-water file is present but unreadable. */
-  ok: boolean;
+  /**
+   * Every website publish builds on the held release (#1032 slice 4), so none
+   * held after a read is RED: false. Null before the first read (listed, never
+   * pages); false too when the high-water file is unreadable.
+   */
+  ok: boolean | null;
   configured: boolean;
   version: number | null;
   commit: string | null;
@@ -167,7 +171,7 @@ export function createSiteRuntimeReleaseCache(
     },
     health(): SiteRuntimeHealth {
       return {
-        ok: !unreadable,
+        ok: unreadable ? false : release ? true : checkedAt === null ? null : false,
         configured: release !== null,
         version: release?.version ?? null,
         commit: release?.commit ?? null,

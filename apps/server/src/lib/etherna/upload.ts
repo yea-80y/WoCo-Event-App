@@ -42,50 +42,6 @@ export function getEthernaBee(): Bee {
   return _ethernaBee;
 }
 
-export interface BzzUploadOpts {
-  batchId: string;
-  tarData: Uint8Array | Buffer;
-  indexDocument: string;
-  errorDocument?: string;
-}
-
-/** Upload a tar collection to Etherna /bzz with bearer auth. Returns content ref. */
-export async function uploadCollectionToEtherna(opts: BzzUploadOpts): Promise<string> {
-  await ensureEthernaToken();
-  const token = getCachedEthernaToken();
-  if (!token) throw new Error("Etherna token unavailable (ETHERNA_API_KEY missing or ETHERNA_ENABLED off)");
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/x-tar",
-    "Swarm-Postage-Batch-Id": opts.batchId,
-    "Swarm-Index-Document": opts.indexDocument,
-    "Swarm-Error-Document": opts.errorDocument ?? opts.indexDocument,
-    "Swarm-Collection": "true",
-    // Bee defaults an upload to DEFERRED: it returns once the node holds the
-    // chunks and pushes them to the network in the background, so every reader
-    // but Etherna waits. Measured 2026-09-21 on 5 MB collections, time until the
-    // page opened from our bee: 326 s deferred vs 171 s with this (#613). Free -
-    // nothing is stored twice. Etherna still returns before the push completes,
-    // so it halves the wait rather than removing it.
-    "Swarm-Deferred-Upload": "false",
-    Authorization: `Bearer ${token}`,
-  };
-
-  const resp = await fetch(`${ETHERNA_GW}/bzz`, {
-    method: "POST",
-    headers,
-    // @ts-ignore — Node 18 fetch doesn't expose duplex in type defs
-    duplex: "half",
-    body: opts.tarData as unknown as BodyInit,
-  });
-
-  if (!resp.ok) {
-    throw new Error(`Etherna /bzz upload failed ${resp.status}: ${await errorSnippet(resp, 300)}`);
-  }
-  const { reference } = await readCappedJson<{ reference: string }>(resp, CONTROL_JSON_MAX_BYTES, "etherna /bzz upload");
-  return reference;
-}
-
 /**
  * Register an Etherna "offer" so the resource becomes anonymously readable
  * via /bytes/{ref} (and /bzz/{ref}/file for collection entries).

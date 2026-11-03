@@ -111,10 +111,11 @@ console.log(`  target   ${HOST}:${DEST}/repo/`);
 if (dirty) console.log(`  TREE IS DIRTY — ${dirty.split("\n").length} changed path(s) will ship`);
 
 // The exclude list also protects RECEIVER-side files, which is what makes
-// `--delete` safe here: the VM's dist-multisite and dist-site are volume-mounted
-// into the container and are synced by their own step. Do not add the flag that
-// deletes excluded paths as well — it overrides that protection and would take
-// dist-multisite with it, breaking every published organiser site.
+// `--delete` safe here. dist-site and dist-multisite are no longer read by the
+// server (#1032: websites and event pages link the runtime release); their
+// excludes stay until the VM copies and their volume mounts are removed, so a
+// deploy never deletes a directory the running container still mounts. Do not
+// add the flag that deletes excluded paths as well.
 const RSYNC = [
   "-az", "--delete",
   "--exclude=node_modules", "--exclude=.git", "--exclude=dist",

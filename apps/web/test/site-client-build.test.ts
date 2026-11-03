@@ -7,9 +7,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildClientSiteCollection } from "../src/lib/api/site-collection.js";
-import { rebuildOnServer, storedSomethingElse } from "../src/lib/api/site-deploy-verdict.js";
-import { buildSiteCollection, siteRenderUrls } from "@woco/shared/site/collection";
+import { buildClientEventPageCollection, buildClientSiteCollection } from "../src/lib/api/site-collection.js";
+import { rebuildForNewRuntime, storedSomethingElse } from "../src/lib/api/site-deploy-verdict.js";
+import { buildEventPageCollection, buildSiteCollection, siteRenderUrls } from "@woco/shared/site/collection";
 
 const fx = JSON.parse(readFileSync(new URL("../../../packages/shared/test/fixtures/site-runtime-release-v1.json", import.meta.url), "utf8"));
 const kit = { version: 1, store: "woco", release: fx.release, rootNode: Buffer.from(fx.rootNode, "hex").toString("base64"), template: fx.template };
@@ -19,20 +19,28 @@ const input = { site, parentAddress: PARENT, apiUrl: "https://events-api.woco-ne
 
 const realFetch = globalThis.fetch;
 const asked: string[] = [];
+const cacheModes: Array<RequestCache | undefined> = [];
 function serve(answer: (url: string) => unknown) {
-  globalThis.fetch = (async (u: RequestInfo | URL) => {
+  globalThis.fetch = (async (u: RequestInfo | URL, init?: RequestInit) => {
     asked.push(String(u));
+    cacheModes.push(init?.cache);
     const body = answer(String(u));
     return new Response(JSON.stringify(body), { status: (body as { ok?: boolean }).ok ? 200 : 503, headers: { "Content-Type": "application/json" } });
   }) as typeof fetch;
 }
-test.afterEach(() => { globalThis.fetch = realFetch; asked.length = 0; });
+test.afterEach(() => { globalThis.fetch = realFetch; asked.length = 0; cacheModes.length = 0; });
+
+async function builtOk(i = input) {
+  const r = await buildClientSiteCollection(i);
+  assert.ok(r.ok, JSON.stringify(r));
+  return r.built;
+}
 
 test("builds on the kit of the store the gateway lands on, with the owner the server stamps", async () => {
   serve(() => ({ ok: true, data: kit }));
-  const built = await buildClientSiteCollection(input);
-  assert.ok(built);
+  const built = await builtOk();
   assert.equal(asked[0], "https://events-api.woco-net.com/api/sites/runtime/kit/woco");
+  assert.equal(cacheModes[0], "no-store", "never a cached kit: the rebuild after a new release must see it");
   assert.equal((built.site as { ownerAddress: string }).ownerAddress, PARENT.toLowerCase());
   // What the server rebuilds from the same request: `{ ...body.site, ownerAddress }` and the URL origins.
   const serverSite = { ...JSON.parse(JSON.stringify(built.site)), ownerAddress: PARENT.toLowerCase() };
@@ -44,31 +52,35 @@ test("builds on the kit of the store the gateway lands on, with the owner the se
 
 test("an Etherna deploy asks for the Etherna kit", async () => {
   serve(() => ({ ok: false, error: "x" }));
-  assert.equal(await buildClientSiteCollection({ ...input, gatewayUrl: "https://gateway.etherna.io" }), null);
+  assert.equal((await buildClientSiteCollection({ ...input, gatewayUrl: "https://gateway.etherna.io" })).ok, false);
   assert.match(asked[0]!, /\/kit\/etherna$/);
 });
 
-test("no kit, the wrong store's kit, or a kit that does not hash: null, and the server builds", async () => {
+test("the server's reason is passed on; the wrong store's kit or one that does not hash is refused", async () => {
   const warn = console.warn;
   console.warn = () => {};
   try {
-    serve(() => ({ ok: false, error: "unavailable" }));
-    assert.equal(await buildClientSiteCollection(input), null);
+    serve(() => ({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }));
+    assert.deepEqual(await buildClientSiteCollection(input), { ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" });
+    globalThis.fetch = (async () => { throw new TypeError("fetch failed"); }) as typeof fetch;
+    assert.match((await buildClientSiteCollection(input) as { error: string }).error, /check your connection/);
     serve(() => ({ ok: true, data: { ...kit, store: "etherna" } }));
-    assert.equal(await buildClientSiteCollection(input), null);
+    assert.equal((await buildClientSiteCollection(input)).ok, false);
     const bad = Buffer.from(fx.rootNode, "hex");
     bad[bad.length - 1] ^= 1;
     serve(() => ({ ok: true, data: { ...kit, rootNode: bad.toString("base64") } }));
-    assert.equal(await buildClientSiteCollection(input), null);
+    assert.equal((await buildClientSiteCollection(input)).ok, false);
   } finally {
     console.warn = warn;
   }
 });
 
-test("only the build refusals fall back to the server's build", () => {
-  for (const code of ["COLLECTION_MISMATCH", "RUNTIME_RELEASE_CHANGED", "RUNTIME_RELEASE_UNAVAILABLE"]) assert.equal(rebuildOnServer({ ok: false, code }), true, code);
-  for (const code of ["BATCH_PURCHASE_REQUIRED", "STRIPE_VERIFICATION_REQUIRED", "FREE_HOSTING_QUOTA_EXCEEDED", undefined]) assert.equal(rebuildOnServer({ ok: false, code }), false, String(code));
-  assert.equal(rebuildOnServer({ ok: true }), false);
+test("only a newer runtime release earns a rebuild; every other refusal stands (no server build since slice 4)", () => {
+  assert.equal(rebuildForNewRuntime({ ok: false, code: "RUNTIME_RELEASE_CHANGED" }), true);
+  for (const code of ["COLLECTION_MISMATCH", "RUNTIME_RELEASE_UNAVAILABLE", "CLIENT_BUILD_REQUIRED", "BATCH_PURCHASE_REQUIRED", undefined]) {
+    assert.equal(rebuildForNewRuntime({ ok: false, code }), false, String(code));
+  }
+  assert.equal(rebuildForNewRuntime({ ok: true }), false);
 });
 
 test("a client build stored at another root is caught before any pointer is signed", () => {
@@ -77,4 +89,43 @@ test("a client build stored at another root is caught before any pointer is sign
   assert.equal(storedSomethingElse({ ok: true, data: { builtBy: "client", contentHash: "cd".repeat(32) } }, root), true);
   assert.equal(storedSomethingElse({ ok: true, data: { builtBy: "client", contentHash: root } }, undefined), true);
   assert.equal(storedSomethingElse({ ok: true, data: { builtBy: "server", contentHash: "cd".repeat(32) } }, root), false);
+});
+
+// --- Event pages (#1032 slice 5) ---------------------------------------------
+
+const pageFx = JSON.parse(readFileSync(new URL("../../../packages/shared/test/fixtures/site-runtime-release-v2-event-page.json", import.meta.url), "utf8"));
+const pageKit = { version: 2, line: "eventPage", store: "etherna", release: pageFx.release, rootNode: Buffer.from(pageFx.rootNode, "hex").toString("base64"), template: pageFx.template };
+const pageConfig = {
+  apiUrl: "https://events-api.woco-net.com",
+  gatewayUrl: "https://gateway.etherna.io",
+  contentGatewayUrl: "https://gateway.woco-net.com",
+  eventId: "evt_client_0001",
+  eventSigner: "0x" + "5e".repeat(20),
+};
+
+test("an event page is built on the event-page kit, uncached, exactly as the server rebuilds it", async () => {
+  serve(() => ({ ok: true, data: pageKit }));
+  const head = { title: "Friday Gig", imageHash: "ab".repeat(32) };
+  const r = await buildClientEventPageCollection({ apiUrl: "https://events-api.woco-net.com/", config: pageConfig, head });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(asked[0], "https://events-api.woco-net.com/api/site/runtime/kit/etherna", "the event-page line, on Etherna");
+  assert.equal(cacheModes[0], "no-store");
+  const server = buildEventPageCollection({ config: pageConfig, head, template: pageFx.template, release: pageFx.release, releaseRootNode: Buffer.from(pageFx.rootNode, "hex") });
+  assert.equal(r.built.root, server.root);
+  assert.deepEqual(r.built.body.objects, server.objects.map((o) => Buffer.from(o.data).toString("base64")));
+  assert.equal(Buffer.compare(Buffer.from(r.built.rootNode), Buffer.from(server.rootNode)), 0, "the feed update signs this browser's own root node");
+  assert.equal(r.built.body.runtimeVersion, 2);
+});
+
+test("an event page with no kit, or a website kit offered for it, is not built", async () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    serve(() => ({ ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" }));
+    assert.deepEqual(await buildClientEventPageCollection({ apiUrl: "https://events-api.woco-net.com", config: pageConfig, head: { title: "Gig" } }), { ok: false, error: "The site runtime is unavailable right now", code: "RUNTIME_RELEASE_UNAVAILABLE" });
+    serve(() => ({ ok: true, data: { ...kit, store: "etherna" } }));
+    assert.equal((await buildClientEventPageCollection({ apiUrl: "https://events-api.woco-net.com", config: pageConfig, head: { title: "Gig" } })).ok, false);
+  } finally {
+    console.warn = warn;
+  }
 });

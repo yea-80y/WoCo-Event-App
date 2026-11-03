@@ -43,8 +43,6 @@ export function isSafeIdParam(raw: string): boolean {
   return /^[0-9a-zA-Z_-]{8,100}$/.test(raw);
 }
 
-/** The icon + share tags of a single-event page: now in packages/shared (#1032 slice 5). */
-export { withEventPageHead } from "@woco/shared";
 
 function stripTrailingSlash(raw: string): string {
   return raw.trim().replace(/\/+$/, "");

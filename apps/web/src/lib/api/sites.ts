@@ -1,4 +1,4 @@
-import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed, SiteDeploySubEns, ApiResponse } from "@woco/shared";
+import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed, SiteDeploySubEns, ApiResponse, EventPageConfig, EventPageHead } from "@woco/shared";
 import {
   siteConfigTopic,
   multisiteFeedTopic,
@@ -11,7 +11,7 @@ import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.
 import { feedRouteFor } from "../swarm/gateways.js";
 import { signAndUploadSoc } from "../swarm/client-soc.js";
 import { retryOnceIfStorageBusy, type StorageBusyRetryOptions } from "./storage-busy.js";
-import { rebuildOnServer, storedSomethingElse } from "./site-deploy-verdict.js";
+import { rebuildForNewRuntime, storedSomethingElse } from "./site-deploy-verdict.js";
 
 export interface SiteEventsFull {
   index: SiteEventsIndex;
@@ -91,42 +91,46 @@ export interface DeploySiteResult {
  * feed serves is exactly what the server reported deploying. A first deploy the
  * server refused as busy (nothing was uploaded) is sent once more after the wait.
  *
- * With `parentAddress` (and a site) the browser builds the site on the shared
- * runtime release first (#1032 slice 3) and the server stores it only if its own
- * rebuild is identical; refused or unbuildable, the deploy is sent once more for
- * the server to build the old way. The server decides per account whether to
- * take the browser's build at all.
+ * The site is built HERE on the shared runtime release (#1032) and the server
+ * stores it only if its own rebuild is identical; there is no server build to
+ * fall back to (slice 4). A release published between the kit read and the
+ * deploy costs one rebuild.
  */
 export async function deploySite(
   siteId: string,
-  opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site?: Site; parentAddress?: string },
+  /** `site` and `parentAddress` are required: every website is built here (null = not signed in). */
+  opts: { apiUrl: string; gatewayUrl: string; wocoAppUrl?: string; site: Site; parentAddress: string | null },
   feedSigner?: ContentFeedSigner | null,
   retry: StorageBusyRetryOptions = {},
-) {
-  const { parentAddress, ...request } = opts;
+): Promise<ApiResponse<DeploySiteResult>> {
+  const { parentAddress, site, ...request } = opts;
+  if (!parentAddress) return { ok: false, error: "Sign in to publish your website." };
   const clientFeed = feedSigner ? { clientFeed: true } : {};
   const send = (body: Record<string, unknown>) =>
     retryOnceIfStorageBusy(() => authPost<DeploySiteResult>(`/api/sites/${siteId}/deploy`, body), retry);
+  const build = () =>
+    import("./site-collection.js").then((m) =>
+      m.buildClientSiteCollection({
+        site,
+        parentAddress,
+        apiUrl: request.apiUrl,
+        gatewayUrl: request.gatewayUrl,
+        wocoAppUrl: request.wocoAppUrl ?? "https://woco.eth.limo",
+      }),
+    );
 
-  const built = parentAddress && request.site
-    ? await import("./site-collection.js").then((m) =>
-        m.buildClientSiteCollection({
-          site: request.site!,
-          parentAddress,
-          apiUrl: request.apiUrl,
-          gatewayUrl: request.gatewayUrl,
-          wocoAppUrl: request.wocoAppUrl ?? "https://woco.eth.limo",
-        }),
-      )
-    : null;
-  let res = built
-    ? await send({ ...request, site: built.site, collection: built.body, ...clientFeed })
-    : await send({ ...request, ...clientFeed });
-  if (built && rebuildOnServer(res)) {
-    console.warn(`[site publish] the server refused the browser's build (${res.code}): building on the server instead`);
-    res = await send({ ...request, ...clientFeed });
+  let attempt = await build();
+  if (!attempt.ok) return attempt;
+  let built = attempt.built;
+  let res = await send({ ...request, site: built.site, collection: built.body, ...clientFeed });
+  if (rebuildForNewRuntime(res)) {
+    // A new runtime release landed between the kit read and the deploy: build on it once.
+    attempt = await build();
+    if (!attempt.ok) return attempt;
+    built = attempt.built;
+    res = await send({ ...request, site: built.site, collection: built.body, ...clientFeed });
   }
-  if (storedSomethingElse(res, built?.root)) {
+  if (storedSomethingElse(res, built.root)) {
     // The server admits only an identical rebuild, so this cannot happen short of
     // a server fault: never sign a pointer to a site we did not build.
     throw new Error("The server stored a different site than this browser built");
@@ -160,7 +164,10 @@ export interface DeployEventPageResult {
   feedManifestHash: string;
   /** Present only when the page feed is the organiser's own (#614). */
   feedOwner?: "client";
-  pageFeed?: { owner: string; nextIndex: number; rootChunkPayloadB64: string };
+  /** Where to sign; WHAT to sign is this browser's own built root node (#1032). */
+  pageFeed?: { owner: string; nextIndex: number };
+  /** The runtime release the page linked (#1032). */
+  runtimeVersion?: number;
   /** The name's state against the page feed, when a name was sent (#614). */
   subEns?: SiteDeploySubEns;
   /** The server could not record this build for the name: it still shows the previous one. */
@@ -168,12 +175,16 @@ export interface DeployEventPageResult {
 }
 
 /**
- * Publish an event page (#614). With a feed signer the page's feed is the
- * organiser's own: the server prepares the update and it is signed HERE, only
- * when the server prepared it for this very signer and its bytes are the page
- * that was deployed. `feedSigned` says whether that happened - a name may
- * follow the feed only then, never on the server's word alone. A first publish
- * refused as busy (nothing was uploaded) is sent once more after the wait.
+ * Publish an event page (#614). The page is built HERE on the shared runtime
+ * release (#1032 slice 5): the server says what config it bakes and suggests the
+ * head (`GET /api/site/:eventId/page-config`), this browser builds, and the
+ * server stores the page only if its own rebuild is identical. With a feed
+ * signer the page's feed is the organiser's own: the update is signed HERE over
+ * the root node this browser built, only when the server prepared it for this
+ * very signer and stored that very root. `feedSigned` says whether that happened
+ * - a name may follow the feed only then, never on the server's word alone. A
+ * first publish refused as busy (nothing was uploaded) is sent once more after
+ * the wait; a release published mid-publish costs one rebuild.
  */
 export async function deployEventPage(
   eventId: string,
@@ -181,24 +192,49 @@ export async function deployEventPage(
   feedSigner?: ContentFeedSigner | null,
   retry: StorageBusyRetryOptions = {},
 ): Promise<ApiResponse<DeployEventPageResult> & { feedSigned: boolean }> {
-  const res = await retryOnceIfStorageBusy(
-    () =>
-      authPost<DeployEventPageResult>("/api/site/deploy", {
-        eventId,
-        apiUrl: opts.apiUrl,
-        gatewayUrl: opts.gatewayUrl,
-        ...(opts.subEnsLabel ? { subEnsLabel: opts.subEnsLabel } : {}),
-        ...(feedSigner ? { clientFeed: true } : {}),
-      }),
-    retry,
+  const cfg = await authGet<{ config: EventPageConfig; head: EventPageHead }>(
+    `/api/site/${encodeURIComponent(eventId)}/page-config?apiUrl=${encodeURIComponent(opts.apiUrl)}`,
   );
+  if (!cfg.ok || !cfg.data) return { ok: false, error: cfg.ok ? "The page could not be prepared" : (cfg.error ?? "The page could not be prepared"), feedSigned: false };
+  const { config, head } = cfg.data;
+  const build = () =>
+    import("./site-collection.js").then((m) => m.buildClientEventPageCollection({ apiUrl: opts.apiUrl, config, head }));
+  const send = (body: { runtimeVersion: number; objects: string[] }) =>
+    retryOnceIfStorageBusy(
+      () =>
+        authPost<DeployEventPageResult>("/api/site/deploy", {
+          eventId,
+          apiUrl: opts.apiUrl,
+          gatewayUrl: opts.gatewayUrl,
+          ...(opts.subEnsLabel ? { subEnsLabel: opts.subEnsLabel } : {}),
+          ...(feedSigner ? { clientFeed: true } : {}),
+          head,
+          collection: body,
+        }),
+      retry,
+    );
+
+  let attempt = await build();
+  if (!attempt.ok) return { ...attempt, feedSigned: false };
+  let built = attempt.built;
+  let res = await send(built.body);
+  if (rebuildForNewRuntime(res)) {
+    attempt = await build();
+    if (!attempt.ok) return { ...attempt, feedSigned: false };
+    built = attempt.built;
+    res = await send(built.body);
+  }
+  if (res.ok && res.data && res.data.contentHash !== built.root) {
+    // The server stores only its own identical rebuild: never sign a pointer to anything else.
+    throw new Error("The server stored a different page than this browser built");
+  }
   const pageFeed = res.ok ? res.data?.pageFeed : undefined;
   if (!res.ok || !res.data || !pageFeed || !feedSigner) return { ...res, feedSigned: false };
 
   if (pageFeed.owner.toLowerCase() !== feedSigner.address.toLowerCase()) {
     throw new Error("The page feed was prepared for a different key - refusing to sign it");
   }
-  const payload = base64ToBytes(pageFeed.rootChunkPayloadB64);
+  const payload = built.rootNode;
   assertFeedUpdateMatches(payload, res.data.contentHash);
   await signAndUploadSoc({
     signerPrivKey: feedSigner.privKey,

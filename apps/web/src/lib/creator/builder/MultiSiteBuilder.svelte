@@ -491,7 +491,7 @@
       if (!feedRes.ok) throw new Error(feedRes.error ?? 'Publish failed');
 
       // parentAddress: build the site here on the shared runtime (#1032); the server checks it.
-      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site), parentAddress: auth.parent ?? undefined }, feedSigner, retry);
+      const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site), parentAddress: auth.parent }, feedSigner, retry);
       publishWaitNote = '';
       if (!deployRes.ok || !deployRes.data) {
         if (deployRes.code === 'BATCH_PURCHASE_REQUIRED') throw new BatchPurchaseNeeded();

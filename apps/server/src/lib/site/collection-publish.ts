@@ -7,14 +7,12 @@
  * release it holds, and stores the client's objects only when they are identical,
  * byte for byte: nothing reaches the site origin that the server did not render
  * itself. Admission is a rebuild, not a parse, so there is no manifest parser
- * here for a client to argue with.
- *
- * Behind `SITE_CLIENT_PUBLISH` (unset = off; `all`; or a comma list of account
- * addresses). Off for an account, the deploy ignores the collection and builds
- * the old way.
+ * here for a client to argue with. Since slice 4 it is the only way a site is
+ * published: the server holds no copy of the runtime.
  */
 
 import {
+  buildEventPageCollection,
   buildSiteCollection,
   sameSiteObjects,
   SITE_HTML_MAX_BYTES,
@@ -24,7 +22,7 @@ import {
 import { mantarayNodeAddress, resolveMantarayPath } from "@woco/shared/swarm/mantaray";
 import { bytesTreeRoot } from "@woco/shared/swarm/bytes-tree";
 import { SITE_RUNTIME_INDEX_DOCUMENT } from "@woco/shared";
-import type { Site, SiteRuntimeLine, SiteRuntimeRelease, SiteRuntimeRoot, SiteRuntimeStore } from "@woco/shared";
+import type { EventPageConfig, EventPageHead, Site, SiteRuntimeLine, SiteRuntimeRelease, SiteRuntimeRoot, SiteRuntimeStore } from "@woco/shared";
 import type { Context } from "hono";
 import { BEE_URL } from "../../config/swarm.js";
 import { siteRuntimeReleases } from "./runtime-release.js";
@@ -49,13 +47,6 @@ const READ_TIMEOUT_MS = 20_000;
 /** Six objects, the largest the HTML tree: bounds what a deploy body can make us decode. */
 export const CLIENT_COLLECTION_MAX_OBJECTS = 8;
 export const CLIENT_COLLECTION_MAX_BYTES = SITE_HTML_MAX_BYTES + 64 * 1024;
-
-export function clientPublishAllowed(parentAddress: string, setting = process.env.SITE_CLIENT_PUBLISH): boolean {
-  const s = (setting ?? "").trim().toLowerCase();
-  if (!s) return false;
-  if (s === "all") return true;
-  return s.split(",").map((a) => a.trim()).includes(parentAddress.toLowerCase());
-}
 
 export function storeForTarget(target: "etherna" | "wocoBee"): SiteRuntimeStore {
   return target === "etherna" ? "etherna" : "woco";
@@ -175,6 +166,31 @@ export type CollectionVerdict =
   | { ok: true; collection: SiteCollection }
   | { ok: false; code: "RUNTIME_RELEASE_CHANGED" | "COLLECTION_MISMATCH"; error: string };
 
+/**
+ * The one admission rule for every page kind: the server's own `build` (from its
+ * own inputs and kit) must equal the client's objects byte for byte, and only the
+ * server's build is returned for storing.
+ */
+export function admitBuild(input: {
+  kit: SiteRuntimeKit;
+  received: { runtimeVersion: number; objects: Uint8Array[] };
+  build: () => SiteCollection;
+}): CollectionVerdict {
+  if (input.received.runtimeVersion !== input.kit.version) {
+    return { ok: false, code: "RUNTIME_RELEASE_CHANGED", error: `the site runtime is now v${input.kit.version}` };
+  }
+  let expected: SiteCollection;
+  try {
+    expected = input.build();
+  } catch (e) {
+    return { ok: false, code: "COLLECTION_MISMATCH", error: e instanceof Error ? e.message : "page could not be built" };
+  }
+  if (!sameSiteObjects(expected, input.received.objects)) {
+    return { ok: false, code: "COLLECTION_MISMATCH", error: "the uploaded page differs from the server's build" };
+  }
+  return { ok: true, collection: expected };
+}
+
 /** Rebuild the site from the server's own inputs; admit the client's objects only if identical. */
 export function admitClientCollection(input: {
   kit: SiteRuntimeKit;
@@ -182,19 +198,26 @@ export function admitClientCollection(input: {
   urls: SiteRenderUrls;
   received: { runtimeVersion: number; objects: Uint8Array[] };
 }): CollectionVerdict {
-  if (input.received.runtimeVersion !== input.kit.version) {
-    return { ok: false, code: "RUNTIME_RELEASE_CHANGED", error: `the site runtime is now v${input.kit.version}` };
-  }
-  let expected: SiteCollection;
-  try {
-    expected = buildSiteCollection({ site: input.site, urls: input.urls, template: input.kit.template, release: input.kit.release, releaseRootNode: input.kit.rootNode });
-  } catch (e) {
-    return { ok: false, code: "COLLECTION_MISMATCH", error: e instanceof Error ? e.message : "site could not be built" };
-  }
-  if (!sameSiteObjects(expected, input.received.objects)) {
-    return { ok: false, code: "COLLECTION_MISMATCH", error: "the uploaded site differs from the server's build" };
-  }
-  return { ok: true, collection: expected };
+  return admitBuild({
+    kit: input.kit,
+    received: input.received,
+    build: () => buildSiteCollection({ site: input.site, urls: input.urls, template: input.kit.template, release: input.kit.release, releaseRootNode: input.kit.rootNode }),
+  });
+}
+
+/** Rebuild a single-event page from the server's own config and the browser's checked head (#1032 slice 5). */
+export function admitClientEventPage(input: {
+  kit: SiteRuntimeKit;
+  config: EventPageConfig;
+  head: EventPageHead;
+  received: { runtimeVersion: number; objects: Uint8Array[] };
+}): CollectionVerdict {
+  if (input.kit.line !== "eventPage") throw new Error("an event page is built on the eventPage line");
+  return admitBuild({
+    kit: input.kit,
+    received: input.received,
+    build: () => buildEventPageCollection({ config: input.config, head: input.head, template: input.kit.template, release: input.kit.release, releaseRootNode: input.kit.rootNode }),
+  });
 }
 
 /**
@@ -218,6 +241,10 @@ export async function uploadSiteObjects(
         "Content-Type": "application/octet-stream",
         "Swarm-Postage-Batch-Id": batchId,
         "Swarm-Redundancy-Level": "0",
+        // Bee defaults an upload to DEFERRED: it returns once the node holds the
+        // chunks and pushes them in the background, so every other reader waits.
+        // Measured 2026-09-21 on 5 MB collections: 326 s deferred vs 171 s
+        // without until the page opened from our bee (#613).
         "Swarm-Deferred-Upload": "false",
       },
       body: o.data as unknown as BodyInit,

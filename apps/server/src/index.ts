@@ -405,7 +405,7 @@ function healthReport() {
     // `push` RED: a send still not on our bee 15 min on - Etherna is not pushing.
     ethernaFailover: ethernaFailoverHealth(),
     // The latest site runtime release (#1032): version, commit and when it was
-    // read. Informational (`ok` always true) until publishing depends on it.
+    // read. RED when none is held after a read: every website publish builds on it.
     siteRuntime: siteRuntimeReleases.health(),
     // The client-SOC relay's limiter (#301). `globalTrippedAt` non-null is the
     // alarm: the per-process ceiling that legitimate traffic never reaches has
