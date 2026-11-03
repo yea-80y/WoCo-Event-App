@@ -164,7 +164,7 @@
       seatsOpenedHere = false;
       history.back();
     } else {
-      history.replaceState(history.state, '', `#/events/${eventId}`);
+      history.replaceState(history.state, '', new URL(`#/events/${eventId}`, window.location.href).href);
       route = parseHash();
     }
   }
