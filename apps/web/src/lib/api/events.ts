@@ -11,7 +11,8 @@ import type {
 } from "@woco/shared";
 export type { OrderEntry };
 import { authPost, authGet, get, apiBase, authStream, currentSiteId } from "./client.js";
-import { refusalText } from "./errors.js";
+import { apiError, refusalText } from "./errors.js";
+import type { Ledger2RelayItem, Ledger2RelayResult } from "@woco/shared/ticket/ledger2-terms";
 import { auth } from "../auth/auth-store.svelte.js";
 import type { RequestSigningOptions } from "../auth/request-session.js";
 import { eventContentTopic, orderKeyRef } from "@woco/shared";
@@ -294,33 +295,41 @@ export interface CancellationProgress {
 export async function cancelEvent(
   eventId: string,
   confirmTitle: string,
-  opts: { feedSigner?: ContentFeedSigner | null } = {},
-): Promise<{ progress: CancellationProgress | null; eventFeed: EventFeed | null; feedUpdated: boolean }> {
-  const resp = await authPost<{ progress?: CancellationProgress; eventFeed?: EventFeed }>(
+  opts: {
+    feedSigner?: ContentFeedSigner | null;
+    /** A ledger2 event's signed cancels, one per ticket type (`lib/ledger2/organiser-changes.ts`). */
+    chainCancels?: Ledger2RelayItem[];
+  } = {},
+): Promise<{ progress: CancellationProgress | null; eventFeed: EventFeed | null; feedUpdated: boolean; chain: ChainCancelOutcome | null }> {
+  const resp = await authPost<{ progress?: CancellationProgress; eventFeed?: EventFeed; chain?: ChainCancelOutcome }>(
     `/api/events/${eventId}/cancel`,
-    { confirmTitle },
+    { confirmTitle, ...(opts.chainCancels?.length ? { chainCancels: opts.chainCancels } : {}) },
   );
-  if (!resp.ok) throw new Error(resp.error || "Could not cancel the event");
+  if (!resp.ok) throw apiError(resp, "Could not cancel the event");
 
+  const chain = resp.data?.chain ?? null;
   const feed = resp.data?.eventFeed ?? null;
   const progress = resp.data?.progress ? { ...resp.data.progress, cancelled: true } : null;
-  if (!feed) return { progress, eventFeed: null, feedUpdated: false };
+  if (!feed) return { progress, eventFeed: null, feedUpdated: false, chain };
   // A platform-owned feed has nothing for the organiser to sign: the server's
   // overlay is what readers see.
-  if (!feed.creatorFeedSigner) return { progress, eventFeed: feed, feedUpdated: true };
+  if (!feed.creatorFeedSigner) return { progress, eventFeed: feed, feedUpdated: true, chain };
   // Sign only a feed that names THIS event and this signer.
   if (!opts.feedSigner || feed.eventId !== eventId
       || feed.creatorFeedSigner.toLowerCase() !== opts.feedSigner.address.toLowerCase()) {
-    return { progress, eventFeed: feed, feedUpdated: false };
+    return { progress, eventFeed: feed, feedUpdated: false, chain };
   }
   try {
     await signEventFeedSoc(feed, opts.feedSigner);
   } catch (err) {
     console.warn("[cancel] the event is cancelled but its page feed could not be re-signed:", err);
-    return { progress, eventFeed: feed, feedUpdated: false };
+    return { progress, eventFeed: feed, feedUpdated: false, chain };
   }
-  return { progress, eventFeed: feed, feedUpdated: true };
+  return { progress, eventFeed: feed, feedUpdated: true, chain };
 }
+
+/** The ledger2 half of a cancel, as the server reports it. */
+export type ChainCancelOutcome = Ledger2RelayResult | { status: "failed"; error: string };
 
 /** Refund progress for the organiser's cancelled event, or `{ cancelled: false }`. */
 export async function getCancellation(eventId: string): Promise<CancellationProgress | null> {

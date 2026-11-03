@@ -544,7 +544,9 @@
    */
   function decryptCurrent(prompt = false): Promise<void> {
     const run = decryptChain.then(() => decryptOnce(prompt));
-    decryptChain = run.catch(() => {});
+    // Kept moving for the next run, but never silent: a swallowed throw here hid every
+    // attendee's details on 2026-11-02 with nothing on screen or in the console.
+    decryptChain = run.catch((err) => console.error("[dashboard] opening orders failed:", err));
     return run;
   }
 
@@ -627,7 +629,8 @@
         const out = await worker.open(
           epoch,
           eventId,
-          batch.map(({ order }, id) => ({ id, seriesId: order.seriesId, box: order.encryptedOrder })),
+          // A snapshot: the rows are reactive proxies, which a worker message cannot copy.
+          batch.map(({ order }, id) => ({ id, seriesId: order.seriesId, box: $state.snapshot(order.encryptedOrder) })),
         );
         if (out.kind === "unavailable") {
           // No worker after all: the rest open on this page.

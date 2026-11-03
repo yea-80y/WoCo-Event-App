@@ -34,7 +34,10 @@ const GATED: Array<[file: string, signature: string, action: string]> = [
   ["creator/audience/MarketingComposer.svelte", "async function handleSend(", "startBroadcast("],
   ["creator/audience/MarketingComposer.svelte", "async function handleSendTest", "sendMarketingTest("],
   ["creator/audience/AudienceScreen.svelte", "async function handleDelete", "suppressContacts("],
-  ["creator/events/CancelEventPanel.svelte", "async function confirmCancel", "cancelEvent("],
+  // A ledger2 event's cancel signs with the organiser key inside `cancelWithChain`.
+  ["creator/events/CancelEventPanel.svelte", "async function confirmCancel", "cancelWithChain("],
+  ["creator/events/CancelEventPanel.svelte", "async function finishCancelling", "cancelEvent("],
+  ["creator/events/TicketNumbersPanel.svelte", "async function save()", "startTermsChange("],
   ["creator/dashboard/DashboardIndex.svelte", "async function handleList", "/list`"],
   ["creator/dashboard/DashboardIndex.svelte", "async function handleUnlist", "/unlist`"],
   ["creator/dashboard/StripeConnect.svelte", "async function handleConnect", "connectStripe()"],

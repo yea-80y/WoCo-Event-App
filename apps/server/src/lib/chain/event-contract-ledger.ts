@@ -467,10 +467,24 @@ export async function isEventCancelledLedger(
   contractAddress: string,
   chainId: number,
 ): Promise<boolean | null> {
+  return (await getEventStatusLedger(onChainEventId, contractAddress, chainId))?.cancelled ?? null;
+}
+
+/**
+ * `getEventStatus` as read now: the cutoff (epoch seconds) and whether the event is
+ * cancelled. On ledger2 both move after registration - the organiser extends the
+ * cutoff and cancels by signature, through any relay - so the sale path reads this
+ * fresh. `null` means exactly `EventNotFound()`; every other failure throws.
+ */
+export async function getEventStatusLedger(
+  onChainEventId: string,
+  contractAddress: string,
+  chainId: number,
+): Promise<{ eventEndTs: number; cancelled: boolean } | null> {
   try {
     const fn = readContract(contractAddress, chainId).getFunction("getEventStatus");
     const r = await fn.staticCall(onChainEventId);
-    return Boolean(r.cancelled);
+    return { eventEndTs: Number(r.eventEndTs), cancelled: Boolean(r.cancelled) };
   } catch (err) {
     const e = err as { revert?: { name?: string } | null; data?: unknown };
     if (e?.revert?.name === "EventNotFound") return null;

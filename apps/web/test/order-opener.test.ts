@@ -104,8 +104,12 @@ function fakePort(opts: { failOnStart?: boolean; hold?: boolean } = {}) {
     onmessage: null,
     onerror: null,
     postMessage(msg, transfer) {
+      // As a real worker port does: the message is COPIED, and a copy that cannot be
+      // made throws here, at the caller. A fake that passed it by reference let a
+      // reactive proxy through every test while every real dashboard failed (2026-11-02).
+      const copy = structuredClone(msg);
       posted.push({ msg, transfer });
-      const run = () => void handle(msg);
+      const run = () => void handle(copy);
       if (opts.hold && msg.type === "open") held.push(run);
       else queueMicrotask(run);
     },
@@ -248,6 +252,30 @@ test("Dashboard: the worker's keys belong to one signed-in account (security rev
 test("the worker only wires the core: no storage, no channels", () => {
   assert.doesNotMatch(WORKER, /indexedDB|caches\.|localStorage|BroadcastChannel|SharedArrayBuffer/);
   assert.match(WORKER, /createOpenerCore\(/);
+});
+
+test("page: a job the browser cannot copy to the worker opens on the page - never a silent stop", async () => {
+  const f = fakePort();
+  const opener = new OrderOpener(() => f.port);
+  opener.unlock(1, [new Uint8Array(1)]);
+  // What a Svelte $state row hands over: a proxy, which structured clone refuses.
+  const reactiveBox = new Proxy({ v: 2, enc: "e", ct: "c" }, {});
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const out = await opener.open(1, "e", [{ id: 0, seriesId: "s", box: reactiveBox }]);
+    assert.deepEqual(out, { kind: "unavailable" }, "resolves, so the page opens them itself");
+  } finally {
+    console.error = quiet;
+  }
+  assert.equal(f.terminated(), 1);
+  assert.deepEqual(await opener.open(1, "e", [{ id: 0, seriesId: "s", box: { v: 2 } }]), { kind: "unavailable" });
+});
+
+test("Dashboard: boxes go to the worker as plain snapshots, and a failed run is never swallowed", () => {
+  assert.match(DASH, /box: \$state\.snapshot\(order\.encryptedOrder\)/, "the rows are reactive proxies (2026-11-02)");
+  assert.match(DASH, /decryptChain = run\.catch\(\(err\) => console\.error\(/);
+  assert.doesNotMatch(DASH, /decryptChain = run\.catch\(\(\) => \{\}\)/);
 });
 
 test("the saved copy of the list stops at ROW_CACHE_MAX rows", () => {

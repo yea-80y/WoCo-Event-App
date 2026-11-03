@@ -111,6 +111,9 @@ DEV COMMANDS:
   owns (`/api/ops/attendee-batch/register` + `/activate`), and checkout refuses (503). Never FEED_PRIVATE_KEY.
   Register the production batch on the production server ONLY: a second ledger for it evicts live orders
   (dev scripts blank the key for this reason).
+  Ledger2 relay: `LEDGER2_RELAY_PRIVATE_KEY` pays the gas for organiser-SIGNED ledger2 changes (capacity,
+  cutoff, seats, cancel; `routes/ledger2-relay.ts`); no role on any contract, boot refuses it equal to any
+  other platform key; once ledger2 is configured, unset = those changes 503 and `ledger2Relay` red.
   Sponsorship (#758): `ZERODEV_POLICY_SECRET` + `ZERODEV_PROJECT_ID` — the ZeroDev custom gas policy
   webhook (`/api/zerodev/policy/:secret`); unset = every sponsored userOp refused, `zerodevPolicy` red.
   Optional `ZERODEV_POLICY_MAX_OP_COST_WEI` (per-op ceiling, default 5e14).
