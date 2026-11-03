@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { LAYOUT_TEMPLATES } from "@woco/shared/seating/templates";
 import { encodeSeatPlan, freezeSeatPlan, seatPlanDigest } from "@woco/shared/seating/plan";
 import { seatStates } from "@woco/shared/seating/availability";
-import { buyerPlan } from "@woco/seatmap/buyer";
+import { buyerPlan } from "../src/buyer.js";
 import {
   companionBeside, mapNotice, picksStorageKey, picksTotal, priceRange, readPicks, seatsText, totalLine, writePicks,
-} from "../src/lib/seating/picker-model.js";
+} from "../src/picker-model.js";
 
 const planOf = (id: string) => {
   const p = freezeSeatPlan(LAYOUT_TEMPLATES.find((t) => t.id === id)!.make());

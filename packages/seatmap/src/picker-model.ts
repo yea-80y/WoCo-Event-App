@@ -1,10 +1,10 @@
 /**
- * The seat picker's words and small rules, kept out of the component so they are
- * testable (apps/web/test/seat-picker-model.test.ts). docs/SEATING.md "Buyer experience".
+ * The seat picker's words and small rules, kept out of the component (svelte/SeatPicker)
+ * so they are testable (test/picker-model.test.ts). docs/SEATING.md "Buyer experience".
  */
 
-import type { BuyerPlan, SeatMapProblem } from "@woco/seatmap";
-import { formatMinor, seatText } from "@woco/seatmap/buyer";
+import { formatMinor, seatText, type BuyerPlan } from "./buyer.js";
+import type { SeatMapProblem } from "./load.js";
 import { SEAT_FREE, type SaleState, type SeatStates } from "@woco/shared/seating/availability";
 
 /** A sentence for why the map cannot sell right now, or null when it can. */

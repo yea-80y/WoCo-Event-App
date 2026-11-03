@@ -88,8 +88,8 @@
 </div>
 
 {#if isOpen}
-  {#await import("./SeatPicker.svelte") then { default: SeatPicker }}
-    <SeatPicker {eventId} {eventTitle} {series} {apiUrl} onclose={closePicker} />
+  {#await import("@woco/seatmap/svelte/SeatPicker.svelte") then { default: SeatPicker }}
+    <SeatPicker {eventId} {eventTitle} {series} load={() => seatMapFor(eventId, series, apiUrl)} onclose={closePicker} />
   {/await}
 {/if}
 

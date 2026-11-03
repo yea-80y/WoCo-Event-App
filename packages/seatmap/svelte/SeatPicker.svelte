@@ -2,38 +2,41 @@
   /**
    * The buyer's seat map, full screen (docs/SEATING.md "Buyer experience"; S3 consult
    * Q7): the map on the left and the order on the right on a desktop; on a phone the
-   * map with a bar at the bottom that pulls up into the order. The same component runs
-   * in the app and on organisers' websites; the embed shows it in a frame.
+   * map with a bar at the bottom that pulls up into the order. One component for every
+   * host: the app, organisers' websites, and the embed's frame. The host says where the
+   * map loads from (`load`) and styles it through the same CSS variables the app uses
+   * (--bg, --text, --accent ...).
    *
    * It draws, picks and explains. Holding seats and paying are the host's (`onhold`,
    * then the `checkout` snippet in the panel): until seated holds ship the host
    * passes no `onhold` and the button says so.
    */
   import { onDestroy, onMount, tick, type Snippet } from "svelte";
-  import type { SeriesSummary } from "@woco/shared";
+  import type { SeriesSummary } from "@woco/shared/event/types";
   import { RESERVATION_MAX_QTY } from "@woco/shared/event/reservation";
   import { pickable, seatReason, seatStates, SEAT_FREE, SEAT_UNKNOWN, type SeatStates } from "@woco/shared/seating/availability";
+  import { headlinePrice } from "@woco/shared/event/fees";
   import {
     bestFor, formatMinor, loneSeat, prunePicks, sectionSummaries, seatText, spokenLabel, togglePick,
-  } from "@woco/seatmap/buyer";
-  import { createPicker, pickerCss, type Picker } from "@woco/seatmap/picker";
-  import { paletteFromCss } from "@woco/seatmap/palette";
-  import { swatchSvg } from "@woco/seatmap/draw";
-  import type { LiveSeatMap, SeatMapProblem, SeatMapSnapshot } from "@woco/seatmap/load";
-  import type { Level } from "@woco/seatmap/view";
-  import { headlinePrice } from "@woco/shared/event/fees";
-  import { seatMapFor } from "../../seating/seat-map-source.js";
+  } from "../src/buyer.js";
+  import { createPicker, pickerCss, type Picker } from "../src/picker.js";
+  import { paletteFromCss } from "../src/palette.js";
+  import { swatchSvg } from "../src/draw.js";
+  import type { LiveSeatMap, SeatMapProblem, SeatMapSnapshot } from "../src/load.js";
+  import type { Level } from "../src/view.js";
   import {
     companionBeside, mapNotice, picksStorageKey, priceRange, readPicks, seatPriceMinor, seatsText, totalLine, writePicks,
-  } from "../../seating/picker-model.js";
+  } from "../src/picker-model.js";
 
   export type HoldResult = { ok: true; expiresAt: string } | { ok: false; message: string; conflicts?: number[] };
+  export type SeatMapLoad = () => Promise<{ ok: true; map: LiveSeatMap } | { ok: false; problem: SeatMapProblem }>;
 
   interface Props {
     eventId: string;
     eventTitle: string;
     series: SeriesSummary;
-    apiUrl: string;
+    /** Where the map comes from (`loadSeatMap` with the host's gateway, RPC and API). */
+    load: SeatMapLoad;
     onclose: () => void;
     /** Hold these seats on this plan. Absent: seat booking is not open yet. */
     onhold?: (req: { seats: number[]; planDigest: string }) => Promise<HoldResult>;
@@ -41,7 +44,7 @@
     checkout?: Snippet<[{ seats: readonly number[]; expiresAt: string }]>;
   }
 
-  let { eventId, eventTitle, series, apiUrl, onclose, onhold, checkout }: Props = $props();
+  let { eventId, eventTitle, series, load: loadMap, onclose, onhold, checkout }: Props = $props();
 
   const MAX = RESERVATION_MAX_QTY;
   // svelte-ignore state_referenced_locally
@@ -93,7 +96,7 @@
   async function load(): Promise<void> {
     loading = true;
     problem = null;
-    const r = await seatMapFor(eventId, series, apiUrl);
+    const r = await loadMap();
     loading = false;
     if (!r.ok) { problem = r.problem; return; }
     map = r.map;

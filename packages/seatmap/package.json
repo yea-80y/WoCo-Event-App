@@ -8,16 +8,22 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./svelte/*": "./svelte/*",
     "./*": "./src/*.ts"
   },
   "scripts": {
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --threshold warning",
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@woco/shared": "*"
   },
+  "peerDependencies": {
+    "svelte": "^5.0.0"
+  },
   "devDependencies": {
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.7",
     "tsx": "^4.23.15",
     "typescript": "~5.9.3"
   }
