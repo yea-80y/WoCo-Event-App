@@ -7,6 +7,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { Wallet } from "ethers";
+import { LEDGER2_DEPLOYMENTS } from "@woco/shared/ticket/ledger2";
 import {
   LEDGER2_END_TTL_MS,
   _resetChainEndMemoForTests,
@@ -105,16 +106,20 @@ test("health: green and inactive while no ledger2 is deployed; red once one is a
   _resetLedger2RelayHealthForTests();
   const saved = { ...process.env };
   try {
-    process.env.WOCO_EVENT_CHAIN_ID = "42161";
+    // Arbitrum Sepolia has no ledger2 (shared or override); Arbitrum One has the
+    // shared deployment, so it is live with no env at all.
+    process.env.WOCO_EVENT_CHAIN_ID = "421614";
+    delete process.env.WOCO_EVENT_ADDRESS_LEDGER2_421614;
     delete process.env.WOCO_EVENT_ADDRESS_LEDGER2_42161;
     delete process.env.LEDGER2_RELAY_PRIVATE_KEY;
     const idle = ledger2RelayHealth();
     assert.equal(idle.active, false);
     assert.equal(idle.ok, true);
 
-    process.env.WOCO_EVENT_ADDRESS_LEDGER2_42161 = LEDGER2.address;
+    process.env.WOCO_EVENT_CHAIN_ID = "42161";
     const live = ledger2RelayHealth();
     assert.equal(live.active, true);
+    assert.equal(live.ledger, LEDGER2_DEPLOYMENTS[42161]!.address);
     assert.equal(live.ok, false);
     assert.match(live.checks.key.reason ?? "", /LEDGER2_RELAY_PRIVATE_KEY/);
 
@@ -124,7 +129,7 @@ test("health: green and inactive while no ledger2 is deployed; red once one is a
     assert.equal(unread.ok, null, "not read yet is unknown, not red");
 
     noteChainCancelled("evt-9", ID);
-    delete process.env.WOCO_EVENT_ADDRESS_LEDGER2_42161;
+    process.env.WOCO_EVENT_CHAIN_ID = "421614";
     const idleButCancelled = ledger2RelayHealth();
     assert.equal(idleButCancelled.ok, false, "a chain-cancelled event still on sale is red even when idle");
   } finally {

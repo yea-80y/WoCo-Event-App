@@ -438,7 +438,9 @@ Arbitrum One (2026-09-25); the server is not switched to it yet. Registrations m
 verifying through their own recorded contract (#563). Addresses: [DEPLOYMENTS.md](./DEPLOYMENTS.md)
 and the contracts repository's `deployments/*.json`.
 
-**Version 2 (`ledger2`, #983) - server support built, contract not yet deployed.** A successor
+**Version 2 (`ledger2`, #983) - deployed on Arbitrum One 2026-11-03 at
+`0x5cD8394EF7A4E50403fF72d6aDDd4582332A6050` (block 520749813, WoCo-Contracts
+`deployments/42161-ledger2.json`); new events register on it once the server selects it.** A successor
 `WoCoTicketLedger` at a new address: `WOCO_EVENT_VERSION_{chainId}=ledger2` plus
 `WOCO_EVENT_ADDRESS_LEDGER2_{chainId}`. Keep `WOCO_EVENT_ADDRESS_LEDGER_{chainId}` set - version-1
 registrations keep minting and verifying on their recorded contract, and a record from before #563
