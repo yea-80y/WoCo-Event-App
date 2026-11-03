@@ -27,7 +27,8 @@
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
   import { OpenedOrders, ORDERS_POLL_MS, RunQueue, createOrdersPoller, orderSlotKey } from "./live-orders.js";
   import { BrowserOrders, OrdersStatusUnavailable } from "./browser-orders.js";
-  import { canReadLedger, liveBrowserOrdersDeps, liveGatewayFetcher } from "./browser-orders-live.js";
+  import { canReadLedger, liveBrowserOrdersDeps, liveBundleVerifier, liveGatewayFetcher } from "./browser-orders-live.js";
+  import type { BundleVerifier } from "./bundle-verifier.js";
   import { DetailQueue, type DetailState } from "./detail-queue.js";
   import { OrderOpenerPool, poolWidth, type OpenerPort } from "./order-opener.js";
   import { DETAIL_CSV, listGate, rowDetail, shortfall, type RowDetail } from "./list-completeness.js";
@@ -739,15 +740,18 @@
    * erasure answer (browser-orders.ts), then sealed orders in the background
    * (detail-queue.ts). This page's reads are kept in memory only.
    */
-  let browserOrders: { eventId: string; reader: BrowserOrders; queue: DetailQueue } | null = null;
+  let browserOrders: { eventId: string; reader: BrowserOrders; queue: DetailQueue; verifier: BundleVerifier } | null = null;
   /** Where the list on screen came from: only the browser's list takes boxes from the queue. */
   let ordersSource: "browser" | "server" | null = null;
   function ordersReader(): { reader: BrowserOrders; queue: DetailQueue } {
     if (browserOrders?.eventId !== eventId) {
       browserOrders?.queue.stop();
+      browserOrders?.verifier.dispose();
+      // Each bundle is checked in a key-free worker, off this page's thread (#1061).
+      const verifier = liveBundleVerifier();
       const queue = new DetailQueue({
         // Bundles of up to 100 orders where the gateway has them, one at a time where not.
-        ...liveGatewayFetcher(),
+        ...liveGatewayFetcher(verifier),
         now: () => Date.now(),
         setTimer: (cb, ms) => setTimeout(cb, ms),
         clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -756,7 +760,7 @@
         wantCoverage: () => void refreshOrders(),
         onChange: scheduleRebuild,
       });
-      browserOrders = { eventId, reader: new BrowserOrders(liveBrowserOrdersDeps(eventId), canReadLedger), queue };
+      browserOrders = { eventId, reader: new BrowserOrders(liveBrowserOrdersDeps(eventId), canReadLedger), queue, verifier };
     }
     return browserOrders;
   }
@@ -771,6 +775,7 @@
     browserOrders?.queue.stop();
     if (rebuildTimer !== null) clearTimeout(rebuildTimer);
     rebuildTimer = null;
+    browserOrders?.verifier.dispose();
   });
 
   /**

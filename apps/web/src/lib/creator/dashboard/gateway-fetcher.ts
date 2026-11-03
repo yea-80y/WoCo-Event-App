@@ -44,11 +44,17 @@ export interface GatewayFetcherDeps {
   fetchImpl: typeof fetch;
   /** One order by GET /bytes (browser-orders-live.ts `fetchOrderBox`). */
   fetchOne(root: string): Promise<FetchResult>;
+  /**
+   * `parseBundle`, possibly off the page (bundle-verifier.ts). Must answer exactly what
+   * `parseBundle` would, and never reject. Defaults to `parseBundle` here.
+   */
+  parse?(roots: readonly string[], body: Uint8Array): Promise<Map<string, FetchResult> | null>;
   now?(): number;
 }
 
 export function gatewayOrderFetcher(deps: GatewayFetcherDeps): Pick<DetailQueueDeps, "fetchBatch" | "maxBatch"> {
   const now = deps.now ?? Date.now;
+  const parse = deps.parse ?? (async (roots: readonly string[], body: Uint8Array) => parseBundle(roots, body));
   let bundles = true;
   let failures = 0;
   let answered = false;
@@ -99,7 +105,9 @@ export function gatewayOrderFetcher(deps: GatewayFetcherDeps): Pick<DetailQueueD
       } catch {
         return failed(budget);
       }
-      const items = body.length <= limit ? parseBundle(roots, body) : null;
+      // The verdict holds the queue's slot until it is in (Fable consult 2026-11-03 Q5): a
+      // device slow to hash downloads no faster than it can check.
+      const items = body.length <= limit ? await parse(roots, body) : null;
       if (!items) return unsupported();
       answered = true;
       failures = 0;
