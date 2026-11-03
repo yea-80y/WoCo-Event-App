@@ -9,6 +9,8 @@ Issue #55 (schema.org/Event ld+json) predates this doc and is folded in below.
   canonical, no JSON-LD, no robots.txt or sitemap. #67, #68, #69, #70, #71, #72, #73 are open.
   #55 is **closed**, but JSON-LD is still set only client-side at runtime (`lib/seo/head.ts`
   callers) - the deploy-time half folds into #70.
+- **2026-11-03:** event pages now carry the event's `<title>` from deploy time (#70's first
+  piece, `withEventPageHead`). Websites' `<title>` and every canonical are still open.
 - **Sub-ENS is live in the website builder** (Domain tab, `SubENSPicker`), and was never removed
   from the code (it has been there since 2026-05-30). D3's condition - "return together with
   canonical injection, not before" - is therefore not met: the duplicate-URL problem D3 named

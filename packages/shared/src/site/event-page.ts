@@ -58,12 +58,16 @@ function stripTrailingSlash(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
 }
 
+/** The runtime template's own `<title>` (site.html says "Event"). */
+const TEMPLATE_TITLE = /<title>[^<]*<\/title>/i;
+
 /**
- * The icon + share tags baked into a single-event page. The event's own image
+ * The title, icon + share tags baked into a single-event page. The event's own image
  * when it has one, WoCo's logo (bundled in dist-site) otherwise - the same rule
  * `deployHeadLines` (render.ts) applies to a site's logo. Any icon link the
  * template carries is dropped first, so the event's is the only one a browser
- * or the iOS home screen can pick.
+ * or the iOS home screen can pick. The `<title>` is written here, not only by the
+ * runtime, because crawlers that run no script read the HTML as served (#70).
  */
 export function withEventPageHead(
   html: string,
@@ -88,7 +92,13 @@ export function withEventPageHead(
     `  <meta name="twitter:image" content="${share}">`,
   ].filter(Boolean).join("\n");
   const stripped = html.replace(/\s*<link\b[^>]*\brel=["']?(?:shortcut )?icon["']?[^>]*>/gi, "");
-  return injectBeforeHeadClose(stripped, lines);
+  // A replacer FUNCTION: a string would read `$&` or `` $` `` in the title as a pattern.
+  const titled = !title
+    ? stripped
+    : TEMPLATE_TITLE.test(stripped)
+      ? stripped.replace(TEMPLATE_TITLE, () => `<title>${title}</title>`)
+      : injectBeforeHeadClose(stripped, `  <title>${title}</title>`);
+  return injectBeforeHeadClose(titled, lines);
 }
 
 /** An event page's HTML: the runtime's template, the config script, then the head. */

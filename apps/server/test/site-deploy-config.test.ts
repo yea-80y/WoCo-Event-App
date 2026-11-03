@@ -428,6 +428,8 @@ test("an event page wears the event's image as its icon, WoCo's logo otherwise",
   assert.match(out, new RegExp(`<link rel="apple-touch-icon" href="https://gateway.woco-net.com/bytes/${ref}">`));
   assert.match(out, new RegExp(`<meta property="og:image" content="https://gateway.woco-net.com/bytes/${ref}">`));
   assert.match(out, /og:title" content="Gig &quot;night&quot; &lt;b&gt;"/);
+  assert.equal(out.match(/<title>/g)?.length, 1);
+  assert.match(out, /<title>Gig &quot;night&quot; &lt;b&gt;<\/title>/, "the template's title is replaced (#70)");
   assert.ok(out.indexOf("apple-touch-icon") < out.indexOf("</head>"));
 
   for (const event of [null, { title: "x", imageHash: "0".repeat(64) }, { imageHash: `"><script>` }]) {
