@@ -13,7 +13,7 @@
  * which says nothing about the order itself - another fetch may serve it right.
  */
 import { bytesTreeRoot } from "@woco/shared/swarm/bytes-tree";
-import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+import { isSealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type { FetchResult } from "./detail-queue.js";
 
 /** A sealed order is at most 16 KB of JSON (MAX_ORDER_BOX_JSON); anything far past it is not one. */
@@ -83,10 +83,9 @@ export function boxFromBytes(root: string, bytes: Uint8Array): FetchResult {
   }
   if (address !== root.toLowerCase()) return { kind: "unavailable" };
   try {
-    const box = JSON.parse(decoder.decode(bytes)) as { enc?: unknown; ct?: unknown };
-    return typeof box.enc === "string" && typeof box.ct === "string"
-      ? { kind: "ok", box: box as unknown as SealedBoxV2 }
-      : { kind: "unreadable" };
+    // The exact v2 shape, as the bundle verifier's reply check uses (Fable consult 2026-11-03 Q1).
+    const box: unknown = JSON.parse(decoder.decode(bytes));
+    return isSealedBoxV2(box) ? { kind: "ok", box } : { kind: "unreadable" };
   } catch {
     return { kind: "unreadable" };
   }

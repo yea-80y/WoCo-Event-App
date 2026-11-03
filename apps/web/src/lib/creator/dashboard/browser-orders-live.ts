@@ -14,6 +14,7 @@ import { authPost } from "../../api/client.js";
 import { buildEnv } from "../../build-env.js";
 import { WOCO_GATEWAY_URL } from "../../swarm/gateways.js";
 import type { BrowserOrdersDeps, SlotRead } from "./browser-orders.js";
+import { BundleVerifier, type VerifierPort } from "./bundle-verifier.js";
 import type { DetailQueueDeps, FetchResult } from "./detail-queue.js";
 import { gatewayOrderFetcher, readBudget, retryAfterMs } from "./gateway-fetcher.js";
 import { MAX_BOX_BYTES, boxFromBytes } from "./order-box.js";
@@ -173,10 +174,30 @@ function gatewayBase(): string {
   return buildEnv(() => import.meta.env.VITE_GATEWAY_URL as string | undefined) || WOCO_GATEWAY_URL;
 }
 
-/** The queue's reads from our gateway: bundles where it has them, one at a time where not (gateway-fetcher.ts). */
-export function liveGatewayFetcher(): Pick<DetailQueueDeps, "fetchBatch" | "maxBatch"> {
+/**
+ * Bundles are checked in a key-free worker (bundle-verifier.ts), or on the page where
+ * there are no workers. One per dashboard; `dispose()` it when the page goes.
+ */
+export function liveBundleVerifier(): BundleVerifier {
+  return new BundleVerifier(() => {
+    if (typeof Worker === "undefined") throw new Error("no workers");
+    return new Worker(new URL("./bundle-verify.worker.ts", import.meta.url), { type: "module" }) as unknown as VerifierPort;
+  });
+}
+
+/**
+ * The queue's reads from our gateway: bundles where it has them, one at a time where
+ * not (gateway-fetcher.ts). A single read is checked on the page: it is the rare path,
+ * ~1 ms per box (Fable consult 2026-11-03 Q4).
+ */
+export function liveGatewayFetcher(verifier: BundleVerifier): Pick<DetailQueueDeps, "fetchBatch" | "maxBatch"> {
   const gateway = gatewayBase();
-  return gatewayOrderFetcher({ gateway, fetchImpl: (input, init) => fetch(input, init), fetchOne: (root) => fetchOrderBox(root, gateway) });
+  return gatewayOrderFetcher({
+    gateway,
+    fetchImpl: (input, init) => fetch(input, init),
+    fetchOne: (root) => fetchOrderBox(root, gateway),
+    parse: (roots, body) => verifier.parse(roots, body),
+  });
 }
 
 export function liveBrowserOrdersDeps(eventId: string): BrowserOrdersDeps {

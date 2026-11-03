@@ -77,6 +77,12 @@ export class BrowserOrders {
   /** The latest answer for the rows read, as `build` needs it. */
   private answer: { status: OrdersStatus; erased: Set<string>; held: Map<string, SealedBoxV2> } | null = null;
   private epoch = 0;
+  /**
+   * Each slot's root, worked out once: the page asks for every row's root on each
+   * update, and recomputing 24k of them was a fifth of a 20k load (#1061). Keyed by
+   * the slot read itself, so a re-read slot (a new object) is worked out afresh.
+   */
+  private readonly roots = new WeakMap<SlotRead, string | null>();
 
   constructor(
     private readonly deps: BrowserOrdersDeps,
@@ -117,7 +123,7 @@ export class BrowserOrders {
     const roots = new Set<string>();
     for (const { slots } of this.rows.values()) {
       for (const s of slots) {
-        const root = s ? orderRoot(s.orderRef) : null;
+        const root = this.rootOfSlot(s);
         if (root) roots.add(root);
       }
     }
@@ -136,7 +142,7 @@ export class BrowserOrders {
       const read = s.ledger ? this.rows.get(s.seriesId) : undefined;
       if (!read || read.key !== ledgerKey(s.ledger!)) continue;
       read.slots.forEach((slot, i) => {
-        const root = slot ? orderRoot(slot.orderRef) : null;
+        const root = this.rootOfSlot(slot);
         const paid = Date.parse(s.paidAt[String(i)] ?? "");
         if (root && now - paid < RECENT_SALE_MS) recent.add(root);
       });
@@ -147,8 +153,17 @@ export class BrowserOrders {
 
   /** The order root behind a row, if its slot was read and carries one. */
   rootOf(order: { seriesId: string; edition: number }): string | null {
-    const slot = this.rows.get(order.seriesId)?.slots[order.edition - 1];
-    return slot ? orderRoot(slot.orderRef) : null;
+    return this.rootOfSlot(this.rows.get(order.seriesId)?.slots[order.edition - 1]);
+  }
+
+  private rootOfSlot(slot: SlotRead | null | undefined): string | null {
+    if (!slot) return null;
+    let root = this.roots.get(slot);
+    if (root === undefined) {
+      root = orderRoot(slot.orderRef);
+      this.roots.set(slot, root);
+    }
+    return root;
   }
 
   private async askStatus(roots: string[], opts?: RequestSigningOptions): Promise<OrdersStatus> {
@@ -181,7 +196,7 @@ export class BrowserOrders {
       const slots = read && read.key === ledgerKey(s.ledger) ? read.slots : [];
       slots.forEach((slot, i) => {
         if (!slot) return;
-        const root = orderRoot(slot.orderRef);
+        const root = this.rootOfSlot(slot);
         const isErased = root !== null && erased.has(root);
         const box = root && !isErased ? (held.get(root) ?? boxFor(root)) : undefined;
         const refund = s.refund[String(i)];

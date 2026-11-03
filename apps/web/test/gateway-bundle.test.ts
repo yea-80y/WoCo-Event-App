@@ -23,8 +23,11 @@ import { BUNDLE_GIVE_UP, gatewayOrderFetcher } from "../src/lib/creator/dashboar
 import type { FetchResult } from "../src/lib/creator/dashboard/detail-queue.js";
 
 const enc = new TextEncoder();
+const hexOf = (s: string) => [...s].map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+/** A box of the exact v2 shape (`isSealedBoxV2`), told apart by its tag. */
+const sealedLike = (tag: string) => ({ v: 2, enc: hexOf(tag).padEnd(2240, "0"), ct: hexOf(tag).padEnd(32, "0") });
 const order = (tag: string) => {
-  const bytes = enc.encode(JSON.stringify({ v: 2, enc: `enc-${tag}`, ct: `ct-${tag}` }));
+  const bytes = enc.encode(JSON.stringify(sealedLike(tag)));
   return { bytes, root: bytesTreeRoot(bytes) };
 };
 type Item = { root: string; status: string; len?: number };
@@ -60,7 +63,7 @@ test("parse: every status maps onto the queue's rules; ok blobs open", () => {
   );
   const out = parseBundle(roots, body)!;
   assert.deepEqual([...out.values()].map((r) => r.kind), ["ok", "ok", "missing", "unavailable", "unreadable"]);
-  assert.deepEqual((out.get(A.root) as { box: unknown }).box, { v: 2, enc: "enc-a", ct: "ct-a" });
+  assert.deepEqual((out.get(A.root) as { box: unknown }).box, sealedLike("a"));
 });
 
 test("parse: a blob under another root is refused for that root only (and retried)", () => {
