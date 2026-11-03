@@ -13,23 +13,25 @@ import { itemGeometry, type Box } from "@woco/shared/seating/geometry";
 import { hasSeats } from "@woco/shared/seating/layout";
 import { drawDefs, drawItem, el, type BuyerView } from "./draw.js";
 import type { SeatmapPalette } from "./palette.js";
-import {
-  SEAT_FREE, neighbour, seatAt, type BuyerPlan, type Direction, type SeatStates,
-} from "./buyer.js";
+import { neighbour, seatAt, type BuyerPlan, type Direction } from "./buyer.js";
 import {
   POINTER_TARGET_PX, SEATS_ALWAYS_DRAWN, TOUCH_TARGET_PX, clampView, fitBox, levelFor, onScreen, panBy, seatTargetPx, showPoints,
   viewBoxOf, visible, zoomAt, zoomForTarget, type Level, type Screen, type View,
 } from "./view.js";
 
+/** What the map shows. The host owns every rule; the picker only draws and reports. */
 export interface PickerState {
-  states: SeatStates;
   picks: readonly number[];
   /** Picking paused: a hold is being placed or is running. */
   locked: boolean;
-  /** Price filter: a seat it excludes is drawn as not available. */
-  allow(k: number): boolean;
+  /** Drawn in its band's fill (free, or not checkable right now), else as a small mark. */
+  free(k: number): boolean;
+  /** Choosing it does something: a buyer picks a free seat in their price; the dashboard (S6) may select any. */
+  canPick(k: number): boolean;
   /** The seat's spoken label. */
   label(k: number): string;
+  /** Why it cannot be chosen ("sold"), null when it can. */
+  reason(k: number): string | null;
   /** A section's second line in the overview: "40 free · £22-28". */
   sectionLine(section: number): string;
   /** No free seat in the section (drawn quieter). */
@@ -57,6 +59,8 @@ export interface Picker {
   fit(): void;
   zoomBy(factor: number): void;
   focusSeat(k: number): void;
+  /** Say something to screen readers ("Added Stalls, Row D, seat 7. 2 seats, £44"). */
+  announce(text: string): void;
   destroy(): void;
 }
 
@@ -92,17 +96,34 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
   let level: Level | null = null;
   let fitted = false;
 
+  const live = document.createElement("div");
+  live.setAttribute("aria-live", "polite");
+  live.style.cssText = "position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap";
+  container.appendChild(live);
+
+  // The roving tab stop: the one seat Tab reaches; arrows move it.
+  let stop = -1;
   const buyerView = (): BuyerView => {
     const s = state;
     return {
       seatAt: (item, row, pos) => seatAt(bp, item, row, pos),
-      free: (k) => !!s && s.states.codes[k] === SEAT_FREE && s.allow(k) && (s.states.sale === "on-sale" || s.states.sale === "unknown"),
+      free: (k) => !!s && s.free(k),
+      canPick: (k) => !!s && s.canPick(k),
       picked: (k) => !!s && s.picks.includes(k),
       label: (k) => s?.label(k) ?? "",
+      reason: (k) => s?.reason(k) ?? null,
+      tabStop: (k) => k === stop,
       number: (k) => bp.plan.seats[k]?.n ?? 0,
-      locked: !s || s.locked || s.states.sale !== "on-sale",
+      locked: !s || s.locked,
     };
   };
+  const seatEl = (k: number) => svg.querySelector(`.seat[data-seat="${k}"]`) as SVGElement | null;
+  function moveStop(k: number): void {
+    if (k === stop) return;
+    seatEl(stop)?.setAttribute("tabindex", "-1");
+    stop = k;
+    seatEl(stop)?.setAttribute("tabindex", "0");
+  }
 
   for (let i = 0; i < items.length; i++) {
     if (hasSeats(items[i])) continue;
@@ -325,6 +346,12 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
       if (block) showSection(Number(block.getAttribute("data-section")));
       return;
     }
+    // On the map itself, Enter goes to the seats (the tab stop, drawn and brought into view).
+    if ((e.key === "Enter" || e.key === " ") && target === svg && stop >= 0) {
+      e.preventDefault();
+      focusSeat(stop);
+      return;
+    }
     if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomBy(1.4); return; }
     if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomBy(1 / 1.4); return; }
     if (e.key === "0") { e.preventDefault(); fit(); return; }
@@ -346,6 +373,7 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
     const seat = (e.target as Element).closest?.(".seat[data-seat]");
     if (!seat) return;
     const k = Number(seat.getAttribute("data-seat"));
+    moveStop(k);
     const pt = bp.points[k];
     if (pt && !onScreen(view, screen, pt.x, pt.y)) animateTo({ ...view, cx: pt.x, cy: pt.y });
   });
@@ -376,9 +404,15 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
       const active = document.activeElement;
       const focusedSeat = active && svg.contains(active) ? active.closest(".seat[data-seat]")?.getAttribute("data-seat") : null;
       state = next;
+      if (stop < 0) {
+        // First visit: Tab lands on the buyer's first pick, else the first seat they could pick.
+        stop = next.picks[0] ?? -1;
+        for (let k = 0; stop < 0 && k < bp.seats; k++) if (next.canPick(k)) stop = k;
+        if (stop < 0 && bp.seats > 0) stop = 0;
+      }
       for (const i of [...drawn.keys()]) drawSeatItem(i);
       if (level === "sections") drawBlocks();
-      if (focusedSeat != null) (svg.querySelector(`.seat[data-seat="${focusedSeat}"]`) as SVGElement | null)?.focus();
+      if (focusedSeat != null) seatEl(Number(focusedSeat))?.focus();
       schedule();
     },
     showSeats(seats) {
@@ -389,11 +423,17 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
     fit,
     zoomBy,
     focusSeat,
+    announce(text) {
+      // Cleared first, so the same words twice are still read out.
+      live.textContent = "";
+      setTimeout(() => { live.textContent = text; }, 30);
+    },
     destroy() {
       cancelAnimationFrame(frame);
       cancelAnimationFrame(anim);
       ro.disconnect();
       svg.remove();
+      live.remove();
     },
   };
 }

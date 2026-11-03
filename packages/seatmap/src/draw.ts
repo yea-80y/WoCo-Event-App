@@ -118,17 +118,28 @@ function tableShort(it: Extract<LayoutItem, { kind: "table" }>): string {
   return roundTableRadius(it.seats.length) >= 40 ? it.name.slice(0, 7) : it.name.slice(0, 3);
 }
 
-/** What a buyer's map needs to know per seat. Seats are addressed by their plan index. */
+/**
+ * What a buyer's map needs to know per seat. Seats are addressed by their plan index.
+ * Every seat is a button a keyboard can reach (one tab stop, arrows for the rest) and
+ * says why it cannot be chosen; only `canPick` seats act.
+ */
 export interface BuyerView {
   /** Seat index of (item, row, pos), or -1 for a gap. */
   seatAt(item: number, row: number, pos: number): number;
+  /** Drawn in its band's fill (else as a small mark). */
   free(k: number): boolean;
+  /** Choosing it does something (picking in a buyer's map, selecting in the dashboard's). */
+  canPick(k: number): boolean;
   picked(k: number): boolean;
   /** The spoken label: "Stalls, Row D, seat 7, £22, wheelchair space". */
   label(k: number): string;
+  /** Why it cannot be chosen ("sold"), spoken after the label; null when it can. */
+  reason(k: number): string | null;
+  /** The one seat in the page's tab order (a roving tab stop). */
+  tabStop(k: number): boolean;
   /** The printed number on a picked seat. */
   number(k: number): number;
-  /** Picking is paused (a hold is running). */
+  /** Choosing is paused (a hold is running). */
   locked: boolean;
 }
 
@@ -245,14 +256,14 @@ export function drawItem(parent: Element, it: LayoutItem, o: DrawOptions): SVGGE
       const k = o.buyer.seatAt(o.itemIndex, s.row, s.pos);
       if (k < 0 || isGap(seat)) continue;
       const picked = o.buyer.picked(k), free = o.buyer.free(k);
-      const sg = el("g", { class: `seat${free && !o.buyer.locked ? " avail" : ""}`, "data-seat": k, transform: rot }, g);
-      if (free || picked) {
-        sg.setAttribute("tabindex", "0");
-        sg.setAttribute("role", "button");
-        sg.setAttribute("aria-pressed", String(picked));
-        sg.setAttribute("aria-label", o.buyer.label(k));
-        if (o.buyer.locked) sg.setAttribute("aria-disabled", "true");
-      }
+      const acts = !o.buyer.locked && (picked || o.buyer.canPick(k));
+      const why = picked ? null : o.buyer.reason(k);
+      const sg = el("g", {
+        class: `seat${acts && !picked ? " avail" : ""}`, "data-seat": k, transform: rot,
+        role: "button", tabindex: o.buyer.tabStop(k) ? 0 : -1, "aria-pressed": String(picked),
+        "aria-label": why ? `${o.buyer.label(k)}, ${why}` : o.buyer.label(k),
+        "aria-disabled": acts ? null : "true",
+      }, g);
       el("rect", { class: "seat-hit", x: x - 2, y: y - 2, width: SEAT_SIZE + 4, height: SEAT_SIZE + 4, fill: "transparent" }, sg);
       if (picked) {
         seatRect(sg, x, y, { fill: p.accent, stroke: p.accent, width: 1 });

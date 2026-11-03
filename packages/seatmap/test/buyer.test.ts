@@ -2,26 +2,25 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LAYOUT_TEMPLATES } from "@woco/shared/seating/templates";
 import { encodeSeatPlan, freezeSeatPlan, seatPlanDigest, seatRefs } from "@woco/shared/seating/plan";
+import { seatStates, type ChainSeats } from "@woco/shared/seating/availability";
 import {
-  SEAT_FREE, SEAT_HELD, SEAT_NO_PRICE, SEAT_ON_HOLD, SEAT_TAKEN,
-  bestFor, buyerPlan, formatMinor, loneSeat, neighbour, pickable, prunePicks, saleState, seatAt, seatStates,
-  sectionSummaries, spokenLabel, togglePick, type ChainSeats,
+  bestFor, buyerPlan, formatMinor, loneSeat, neighbour, prunePicks, seatAt, sectionSummaries, spokenLabel, togglePick,
 } from "../src/buyer.js";
 
 const planOf = (id: string) => {
   const p = freezeSeatPlan(LAYOUT_TEMPLATES.find((t) => t.id === id)!.make());
   return buyerPlan(p, seatPlanDigest(encodeSeatPlan(p)));
 };
+const none = { held: new Set<number>(), confirmed: new Map<number, number>() };
 
-const words = (n: number, taken: number[] = []): bigint[] => {
-  const w = new Array<bigint>(Math.ceil(n / 256)).fill(0n);
-  for (const k of taken) w[k >> 8] |= 1n << BigInt(k & 255);
-  return w;
+const chain = (n: number, taken: number[] = [], over: Partial<ChainSeats> = {}): ChainSeats => {
+  const words = new Array<bigint>(Math.ceil(n / 256)).fill(0n);
+  for (const k of taken) words[k >> 8] |= 1n << BigInt(k & 255);
+  return { words, remaining: 10n, cancelled: false, eventEndTs: 2_000n, blockTs: 1_000n, ...over };
 };
-const chain = (n: number, taken: number[] = [], over: Partial<ChainSeats> = {}): ChainSeats => ({
-  words: words(n, taken), remaining: 10n, cancelled: false, eventEndTs: 2_000n, blockTs: 1_000n, ...over,
-});
 const priced = (bp: ReturnType<typeof planOf>) => bp.plan.bands.map((_, i) => 1000 + i * 500);
+const states = (bp: ReturnType<typeof planOf>, taken: number[] = [], over: Partial<ChainSeats> = {}) =>
+  seatStates(bp.plan, { chain: chain(bp.seats, taken, over), organiser: none, onHold: [], bandPrices: priced(bp) });
 
 test("sections are contiguous seat ranges that cover the walk exactly", () => {
   for (const t of LAYOUT_TEMPLATES.filter((t) => t.id !== "empty")) {
@@ -38,54 +37,19 @@ test("sections are contiguous seat ranges that cover the walk exactly", () => {
   }
 });
 
-test("seat states: chain bit beats everything, unpriced bands never sell, my hold is mine", () => {
-  const bp = planOf("theatre");
-  const n = bp.seats;
-  const prices = priced(bp);
-  prices[bp.plan.seats[9].b] = prices[bp.plan.seats[9].b]; // seat 9's band stays priced
-  const s = seatStates(bp, {
-    chain: chain(n, [0, 300]),
-    held: new Set([1, 0]),
-    onHold: [2, 3, -1, n, 1.5],
-    mine: [3],
-    bandPrices: prices,
-  });
-  assert.equal(s.sale, "on-sale");
-  assert.equal(s.codes[0], SEAT_TAKEN);
-  assert.equal(s.codes[300], SEAT_TAKEN);
-  assert.equal(s.codes[1], SEAT_HELD);
-  assert.equal(s.codes[2], SEAT_ON_HOLD);
-  assert.equal(s.codes[3], SEAT_FREE, "my own hold is not someone else's");
-  assert.equal(s.codes[4], SEAT_FREE);
-
-  const unpriced = seatStates(bp, { chain: chain(n), held: new Set(), onHold: [], bandPrices: prices.map(() => null) });
-  assert.ok([...unpriced.codes].every((c) => c === SEAT_NO_PRICE));
-});
-
-test("sale state: cancelled, then the cutoff by the chain's clock, then remaining", () => {
-  assert.equal(saleState(null), "unknown");
-  assert.equal(saleState(chain(1, [], { cancelled: true, remaining: 5n })), "cancelled");
-  assert.equal(saleState(chain(1, [], { blockTs: 2_000n })), "closed");
-  assert.equal(saleState(chain(1, [], { remaining: 0n })), "sold-out");
-  assert.equal(saleState(chain(1)), "on-sale");
-});
-
-test("nothing is pickable unless on sale, whatever the seat says", () => {
+test("section summaries count free seats only while on sale", () => {
   const bp = planOf("comedy");
-  for (const over of [{ remaining: 0n }, { cancelled: true }, { blockTs: 5_000n }]) {
-    const s = seatStates(bp, { chain: chain(bp.seats, [], over), held: new Set(), onHold: [], bandPrices: priced(bp) });
-    assert.equal(s.codes[0], SEAT_FREE);
-    assert.equal(pickable(s, 0), false);
-    assert.equal(bestFor(bp, s, 1), null);
-    assert.equal(sectionSummaries(bp, s, priced(bp))[0].free, 0);
+  const open = sectionSummaries(bp, states(bp, [0]), priced(bp));
+  assert.equal(open[0].free, bp.sections[0].count - 1);
+  for (const over of [{ remaining: 0n }, { cancelled: true }]) {
+    assert.equal(sectionSummaries(bp, states(bp, [], over), priced(bp))[0].free, 0);
   }
-  const unread = seatStates(bp, { chain: null, held: new Set(), onHold: [], bandPrices: priced(bp) });
-  assert.equal(pickable(unread, 0), false);
+  assert.equal(bestFor(bp, states(bp, [], { remaining: 0n }), 1), null);
 });
 
 test("toggle: add a free seat, remove a picked one even when no longer free, cap at max", () => {
   const bp = planOf("comedy");
-  const s = seatStates(bp, { chain: chain(bp.seats, [5]), held: new Set(), onHold: [], bandPrices: priced(bp) });
+  const s = states(bp, [5]);
   assert.deepEqual(togglePick([], 1, s, 2), [1]);
   assert.equal(togglePick([1], 5, s, 2), "not-free");
   assert.equal(togglePick([1, 2], 3, s, 2), "full");
@@ -95,10 +59,9 @@ test("toggle: add a free seat, remove a picked one even when no longer free, cap
 
 test("best seats skip anything not free and respect the filter", () => {
   const bp = planOf("theatre");
-  const all = seatStates(bp, { chain: chain(bp.seats), held: new Set(), onHold: [], bandPrices: priced(bp) });
-  const best = bestFor(bp, all, 2)!;
+  const best = bestFor(bp, states(bp), 2)!;
   assert.equal(best.length, 2);
-  const taken = seatStates(bp, { chain: chain(bp.seats, best), held: new Set(), onHold: [], bandPrices: priced(bp) });
+  const taken = states(bp, best);
   const next = bestFor(bp, taken, 2)!;
   assert.ok(next.every((k) => !best.includes(k)));
   const band = bp.plan.seats[next[0]].b;
@@ -110,8 +73,7 @@ test("lone seat advice points at the seat left alone", () => {
   const bp = planOf("comedy");
   const row = bp.runs.find((r) => r.isRow && r.seats.filter((k) => k >= 0).length >= 4)!;
   const [a, b, c] = row.seats.filter((k) => k >= 0);
-  // Seat a free, b picked: a sits alone at the row end.
-  const s = seatStates(bp, { chain: chain(bp.seats), held: new Set(), onHold: [], bandPrices: priced(bp) });
+  const s = states(bp);
   assert.equal(loneSeat(bp, s, [b, c]), a);
   assert.equal(loneSeat(bp, s, [a, b]), null);
 });

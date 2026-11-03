@@ -49,8 +49,7 @@ export const LEDGER2_SIG_LIFETIME_SECS = 60 * 60;
 export const LEDGER2_RELAY_MIN_LEFT_SECS = 5 * 60;
 export const LEDGER2_RELAY_MAX_LEFT_SECS = 2 * 60 * 60;
 
-/** Canonical Multicall3, immutable and at one address on every chain it is on. */
-export const MULTICALL3_ADDRESS = "0xca11bde05977b3631167028862be2a173976ca11";
+export { MULTICALL3_ADDRESS } from "../chain/multicall.js";
 /**
  * keccak256 of its runtime code, read 2026-11-02 from Arbitrum One, Ethereum and
  * Optimism (identical on all three). The relay refuses to batch through an address

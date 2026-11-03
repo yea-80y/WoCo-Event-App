@@ -1,7 +1,8 @@
 /**
- * The buyer's map as data: where every seat is, which seats can be picked right now,
- * and what a pick looks like in words. Pure (no DOM), so the picker (picker.ts), each
- * host's order panel and the tests share one implementation. docs/SEATING.md.
+ * The buyer's map as data: where every seat is, what picking does, and what a pick
+ * looks like in words. Pure (no DOM), so the picker (picker.ts), each host's order
+ * panel and the tests share one implementation. Which seats are free is
+ * `@woco/shared/seating/availability` (the server's rules too). docs/SEATING.md.
  *
  * A seat index `k` is the plan's walk order, which is also the ledger's seat number.
  * An item's seats are numbered contiguously by that walk, so a section is a range.
@@ -11,6 +12,7 @@ import { formatSeatLabel, seatLabel, seatRefs, type SeatPlan, type SeatRef } fro
 import { bestSeats, loneSeatLeft, seatRuns, type SeatRun } from "@woco/shared/seating/best";
 import { itemWorldBox, planFocus, seatWorldPoints, unionBox, type Box } from "@woco/shared/seating/geometry";
 import { hasSeats, type LayoutItem } from "@woco/shared/seating/layout";
+import { SEAT_FREE, pickable, type SeatStates } from "@woco/shared/seating/availability";
 import { CURRENCY_SYMBOLS } from "@woco/shared/event/fees";
 
 export interface Section {
@@ -77,96 +79,6 @@ export function buyerPlan(plan: SeatPlan, digest: string): BuyerPlan {
 export function seatAt(bp: BuyerPlan, item: number, row: number, pos: number): number {
   return bp.runsOf[item]?.[row]?.[pos] ?? -1;
 }
-
-// ---------------------------------------------------------------------------
-// What the chain says, and what each seat is right now
-// ---------------------------------------------------------------------------
-
-/** One read of the ledger for a seated event (`load.ts` fills it). */
-export interface ChainSeats {
-  /** `seatWord(eventId, w)` for w = 0 .. ceil(seats / 256) - 1: bit set = a ticket holds the seat. */
-  words: readonly bigint[];
-  remaining: bigint;
-  cancelled: boolean;
-  eventEndTs: bigint;
-  /** The block's timestamp the read ran at, so "sales closed" uses the chain's clock. */
-  blockTs: bigint;
-}
-
-/**
- * The series as a whole:
- *   on-sale    seats can be picked
- *   sold-out   `remaining()` is 0 with sales open (every ticket sold, or capacity cut)
- *   closed     the sales cutoff has passed
- *   cancelled  the event was cancelled
- *   unknown    the chain could not be read: draw the map, pick nothing
- */
-export type SaleState = "on-sale" | "sold-out" | "closed" | "cancelled" | "unknown";
-
-export function saleState(chain: ChainSeats | null): SaleState {
-  if (!chain) return "unknown";
-  if (chain.cancelled) return "cancelled";
-  if (chain.blockTs >= chain.eventEndTs) return "closed";
-  return chain.remaining > 0n ? "on-sale" : "sold-out";
-}
-
-export const SEAT_FREE = 0;
-/** A ticket holds it (the chain's bit). */
-export const SEAT_TAKEN = 1;
-/** The organiser keeps it back. */
-export const SEAT_HELD = 2;
-/** Someone else's 10-minute hold, or paid and not yet on the chain. */
-export const SEAT_ON_HOLD = 3;
-/** Its band has no price in the event: never sold (docs/SEATING.md decision 2). */
-export const SEAT_NO_PRICE = 4;
-
-export interface SeatStateInput {
-  chain: ChainSeats | null;
-  /** Seats the organiser keeps back (the plan's flags until the seat-state feed exists, S6). */
-  held: ReadonlySet<number>;
-  /** Seats the server will refuse (live holds route). Indices out of range are ignored. */
-  onHold: Iterable<number>;
-  /** This buyer's own hold: never shown as someone else's. */
-  mine?: Iterable<number>;
-  /** Price in minor units by plan band index, null for a band the event does not price. */
-  bandPrices: readonly (number | null)[];
-}
-
-export interface SeatStates {
-  sale: SaleState;
-  /** One `SEAT_*` code per seat. With the chain unread, taken seats read FREE: `sale` is then "unknown". */
-  codes: Uint8Array;
-}
-
-export function seatStates(bp: BuyerPlan, input: SeatStateInput): SeatStates {
-  const n = bp.seats;
-  const codes = new Uint8Array(n);
-  for (let k = 0; k < n; k++) {
-    if (input.bandPrices[bp.plan.seats[k].b] == null) codes[k] = SEAT_NO_PRICE;
-  }
-  for (const k of input.held) if (k >= 0 && k < n && codes[k] === SEAT_FREE) codes[k] = SEAT_HELD;
-  const mine = new Set(input.mine ?? []);
-  for (const k of input.onHold) {
-    if (Number.isInteger(k) && k >= 0 && k < n && !mine.has(k) && codes[k] === SEAT_FREE) codes[k] = SEAT_ON_HOLD;
-  }
-  const words = input.chain?.words;
-  if (words) {
-    for (let w = 0; w < words.length; w++) {
-      let word = words[w];
-      if (word === 0n) continue;
-      for (let bit = 0; word !== 0n; bit++, word >>= 1n) {
-        if (word & 1n) {
-          const k = w * 256 + bit;
-          if (k < n) codes[k] = SEAT_TAKEN;
-        }
-      }
-    }
-  }
-  return { sale: saleState(input.chain), codes };
-}
-
-/** Seat `k` may be picked: the series is on sale and the seat is free. */
-export const pickable = (s: SeatStates, k: number): boolean => s.sale === "on-sale" && s.codes[k] === SEAT_FREE;
 
 // ---------------------------------------------------------------------------
 // Picks
