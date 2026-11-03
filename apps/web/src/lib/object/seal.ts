@@ -74,6 +74,8 @@ export interface SealManifestOpts {
   /** The derived secp256k1 issuing key (`ensureIssuingKey`). Its address is
    *  the manifest's `issuer` — computed here, never passed. */
   issuingPrivKey: Uint8Array;
+  /** Signed with the body: a seated series' `{ seatPlan }` (`seatPlanEditionTemplate`). */
+  editionTemplate?: Record<string, unknown>;
 }
 
 /** Build the Merkle root over `bodies`, assemble the manifest body, and sign it. */
@@ -87,6 +89,7 @@ export function sealManifest(opts: SealManifestOpts): SealedManifest {
     metadataRoot: root,
     encoding: "cbor-v1",
     treeScheme: "oz-simple-v1",
+    ...(opts.editionTemplate !== undefined ? { editionTemplate: opts.editionTemplate } : {}),
   };
 
   return {
