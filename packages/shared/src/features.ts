@@ -102,6 +102,11 @@ export const FEATURES = {
   // the stored config: it held the endpoint's auth header in plaintext. Bring
   // back browser-direct (no relay) if organisers ask, not as it was.
   webhooksAllowed: false,
+  // Allocated seating (docs/SEATING.md): the seated creation route, the buyer's seat
+  // map and seat-by-seat sale. OFF until every slice there has shipped: door seat
+  // check, seated checkout and mint, dashboard holds and seat moves. Gates the UI AND,
+  // in lockstep, the server's seated create and seat holds.
+  seatedEventsAllowed: false,
 } as const;
 
 /**

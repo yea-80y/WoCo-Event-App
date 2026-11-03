@@ -1,11 +1,15 @@
 import { Hono } from "hono";
 import { Topic } from "@ethersphere/bee-js";
 import {
+  eventLdFacts,
+  eventMetaDescription,
   eventPageDeployConfig,
   eventPageFeedTopic,
   parseEventPageHead,
   validateLabel,
+  EVENT_DESCRIPTION_MAX,
   EVENT_PAGE_TITLE_MAX,
+  type EventFeed,
   type EventPageConfig,
   type EventPageHead,
 } from "@woco/shared";
@@ -43,7 +47,8 @@ import { isSafeIdParam, resolveDeployApiUrl } from "../lib/site/deploy-config.js
  * The page is built in the organiser's browser on the shared runtime release's
  * `eventPage` line (`@woco/shared/site/collection` buildEventPageCollection) and
  * this server rebuilds it from its OWN config (its API base, Etherna, the feed
- * signer pinned at create) and the browser's head (title + image, format-checked):
+ * signer pinned at create) and the browser's head (title + image, and since #55
+ * description + schema.org facts; format-checked):
  * it stores its own build only when the browser's is byte-identical. It reads
  * nothing of the event to admit a page - the event feed is the organiser's own
  * signed data, so a second read could only add timing differences.
@@ -68,13 +73,32 @@ function pageConfig(apiUrl: string, eventId: string, signer: string): EventPageC
  * The head this server suggests to the builder: the event's own title and image,
  * shaped to pass `parseEventPageHead`. Only a suggestion - a deploy is admitted
  * on the head the browser sends, never on a read of the event.
+ *
+ * With `facts` (#55: an app that renders them asks `?head=2`) it adds the event's
+ * description and schema.org facts as final display values. Only then: an app from
+ * before them passes the head through but renders without them, so every publish it
+ * made would be refused. A head the parser would refuse is never suggested - an
+ * event's odd data costs its page the extra tags, never its publish.
  */
-function suggestedHead(event: { title?: string; imageHash?: string } | null): EventPageHead {
+export function suggestedHead(event: EventFeed | null, facts = false): EventPageHead {
   let title = (event?.title?.trim() || "Event").slice(0, EVENT_PAGE_TITLE_MAX);
   // Never end on half of a surrogate pair (an emoji cut at the limit).
   if (/[\uD800-\uDBFF]$/.test(title)) title = title.slice(0, -1);
   const ref = (event?.imageHash ?? "").toLowerCase();
-  return /^[0-9a-f]{64}$/.test(ref) && !/^0+$/.test(ref) ? { title, imageHash: ref } : { title };
+  const base: EventPageHead = /^[0-9a-f]{64}$/.test(ref) && !/^0+$/.test(ref) ? { title, imageHash: ref } : { title };
+  if (!facts || !event) return base;
+  // The feed is the organiser's own signed data with no shape check on read, and fee
+  // arithmetic throws on an absurd price: any throw here means the plain head.
+  try {
+    const head: EventPageHead = { ...base };
+    const description = eventMetaDescription(event, EVENT_DESCRIPTION_MAX - 1);
+    if (description) head.description = description;
+    const ld = eventLdFacts(event);
+    if (ld) head.ld = ld;
+    return parseEventPageHead(head) ? head : base;
+  } catch {
+    return base;
+  }
 }
 
 /** The kit an event-page deploy builds against: the held release's `eventPage` line on Etherna. */
@@ -114,7 +138,8 @@ site.get("/:eventId/page-config", requireAuth, async (c) => {
   if (!gate.ok) return c.json({ ok: false, error: gate.error }, gate.status);
   // The event's title and image, best effort: a failed read suggests WoCo's logo.
   const event = await getEvent(eventId, gate.signer).catch(() => null);
-  return c.json({ ok: true, data: { config: pageConfig(apiUrl, eventId, gate.signer), head: suggestedHead(event) } });
+  const head = suggestedHead(event, c.req.query("head") === "2");
+  return c.json({ ok: true, data: { config: pageConfig(apiUrl, eventId, gate.signer), head } });
 });
 
 // POST /api/site/deploy — store a browser-built event page.
@@ -133,7 +158,7 @@ site.post("/deploy", requireAuth, async (c) => {
       clientFeed?: boolean;
       /** A name to check against the page feed - read-only, never written here. */
       subEnsLabel?: string;
-      /** The title + image the browser rendered the head with (#1032 slice 5). */
+      /** The head the browser rendered with (#1032 slice 5; description + facts since #55). */
       head?: unknown;
       /** The browser's build (#1032 slice 5). */
       collection?: unknown;

@@ -1,0 +1,32 @@
+// Allocated seating: `import { ... } from "@woco/shared/seating/index"`. Not re-exported
+// from the package root, so its constructors (`table`, `shape`, ...) never shadow other names.
+export {
+  SEAT_LAYOUT_FORMAT, MAX_SEAT_BANDS, MAX_PLAN_SEATS, MAX_PLAN_ITEMS, MAX_ROWS_PER_BLOCK, MAX_SEATS_PER_ROW,
+  MAX_TABLE_SEATS, TABLE_SHAPES, SHAPE_KINDS, FOCUS_KINDS, isGap, hasSeats, seatLists, validateSeatLayout,
+  type TableShape, type ShapeKind, type LayoutSeat, type SeatBand, type RowsItem, type TableItem, type ShapeItem,
+  type LayoutItem, type SeatLayout,
+} from "./layout.js";
+export {
+  SEAT_PLAN_FORMAT, seatRefs, canonicalSeats, seatLabel, formatSeatLabel, seatPlanProblems, freezeSeatPlan,
+  layoutOfPlan, validateSeatPlan, initialHeldSeats, canonicalSeatPlan, encodeSeatPlan, seatPlanDigest, parseSeatPlan,
+  isSeatIndex, MAX_SEAT_PLAN_BYTES,
+  type PlanSeat, type SeatPlan, type SeatRef, type SeatLabel, type SeatPlanProblem,
+} from "./plan.js";
+export { seatPlanEditionTemplate, seatPlanTemplateOf, type SeatPlanTemplate } from "./template.js";
+export { seriesSeatingRefusal, bandPricesMinor, priceMinor } from "./series.js";
+export {
+  SEAT_STATE_FORMAT, heldBytes, encodeHeld, decodeHeld, validateSeatState, buildSeatState, seatStateView,
+  organiserAllowsSale,
+  type SeatState, type SeatStateView,
+} from "./state.js";
+export {
+  SEAT_PITCH, SEAT_SIZE, roundTableRadius, longTableLength, headTableLength, itemGeometry, toWorld, toLocal,
+  itemWorldBox, unionBox, seatWorldPoints, planFocus, itemSeatCount,
+  type Box, type SeatPoint, type ItemLabel, type ItemGeometry,
+} from "./geometry.js";
+export { seatRuns, bestSeats, loneSeatLeft, LONE_SEAT_PENALTY, type SeatRun, type BestSeatsOptions } from "./best.js";
+export { seatLayoutLibraryTopic, seatLayoutTopic, eventSeatStateTopic } from "./topics.js";
+export {
+  rowLetters, labelsAfter, normRot, labelWidth, idMaker, makeRow, rowsBlock, table, shape, LAYOUT_TEMPLATES,
+  type LayoutTemplate,
+} from "./templates.js";

@@ -23,6 +23,12 @@
     import.meta.env.VITE_EVENT_ID ||
     "";
 
+  // The page's canonical, baked at publish when it has a WoCo name (#70): the url its
+  // schema.org Event states (#55). None = no stable address, so the Event states none -
+  // never the gateway URL this page happens to be read through.
+  const PAGE_URL =
+    (typeof document !== "undefined" && document.querySelector('link[rel="canonical"]')?.getAttribute("href")) || null;
+
   let route = $state(parseRoute());
 
   // An event page is checkout only for launch (owner, 2026-10-08): its one way in
@@ -81,7 +87,7 @@
         <OrganiserNotice eventId={EVENT_ID} />
       </div>
     {:else if route === "event"}
-      <EventPage eventId={EVENT_ID} ondashboard={signInHere ? () => { window.location.hash = "#/dashboard"; } : undefined} />
+      <EventPage eventId={EVENT_ID} pageUrl={PAGE_URL} ondashboard={signInHere ? () => { window.location.hash = "#/dashboard"; } : undefined} />
     {:else if route === "dashboard"}
       {#if !auth.ready}
         <div class="state-center">

@@ -642,7 +642,7 @@ function eventOf(who: Wallet): string {
 }
 
 /** What the builder does: read the page config, build on the event-page kit, send. */
-async function pageDeployBody(who: Wallet, eventId: string, head?: { title: string; imageHash?: string }, name?: string) {
+async function pageDeployBody(who: Wallet, eventId: string, head?: import("@woco/shared").EventPageHead, name?: string) {
   const cfg = await call(who, `/api/site/${eventId}/page-config`, null, "GET");
   assert.equal(cfg.status, 200, JSON.stringify(cfg.json));
   const { config, head: suggested } = cfg.json.data as { config: Record<string, string>; head: { title: string; imageHash?: string } };
@@ -785,6 +785,80 @@ test("event page: only the creator gets the page config or publishes the page", 
   assert.equal((await call(stranger, `/api/site/${eventId}/page-config`, null, "GET")).status, 403);
   assert.equal((await call(stranger, "/api/site/deploy", d.body)).status, 403);
   assert.equal((await call(creator, `/api/site/evt-unknown-0001/page-config`, null, "GET")).status, 404);
+});
+
+// ---------------------------------------------------------------------------
+// #55: description + schema.org facts in the head, only for an app that asks
+// ---------------------------------------------------------------------------
+
+/** An event as its feed holds it: enough for every head field. */
+function feedEvent(over: Record<string, unknown> = {}) {
+  return {
+    eventId: "evt-x", title: "Friday Gig", tagline: "Live music every Friday", description: "Long text",
+    imageHash: "AB".repeat(32), startDate: "2026-08-01T19:00:00.000Z", endDate: "2026-08-01T23:00:00.000Z",
+    location: "The Lock Tavern, Camden",
+    geo: { venue: "The Lock Tavern", city: "London", country: "GB", address: "35 Chalk Farm Rd", lat: 51.54, lng: -0.146 },
+    series: [{
+      seriesId: "s1", name: "GA", description: "", totalSupply: 10, price: 0,
+      payment: { price: "12.50", currency: "GBP", recipientAddress: "0x0", acceptedChains: [], escrow: false, stripeEnabled: true },
+    }],
+    ...over,
+  } as never;
+}
+
+test("event page: the suggested head adds the description and facts only for an app that asks (head=2, #55)", async () => {
+  const { suggestedHead } = await import("../src/routes/site.js");
+  const { eventLdFacts, parseEventPageHead } = await import("@woco/shared");
+  const ev = feedEvent();
+  // An app from before #55 passes the head through and renders title + image only.
+  assert.deepEqual(suggestedHead(ev), { title: "Friday Gig", imageHash: "ab".repeat(32) });
+  assert.deepEqual(suggestedHead(null, true), { title: "Event" }, "no event read: today's fallback");
+  const head = suggestedHead(ev, true);
+  assert.deepEqual(Object.keys(head), ["title", "imageHash", "description", "ld"]);
+  assert.equal(head.description, "Live music every Friday");
+  assert.deepEqual(head.ld, eventLdFacts(ev));
+  assert.equal(head.ld!.offers![0]!.price, "12.50");
+  assert.deepEqual(parseEventPageHead(JSON.parse(JSON.stringify(head))), head, "what the server suggests, it admits");
+  // An online event: its description, no Event.
+  const online = suggestedHead(feedEvent({ geo: { online: true } }), true);
+  assert.deepEqual([online.description, online.ld], ["Live music every Friday", undefined]);
+  // Nothing to say: the head is today's.
+  const plain = { title: "Friday Gig", imageHash: "ab".repeat(32) };
+  assert.deepEqual(suggestedHead(feedEvent({ tagline: "", description: "", startDate: "x" }), true), plain);
+  // Data the projection throws on (fee arithmetic past a safe integer; a mistyped
+  // organiser-signed feed): the plain head, never a failed page-config.
+  const { ACCEPTED_COVER_FEE_RATES } = await import("@woco/shared");
+  const absurd = feedEvent({ series: [{
+    seriesId: "s1", name: "GA", description: "", totalSupply: 10, price: 0,
+    payment: { price: "1e400", currency: "GBP", recipientAddress: "0x0", acceptedChains: [], escrow: false, feePassedToCustomer: true, coverFees: ACCEPTED_COVER_FEE_RATES[0] },
+  }] });
+  assert.deepEqual(suggestedHead(absurd, true), plain);
+  assert.deepEqual(suggestedHead(feedEvent({ tagline: 7, series: [{ name: 5, saleStart: 9 }] }), true), plain);
+});
+
+test("event page: a build with the facts is admitted; one that dropped or changed them is refused before any upload (#55)", async () => {
+  const { suggestedHead } = await import("../src/routes/site.js");
+  const who = await organiser();
+  const eventId = eventOf(who);
+  const head = suggestedHead(feedEvent(), true);
+  const before = contents.size;
+  const withoutLd = await pageDeployBody(who, eventId, { title: head.title!, imageHash: head.imageHash });
+  const dropped = await call(who, "/api/site/deploy", { ...withoutLd.body, head });
+  assert.deepEqual([dropped.status, dropped.json.code], [409, "COLLECTION_MISMATCH"], "built without the facts, sent with them");
+  assert.match(String(dropped.json.error), /reload the page/);
+  const d = await pageDeployBody(who, eventId, head);
+  const html = Buffer.from(d.body.collection.objects[0]!, "base64").toString("utf8");
+  assert.match(html, /<script type="application\/ld\+json" data-woco-seo="event">\{"@context":"https:\/\/schema\.org","@type":"Event","name":"Friday Gig"/);
+  const changed = { ...head, ld: { ...head.ld!, offers: [{ ...head.ld!.offers![0]!, price: "1.00" }] } };
+  const altered = await call(who, "/api/site/deploy", { ...d.body, head: changed });
+  assert.deepEqual([altered.status, altered.json.code], [409, "COLLECTION_MISMATCH"]);
+  const malformed = await call(who, "/api/site/deploy", { ...d.body, head: { ...head, ld: { ...head.ld!, startDate: "soon" } } });
+  assert.deepEqual([malformed.status, malformed.json.code], [400, "COLLECTION_MISMATCH"]);
+  assert.equal(contents.size, before, "nothing stored");
+  const r = await call(who, "/api/site/deploy", d.body);
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(r.json.data!.contentHash, d.root);
+  await settle();
 });
 
 // ---------------------------------------------------------------------------

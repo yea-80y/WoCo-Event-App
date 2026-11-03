@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PaymentConfig, PaymentChainId, Hex0x, ObjectGate, ObjectGateGroup } from "@woco/shared";
   import ObjectGateEditor from "../../components/object/ObjectGateEditor.svelte";
-  import { CHAIN_NAMES, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, COVER_FEE_RATES, STRIPE_UK_STANDARD_CARD, cardOrderAmounts } from "@woco/shared";
+  import { CHAIN_NAMES, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, STRIPE_UK_STANDARD_CARD, cardOrderAmounts } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import ConnectWalletModal from "../../components/profile/ConnectWalletModal.svelte";
@@ -11,6 +11,7 @@
   import type { ImportTier } from "./ImportUrlPanel.svelte";
   import { getStripeAccountStatus, type StripeAccountStatus } from "../../api/stripe.js";
   import { importedSaleBound, saleWindowError } from "./date.js";
+  import { ALL_CURRENCIES, currencyChoices, feeSettings, type Ccy } from "./payment-settings.js";
 
   interface WaveItem {
     id: string;
@@ -120,8 +121,6 @@
   let stripeStatus = $state<StripeAccountStatus | null>(null);
   let stripeStatusLoading = $state(true);
 
-  const ALL_CURRENCIES = ["GBP", "USD", "EUR"] as const;
-  type Ccy = (typeof ALL_CURRENCIES)[number];
 
   /**
    * Stripe pays each organiser out in ONE currency. Pricing in any other makes
@@ -136,11 +135,7 @@
   const payoutCurrency = $derived(
     stripeStatus?.defaultCurrency?.toUpperCase() as Ccy | undefined,
   );
-  const currencyOptions = $derived<readonly Ccy[]>(
-    payoutCurrency && (ALL_CURRENCIES as readonly string[]).includes(payoutCurrency)
-      ? [payoutCurrency]
-      : ALL_CURRENCIES,
-  );
+  const currencyOptions = $derived<readonly Ccy[]>(currencyChoices(payoutCurrency));
   /** True when the organiser banks in a currency WoCo does not sell in. */
   const payoutCurrencyUnsupported = $derived(
     !!payoutCurrency && !(ALL_CURRENCIES as readonly string[]).includes(payoutCurrency),
@@ -389,10 +384,7 @@
 
   /** The tier's booking-fee choice as stored on the series (PaymentConfig). */
   function tierFeeSettings(tier: TierGroup) {
-    if (!tier.feePassedToCustomer) return { feePassedToCustomer: false };
-    return tier.coverFees
-      ? { feePassedToCustomer: true, coverFees: { ...COVER_FEE_RATES } }
-      : { feePassedToCustomer: true, buyerFeePercent: tier.buyerFeePercent };
+    return feeSettings(tier);
   }
 
   // A one-ticket order, from the checkout's own arithmetic. The payout estimate

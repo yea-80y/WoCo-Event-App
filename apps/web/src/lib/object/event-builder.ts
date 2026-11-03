@@ -1,10 +1,13 @@
-import { issuingAddress } from "@woco/shared";
-import type { EditionV1Body, SignedManifestV2 } from "@woco/shared";
+import { editionBody, issuingAddress } from "@woco/shared";
+import type { EditionCommon, EditionV1Body, SignedManifestV2 } from "@woco/shared";
+import { seatPlanEditionTemplate, type SeatPlanTemplate } from "@woco/shared/seating/template";
 import { sealManifest } from "./seal.js";
 
 export interface SeriesManifestData {
   seriesId: string;
   editionBodies: EditionV1Body[];
+  /** The bodies minus their number: what a create request may send instead of them. */
+  editionCommon: EditionCommon;
   signedManifest: SignedManifestV2;
   /** keccak256(dagCbor(manifestBody)) == on-chain manifestRef */
   manifestDigestHex: string;
@@ -25,6 +28,8 @@ export interface BuildEventManifestsOpts {
     name: string;
     description: string;
     totalSupply: number;
+    /** Seated: the stored plan (`uploadSeatPlan`); `seats` must equal `totalSupply`. */
+    seatPlan?: SeatPlanTemplate;
   }>;
   /**
    * Mint timestamp baked into every edition body. Defaults to now; injectable
@@ -54,11 +59,13 @@ export function buildEventManifests(opts: BuildEventManifestsOpts): SeriesManife
   const mintedAt = opts.mintedAt ?? new Date().toISOString();
 
   return series.map((s) => {
-    // Build edition bodies (1-indexed editions)
-    const editionBodies: EditionV1Body[] = Array.from({ length: s.totalSupply }, (_, idx) => ({
+    if (s.seatPlan && s.seatPlan.seats !== s.totalSupply) {
+      throw new Error(`Series ${s.seriesId}: a seated series sells exactly one ticket per seat`);
+    }
+    // Every edition body is this one with its number (1-indexed).
+    const editionCommon: EditionCommon = {
       format: "woco.edition.v1" as const,
       seriesId: s.seriesId,
-      edition: idx + 1,
       metadata: {
         name: s.name,
         description: s.description,
@@ -69,19 +76,22 @@ export function buildEventManifests(opts: BuildEventManifestsOpts): SeriesManife
         mintedAt,
       },
       issuer,
-    }));
+    };
+    const editionBodies: EditionV1Body[] = Array.from({ length: s.totalSupply }, (_, idx) => editionBody(editionCommon, idx + 1));
 
     // Seal + sign through the shared core. `totalSupply` is passed as the body
     // count here because on THIS rail every declared unit is a claimable
     // edition the contract sells — the certificate rail passes a cap instead,
     // and stating it explicitly at each call site is what keeps the two from
-    // being confused for one another.
+    // being confused for one another. A seated series' plan is signed into the
+    // body, and so into the on-chain manifestRef.
     const { signedManifest, manifestDigestHex } = sealManifest({
       bodies: editionBodies,
       totalSupply: s.totalSupply,
       issuingPrivKey,
+      ...(s.seatPlan ? { editionTemplate: seatPlanEditionTemplate(s.seatPlan) } : {}),
     });
 
-    return { seriesId: s.seriesId, editionBodies, signedManifest, manifestDigestHex };
+    return { seriesId: s.seriesId, editionBodies, editionCommon, signedManifest, manifestDigestHex };
   });
 }
