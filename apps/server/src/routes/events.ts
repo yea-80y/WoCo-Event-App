@@ -254,7 +254,10 @@ events.post("/", requireAuth, async (c) => {
   }
   // Every edition is a Merkle leaf the server hashes, whichever shape it arrives in
   // (a compact `editionCommon` is a few bytes): bounded before anything else runs.
-  const totalEditions = series.reduce((n, s) => n + (Number.isSafeInteger(s.totalSupply) && s.totalSupply > 0 ? s.totalSupply : Infinity), 0);
+  if (series.some((s) => !Number.isSafeInteger(s.totalSupply) || s.totalSupply < 1)) {
+    return c.json({ ok: false, error: "Each ticket type needs a whole number of tickets, at least 1" }, 400);
+  }
+  const totalEditions = series.reduce((n, s) => n + s.totalSupply, 0);
   if (totalEditions > MAX_EDITIONS_PER_EVENT) {
     return c.json({ ok: false, error: `An event can have at most ${MAX_EDITIONS_PER_EVENT.toLocaleString("en-GB")} tickets` }, 400);
   }

@@ -193,6 +193,8 @@ test("create refuses more editions across its series than the per-event ceiling"
   assert.equal(error, "An event can have at most 200,000 tickets");
   body.series[0].totalSupply = 100_000;
   assert.match((await post(body)).error ?? "", /missing signedManifest/, "at the ceiling it goes on");
+  body.series[0].totalSupply = 0;
+  assert.equal((await post(body)).error, "Each ticket type needs a whole number of tickets, at least 1");
 });
 
 test("a zoned window gets past the check to the next gate", async () => {

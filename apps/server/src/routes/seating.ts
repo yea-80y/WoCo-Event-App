@@ -21,7 +21,7 @@ import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { jsonBodyLimit } from "../lib/http/body-limit.js";
 import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import { refuseUnlessVerifiedOrganiser } from "../lib/stripe/verification.js";
-import { storeSeatPlan } from "../lib/seating/plan-store.js";
+import { SeatPlanTooLargeError, storeSeatPlan } from "../lib/seating/plan-store.js";
 
 export const seatingRoutes = new Hono<AppEnv>();
 
@@ -39,6 +39,15 @@ seatingRoutes.post("/plans", jsonBodyLimit(PLAN_BODY_MAX_BYTES), requireAuth, as
     return c.json({ ok: false, error: "Allocated seating is not available yet" }, 403);
   }
   const parent = (c.get("parentAddress") as string).toLowerCase();
+  // Cheapest first: the per-account limit before a live Stripe check, both before
+  // validating a plan of up to 12 MiB.
+  if (!PLAN_UPLOADS.allow(parent)) {
+    return c.json({ ok: false, error: "Too many seating plans saved in a short time. Try again later." }, 429);
+  }
+  // Storage on the platform's batch: the same organisers who may sell tickets.
+  const refusal = await refuseUnlessVerifiedOrganiser(parent, "Connect and verify Stripe before publishing a seated event.");
+  if (refusal) return c.json(refusal, 403);
+
   const body = c.get("body") as { plan?: unknown; gatewayUrl?: unknown } | undefined;
   if (!body || typeof body !== "object") return c.json({ ok: false, error: "Invalid body" }, 400);
   if (body.gatewayUrl !== undefined && typeof body.gatewayUrl !== "string") {
@@ -48,18 +57,12 @@ seatingRoutes.post("/plans", jsonBodyLimit(PLAN_BODY_MAX_BYTES), requireAuth, as
     return c.json({ ok: false, error: "This seating plan is not valid" }, 400);
   }
 
-  // Storage on the platform's batch: the same organisers who may sell tickets.
-  const refusal = await refuseUnlessVerifiedOrganiser(parent, "Connect and verify Stripe before publishing a seated event.");
-  if (refusal) return c.json(refusal, 403);
-  if (!PLAN_UPLOADS.allow(parent)) {
-    return c.json({ ok: false, error: "Too many seating plans saved in a short time. Try again later." }, 429);
-  }
-
   try {
     const selection = batchForDeploy({ ownerAddress: parent, gatewayUrl: body.gatewayUrl ?? "", deployType: "event" });
     const stored = await storeSeatPlan(body.plan, selection);
     return c.json({ ok: true, data: stored });
   } catch (err) {
+    if (err instanceof SeatPlanTooLargeError) return c.json({ ok: false, error: "This seating plan is too large to store" }, 413);
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     console.error("[seating] plan store failed:", err);
     return c.json({ ok: false, error: "Could not save the seating plan. Try again." }, 502);

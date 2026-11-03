@@ -10,11 +10,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { EventFeed, PaymentConfig } from "@woco/shared";
 import {
-  LAYOUT_TEMPLATES, encodeSeatPlan, freezeSeatPlan, seatPlanDigest, seatPlanEditionTemplate,
+  LAYOUT_TEMPLATES, MAX_SEAT_PLAN_BYTES, encodeSeatPlan, freezeSeatPlan, seatPlanDigest, seatPlanEditionTemplate,
+  type SeatLayout,
 } from "@woco/shared/seating/index";
 import { checkSeatedSeries } from "../src/lib/seating/seated-series.js";
-import { loadSeatPlan, SeatPlanUnavailableError } from "../src/lib/seating/plan-store.js";
+import { loadSeatPlan, SeatPlanTooLargeError, SeatPlanUnavailableError, storeSeatPlan } from "../src/lib/seating/plan-store.js";
 import { registerSeriesExactlyOnce, type RegisterDeps, type RegisterParams } from "../src/lib/event/register-once.js";
+import { registeredIdFromLogs } from "../src/lib/chain/event-contract-ledger.js";
+import { Interface } from "ethers";
 
 process.env.WOCO_EVENT_CHAIN_ID ??= "421614";
 
@@ -84,6 +87,44 @@ test("a plan loads only when its bytes hash to the digest; a failed read is unav
   const other = `0x${"12".repeat(32)}`;
   assert.equal(await loadSeatPlan(REF, other, async () => text), null);
   await assert.rejects(loadSeatPlan(REF, `0x${"34".repeat(32)}`, async () => { throw new Error("404"); }), SeatPlanUnavailableError);
+});
+
+test("a valid plan whose bytes exceed the read cap is refused before anything is stored", { timeout: 120_000 }, async () => {
+  // 200 blocks x 40 rows x 25 seats with 12-character row labels, six-digit numbers and a 24-character
+  // band id (all allowed): valid, but ~80 bytes a seat.
+  const band = "band-aaaaaaaaaaaaaaaaaaa";
+  const items: SeatLayout["items"] = [];
+  for (let b = 0; b < 200; b++) {
+    items.push({
+      id: `r${b}`, kind: "rows", name: `Block ${b + 1}`, x: (b % 20) * 700, y: Math.floor(b / 20) * 1000, rot: 0, curve: 0,
+      numberFrom: "left", numberStart: 100_000,
+      rows: Array.from({ length: 40 }, (_, r) => ({ label: `Row-label-${String(r).padStart(2, "0")}`, seats: Array.from({ length: 25 }, () => ({ b: band })) })),
+    });
+  }
+  const big = freezeSeatPlan({ format: "woco.seatlayout.v1", name: "Big", bands: [{ id: band, name: "All", style: 0 }], items });
+  assert.ok(encodeSeatPlan(big).length > MAX_SEAT_PLAN_BYTES, "the fixture is over the cap");
+  await assert.rejects(storeSeatPlan(big, { batchId: "00", target: "wocoBee" }), SeatPlanTooLargeError);
+});
+
+test("a registration receipt counts only the ledger's own logs, and a seated one must say Seated", () => {
+  const iface = new Interface([
+    "event Registered(bytes32 indexed eventId, address indexed organiser, address indexed registrant, uint64 supply, bytes32 manifestRef, uint64 eventEndTs)",
+    "event Seated(bytes32 indexed eventId)",
+  ]);
+  const LEDGER = "0x" + "2e".repeat(20), OTHER = "0x" + "99".repeat(20);
+  const id = "0x" + "ab".repeat(32), other = "0x" + "cd".repeat(32);
+  const log = (address: string, name: "Registered" | "Seated", eventId: string) => {
+    const args = name === "Registered" ? [eventId, "0x" + "01".repeat(20), "0x" + "02".repeat(20), 5, "0x" + "03".repeat(32), 9] : [eventId];
+    const e = iface.encodeEventLog(name, args);
+    return { address, topics: e.topics, data: e.data };
+  };
+  assert.equal(registeredIdFromLogs([log(LEDGER, "Registered", id)], LEDGER, false), id);
+  assert.equal(registeredIdFromLogs([log(LEDGER, "Registered", id), log(LEDGER, "Seated", id)], LEDGER.toUpperCase().replace("0X", "0x"), true), id);
+  assert.throws(() => registeredIdFromLogs([log(OTHER, "Registered", other), log(LEDGER, "Registered", id)].slice(0, 1), LEDGER, false), /Registered event not found/, "another contract's log");
+  assert.equal(registeredIdFromLogs([log(OTHER, "Registered", other), log(LEDGER, "Registered", id)], LEDGER, false), id, "skips the foreign one");
+  assert.throws(() => registeredIdFromLogs([log(LEDGER, "Registered", id)], LEDGER, true), /Seated event not found/);
+  assert.throws(() => registeredIdFromLogs([log(LEDGER, "Registered", id), log(LEDGER, "Seated", other)], LEDGER, true), /Seated event not found/, "Seated for another id");
+  assert.throws(() => registeredIdFromLogs([log(LEDGER, "Registered", id), log(OTHER, "Seated", id)], LEDGER, true), /Seated event not found/, "Seated from another contract");
 });
 
 // ── register-once carries seating ───────────────────────────────────────────

@@ -78,6 +78,20 @@ test("painting: a price puts a held seat back on sale and keeps a wheelchair spa
   assert.ok(validateSeatLayout(l));
 });
 
+test("tidy cleans names the way the format needs: trimmed, no invisible characters, never empty", () => {
+  const l = fresh("cabaret");
+  l.name = "  My room ";
+  (l.items[1] as TableItem).name = "Table​ 1 ";
+  (l.items[2] as TableItem).name = "   ";
+  l.bands[0].name = " Front‮ ";
+  tidyLayout(l);
+  assert.equal(l.name, "My room");
+  assert.equal((l.items[1] as TableItem).name, "Table 1");
+  assert.equal((l.items[2] as TableItem).name, "Table");
+  assert.equal(l.bands[0].name, "Front");
+  assert.ok(validateSeatLayout(l));
+});
+
 test("copies get fresh ids and non-clashing names; turning stays 0..359", () => {
   const l = fresh("cabaret");
   const c = cloneItem(l, l.items[1], { x: 140, y: 0 });

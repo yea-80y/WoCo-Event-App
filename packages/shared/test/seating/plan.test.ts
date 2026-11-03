@@ -141,6 +141,35 @@ test("two seats that would print the same label stop publishing", () => {
   assert.throws(() => freezeSeatPlan(l));
 });
 
+test("odd/even houses: numbers go up in twos from the start, either direction", () => {
+  const l = golden();
+  const side = l.items[2] as Extract<SeatLayout["items"][number], { kind: "rows" }>;
+  side.numberStep = 2;
+  side.numberStart = 2;
+  assert.deepEqual(freezeSeatPlan(l).seats.slice(5, 8).map((s) => s.n), [6, 4, 2], "right to left: evens");
+  side.numberFrom = "left";
+  side.numberStart = 1;
+  assert.deepEqual(freezeSeatPlan(l).seats.slice(5, 8).map((s) => s.n), [1, 3, 5], "left to right: odds");
+  assert.ok(validateSeatLayout(l));
+  (side as { numberStep?: number }).numberStep = 1;
+  assert.equal(validateSeatLayout(l), false, "consecutive is spelled by leaving it out");
+});
+
+test("labels that print alike are the same label: case, spacing and invisible characters", () => {
+  const l = golden();
+  l.items.push({ id: "i5", kind: "table", shape: "round", name: "table 1", x: 200, y: 300, rot: 0, seats: [{ b: "b1" }, { b: "b1" }] });
+  assert.ok(seatPlanProblems(l).some((p) => p.kind === "duplicate-label"), "Table 1 vs table 1");
+  const bad = (name: string) => { const x = golden(); (x.items[3] as { name: string }).name = name; return validateSeatLayout(x); };
+  assert.equal(bad("Table 1 "), false, "trailing space");
+  assert.equal(bad(" Table 1"), false, "leading space");
+  assert.equal(bad("Table​1"), false, "zero-width space");
+  assert.equal(bad("Table‮1"), false, "direction override");
+  assert.equal(bad("Table 1"), true);
+  const rows = golden();
+  (rows.items[1] as Extract<SeatLayout["items"][number], { kind: "rows" }>).rows[1].label = "a";
+  assert.equal(validateSeatLayout(rows), false, "rows A and a in one block");
+});
+
 test("a layout with no seats cannot be published", () => {
   const empty = LAYOUT_TEMPLATES.find((t) => t.id === "empty")!.make();
   assert.ok(validateSeatLayout(empty));

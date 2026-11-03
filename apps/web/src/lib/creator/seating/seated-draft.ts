@@ -5,7 +5,7 @@
 
 import { BUYER_FEE_DEFAULT_PCT, ticketPriceMeetsMinimum, MIN_TICKET_PRICE } from "@woco/shared";
 import type { SeatLayout } from "@woco/shared/seating/layout";
-import { freezeSeatPlan, seatPlanProblems, type SeatPlan } from "@woco/shared/seating/plan";
+import { MAX_SEAT_PLAN_BYTES, encodeSeatPlan, freezeSeatPlan, seatPlanProblems, type SeatPlan } from "@woco/shared/seating/plan";
 import { cardPayment, type Ccy, type FeeChoice } from "../events/payment-settings.js";
 import type { PaymentConfig } from "@woco/shared";
 
@@ -49,6 +49,10 @@ export function seatedDraftProblems(d: SeatedDraft): string[] {
     const p = (d.prices[b.id] ?? "").trim();
     if (!PRICE_RE.test(p) || !ticketPriceMeetsMinimum(p)) out.push(`${b.name}: set a price of at least ${MIN_TICKET_PRICE}.00.`);
   }
+  // Only a very large plan with long names gets near the cap; every reader refuses one over it.
+  if (!out.length && encodeSeatPlan(freezeSeatPlan(d.layout, d.sourceId)).length > MAX_SEAT_PLAN_BYTES) {
+    out.push("This seating plan is too large to publish. Use shorter section, table and row names, or fewer seats.");
+  }
   return out;
 }
 
@@ -72,8 +76,10 @@ export type Admission = "general" | "seated";
 
 /**
  * What a create flow publishes: the general-admission ticket types, or the seated
- * ticket type (once it is complete) plus any standing tickets sold beside it. Both
- * routes' drafts are kept by the host; only the chosen one is published.
+ * ticket type plus any standing tickets sold beside it. Both routes' drafts are kept
+ * by the host; only the chosen one is published. On the seated route an unfinished
+ * plan publishes NOTHING (empty list = publish stays off), never the standing tickets
+ * alone: that would be a seated event with no seats.
  */
 export function publishableSeries<T extends { seriesId: string }>(
   admission: Admission,
@@ -83,7 +89,8 @@ export function publishableSeries<T extends { seriesId: string }>(
 ): (T | SeatedSeries)[] {
   if (admission === "general") return series;
   const s = seatedSeries(seated);
-  return [...(s ? [s] : []), ...(standingToo ? series : [])];
+  if (!s) return [];
+  return [s, ...(standingToo ? series : [])];
 }
 
 /** "12" -> "12.00", "12.5" -> "12.50": one spelling per price. */

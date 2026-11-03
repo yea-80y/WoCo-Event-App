@@ -18,7 +18,7 @@
  * Validation is closed and refuses, never normalises.
  */
 
-import { hasExactKeys, isDisplayText, isIntIn, isPlainRecord } from "../validate.js";
+import { hasExactKeys, isDisplayText, isIntIn, isPlainRecord, labelIdentity } from "../validate.js";
 
 export const SEAT_LAYOUT_FORMAT = "woco.seatlayout.v1";
 
@@ -63,6 +63,11 @@ export interface RowsItem {
   numberFrom: "left" | "right";
   /** First seat number in every row (default 1), for blocks that continue another's numbering. */
   numberStart?: number;
+  /**
+   * 2 = numbers go up in twos (odd seats on one side of a house, even on the other:
+   * start 1 gives 1, 3, 5...; start 2 gives 2, 4, 6...). Absent = consecutive.
+   */
+  numberStep?: 2;
   rows: { label: string; seats: LayoutSeat[] }[];
 }
 
@@ -142,16 +147,17 @@ function validItem(v: unknown, bandIds: ReadonlySet<string>): boolean {
   if (!isPlainRecord(v)) return false;
   if (typeof v.id !== "string" || !ID_RE.test(v.id)) return false;
   if (v.kind === "rows") {
-    if (!hasExactKeys(v, ["id", "kind", "name", "x", "y", "rot", "curve", "numberFrom", "rows"], ["numberStart"])) return false;
+    if (!hasExactKeys(v, ["id", "kind", "name", "x", "y", "rot", "curve", "numberFrom", "rows"], ["numberStart", "numberStep"])) return false;
     if (!isText(v.name, 80) || !validPlace(v) || !isIntIn(v.curve, 0, 100)) return false;
     if (v.numberFrom !== "left" && v.numberFrom !== "right") return false;
     if ("numberStart" in v && !isIntIn(v.numberStart, 1, 100_000)) return false;
+    if ("numberStep" in v && v.numberStep !== 2) return false;
     if (!Array.isArray(v.rows) || v.rows.length === 0 || v.rows.length > MAX_ROWS_PER_BLOCK) return false;
     const labels = new Set<string>();
     for (const row of v.rows) {
       if (!isPlainRecord(row) || !hasExactKeys(row, ["label", "seats"])) return false;
-      if (!isText(row.label, 12) || labels.has(row.label)) return false;
-      labels.add(row.label);
+      if (!isText(row.label, 12) || labels.has(labelIdentity(row.label))) return false;
+      labels.add(labelIdentity(row.label));
       if (!validSeatList(row.seats, MAX_SEATS_PER_ROW, bandIds)) return false;
     }
     return true;

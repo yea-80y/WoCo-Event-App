@@ -25,7 +25,7 @@ import {
   seatLists,
   validateSeatLayout,
 } from "./layout.js";
-import { hasExactKeys, isIntIn, isPlainRecord } from "../validate.js";
+import { hasExactKeys, isIntIn, isPlainRecord, labelIdentity } from "../validate.js";
 
 export const SEAT_PLAN_FORMAT = "woco.seatplan.v1";
 
@@ -76,12 +76,13 @@ export function seatRefs(items: readonly LayoutItem[]): SeatRef[] {
 /** The printed number of each real seat of one row or table, by position (null for a gap). */
 function rowNumbers(it: LayoutItem, list: readonly LayoutSeat[]): (number | null)[] {
   const start = it.kind === "rows" || it.kind === "table" ? (it.numberStart ?? 1) : 1;
+  const step = it.kind === "rows" ? (it.numberStep ?? 1) : 1;
   const real = list.filter((s) => !isGap(s)).length;
   const fromRight = it.kind === "rows" && it.numberFrom === "right";
   let k = 0;
   return list.map((s) => {
     if (isGap(s)) return null;
-    const n = fromRight ? start + (real - 1 - k) : start + k;
+    const n = start + step * (fromRight ? real - 1 - k : k);
     k++;
     return n;
   });
@@ -138,7 +139,8 @@ export function formatSeatLabel(l: SeatLabel): string {
   return l.row !== undefined ? `${l.area}, Row ${l.row}, seat ${l.seat}` : `${l.area}, seat ${l.seat}`;
 }
 
-const labelKey = (area: string, s: PlanSeat) => `${area}\u0000${s.r ?? ""}\u0000${s.n}`;
+/** Two seats print the same label when these keys match (case and spacing do not tell them apart). */
+const labelKey = (area: string, s: PlanSeat) => `${labelIdentity(area)}\u0000${labelIdentity(s.r ?? "")}\u0000${s.n}`;
 
 // ---------------------------------------------------------------------------
 // Freezing a layout
@@ -259,6 +261,7 @@ function canonicalItem(it: LayoutItem): LayoutItem {
     return {
       id: it.id, kind: "rows", name: it.name, x: it.x, y: it.y, rot: it.rot, curve: it.curve, numberFrom: it.numberFrom,
       ...(it.numberStart !== undefined ? { numberStart: it.numberStart } : {}),
+      ...(it.numberStep !== undefined ? { numberStep: it.numberStep } : {}),
       rows: it.rows.map((r) => ({ label: r.label, seats: r.seats.map(canonicalSeat) })),
     };
   }

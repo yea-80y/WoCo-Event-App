@@ -6,6 +6,8 @@
  */
 
 import {
+  MAX_SEAT_PLAN_BYTES,
+  canonicalSeatPlan,
   encodeSeatPlan,
   parseSeatPlan,
   seatPlanDigest,
@@ -21,26 +23,31 @@ export interface StoredSeatPlan {
   seats: number;
 }
 
+/** A plan whose canonical bytes exceed MAX_SEAT_PLAN_BYTES: every reader would refuse it. */
+export class SeatPlanTooLargeError extends Error {
+  constructor(bytes: number) {
+    super(`seat plan is ${bytes} bytes, over the ${MAX_SEAT_PLAN_BYTES}-byte cap`);
+    this.name = "SeatPlanTooLargeError";
+  }
+}
+
 /**
- * Store a validated plan: its canonical bytes on the event's batch, and on the WoCo
- * batch as well when that is Etherna (browsers read it through our gateway, and a
- * chunk stamped only on Etherna reaches our bee minutes later). Whitelisted before
- * returning: an unwhitelisted chunk reads as absent to a buyer's map.
+ * Store a validated plan: its canonical bytes on the event's batch, ONE copy (owner
+ * 2026-10-21: no permanent double-stamping of Etherna-routed content). For an Etherna
+ * event a buyer's map may need a few minutes before our gateway serves it; the server's
+ * own reads ask Etherna too. Whitelisted before returning: an unwhitelisted chunk reads
+ * as absent to a buyer's map. Refused over the read cap, so nothing is stored that a
+ * reader would later refuse.
  */
 export async function storeSeatPlan(plan: SeatPlan, selection: BatchSelection): Promise<StoredSeatPlan> {
-  const bytes = encodeSeatPlan(plan);
+  const canonical = canonicalSeatPlan(plan);
+  const bytes = encodeSeatPlan(canonical);
+  if (bytes.length > MAX_SEAT_PLAN_BYTES) throw new SeatPlanTooLargeError(bytes.length);
   const digest = seatPlanDigest(bytes);
-  const refs = await Promise.all([
-    uploadToBytes(bytes, selection),
-    ...(selection.target === "etherna" ? [uploadToBytes(bytes)] : []),
-  ]);
-  const ref = refs[0].toLowerCase().replace(/^0x/, "");
-  if (refs.some((r) => r.toLowerCase().replace(/^0x/, "") !== ref)) {
-    throw new Error("seat plan upload: the two batches returned different references");
-  }
+  const ref = (await uploadToBytes(bytes, selection)).toLowerCase().replace(/^0x/, "");
   await whitelistHashes([ref]);
-  remember(digest, plan);
-  return { ref, digest, seats: plan.seats.length };
+  remember(digest, canonical);
+  return { ref, digest, seats: canonical.seats.length };
 }
 
 // Immutable by digest, so a hit never goes stale. Bounded: a big plan is megabytes.

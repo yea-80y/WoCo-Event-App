@@ -238,6 +238,16 @@ function trimEnds(seats: LayoutSeat[]): void {
  */
 export function tidyLayout(layout: SeatLayout): number {
   let removed = 0;
+  // Names as typed may carry outer spaces or invisible characters, which the format
+  // refuses (two names that print alike must not pass as different).
+  const clean = (s: string, fallback: string, max: number) => s.replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim().slice(0, max) || fallback;
+  layout.name = clean(layout.name, "Seating plan", 80);
+  for (const b of layout.bands) b.name = clean(b.name, "Price", 60);
+  for (const it of layout.items) {
+    if (it.kind === "rows" || it.kind === "table") it.name = clean(it.name, it.kind === "rows" ? "Section" : "Table", 80);
+    else it.text = clean(it.text, "Label", 80);
+    if (it.kind === "rows") for (const r of it.rows) r.label = clean(r.label, "?", 12);
+  }
   layout.items = layout.items.filter((it) => {
     if (it.kind === "rows") {
       it.rows = it.rows.filter((r) => {

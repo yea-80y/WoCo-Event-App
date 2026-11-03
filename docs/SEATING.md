@@ -62,6 +62,13 @@ templates.ts (starting layouts). Every number is an integer, so all three format
 Ceilings: 200,000 seats a plan (structural, not a product limit), 8 bands, 12 MiB a plan blob (a 200,000-seat
 plan measures 8.5 MB).
 
+Decided before the format freezes (Fable sign-off, 2026-11-03): numbering is consecutive or in twos
+(`numberStep: 2`, odd or even sides of a house); 8 price bands per plan, one fill each (more would need
+hue, which the map does not use for meaning); labels that print alike are the same label (NFC, case and
+spacing ignored; no outer spaces or invisible characters). A plan is stored ONCE, on the event's batch
+(no Etherna + WoCo double copy, owner 2026-10-21): an Etherna event's map can take a few minutes to
+reach our gateway.
+
 Seat-list rules: canonical walk of the plan, versioned, golden vectors; label parts structured
 (`{ section, row, seat, table }`), never a pre-rendered string; `accessible: false`, never `null`
 (statement values refuse null); `seats` = manifest `totalSupply` = registered supply. Every reader
@@ -149,6 +156,11 @@ Each slice is one PR. Fable signs off S2, S4, S5 and S6 (server, money path, doo
    receipt parsing, revert decoding, seat in the sale record and email.
 5. **S5 door + tickets**: door pack `seats[]`, scanner refusal + label, seat on the passport and ticket page.
 6. **S6 dashboard**: held / release, seat moves through the relay, confirm freed seats, relay refusals.
+
+Carried into later slices from the S1+S2 sign-off: S4 reads `isSeated` before recording a recovered
+registration (pending tx or intent marker) and refuses a mismatch; S4/S6 read `seatWord` and `seatNonces`
+in one multicall; S6 sizes seat-state writes against the SOC relay's per-account limits (a 200,000-seat
+state is ~50 KB).
 
 Before the flag flips: scanner deploy, a site runtime release (organisers republish), the
 `onchain-events.json` rollback note for the new fields, `docs/legal/DATA_INVENTORY.md` + privacy-notice

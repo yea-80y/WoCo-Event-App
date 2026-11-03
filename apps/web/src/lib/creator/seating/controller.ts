@@ -390,6 +390,15 @@ export class BuilderController {
     for (const it of this.selItems()) if (it.kind === "rows") it.numberFrom = v;
     this.render();
   }
+  /** 1 = consecutive; 2 = odd or even (with numbers starting at 1 or 2). */
+  setNumberStep(step: 1 | 2): void {
+    this.snapshot();
+    for (const it of this.selItems()) {
+      if (it.kind !== "rows") continue;
+      if (step === 2) it.numberStep = 2; else delete it.numberStep;
+    }
+    this.render();
+  }
   setNumberStart(n: number): void {
     const it = this.selItems()[0];
     if (!it || (it.kind !== "rows" && it.kind !== "table")) return;

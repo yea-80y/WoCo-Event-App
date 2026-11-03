@@ -548,7 +548,8 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     which plan). A build from before seating reads it as ordinary and drops both
     fields on its next write: those series then refund rather than mint (the
     ledger refuses the general path), and the plan link must be restored from
-    the backup)
+    the backup - and those series must NOT be re-registered, which would mint a
+    second on-chain event)
   kernel-deployed.json (which Kernels have been seen with an on-chain owner, WHICH
     owner, at which L2 block, and — since #489 — on which CHAIN: records are keyed
     `{chainId}:{address}` and a record from another chain is ignored, never deleted.

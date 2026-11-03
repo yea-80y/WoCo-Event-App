@@ -335,7 +335,12 @@
                 <option value="left">on the left</option><option value="right">on the right</option>
               </select>
             </label>
-            <label class="mini">Numbers start at
+            <label class="mini">Count
+              <select class="input" value={it.numberStep === 2 ? "2" : "1"} onchange={(e) => ctrl.setNumberStep((e.currentTarget as HTMLSelectElement).value === "2" ? 2 : 1)}>
+                <option value="1">1, 2, 3</option><option value="2">in twos (odd or even)</option>
+              </select>
+            </label>
+            <label class="mini">from
               <input class="input num" type="number" min="1" value={it.numberStart ?? 1} onchange={(e) => ctrl.setNumberStart(Number((e.currentTarget as HTMLInputElement).value))} />
             </label>
           {:else if it.kind === "table"}

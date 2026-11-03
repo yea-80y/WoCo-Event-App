@@ -57,7 +57,7 @@ test("the publish list follows the route; standing tickets ride along only when 
   assert.deepEqual(publishableSeries("general", d, true, ga), ga);
   assert.deepEqual(publishableSeries("seated", d, false, ga).map((s) => s.seriesId), [d.seriesId]);
   assert.deepEqual(publishableSeries("seated", d, true, ga).map((s) => s.seriesId), [d.seriesId, "ga-000000001"]);
-  assert.deepEqual(publishableSeries("seated", newSeatedDraft("GBP"), true, ga), ga, "an unfinished plan publishes nothing seated");
+  assert.deepEqual(publishableSeries("seated", newSeatedDraft("GBP"), true, ga), [], "an unfinished plan publishes nothing, standing tickets included");
 });
 
 test("prices have one spelling", () => {

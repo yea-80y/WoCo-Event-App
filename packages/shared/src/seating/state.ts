@@ -136,7 +136,12 @@ export function seatStateView(plan: Pick<SeatPlan, "items" | "seats">, planDiges
 /**
  * Whether the organiser lets seat `k` sell: not held, and either never freed on
  * chain (`seatNonce` 0) or freed and confirmed at exactly that nonce. Whether a
- * ticket holds it now is the chain's `seatWord`, checked separately.
+ * ticket holds it now is the chain's `seatWord`, checked separately - and in the SAME
+ * read as `seatNonces`, or a seat freed between the two reads sells unconfirmed.
+ *
+ * Stricter than the contract header asks: a seat freed by ANY move (a holder-consented
+ * `reseat` included, not only an organiser-only one) waits for confirmation. One rule
+ * for every freed seat; the organiser confirms with one tap.
  */
 export function organiserAllowsSale(view: SeatStateView, k: number, seatNonce: number | bigint): boolean {
   if (view.held.has(k)) return false;

@@ -25,8 +25,18 @@ export function isIntIn(v: unknown, min: number, max: number): v is number {
   return Number.isSafeInteger(v) && (v as number) >= min && (v as number) <= max;
 }
 
-/** Display text: non-empty after trimming, no control characters, at most `max` UTF-16 units. */
+/**
+ * Display text: non-empty, no leading or trailing space, no control or invisible
+ * formatting characters (Cf: zero-width, direction marks), at most `max` UTF-16 units.
+ * Two strings that print alike must not pass as different (seat labels are keyed on them).
+ */
 export function isDisplayText(v: unknown, max: number): v is string {
-  // eslint-disable-next-line no-control-regex
-  return typeof v === "string" && v.length <= max && v.trim().length > 0 && !/[\u0000-\u001f\u007f]/.test(v);
+  return (
+    typeof v === "string" && v.length > 0 && v.length <= max && v === v.trim() &&
+    // eslint-disable-next-line no-control-regex
+    !/[\u0000-\u001f\u007f]/.test(v) && !/\p{Cf}/u.test(v)
+  );
 }
+
+/** How a label is compared for "prints the same": NFC, case-folded, runs of space collapsed. */
+export const labelIdentity = (s: string): string => s.normalize("NFC").toLowerCase().replace(/\s+/g, " ");
