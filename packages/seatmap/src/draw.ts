@@ -251,6 +251,7 @@ export function drawItem(parent: Element, it: LayoutItem, o: DrawOptions): SVGGE
         sg.setAttribute("role", "button");
         sg.setAttribute("aria-pressed", String(picked));
         sg.setAttribute("aria-label", o.buyer.label(k));
+        if (o.buyer.locked) sg.setAttribute("aria-disabled", "true");
       }
       el("rect", { class: "seat-hit", x: x - 2, y: y - 2, width: SEAT_SIZE + 4, height: SEAT_SIZE + 4, fill: "transparent" }, sg);
       if (picked) {
@@ -264,6 +265,7 @@ export function drawItem(parent: Element, it: LayoutItem, o: DrawOptions): SVGGE
       } else if (free) {
         seatRect(sg, x, y, fill);
         if (seat.a) wheelMark(sg, x, y, st.ink);
+        if (seat.c) companionMark(sg, x, y, st.ink);
       } else {
         // Sold, held, or not in the chosen price: a small mark, so free seats read first.
         el("rect", { x: x + 4, y: y + 4, width: SEAT_SIZE - 8, height: SEAT_SIZE - 8, rx: 1, fill: p.line }, sg);
