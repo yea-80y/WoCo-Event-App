@@ -36,6 +36,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeJsonAtomic } from "../marketing/persist.js";
+import { RESERVATION_MAX_QTY } from "@woco/shared/event/reservation";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "reservations.json");
@@ -49,8 +50,8 @@ const RESERVATION_GC_INTERVAL_MS = 60 * 1000;
 /** Keep consumed/expired entries this long for debugging before deletion. */
 const RESERVATION_KEEP_AFTER_MS = 60 * 60 * 1000; // 1 hour
 
-/** Max quantity that can be reserved in one entry (matches Stripe checkout cap). */
-export const RESERVATION_MAX_QTY = 10;
+/** Max quantity that can be reserved in one entry (matches Stripe checkout cap). Shared with every client. */
+export { RESERVATION_MAX_QTY };
 
 /**
  * The per-IP held-seat cap is no longer a constant — it is sized per event by
@@ -103,6 +104,21 @@ export interface Reservation {
    * flood-control hint.
    */
   ip?: string;
+  /**
+   * Allocated seating: the seat indices this hold names (docs/SEATING.md), ascending,
+   * each once, `quantity` of them. Only a seated hold has it, and nothing writes one
+   * until seated holds ship (S4): the reserve route refuses seated series until then.
+   */
+  seats?: number[];
+}
+
+/** A persisted `seats` field is used only when it is exactly a seated hold's. */
+function validSeats(seats: unknown, quantity: number): seats is number[] {
+  if (!Array.isArray(seats) || seats.length !== quantity || seats.length > RESERVATION_MAX_QTY) return false;
+  for (let i = 0; i < seats.length; i++) {
+    if (!Number.isSafeInteger(seats[i]) || seats[i] < 0 || (i > 0 && seats[i] <= seats[i - 1])) return false;
+  }
+  return true;
 }
 
 const reservations = new Map<string, Reservation>();
@@ -115,7 +131,11 @@ function ensureLoaded(): void {
   try {
     const raw = readFileSync(STORE_FILE, "utf-8");
     const arr = JSON.parse(raw) as Reservation[];
-    for (const r of arr) reservations.set(r.id, r);
+    for (const r of arr) {
+      // A malformed seat list loses the list, never the hold (it still counts by quantity).
+      if ("seats" in r && !validSeats(r.seats, r.quantity)) delete r.seats;
+      reservations.set(r.id, r);
+    }
     console.log(`[reservations] Loaded ${reservations.size} reservations from disk`);
   } catch {
     // File doesn't exist yet — fine
@@ -207,6 +227,26 @@ export function heldFor(eventId: string, seriesId: string): number {
     }
   }
   return total;
+}
+
+/**
+ * Seats of a seated series the server would refuse that the chain may not show yet,
+ * ascending (the live holds route, docs/SEATING.md "Buyer experience"): every active
+ * hold's seats, plus the seats of holds consumed (paid, minted) in the last
+ * RESERVATION_TTL_MS, so a buyer's map reading a public RPC replica that has not
+ * caught up with the mint still sees them taken. Seats only: never a hold's expiry,
+ * id, client key or address.
+ */
+export function heldSeatsFor(eventId: string, seriesId: string): number[] {
+  ensureLoaded();
+  const now = Date.now();
+  const out = new Set<number>();
+  for (const r of reservations.values()) {
+    if (r.eventId !== eventId || r.seriesId !== seriesId || !r.seats) continue;
+    const recentlyPaid = !!r.consumedAt && new Date(r.consumedAt).getTime() + RESERVATION_TTL_MS > now;
+    if (isActive(r, now) || recentlyPaid) for (const k of r.seats) out.add(k);
+  }
+  return [...out].sort((a, b) => a - b);
 }
 
 /**

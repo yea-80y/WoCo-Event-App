@@ -10,15 +10,17 @@ import { sellableKeys } from "../lib/keyring/sale-keys.js";
 import { noticeRefusal, organiserNoticeVerdict } from "../lib/legal/notice-gate.js";
 import { getOnChainEventAt } from "../lib/chain/event-contract.js";
 import { ledger2SaleStatus, noteChainCancelled } from "../lib/event/ledger2-sale-status.js";
-import { saleContractFor } from "../lib/event/onchain-registry.js";
+import { registrationSeatingFor, saleContractFor } from "../lib/event/onchain-registry.js";
 import {
   reserve,
   release,
   getReservation,
   RESERVATION_MAX_QTY,
   heldFor,
+  heldSeatsFor,
 } from "../lib/event/reservation-store.js";
 import { seatCapForReserve } from "../lib/event/seat-cap.js";
+import { seatedSaleRefusal } from "../lib/seating/seated-sale.js";
 import { clientIp } from "../lib/http/client-ip.js";
 
 const reservations = new Hono<AppEnv>();
@@ -70,6 +72,10 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   const gate = cancellationGate(eventId);
   if (gate === "cancelled") return c.json({ ok: false, error: "This event has been cancelled" }, 409);
   if (gate === "unknown") return c.json({ ok: false, error: "Ticket sales are temporarily unavailable" }, 503);
+
+  // Allocated seating: held by seat, and this route holds by quantity (seated-sale.ts).
+  const seatedRefusal = seatedSaleRefusal(eventId, seriesId);
+  if (seatedRefusal) return c.json(seatedRefusal.body, seatedRefusal.status);
 
   let body: Record<string, unknown>;
   try {
@@ -276,14 +282,23 @@ reservations.post("/:eventId/series/:seriesId/reserve/release", async (c) => {
 // ---------------------------------------------------------------------------
 // GET /api/events/:eventId/series/:seriesId/held
 //
-// Optional helper for clients that want a fast "how many seats are currently
-// held by other buyers" read without a full claim-status round-trip.
+// How many seats other buyers hold right now. For a series registered seated it
+// also lists WHICH seats (`heldSeatsFor`: live holds, and seats paid in the last
+// few minutes that a lagging RPC may not show yet) - the one thing a buyer's seat
+// map needs from our server (docs/SEATING.md decision 6). Only seat indices: no
+// expiry, nothing about who. The same answer for every caller (a buyer's map
+// leaves its own hold out itself), so a CDN may keep it for a few seconds.
 // ---------------------------------------------------------------------------
 
 reservations.get("/:eventId/series/:seriesId/held", async (c) => {
   const seriesId = c.req.param("seriesId");
   const eventId = c.req.param("eventId");
-  return c.json({ ok: true, data: { held: heldFor(eventId, seriesId) } });
+  const seated = registrationSeatingFor(eventId, seriesId) !== null;
+  c.header("Cache-Control", "public, max-age=5, s-maxage=5");
+  return c.json({
+    ok: true,
+    data: { held: heldFor(eventId, seriesId), ...(seated ? { seats: heldSeatsFor(eventId, seriesId) } : {}) },
+  });
 });
 
 export { reservations };

@@ -62,6 +62,7 @@ import {
 } from "../lib/chain/event-contract.js";
 import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
 import { lookupOnChainEventId, saleContractFor } from "../lib/event/onchain-registry.js";
+import { seatedSaleRefusal } from "../lib/seating/seated-sale.js";
 import { attendeeCheckoutRefusal, orderRefOf } from "../lib/attendee-batch/writer.js";
 import { getOrderRecord, isOrderErased } from "../lib/attendee-batch/ledger.js";
 import { commitHold, getHeldOrder, holdPrepared } from "../lib/attendee-batch/held-orders.js";
@@ -882,6 +883,10 @@ stripe.post("/create-checkout", async (c) => {
       409,
     );
   }
+  // Allocated seating: sold by seat, from a seat hold; refused here as at /reserve
+  // until the seated checkout ships (seated-sale.ts).
+  const seatedRefusal = seatedSaleRefusal(eventId, seriesId);
+  if (seatedRefusal) return c.json(seatedRefusal.body, seatedRefusal.status);
   const mintTarget = sale.contract;
 
   // Past-event gate (#241). The "This event has ended" banner is client-side
