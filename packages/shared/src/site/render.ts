@@ -169,8 +169,14 @@ export function withDocumentTitle(html: string, titleEsc: string): string {
  * the pointer the name may show nothing.
  */
 export function canonicalLinkLine(label: string | undefined): string {
-  if (!label || validateLabel(label)) return "";
-  return `  <link rel="canonical" href="${escapeHtmlAttribute(subEnsWebUrl(label))}/">`;
+  const url = canonicalPageUrl(label);
+  return url ? `  <link rel="canonical" href="${escapeHtmlAttribute(url)}">` : "";
+}
+
+/** The canonical address itself, for markup that states it too (an event's JSON-LD `url`). */
+export function canonicalPageUrl(label: string | undefined): string | undefined {
+  if (!label || validateLabel(label)) return undefined;
+  return `${subEnsWebUrl(label)}/`;
 }
 
 /** A site's name as its head carries it (`<title>`, og:title, twitter:title), escaped. */

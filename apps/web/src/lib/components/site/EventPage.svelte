@@ -5,7 +5,7 @@
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { isPastEvent } from "../../utils/events.js";
   import { onMount, onDestroy } from "svelte";
-  import { buildEventJsonLd, eventMetaDescription, headlinePrice, headlinePriceRange } from "@woco/shared";
+  import { buildEventJsonLd, eventMetaDescription, headlinePrice, headlinePriceRange, EVENT_DESCRIPTION_MAX } from "@woco/shared";
   import { setJsonLd, setMetaDescription, setTitle } from "../../seo/head.js";
   import ClaimButton from "../../attendee/events/ClaimButton.svelte";
   import { WOCO_POLICY_URL } from "../../legal/organiser-notice.js";
@@ -18,9 +18,13 @@
     onback?: () => void;
     /** Override API base URL — used when this event is hosted on an organiser's own server */
     apiUrl?: string;
+    /** The page's own address for its schema.org Event (#55): a single-event page
+     *  passes its baked canonical, or null when it has none (never a gateway URL).
+     *  Absent = the host does not say, and the current URL is used (websites). */
+    pageUrl?: string | null;
   }
 
-  let { eventId, ondashboard, onback, apiUrl }: Props = $props();
+  let { eventId, ondashboard, onback, apiUrl, pageUrl }: Props = $props();
 
   // contentGatewayUrl is injected by the deploy step for standalone sites that
   // are hosted on a different gateway (e.g. Etherna) — event images were uploaded
@@ -92,19 +96,22 @@
   // Organiser sites are the strongest SEO surface we have — a real venue domain
   // rather than a shared gateway root — so Event rich results matter most here.
   // The event body is fetched at runtime, hence runtime injection; the site's own
-  // title/description/canonical are injected at deploy time (routes/sites.ts).
+  // title/description/canonical are injected at deploy time (routes/sites.ts). A
+  // single-event page also bakes its Event at publish (#55, site/event-page.ts):
+  // this replaces that block with live values, from the same facts projection.
   $effect(() => {
     if (!event) return;
     const ev = event;
 
     setTitle(ev.title, siteName ?? undefined);
-    setMetaDescription(eventMetaDescription(ev));
+    setMetaDescription(eventMetaDescription(ev, EVENT_DESCRIPTION_MAX - 1));
     setJsonLd(
       "event",
       buildEventJsonLd(ev, {
-        url: window.location.href,
+        url: pageUrl === undefined ? window.location.href : (pageUrl ?? undefined),
         imageUrl: ev.imageHash ? firstImageUrl(ev.imageHash, BEE_GATEWAY, ev.gatewayUrl) : undefined,
         organiserName: siteName ?? undefined,
+        cancelled: !!ev.cancelledAt,
       }),
     );
   });

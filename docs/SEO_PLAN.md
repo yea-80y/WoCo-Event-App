@@ -14,6 +14,12 @@ Issue #55 (schema.org/Event ld+json) predates this doc and is folded in below.
   (`https://{label}.woco.eth.limo/`, `canonicalLinkLine` in `render.ts`). Pages reach both when
   next republished. Not yet: custom domains in the canonical (needs an explicit "primary
   domain" setting, and event domains a contentHash refresh first), `og:url`.
+- **#55 at deploy time (event pages only):** the head bakes the description (meta, og, twitter)
+  and one schema.org Event (`data-woco-seo="event"`, which the runtime replaces with live
+  values). The server projects the facts (`eventLdFacts`: dates, place, headline prices, strings
+  only) and suggests them only to an app that asks (`page-config?head=2`); `eventLdObject` is the
+  one serialiser for both halves. Not baked, because they change after publish: availability,
+  eventStatus. `url` = the canonical, else none. Websites still set JSON-LD at runtime only.
 - **Sub-ENS is live in the website builder** (Domain tab, `SubENSPicker`). D3's condition -
   "return together with canonical injection" - is met for names since #70; a page with no name
   emits no canonical.
@@ -284,7 +290,7 @@ town name appears in body copy at all, link text in {"click here", "read more", 
 | 2 | One CNAME path — drop trial/migration funnel (D6) | #68 |
 | 3 | ~~Drop sub-ENS from website builder (D3)~~ → **REVERSED 2026-08-09.** Keep sub-ENS; bring the picker back as the Shopify-parity default address. Sequenced AFTER item 4 (#70), because canonical injection is the condition | #69 (reopened in place) |
 | 4 | Deploy-time `<title>` + canonical injection | #70 |
-| 5 | schema.org/Event JSON-LD, deploy-time injected | #55 (closed; client-side only shipped - deploy-time still to do) |
+| 5 | schema.org/Event JSON-LD, deploy-time injected | #55 (event pages baked 2026-11-03; websites still runtime only) |
 | 6 | Real per-page URLs — static pre-render per page | #71 |
 | 7 | SEO guidance panel in builder | #72 |
 | 8 | sitemap.xml + robots.txt at deploy | #73 |

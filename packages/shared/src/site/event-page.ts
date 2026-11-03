@@ -6,12 +6,22 @@
  * server's output from before the move.
  *
  * The page head carries the event's title and image (icon + share preview) baked
- * in at publish, for crawlers that run no script. Their inputs are the organiser's
- * own event fields, so they are parsed strictly (`parseEventPageHead`) and every
- * one is attribute-escaped.
+ * in at publish, for crawlers that run no script, and since #55 its description and
+ * its schema.org Event (date, place, prices). Their inputs are the organiser's own
+ * event fields, so they are parsed strictly (`parseEventPageHead`) and every one is
+ * escaped for where it lands. A head with neither renders the bytes it always did.
  */
 
-import { canonicalLinkLine, escapeHtmlAttribute, injectBeforeHeadClose, siteConfigScript, withDocumentTitle } from "./render.js";
+import { EVENT_DESCRIPTION_MAX, eventLdObject, parseEventLdFacts, type EventLdFacts } from "../event/jsonld.js";
+import {
+  canonicalLinkLine,
+  canonicalPageUrl,
+  escapeHtmlAttribute,
+  injectBeforeHeadClose,
+  jsonForInlineScript,
+  siteConfigScript,
+  withDocumentTitle,
+} from "./render.js";
 
 /** An event page's index document in the runtime (`apps/web/dist-site`). */
 export const EVENT_PAGE_INDEX_DOCUMENT = "site.html";
@@ -20,10 +30,18 @@ export const EVENT_PAGE_TITLE_MAX = 200;
 /** Chat crawlers ignore relative URLs, so the share fallback is the app's own copy. */
 const DEFAULT_APP_URL = "https://woco.eth.limo";
 
-/** What the head is rendered from: the event's title and image, as the event holds them. */
+/**
+ * What the head is rendered from: the event's title and image, as the event holds
+ * them, and (#55) its description and schema.org facts as final display values —
+ * the server projects them (`eventLdFacts`), so no fee rule or vocabulary sits on
+ * the path two separately deployed renders must agree on.
+ */
 export interface EventPageHead {
   title?: string;
   imageHash?: string;
+  /** The tagline, else the description's opening (`eventMetaDescription`). */
+  description?: string;
+  ld?: EventLdFacts;
 }
 
 /** The `window.SITE_CONFIG` an event page carries. Key order is part of the bytes. */
@@ -42,16 +60,30 @@ export function eventPageDeployConfig(c: EventPageConfig): EventPageConfig {
 /**
  * A head a browser sends with its build, or null. Strict and non-normalising: a
  * title of 1-200 characters (whitespace is trimmed by the render, never here), an
- * image reference absent or 64 LOWERCASE hex and not all zero. Nothing else.
+ * image reference absent or 64 LOWERCASE hex and not all zero, a description absent
+ * or 1-300 characters, facts absent or exactly `parseEventLdFacts`'s shape - and then
+ * a title that is not blank, since a schema.org Event must have a name. Nothing else.
  */
-export function parseEventPageHead(v: unknown): { title: string; imageHash?: string } | null {
+export function parseEventPageHead(v: unknown): EventPageHead & { title: string } | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (k !== "title" && k !== "imageHash") return null;
+  for (const k of Object.keys(o)) if (k !== "title" && k !== "imageHash" && k !== "description" && k !== "ld") return null;
   if (typeof o.title !== "string" || o.title.length < 1 || o.title.length > EVENT_PAGE_TITLE_MAX) return null;
-  if (o.imageHash === undefined) return { title: o.title };
-  if (typeof o.imageHash !== "string" || !/^[0-9a-f]{64}$/.test(o.imageHash) || /^0+$/.test(o.imageHash)) return null;
-  return { title: o.title, imageHash: o.imageHash };
+  const head: EventPageHead & { title: string } = { title: o.title };
+  if (o.imageHash !== undefined) {
+    if (typeof o.imageHash !== "string" || !/^[0-9a-f]{64}$/.test(o.imageHash) || /^0+$/.test(o.imageHash)) return null;
+    head.imageHash = o.imageHash;
+  }
+  if (o.description !== undefined) {
+    if (typeof o.description !== "string" || o.description.length < 1 || o.description.length > EVENT_DESCRIPTION_MAX) return null;
+    head.description = o.description;
+  }
+  if (o.ld !== undefined) {
+    const ld = parseEventLdFacts(o.ld);
+    if (!ld || !o.title.trim()) return null;
+    head.ld = ld;
+  }
+  return head;
 }
 
 function stripTrailingSlash(raw: string): string {
@@ -67,6 +99,13 @@ function stripTrailingSlash(raw: string): string {
  * runtime, because crawlers that run no script read the HTML as served (#70), and
  * so is the canonical when the page is published under a WoCo name (`name`, the
  * label the deploy carries).
+ *
+ * #55: the description goes in the description, og and twitter tags, and the facts
+ * in ONE `application/ld+json` block marked `data-woco-seo="event"`, the block the
+ * page's runtime replaces with live values (`lib/seo/head.ts`) rather than adding a
+ * second Event. Its JSON escapes every `<` (`jsonForInlineScript`), so organiser
+ * text can neither close the element nor open a comment in it. Its `url` is the
+ * canonical, or absent; its image is the event's own, never the logo fallback.
  */
 export function withEventPageHead(
   html: string,
@@ -75,22 +114,37 @@ export function withEventPageHead(
   name?: string,
 ): string {
   const ref = event?.imageHash ?? "";
-  const image = escapeHtmlAttribute(
-    /^[0-9a-f]{64}$/i.test(ref) && !/^0+$/.test(ref) ? `${stripTrailingSlash(contentGatewayUrl)}/bytes/${ref}` : "./logo.png",
-  );
+  const hasImage = /^[0-9a-f]{64}$/i.test(ref) && !/^0+$/.test(ref);
+  const imageUrl = `${stripTrailingSlash(contentGatewayUrl)}/bytes/${ref}`;
+  const image = escapeHtmlAttribute(hasImage ? imageUrl : "./logo.png");
   const share = image === "./logo.png" ? `${DEFAULT_APP_URL}/logo.png` : image;
-  const title = escapeHtmlAttribute(event?.title?.trim() ?? "");
+  const rawTitle = event?.title?.trim() ?? "";
+  const title = escapeHtmlAttribute(rawTitle);
+  const rawDescription = event?.description ?? "";
+  const description = escapeHtmlAttribute(rawDescription);
+  const ld = event?.ld && rawTitle
+    ? eventLdObject(event.ld, {
+        name: rawTitle,
+        description: rawDescription || undefined,
+        url: canonicalPageUrl(name),
+        imageUrl: hasImage ? imageUrl : undefined,
+      })
+    : null;
   const lines = [
     `  <link rel="manifest" href="./manifest.json">`,
     `  <link rel="icon" href="${image}">`,
     `  <link rel="apple-touch-icon" href="${image}">`,
     canonicalLinkLine(name),
+    description ? `  <meta name="description" content="${description}">` : "",
     `  <meta property="og:type" content="website">`,
     title ? `  <meta property="og:title" content="${title}">` : "",
+    description ? `  <meta property="og:description" content="${description}">` : "",
     `  <meta property="og:image" content="${share}">`,
     `  <meta name="twitter:card" content="summary_large_image">`,
     title ? `  <meta name="twitter:title" content="${title}">` : "",
+    description ? `  <meta name="twitter:description" content="${description}">` : "",
     `  <meta name="twitter:image" content="${share}">`,
+    ld ? `  <script type="application/ld+json" data-woco-seo="event">${jsonForInlineScript(ld)}</script>` : "",
   ].filter(Boolean).join("\n");
   const stripped = html.replace(/\s*<link\b[^>]*\brel=["']?(?:shortcut )?icon["']?[^>]*>/gi, "");
   return injectBeforeHeadClose(withDocumentTitle(stripped, title), lines);
