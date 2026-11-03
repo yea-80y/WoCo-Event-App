@@ -73,32 +73,20 @@ export function perIpSeatCapForEvent(declaredSupply: number): number {
   // A non-finite supply must collapse to the floor, not propagate. NaN compares
   // false against everything, so it would survive both clamp arms and disable
   // the cap silently — the one failure mode of this function that fails OPEN.
-  // `declaredSupplyOf` cannot produce one; this makes the function total anyway.
+  // `capSupplyOf` cannot produce one; this makes the function total anyway.
   const supply = Number.isFinite(declaredSupply) ? Math.max(0, declaredSupply) : 0;
   const proportional = Math.ceil(supply * SEAT_CAP_FRACTION);
   return Math.min(SEAT_CAP_CEILING, Math.max(RESERVATION_MAX_QTY, proportional));
 }
 
 /**
- * Declared supply of an event — the sum of its series.
+ * The supply one reserve's cap is sized from: the event's declared supply (the sum
+ * of its series), with `seriesId` counted at no more than `live`. The live number
+ * only ever tightens: above the declared one, null, or negative, it changes nothing.
  *
  * Tolerant of a malformed series rather than throwing: a missing or negative
  * `totalSupply` contributes nothing, and an event that sums to zero still gets
  * the floor, so a seat hold is never refused because of a bad supply field.
- */
-export function declaredSupplyOf(series: readonly { totalSupply?: number }[]): number {
-  let total = 0;
-  for (const s of series) {
-    const n = Number(s?.totalSupply);
-    if (Number.isFinite(n) && n > 0) total += n;
-  }
-  return total;
-}
-
-/**
- * The supply one reserve's cap is sized from: the declared sum, with `seriesId`
- * counted at no more than `live`. It only ever tightens: a live number above the
- * declared one, or one that is not a finite non-negative number, changes nothing.
  */
 export function capSupplyOf(
   series: readonly { seriesId?: string; totalSupply?: number }[],
