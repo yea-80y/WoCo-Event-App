@@ -16,7 +16,8 @@
   });
   onDestroy(() => clearInterval(timer));
 
-  const line = $derived(describeSync(audienceSync.record, audienceSync.running, now));
+  // While a check runs, which event it is on and how far; the page stays usable meanwhile.
+  const line = $derived(describeSync(audienceSync.record, audienceSync.running, now, audienceSync.progress));
 
   function checkNow(): void {
     now = Date.now();
