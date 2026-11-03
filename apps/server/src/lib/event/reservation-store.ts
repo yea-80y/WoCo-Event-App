@@ -71,7 +71,9 @@ export const RESERVATION_MAX_QTY = 10;
  * IPv6 to /64 bucketing and made that office ONE bucket rather than thirty.
  *
  * The cap is computed at the route, not here, so the check below stays
- * synchronous. See the invariant note on the check itself.
+ * synchronous. See the invariant note on the check itself. It may be passed as a
+ * synchronous function, evaluated after the availability read, so a ledger2
+ * supply cut that read saw sizes the cap (`seatCapForReserve`).
  */
 
 export interface Reservation {
@@ -285,7 +287,7 @@ export async function reserve(
   seriesId: string,
   quantity: number,
   availableSupplier: () => Promise<number>,
-  perIpSeatCap: number,
+  perIpSeatCap: number | (() => number),
   replaceReservationId?: string,
   clientKey?: string,
   ip?: string,
@@ -372,9 +374,11 @@ export async function reserve(
     // concurrent reserve on a DIFFERENT series of the same event holds a
     // different lock. What makes the check-then-insert atomic is that it is one
     // synchronous stretch under Node's run-to-completion. `perIpSeatCap` is
-    // passed in already computed for exactly this reason — deriving it here
-    // would need I/O and would silently reopen the race.
-    if (ip && heldSeatsByIp(ip, eventId) + quantity > perIpSeatCap) {
+    // passed in already computed, or as a SYNCHRONOUS function (the type refuses a
+    // Promise), for exactly this reason — deriving it here with I/O would
+    // silently reopen the race.
+    const ipCap = typeof perIpSeatCap === "function" ? perIpSeatCap() : perIpSeatCap;
+    if (ip && heldSeatsByIp(ip, eventId) + quantity > ipCap) {
       return { ok: false, error: "IpCapExceeded" };
     }
     const now = new Date();
