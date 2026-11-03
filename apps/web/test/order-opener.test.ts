@@ -280,8 +280,9 @@ test("page: a job the browser cannot copy to the worker opens on the page - neve
 
 test("Dashboard: boxes go to the worker as plain snapshots, and a failed run is never swallowed", () => {
   assert.match(DASH, /box: \$state\.snapshot\(order\.encryptedOrder\)/, "the rows are reactive proxies (2026-11-02)");
-  assert.match(DASH, /decryptChain = run\.catch\(\(err\) => console\.error\(/);
-  assert.doesNotMatch(DASH, /decryptChain = run\.catch\(\(\) => \{\}\)/);
+  // The queue reports every throw (RunQueue, tested in dashboard-live-orders.test.ts) - to the console here.
+  assert.match(DASH, /new RunQueue\(\(err\) => console\.error\("\[dashboard\] opening orders failed:", err\)\)/);
+  assert.doesNotMatch(DASH, /new RunQueue\(\(\) => \{\}\)/);
 });
 
 test("the saved copy of the list stops at ROW_CACHE_MAX rows", () => {

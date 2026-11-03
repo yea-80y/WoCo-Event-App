@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import type { OrderEntry } from "@woco/shared";
 import {
   OpenedOrders,
+  RunQueue,
   createOrdersPoller,
   pollDelay,
   ORDERS_POLL_MAX_MS,
@@ -525,6 +526,8 @@ test("each run opens only what is not open yet", () => {
 });
 
 test("#1061: the list is replaced whole, never changed in place - nextUnopened relies on it", () => {
+  // A source scan cannot see an alias (`const rows = ordersResponse.orders; rows.push(...)`).
+  // It holds today because every list comes from build() or a parse, fresh each time (Fable F3).
   assert.match(DASH, /let ordersResponse = \$state\.raw<EventOrdersResponse \| null>\(null\);/);
   assert.doesNotMatch(DASH, /ordersResponse[!?]?\.[\w.[\]]+\s*=[^=]/, "no write into the list");
   assert.doesNotMatch(DASH, /ordersResponse[!?]?\.orders\.(push|pop|shift|unshift|splice|sort|reverse|fill|copyWithin)\(/);
@@ -534,7 +537,7 @@ test("#1061: a run shows what it opened at most every SHOW_OPENED_MS, and all of
   const body = fnBody("async function openOrders");
   assert.doesNotMatch(body, /decryptedOrders = /, "every update goes through showOpened");
   assert.equal(body.match(/showOpened\(\);/g)?.length, 2, "once per step, on both paths (throttled)");
-  assert.match(body, /\n    showOpened\(true\);\n    decryptError = /, "the run's end shows everything");
+  assert.match(fnBody("async function decryptOnce"), /\} finally \{[\s\S]*?showOpened\(true\);/, "the run's end shows everything");
   const show = fnBody("function showOpened");
   assert.match(show, /if \(!now && performance\.now\(\) - openedShownAt < SHOW_OPENED_MS\) return;/);
   assert.match(show, /if \(ordersResponse\) decryptedOrders = opened\.remap\(ordersResponse\.orders\);/);
@@ -542,11 +545,85 @@ test("#1061: a run shows what it opened at most every SHOW_OPENED_MS, and all of
   assert.match(fnBody("function showOrders"), /decryptedOrders = opened\.remap\(fresh\.orders\);/);
 });
 
-test("#1061: a call joins the run still waiting to start, unless it may ask and that one may not", () => {
-  const body = fnBody("function decryptCurrent");
-  assert.match(body, /if \(waitingRun && \(waitingRun\.prompt \|\| !prompt\)\) return waitingRun\.run;/);
-  assert.match(body, /const run = decryptChain\.then\(\(\) => \{\s*if \(waitingRun === waiting\) waitingRun = null;\s*return decryptOnce\(prompt\);/);
-  assert.match(body, /waiting\.run = run;\s*waitingRun = waiting;/);
+test("#1061: every opening run goes through the RunQueue", () => {
+  assert.match(fnBody("function decryptCurrent"), /return openRuns\.enqueue\(prompt, decryptOnce\);/);
+  assert.match(DASH, /const openRuns = new RunQueue\(\(err\) => console\.error\("\[dashboard\] opening orders failed:", err\)\);/);
+  assert.equal(DASH.match(/decryptOnce\(/g)?.length, 1, "decryptOnce is only declared - never called around the queue");
+});
+
+// ── RunQueue (behaviour, Fable sign-off #1061 F2) ──────────────────────────
+
+/** A run that waits for its release, recording which prompt it started with. */
+function gatedRuns() {
+  const started: boolean[] = [];
+  const gates: Array<() => void> = [];
+  const start = (prompt: boolean) =>
+    new Promise<void>((resolve) => {
+      started.push(prompt);
+      gates.push(resolve);
+    });
+  const releaseNext = async () => {
+    gates.shift()?.();
+    await new Promise((r) => setImmediate(r));
+  };
+  return { started, start, releaseNext };
+}
+
+test("RunQueue: one run at a time; calls while one waits join it rather than stacking", async () => {
+  const q = new RunQueue(() => {});
+  const g = gatedRuns();
+  const first = q.enqueue(false, g.start);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(g.started, [false], "the first starts at once");
+  const second = q.enqueue(false, g.start);
+  const third = q.enqueue(false, g.start);
+  assert.equal(second, third, "a call joins the run still waiting");
+  await g.releaseNext();
+  assert.deepEqual(g.started, [false, false], "one more run, not two");
+  await g.releaseNext();
+  await Promise.all([first, second]);
+  assert.equal(g.started.length, 2);
+});
+
+test("RunQueue: a call after the waiting run started gets a run of its own (no lost wake-up)", async () => {
+  const q = new RunQueue(() => {});
+  const g = gatedRuns();
+  void q.enqueue(false, g.start);
+  await new Promise((r) => setImmediate(r));
+  void q.enqueue(false, g.start);
+  await g.releaseNext(); // the second is running now
+  void q.enqueue(false, g.start); // a list landed after it read the rows
+  await g.releaseNext();
+  assert.deepEqual(g.started, [false, false, false]);
+});
+
+test("RunQueue: a tap never joins a quiet run; a quiet call may join a tap's", async () => {
+  const q = new RunQueue(() => {});
+  const g = gatedRuns();
+  void q.enqueue(false, g.start);
+  await new Promise((r) => setImmediate(r));
+  const quiet = q.enqueue(false, g.start);
+  const tap = q.enqueue(true, g.start);
+  assert.notEqual(tap, quiet, "the tap's run may ask for the passkey; the quiet one never does");
+  const later = q.enqueue(false, g.start);
+  assert.equal(later, tap, "a quiet call joins the tap's run: no extra prompt, no extra run");
+  for (let i = 0; i < 3; i++) await g.releaseNext();
+  assert.deepEqual(g.started, [false, false, true], "each run starts with its own prompt flag");
+});
+
+test("RunQueue: a run that throws is reported, and the next still runs", async () => {
+  const seen: unknown[] = [];
+  const q = new RunQueue((err) => seen.push(err));
+  const boom = new Error("boom");
+  await assert.rejects(q.enqueue(false, async () => {
+    throw boom;
+  }));
+  let ran = false;
+  await q.enqueue(false, async () => {
+    ran = true;
+  });
+  assert.deepEqual(seen, [boom], "never swallowed");
+  assert.ok(ran, "the queue keeps moving");
 });
 
 test("#1061: the list is grouped and indexed once per list, never per render", () => {
@@ -597,7 +674,11 @@ test("opening runs in steps from the rows on screen, gives the page a turn, and 
 
 test("every way out of an opening run stops showing 'Opening...' (Fable sign-off S5)", () => {
   const body = fnBody("async function decryptOnce");
-  assert.match(body, /decrypting = true;\s*try \{\s*await openOrders\(prompt\);\s*\} finally \{\s*\/\/[^\n]*\n\s*decrypting = false;/);
+  // …and everything the run opened is on screen first, however it ended (Fable sign-off #1061 F1).
+  assert.match(
+    body,
+    /decrypting = true;\s*try \{\s*await openOrders\(prompt\);\s*\} finally \{\s*(\/\/[^\n]*\n\s*)+showOpened\(true\);\s*\/\/[^\n]*\n\s*decrypting = false;/,
+  );
 });
 
 test("nothing opens for a dashboard that has gone (Fable sign-off M1)", () => {

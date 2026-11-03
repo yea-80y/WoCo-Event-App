@@ -25,7 +25,7 @@
   import CancellationStatus from "./CancellationStatus.svelte";
   import UndeliveredTickets from "./UndeliveredTickets.svelte";
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
-  import { OpenedOrders, ORDERS_POLL_MS, createOrdersPoller, orderSlotKey } from "./live-orders.js";
+  import { OpenedOrders, ORDERS_POLL_MS, RunQueue, createOrdersPoller, orderSlotKey } from "./live-orders.js";
   import { BrowserOrders, OrdersStatusUnavailable } from "./browser-orders.js";
   import { canReadLedger, liveBrowserOrdersDeps, liveGatewayFetcher } from "./browser-orders-live.js";
   import { DetailQueue, type DetailState } from "./detail-queue.js";
@@ -499,9 +499,7 @@
 
   /** What this page has opened, by ticket - so a poll opens only the new orders. */
   const opened = new OpenedOrders<DecryptedOrder>();
-  let decryptChain: Promise<void> = Promise.resolve();
-  /** The run queued behind the current one and not started yet. */
-  let waitingRun: { prompt: boolean; run: Promise<void> } | null = null;
+  const openRuns = new RunQueue((err) => console.error("[dashboard] opening orders failed:", err));
   /**
    * During a run, what it opened reaches the screen at most this often: each update
    * re-reads the whole list, and once per 50-order step held the page at 20k orders (#1061).
@@ -567,21 +565,8 @@
    * instead of a passkey or wallet sheet nobody asked for (#746 fix 1).
    */
   function decryptCurrent(prompt = false): Promise<void> {
-    // A run still waiting to start reads the rows on screen when it starts, which is all
-    // a new one would do: join it. Each arriving bundle asks, and a long load used to
-    // stack hundreds of runs (#1061). Only a tap's run, which may ask, is not covered by a quiet one.
-    if (waitingRun && (waitingRun.prompt || !prompt)) return waitingRun.run;
-    const waiting = { prompt, run: Promise.resolve() };
-    const run = decryptChain.then(() => {
-      if (waitingRun === waiting) waitingRun = null;
-      return decryptOnce(prompt);
-    });
-    waiting.run = run;
-    waitingRun = waiting;
-    // Kept moving for the next run, but never silent: a swallowed throw here hid every
-    // attendee's details on 2026-11-02 with nothing on screen or in the console.
-    decryptChain = run.catch((err) => console.error("[dashboard] opening orders failed:", err));
-    return run;
+    // One run at a time, a call joining one still waiting to start (live-orders.ts RunQueue).
+    return openRuns.enqueue(prompt, decryptOnce);
   }
 
   async function decryptOnce(prompt: boolean): Promise<void> {
@@ -594,6 +579,10 @@
     try {
       await openOrders(prompt);
     } finally {
+      // Everything opened is on screen before "Opening..." stops, on every way out: a step
+      // that threw after its puts would otherwise read as "could not be opened" (Fable
+      // sign-off #1061 F1). After a lock this shows nothing, as endOpening left it.
+      showOpened(true);
       // Every way out - a lock, a failure, leaving the page - stops showing "Opening...".
       decrypting = false;
     }
@@ -709,7 +698,7 @@
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (epoch !== openEpoch || destroyed) return;
     }
-    showOpened(true);
+    // The rest of the run's openings go on screen in decryptOnce's finally.
     decryptError = opened.failures > 0 ? `Failed to decrypt ${opened.failures} order(s)` : null;
   }
 
