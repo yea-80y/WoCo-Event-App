@@ -48,6 +48,14 @@ jobs:
       - name: Test shared (statement + manifest signing)
         run: npm test -w @woco/shared
 
+      # The seat map renderer (docs/SEATING.md), shared by the builder, the buyer's
+      # map, organisers' websites and the embed: raw TS like shared.
+      - name: Typecheck seatmap
+        run: npm run check -w @woco/seatmap
+
+      - name: Test seatmap (one seat per seat, palette-only colours)
+        run: npm test -w @woco/seatmap
+
       # Golden vectors pinning identity-seed derivation. These existed but were
       # never run in CI — the exact gap that would let a crypto bump silently
       # change every user's identity behind a green build.
