@@ -9,6 +9,7 @@
   import { localInputFromNow } from "./date.js";
   import { onMount } from "svelte";
   import { navigate } from "../../router/router.svelte.js";
+  import { newSeatedDraft, publishableSeries, type Admission, type SeatedDraft } from "../seating/seated-draft.js";
 
   /** Set on publish success — swaps the form for the what-next card. Publishing
    *  used to navigate straight to the event page, which buried the one moment
@@ -28,6 +29,13 @@
   let tags = $state<EventTag[]>([]);
   let imageDataUrl = $state<string | null>(null);
   let series = $state<{ seriesId: string; name: string; description: string; totalSupply: number; wave?: string; saleStart?: string; saleEnd?: string; payment?: PaymentConfig }[]>([]);
+
+  // The two routes (owner 2026-11-03, docs/SEATING.md): general admission, or a
+  // seating plan. Both drafts are kept, so switching back and forth loses nothing;
+  // only the chosen route is published.
+  let admission = $state<Admission>("general");
+  let seated = $state<SeatedDraft>(newSeatedDraft("GBP"));
+  let standingToo = $state(false);
   let cryptoRecipientMissing = $state(false);
   // null = still checking · false = not verified · true = Stripe charges_enabled.
   // Only gates publish when the event actually takes card payments (below).
@@ -35,7 +43,8 @@
   // Card payments settle through Stripe → Stripe verification is required only
   // for events that have card on. Crypto-only events are NOT gated on Stripe
   // (their anti-abuse gate is separate — see docs/EVENT_CREATION_ANTI_ABUSE.md).
-  const anyCardEnabled = $derived(series.some((s) => s.payment?.stripeEnabled === true));
+  // Seats always sell by card.
+  const anyCardEnabled = $derived(admission === "seated" || series.some((s) => s.payment?.stripeEnabled === true));
   let claimMode = $state<ClaimMode>("email");
   let collectEmail = $state(true);
   let collectInfo = $state(false);
@@ -108,6 +117,9 @@
     bind:importedTiers
     bind:geo
     bind:tags
+    bind:admission
+    bind:seated
+    bind:standingToo
   />
 
   <SubENSPicker />
@@ -123,7 +135,7 @@
     {geo}
     {tags}
     {imageDataUrl}
-    {series}
+    series={publishableSeries(admission, $state.snapshot(seated), standingToo, series)}
     orderFields={collectInfo ? orderFields : undefined}
     {claimMode}
     disabled={cryptoRecipientMissing || (anyCardEnabled && stripeVerified !== true)}

@@ -61,6 +61,7 @@ import { socialRoutes } from "./routes/social.js";
 import { campaignRoutes } from "./routes/campaign.js";
 import { agentRouter } from "./routes/agent.js";
 import { swarmRoutes } from "./routes/swarm.js";
+import { seatingRoutes } from "./routes/seating.js";
 import { socRelayHealth } from "./lib/swarm/soc-relay-limits.js";
 import { firstWriteRetryHealth } from "./lib/swarm/first-write-retry.js";
 import { apiBodyLimit } from "./lib/http/body-limit.js";
@@ -873,6 +874,8 @@ app.route("/api/campaign", campaignRoutes);
 // Client-signed Single-Owner-Chunk write rail (client signs, server stamps).
 // Phase A of the client feed signer / cross-device recovery work.
 app.route("/api/swarm", swarmRoutes);
+// Allocated seating: store a plan before publishing (docs/SEATING.md).
+app.route("/api/seating", seatingRoutes);
 
 // Agent commerce surface (#Tier-2) — discover events + buy tickets from a bounded
 // non-custodial spend permission. Unauthenticated by design (on-chain draw is the

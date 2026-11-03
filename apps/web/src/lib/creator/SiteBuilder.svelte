@@ -21,6 +21,7 @@
   import { describeSubEnsError, subEnsErrorDetail, subEnsErrorFrom } from "../sub-ens/errors.js";
   import { ApiError } from "../api/errors.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
+  import { newSeatedDraft, publishableSeries, type Admission, type SeatedDraft } from "./seating/seated-draft.js";
 
   const apiUrl = import.meta.env.VITE_API_URL ?? "";
   const advanced = $derived(router.params.advanced === "1");
@@ -60,7 +61,12 @@
   // gates publish when the event takes card payments (crypto-only is not gated on
   // Stripe — see docs/EVENT_CREATION_ANTI_ABUSE.md).
   let stripeVerified = $state<boolean | null>(null);
-  const anyCardEnabled = $derived(eventSeries.some((s) => s.payment?.stripeEnabled === true));
+  // The two routes (docs/SEATING.md): both drafts kept, only the chosen one published.
+  let admission = $state<Admission>("general");
+  let seatedDraft = $state<SeatedDraft>(newSeatedDraft("GBP"));
+  let standingToo = $state(false);
+  // Seats always sell by card.
+  const anyCardEnabled = $derived(admission === "seated" || eventSeries.some((s) => s.payment?.stripeEnabled === true));
   let createdEventId = $state<string | null>(null);
   let importedTiers = $state<ImportTier[] | null>(null);
 
@@ -539,6 +545,9 @@
             bind:collectInfo
             bind:cryptoRecipientMissing
             bind:importedTiers
+            bind:admission
+            bind:seated={seatedDraft}
+            bind:standingToo
           />
 
           <PublishButton
@@ -551,7 +560,7 @@
             geo={eventGeo}
             tags={eventTags}
             imageDataUrl={eventImageDataUrl}
-            series={eventSeries}
+            series={publishableSeries(admission, $state.snapshot(seatedDraft), standingToo, eventSeries)}
             orderFields={collectInfo ? eventOrderFields : undefined}
             {claimMode}
             {apiUrl}

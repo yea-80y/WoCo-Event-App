@@ -47,6 +47,17 @@ test("another signer, another creator, or another order form is refused", () => 
   assert.throws(() => assertAssembledFeedMatches(req, { ...good, orderFields: [] } as unknown as EventFeed, OWN), /order form/);
 });
 
+test("seat prices must come back exactly as sent, and only on the series that sent them", () => {
+  const seating = { bands: [{ id: "b1", price: "25.00" }, { id: "b2", price: "15.00" }] };
+  const seatedReq = { ...req, series: [{ seriesId: "s1", seating }, { seriesId: "s2" }] } as unknown as CreateEventV3Request;
+  const feed = (s1: unknown, s2?: unknown) =>
+    ({ ...good, series: [{ seriesId: "s1", seating: s1 }, { seriesId: "s2", ...(s2 ? { seating: s2 } : {}) }] }) as unknown as EventFeed;
+  assert.doesNotThrow(() => assertAssembledFeedMatches(seatedReq, feed(seating), OWN));
+  assert.throws(() => assertAssembledFeedMatches(seatedReq, feed({ bands: [{ id: "b1", price: "2.50" }, seating.bands[1]] }), OWN), /seat prices/);
+  assert.throws(() => assertAssembledFeedMatches(seatedReq, feed(undefined), OWN), /seat prices/);
+  assert.throws(() => assertAssembledFeedMatches(seatedReq, feed(seating, seating), OWN), /seat prices/);
+});
+
 // ── Every re-sign path (Fable sign-off F1) ──────────────────────────────────
 // The feed signed after on-chain registration, edits, cancel, delete and the
 // sub-ENS stamp are all server-assembled too. The same guard runs on each.

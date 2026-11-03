@@ -9,7 +9,11 @@ import { FEATURES } from "@woco/shared";
  * wallet login is off (#186). The refusal itself is pinned in wallet-login-gate.test.ts.
  * `accountBackupsAllowed`: the sponsorship tests of the backup ops.
  * `agentCommerceAllowed`: the privacy-notice sale gate on the (flag-off) agent rail.
+ * `seatedEventsAllowed`: the seated create / register checks (docs/SEATING.md).
  */
-export function enableFeature(name: "walletLoginAllowed" | "accountBackupsAllowed" | "agentCommerceAllowed", on = true): void {
+export function enableFeature(
+  name: "walletLoginAllowed" | "accountBackupsAllowed" | "agentCommerceAllowed" | "seatedEventsAllowed",
+  on = true,
+): void {
   (FEATURES as Record<string, boolean>)[name] = on;
 }

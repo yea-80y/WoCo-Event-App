@@ -36,6 +36,11 @@ export function assertAssembledFeedMatches(
   if (feed.encryptionKeyRef !== expectedRef) refuse("order key");
   assertFeedIsOurs(feed, { ...own, orderKeyRef: expectedRef });
   if (JSON.stringify(feed.orderFields ?? []) !== JSON.stringify(req.orderFields ?? [])) refuse("order form");
+  // Seat prices are what buyers pay: exactly the ones sent, and none on a series sent without.
+  for (const s of req.series ?? []) {
+    const got = (feed.series ?? []).find((f) => f.seriesId === s.seriesId);
+    if (JSON.stringify(got?.seating ?? null) !== JSON.stringify(s.seating ?? null)) refuse("seat prices");
+  }
 }
 
 function refuse(what: string): never {

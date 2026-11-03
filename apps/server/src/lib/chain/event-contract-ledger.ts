@@ -144,6 +144,9 @@ const LEDGER2_ADMIN_ABI = [
  */
 const LEDGER2_REGISTER_ABI = [
   "function registerEvent(address organiser, address organiserKey, uint64 supply, bytes32 manifestRef, uint64 eventEndTs) returns (bytes32 eventId)",
+  // Same arguments and the same `Registered` log, plus `Seated(eventId)`: `supply` seats.
+  "function registerSeatedEvent(address organiser, address organiserKey, uint64 supply, bytes32 manifestRef, uint64 eventEndTs) returns (bytes32 eventId)",
+  "event Seated(bytes32 indexed eventId)",
   "event Registered(bytes32 indexed eventId, address indexed organiser, address indexed registrant, uint64 supply, bytes32 manifestRef, uint64 eventEndTs)",
   "event OrganiserKeySet(bytes32 indexed eventId, address indexed previous, address indexed key)",
 ];
@@ -699,12 +702,15 @@ export async function registerEventLedger(
   chainId: number,
   onTxSent?: (tx: { txHash: string; nonce: number; chainId: number }) => void,
   onTxReserved?: (r: { nonce: number; chainId: number }) => void,
+  /** `registerSeatedEvent` (ledger2 only: needs `organiserKey`). */
+  seated = false,
 ): Promise<{ onChainEventId: string; txHash: string }> {
+  if (seated && !organiserKey) throw new Error("registerEventLedger: a seated event needs ledger2 and its organiser key");
   const wallet   = new Wallet(sponsorPk, getProvider(chainId));
   const contract = new Contract(contractAddress, organiserKey ? LEDGER2_REGISTER_ABI : LEDGER_REGISTER_ABI, wallet);
 
   console.log(
-    `[sponsor ledger] registerEvent organiser=${organiser}${organiserKey ? ` key=${organiserKey}` : ""} ` +
+    `[sponsor ledger] ${seated ? "registerSeatedEvent" : "registerEvent"} organiser=${organiser}${organiserKey ? ` key=${organiserKey}` : ""} ` +
     `supply=${supply} eventEndTs=${eventEndTs} manifestRef=${manifestRef.slice(0, 10)}… chain=${chainId}`,
   );
 
@@ -715,6 +721,7 @@ export async function registerEventLedger(
       // send (#318). Inside the closure so a nonce re-sync retry re-journals
       // the corrected nonce.
       onTxReserved?.({ nonce: o.nonce, chainId });
+      if (seated) return contract.registerSeatedEvent(organiser, organiserKey, supply, manifestRef, eventEndTs, o);
       return organiserKey
         ? contract.registerEvent(organiser, organiserKey, supply, manifestRef, eventEndTs, o)
         : contract.registerEvent(organiser, supply, manifestRef, eventEndTs, o);
@@ -729,21 +736,39 @@ export async function registerEventLedger(
 
   console.log(`[sponsor ledger] registerEvent confirmed txHash=${receipt.hash} gasUsed=${receipt.gasUsed}`);
 
-  const iface = new Interface(LEDGER_REGISTER_ABI);
-  for (const log of receipt.logs) {
+  const onChainEventId = registeredIdFromLogs(receipt.logs, contractAddress, seated);
+  console.log(`[sponsor ledger] Registered onChainEventId=${onChainEventId}${seated ? " (seated)" : ""}`);
+  return { onChainEventId, txHash: receipt.hash };
+}
+
+const REGISTER_LOGS = new Interface([...LEDGER_REGISTER_ABI, ...LEDGER2_REGISTER_ABI.filter((x) => x.startsWith("event Seated"))]);
+
+/**
+ * The id `Registered` names in a registration receipt, counting only logs emitted BY
+ * the ledger it was sent to. A seated registration must also carry `Seated` for that
+ * id: without it the event is general admission on chain, and recording it as seated
+ * would point every seat mint at an event that refuses them.
+ */
+export function registeredIdFromLogs(
+  logs: ReadonlyArray<{ address: string; topics: readonly string[]; data: string }>,
+  contractAddress: string,
+  seated: boolean,
+): string {
+  const ours = logs.filter((l) => l.address.toLowerCase() === contractAddress.toLowerCase());
+  let id: string | null = null;
+  const seatedIds = new Set<string>();
+  for (const log of ours) {
     try {
-      const parsed = iface.parseLog({ topics: log.topics as string[], data: log.data });
-      if (parsed?.name === "Registered") {
-        const onChainEventId = parsed.args.eventId as string;
-        console.log(`[sponsor ledger] Registered onChainEventId=${onChainEventId}`);
-        return { onChainEventId, txHash: receipt.hash };
-      }
+      const parsed = REGISTER_LOGS.parseLog({ topics: log.topics as string[], data: log.data });
+      if (parsed?.name === "Registered" && id === null) id = (parsed.args.eventId as string).toLowerCase();
+      if (parsed?.name === "Seated") seatedIds.add((parsed.args.eventId as string).toLowerCase());
     } catch {
-      // skip logs from other contracts
+      // not one of ours
     }
   }
-
-  throw new Error("Registered event not found in ledger registerEvent receipt");
+  if (!id) throw new Error("Registered event not found in ledger registerEvent receipt");
+  if (seated && !seatedIds.has(id)) throw new Error("Seated event not found in ledger registerSeatedEvent receipt");
+  return id;
 }
 
 function parseSlotClaimedSlots(

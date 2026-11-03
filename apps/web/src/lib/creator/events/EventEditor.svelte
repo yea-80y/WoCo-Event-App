@@ -8,6 +8,8 @@
   import GenreTagPicker from "./GenreTagPicker.svelte";
   import type { ImportTier } from "./ImportUrlPanel.svelte";
   import { localInputFromNow } from "./date.js";
+  import AdmissionChoice from "../seating/AdmissionChoice.svelte";
+  import type { Admission, SeatedDraft } from "../seating/seated-draft.js";
 
   type SeriesDraft = {
     seriesId: string;
@@ -37,9 +39,18 @@
     importedTiers?: ImportTier[] | null;
     geo?: EventGeo;
     tags?: EventTag[];
+    /** Which route (docs/SEATING.md). Offered only with seatedEventsAllowed and a `seated` draft. */
+    admission?: Admission;
+    /** The seated route's draft: a seating plan instead of ticket types. */
+    seated?: SeatedDraft;
+    /** On the seated route, also sell standing or unreserved tickets. */
+    standingToo?: boolean;
   }
 
   let {
+    admission = $bindable("general"),
+    seated = $bindable(undefined),
+    standingToo = $bindable(false),
     title = $bindable(),
     tagline = $bindable(),
     description = $bindable(),
@@ -85,6 +96,10 @@
   });
 </script>
 
+{#if FEATURES.seatedEventsAllowed && seated}
+  <AdmissionChoice bind:admission />
+{/if}
+
 <ImageUpload bind:imageDataUrl onchange={(url) => (imageDataUrl = url)} />
 
 <div class="fields">
@@ -118,7 +133,21 @@
 <LocationPicker bind:geo bind:location />
 <GenreTagPicker bind:tags />
 
-<TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers {startDate} {endDate} />
+{#if FEATURES.seatedEventsAllowed && seated && admission === "seated"}
+  <!-- Loaded only on the seated route: general admission organisers never download it. -->
+  {#await import("../seating/SeatingSection.svelte") then { default: SeatingSection }}
+    <SeatingSection bind:draft={seated} />
+  {/await}
+  <label class="standing-too">
+    <input type="checkbox" bind:checked={standingToo} />
+    Also sell standing or unreserved tickets
+  </label>
+  {#if standingToo}
+    <TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers {startDate} {endDate} />
+  {/if}
+{:else}
+  <TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers {startDate} {endDate} />
+{/if}
 
 {#if FEATURES.cryptoPaymentsAllowed}
   <fieldset class="claim-mode-section">
@@ -168,6 +197,8 @@
 <OrderFieldsEditor bind:orderFields bind:enabled={collectInfo} />
 
 <style>
+  .standing-too { display: flex; align-items: center; gap: 0.5rem; color: var(--text-secondary); font-size: 0.9rem; }
+  .standing-too input { accent-color: var(--accent); }
   .fields {
     display: flex;
     flex-direction: column;

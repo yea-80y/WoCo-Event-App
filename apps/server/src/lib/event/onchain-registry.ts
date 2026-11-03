@@ -67,16 +67,38 @@ const CACHE_FILE = join(DATA_DIR, "onchain-events.json");
 interface Registration {
   onChainEventId: string;
   contract?: EventContractTarget;
+  /**
+   * Registered with `registerSeatedEvent` (docs/SEATING.md): the mint path's ONLY
+   * source for choosing the seat mint, and the plan every seat is read from. The
+   * chain cannot answer which plan (`Registered` is identical for both kinds), and
+   * the feed is the organiser's. Set at registration, never added or changed later.
+   */
+  seating?: { planDigest: string };
 }
 
 /**
  * The value on disk. A pre-#563 record is the bare id string and STAYS one — a
  * rewrite of the file reproduces it byte for byte, so the only change the file
  * ever sees is records added in the new shape.
+ *
+ * ROLLBACK HAZARD (seating): a build from before seating reads a seated record as an
+ * ordinary one and, on its next registration, rewrites the file WITHOUT `seated` /
+ * `planDigest`. Those series then mint through the general path, which the ledger
+ * refuses (`SeatedEvent`), so sales refund rather than seat wrongly - but the plan
+ * link is gone from the file. Back the file up before any rollback past seating.
  */
 type PersistedRegistration =
   | string
-  | { onChainEventId: string; chainId: number; contract: string; version: EventContractVersion };
+  | {
+      onChainEventId: string;
+      chainId: number;
+      contract: string;
+      version: EventContractVersion;
+      seated?: true;
+      planDigest?: string;
+    };
+
+const PLAN_DIGEST_RE = /^0x[0-9a-f]{64}$/;
 
 // A record naming a version this build does not know is unreadable (fails
 // closed), so "ledger2" must be listed here before any is written.
@@ -94,9 +116,15 @@ function parseRegistration(v: unknown): Registration | null {
   ) {
     return null;
   }
+  // Seated: both fields or neither. Anything else is unreadable (fails closed): a
+  // seated series read as general would mint through the wrong path.
+  if ("seated" in o || "planDigest" in o) {
+    if (o.seated !== true || typeof o.planDigest !== "string" || !PLAN_DIGEST_RE.test(o.planDigest)) return null;
+  }
   return {
     onChainEventId: o.onChainEventId,
     contract: { chainId: o.chainId, address: o.contract.toLowerCase(), version: o.version as EventContractVersion },
+    ...(o.seated === true ? { seating: { planDigest: o.planDigest as string } } : {}),
   };
 }
 
@@ -107,6 +135,7 @@ function serialiseRegistration(r: Registration): PersistedRegistration {
     chainId: r.contract.chainId,
     contract: r.contract.address,
     version: r.contract.version,
+    ...(r.seating ? { seated: true as const, planDigest: r.seating.planDigest } : {}),
   };
 }
 
@@ -310,9 +339,18 @@ export function recordOnChainEventId(
   seriesId: string,
   onChainEventId: string,
   contract?: EventContractTarget,
+  /** A seated registration's plan. A replay must name the same one, or none. */
+  seating?: { planDigest: string },
 ): void {
   ensureLoaded();
   const k = key(eventId, seriesId);
+  if (seating && (!seating.planDigest || !PLAN_DIGEST_RE.test(seating.planDigest.toLowerCase()))) {
+    throw new Error("recordOnChainEventId: invalid planDigest");
+  }
+  // A seated record needs a contract: the bare legacy shape cannot carry it.
+  if (seating && !contract && !byEventSeries.has(k)) {
+    throw new Error("recordOnChainEventId: a seated registration must name its contract");
+  }
 
   if (fileUnreadable) {
     throw new RegistryUnreadableError(
@@ -336,6 +374,15 @@ export function recordOnChainEventId(
           `${contractKey(existing.contract)}, asked to record it on ${contractKey(contract)}`,
         );
       }
+      // Seating is fixed at registration: a replay may omit it (the record keeps
+      // its own) but never add one to a general record or name another plan.
+      if (seating && seating.planDigest.toLowerCase() !== existing.seating?.planDigest) {
+        throw new RegistrationRebindError(
+          `refusing to change ${eventId.slice(0, 8)}/${seriesId.slice(0, 8)}: registered ` +
+          `${existing.seating ? `with plan ${existing.seating.planDigest.slice(0, 10)}…` : "without seats"}, ` +
+          `asked to record plan ${seating.planDigest.slice(0, 10)}…`,
+        );
+      }
       // Idempotent replay — the landed-tx heal path in `register-once` relies on
       // this returning quietly.
       return;
@@ -357,6 +404,7 @@ export function recordOnChainEventId(
   byEventSeries.set(k, {
     onChainEventId,
     ...(contract ? { contract: { ...contract, address: contract.address.toLowerCase() } } : {}),
+    ...(seating ? { seating: { planDigest: seating.planDigest.toLowerCase() } } : {}),
   });
   // The two maps move together or the reverse index lies — and a lying index
   // answers `findKeyBoundTo` with null, which is the exact answer that lets a
@@ -401,6 +449,17 @@ export function findKeyBoundTo(onChainEventId: string): string | null {
 export function lookupOnChainEventId(eventId: string, seriesId: string): string | null {
   ensureLoaded();
   return byEventSeries.get(key(eventId, seriesId))?.onChainEventId ?? null;
+}
+
+/**
+ * The plan a series was registered seated with, or null: general admission, no
+ * record, or the file unreadable. Zero I/O. The seat mint and every seat read go
+ * by this, never by the feed.
+ */
+export function registrationSeatingFor(eventId: string, seriesId: string): { planDigest: string } | null {
+  ensureLoaded();
+  if (fileUnreadable) return null;
+  return byEventSeries.get(key(eventId, seriesId))?.seating ?? null;
 }
 
 /**

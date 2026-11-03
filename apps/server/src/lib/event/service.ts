@@ -137,6 +137,8 @@ export async function createEventV2(opts: {
     saleEnd?: string;
     payment?: import("@woco/shared").PaymentConfig;
     gate?: import("@woco/shared").ObjectGate | import("@woco/shared").ObjectGateGroup;
+    /** Seated series only, already checked against the manifest's plan (checkSeatedSeries). */
+    seating?: import("@woco/shared").SeriesSeating;
   }>;
   /** The organiser's X-Wing order key, 1216 bytes as lowercase hex (#642). */
   encryptionPublicKey?: string;
@@ -269,6 +271,7 @@ export async function createEventV2(opts: {
         ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
         ...(s.payment ? { payment: s.payment } : {}),
         ...(s.gate ? { gate: s.gate } : {}),
+        ...(s.seating ? { seating: s.seating } : {}),
       } as SeriesSummary;
     }),
   );
@@ -391,6 +394,8 @@ export async function confirmSeriesOnChain(
   onChainEventId: string,
   signerHint?: string,
   contract?: EventContractTarget,
+  /** A seated registration's plan (docs/SEATING.md), recorded with the id. */
+  seating?: { planDigest: string },
 ): Promise<{ feed: EventFeed; resignable: boolean }> {
   // Persist the chain receipt FIRST — independent of whether the client re-signs its
   // SOC with onChainEventId. This is what makes the money path's v2 detection robust:
@@ -402,7 +407,7 @@ export async function confirmSeriesOnChain(
   // can ever get past this line. Counted before rethrowing so `/api/health` can say
   // an operator has work to do — the error itself stays exactly as it was.
   try {
-    recordOnChainEventId(eventId, seriesId, onChainEventId, contract);
+    recordOnChainEventId(eventId, seriesId, onChainEventId, contract, seating);
   } catch (err) {
     if (err instanceof RegistrationRebindError) noteRebindConflict(eventId, seriesId);
     throw err;

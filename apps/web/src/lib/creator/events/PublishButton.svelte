@@ -26,6 +26,9 @@
     saleEnd?: string;
     payment?: import("@woco/shared").PaymentConfig;
     gate?: import("@woco/shared").ObjectGate;
+    /** Allocated seating: the plan frozen for this event and a price per band.
+     *  `totalSupply` is its seat count; `payment.price` the lowest band price. */
+    seating?: { plan: import("@woco/shared/seating/plan").SeatPlan; bands: { id: string; price: string }[] };
   }
 
   interface Props {
@@ -111,7 +114,14 @@
     series.length > 0 &&
     series.every((s) => s.name.trim() && s.totalSupply > 0) &&
     // When free events are disabled, every series must carry at least the minimum price.
-    (FEATURES.freeEventsAllowed || series.every((s) => s.payment && ticketPriceMeetsMinimum(s.payment.price)))
+    (FEATURES.freeEventsAllowed || series.every((s) => s.payment && ticketPriceMeetsMinimum(s.payment.price))) &&
+    // A seated ticket type sells one ticket per seat, each band at a price.
+    series.every((s) => !s.seating || (
+      FEATURES.seatedEventsAllowed &&
+      s.totalSupply === s.seating.plan.seats.length &&
+      s.seating.bands.length === s.seating.plan.bands.length &&
+      s.seating.bands.every((b) => ticketPriceMeetsMinimum(b.price))
+    ))
   );
 
   const hasPaidSeries = $derived(series.some((s) => s.payment));
@@ -225,6 +235,18 @@
       phase = "building";
       step = "Creating your tickets…";
 
+      // Allocated seating: the plan is stored first, because each seated ticket
+      // type's manifest names it (and so does the on-chain record of that manifest).
+      const seatPlans = new Map<string, import("@woco/shared/seating/template").SeatPlanTemplate>();
+      if (series.some((s) => s.seating)) {
+        step = "Saving your seating plan…";
+        const { uploadSeatPlan } = await import("../../api/seating.js");
+        for (const s of series) {
+          if (s.seating) seatPlans.set(s.seriesId, await uploadSeatPlan(s.seating.plan, gatewayUrl));
+        }
+        step = "Creating your tickets…";
+      }
+
       // Strip data: URL prefix to get raw base64, then upload image to get hash.
       // The image hash is embedded in object metadata so it matches the event feed.
       // We pass an empty string if the image isn't available yet (rare edge case).
@@ -236,6 +258,7 @@
           name: s.name,
           description: s.description,
           totalSupply: s.totalSupply,
+          ...(seatPlans.has(s.seriesId) ? { seatPlan: seatPlans.get(s.seriesId)! } : {}),
         })),
       });
       progress = 15;
@@ -267,7 +290,12 @@
             description: s.description || "",
             totalSupply: s.totalSupply,
             signedManifest: manifests[i]!.signedManifest,
-            editionBodies: manifests[i]!.editionBodies,
+            // A seated ticket type sends one body without its number (the server
+            // rebuilds the rest); general admission keeps the list until every
+            // server takes the compact form.
+            ...(s.seating
+              ? { editionCommon: manifests[i]!.editionCommon, seating: { bands: s.seating.bands } }
+              : { editionBodies: manifests[i]!.editionBodies }),
             ...(s.wave ? { wave: s.wave } : {}),
             ...(s.saleStart ? { saleStart: saleBound(s.saleStart) } : {}),
             ...(s.saleEnd ? { saleEnd: saleBound(s.saleEnd) } : {}),

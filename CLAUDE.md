@@ -64,6 +64,7 @@ FEATURE FLAGS — READ BEFORE ASSUMING A RAIL IS LIVE
   walletLoginAllowed    = false   # MetaMask/WalletConnect login: phishable sign-to-derive seed (#186)
   accountBackupsAllowed = false   # email accounts' Protect backups; passkey accounts add passkeys (#186)
   webhooksAllowed       = false   # dashboard order webhook: its relay was our server's one plaintext attendee path
+  seatedEventsAllowed   = false   # allocated seating (docs/SEATING.md): on only when every slice there has shipped
   (also off: agentCommerceAllowed, coinbaseLoginAllowed, organiserSendingDomains)
 
 Flags gate UI AND server validation in lockstep — an old client cannot reach a disabled
@@ -543,7 +544,14 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     registration #563 made after it. Back the file up before any rollback. If
     the old build then records anything, its file is the partial map: on
     rolling forward, restore the backup and re-add the bare-string records the
-    old build wrote (this build reads them))
+    old build wrote (this build reads them). Seating (docs/SEATING.md): a seated
+    series' record also holds `seated: true` + `planDigest` - the seat mint's
+    ONLY source for choosing the seat path and the plan (the chain cannot say
+    which plan). A build from before seating reads it as ordinary and drops both
+    fields on its next write: those series then refund rather than mint (the
+    ledger refuses the general path), and the plan link must be restored from
+    the backup - and those series must NOT be re-registered, which would mint a
+    second on-chain event)
   kernel-deployed.json (which Kernels have been seen with an on-chain owner, WHICH
     owner, at which L2 block, and — since #489 — on which CHAIN: records are keyed
     `{chainId}:{address}` and a record from another chain is ignored, never deleted.
