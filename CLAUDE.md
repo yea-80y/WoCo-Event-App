@@ -232,7 +232,9 @@ SWARM
 - Postage batch: `POSTAGE_BATCH_ID` (server-only)
 - Frontend deploys (`scripts/`) use two batches: feed updates + manifests on the core batch (`POSTAGE_BATCH_ID`,
   never replaced, only topped up), app + scanner bundles on a builds batch (`BUILD_BATCH_ID`, replaced when full).
-  `scripts/swarm-batches.cjs` refuses the deploy on a bad split. The app feed topic is `woco-app-v1` (since launch).
+  `scripts/swarm-batches.cjs` refuses the deploy on a bad split, a builds batch under 1 day or 3/4 full. The live
+  app names its builds batch in index.html (`woco-build-batch` meta); `/api/health` `postage.builds` is red under 2 days.
+  The app feed topic is `woco-app-v1` (since launch).
 - Feed private key: `FEED_PRIVATE_KEY` (server-only). Owns PLATFORM feeds — directory pointer,
   site events index, creator site directory, issuer-log relay, recovery status, marketing pointer,
   shop config, passport collection — PLUS any event/site feed whose client sent no feed signer.

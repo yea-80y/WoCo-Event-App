@@ -236,7 +236,10 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
       // Patch index.html with absolute <base href> → fast gateway
       const baseTag = `<base href="https://gateway.woco-net.com/bzz/${assetsRef}/">`;
       const feedMeta = `<meta name="woco-feed" content="v1 ${ownerHex.toLowerCase()} ${topic.toString()} ${nextIdx}">`;
-      const patched = indexOriginal.replace(/<head>/i, `<head>\n    ${baseTag}\n    ${feedMeta}`);
+      // The batch this build is stamped on: the server's /api/health reads it
+      // from the live app and alarms before that batch - and the app - expires.
+      const batchMeta = `<meta name="woco-build-batch" content="${BUILD_BATCH_ID.toLowerCase()}">`;
+      const patched = indexOriginal.replace(/<head>/i, `<head>\n    ${baseTag}\n    ${feedMeta}\n    ${batchMeta}`);
       if (patched === indexOriginal) {
         throw new Error('Could not inject <base href> — no <head> tag found in dist/index.html');
       }
