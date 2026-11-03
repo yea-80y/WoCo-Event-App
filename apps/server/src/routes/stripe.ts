@@ -1537,7 +1537,7 @@ stripe.post("/webhook", async (c) => {
         // mint is the result of that confirmation, not a prerequisite.
         // Fulfilment never rejects: every failure is a refund reason, a
         // degraded accessory, or a ledgered email failure (lib/stripe/fulfilment.ts).
-        void fulfilPaidSession(session, event.created, liveFulfilmentDeps)
+        void fulfilPaidSession(session, event.created, liveFulfilmentDeps, verdict.feeId)
           .then((outcome) => {
             if (outcome.kind === "processed" && (outcome.stoppedReason || outcome.email === "failed")) {
               console.warn(

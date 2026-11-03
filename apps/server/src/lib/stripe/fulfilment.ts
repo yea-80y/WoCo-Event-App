@@ -345,11 +345,14 @@ function paymentIntentId(session: FulfilmentSession): string | null {
  * @param webhookEventCreated Stripe `event.created` (Unix seconds): the payment
  *   time, used as `claimedAt` so the dashboard shows when the buyer paid, not
  *   when we got round to it.
+ * @param applicationFeeId the fee the provenance check proved the sale by,
+ *   stored on the ledger entry: referral earnings read the fee from it (#12).
  */
 export async function fulfilPaidSession(
   session: FulfilmentSession,
   webhookEventCreated: number,
   deps: FulfilmentDeps,
+  applicationFeeId?: string,
 ): Promise<FulfilmentOutcome> {
   const {
     eventId,
@@ -698,6 +701,7 @@ export async function fulfilPaidSession(
         currency: session.currency,
         grossAmount: session.amount_total,
         paymentIntentId: paymentIntentId(session) ?? undefined,
+        ...(applicationFeeId ? { applicationFeeId } : {}),
         recordedAt: claimedAt,
         releaseAfter: eventReleaseAfter(claimedAt, eventEndDate, eventDate),
       });
