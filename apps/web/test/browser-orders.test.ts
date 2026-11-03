@@ -201,6 +201,41 @@ test("every answer is a new, later epoch, stamped with the reader's clock", asyn
   assert.equal(two.at, NOW);
 });
 
+test("#1061: each slot's root is worked out once, however often the page asks", async () => {
+  let reads = 0;
+  const counted = (owner: string, c: string): SlotRead => ({
+    owner,
+    get orderRef() {
+      reads++;
+      return ref(c);
+    },
+  });
+  const w = world({ slots: [counted("0x1", "a"), counted("0x2", "b")] });
+  const r = reader(w.deps);
+  await r.loadRows();
+  assert.equal(reads, 2, "once per slot across the whole load");
+  for (let i = 0; i < 50; i++) {
+    r.rootOf({ seriesId: "s1", edition: 1 });
+    r.rootOf({ seriesId: "s1", edition: 2 });
+    r.build(queueHasAll);
+  }
+  await r.loadRows();
+  assert.equal(reads, 2, "never again: not per row, per update or per poll");
+});
+
+test("#1061: a slot read again (a new registration) is worked out afresh, never from the old read", async () => {
+  const w = world({ slots: [S("0x1", "a")] });
+  const r = reader(w.deps);
+  await r.loadRows();
+  assert.equal(r.rootOf({ seriesId: "s1", edition: 1 }), root("a"));
+  w.state.ledger = { ...LEDGER, onChainEventId: "0x" + "f".repeat(64) };
+  w.state.slots = [S("0x9", "d")];
+  await r.loadRows();
+  await r.loadRows();
+  assert.equal(r.rootOf({ seriesId: "s1", edition: 1 }), root("d"));
+  assert.equal(r.build(queueHasAll).orders[0].encryptedOrder !== undefined, true);
+});
+
 test("rootOf names the row's order root; none before a read", async () => {
   const w = world({ slots: [S("0x1", "a"), { owner: "0x2", orderRef: ref("0") }] });
   const r = reader(w.deps);
