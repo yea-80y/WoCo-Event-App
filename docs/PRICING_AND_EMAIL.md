@@ -775,7 +775,7 @@ chat above and the 2026-07-31 Radar repricing email. Held for Nice's answer
 (3-question addendum sent 2026-07-31).
 
 **Why this is not a detail.** At a £20 ticket our 1.5% fee is 30p, and the 40%
-referral campaign takes that to ~18p net. A £0.08 per-transaction Radar charge
+referral campaign (rate: `REFERRAL_SHARE_SCHEDULE`, rules: REFERRAL_EARNINGS.md) takes that to ~18p net. A £0.08 per-transaction Radar charge
 would eat close to half of what is left. Per-transaction risk pricing is close
 to existential for the unit economics in §7 — it must be confirmed before any
 real organiser is onboarded, not after.

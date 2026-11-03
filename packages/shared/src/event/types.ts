@@ -204,6 +204,37 @@ export const PLATFORM_FEE_BP = 150; // 1.5%
  */
 export const CANCELLATION_RETURNS_PLATFORM_FEE = false;
 
+/** One referral-share rate and the date it applies from (ToS §9). */
+export interface ReferralShareTerms {
+  /** ISO instant: the date given in the notice of the change. */
+  from: string;
+  /** Basis points of the platform fee WoCo keeps on a sale. */
+  bp: number;
+}
+
+/**
+ * Referral share of the platform fee, by SALE date (ToS §9, #12). A change is a
+ * new entry dated from its notice, never an edit: a sale earns at the rate in
+ * force when it was made, so a change cannot touch earnings already accrued.
+ * Sorted by `from`. §9 also allows per-referrer rates, caps and an end period;
+ * none is set, and none is modelled until one is.
+ */
+export const REFERRAL_SHARE_SCHEDULE: readonly ReferralShareTerms[] = [
+  // Launch rate: 40% of the 1.5% fee, from launch day.
+  { from: "2026-10-23T00:00:00.000Z", bp: 4000 },
+];
+
+/** The share for a sale made at `saleAt` (ISO); 0 before the first entry. */
+export function referralShareBp(saleAt: string, schedule: readonly ReferralShareTerms[] = REFERRAL_SHARE_SCHEDULE): number {
+  const t = Date.parse(saleAt);
+  if (!Number.isFinite(t)) return 0;
+  let bp = 0;
+  for (const terms of schedule) {
+    if (Date.parse(terms.from) <= t) bp = terms.bp;
+  }
+  return bp;
+}
+
 /** USDC contract addresses by chain (native Circle-issued USDC) */
 export const USDC_ADDRESSES: Partial<Record<PaymentChainId, Hex0x>> = {
   1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Hex0x,
