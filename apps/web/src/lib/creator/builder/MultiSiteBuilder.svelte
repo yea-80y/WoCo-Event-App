@@ -1061,7 +1061,7 @@
         {:else}
           {#if siteNameCheck.state === 'not-owned' && site.subEnsLabel}
             <div class="subens-notice subens-notice--warn">
-              <code>{subEnsName(site.subEnsLabel)}</code> isn't registered to this account, so publishing won't point it here.
+              <code>{subEnsName(site.subEnsLabel)}</code> isn't registered to this account, so publishing won't point it here, but the site would still tell search engines it's this site's address.
               <button class="subens-notice-btn" onclick={() => { site.subEnsLabel = undefined; }}>Remove it from this site</button>
             </div>
           {/if}

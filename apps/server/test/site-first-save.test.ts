@@ -642,7 +642,7 @@ function eventOf(who: Wallet): string {
 }
 
 /** What the builder does: read the page config, build on the event-page kit, send. */
-async function pageDeployBody(who: Wallet, eventId: string, head?: { title: string; imageHash?: string }) {
+async function pageDeployBody(who: Wallet, eventId: string, head?: { title: string; imageHash?: string }, name?: string) {
   const cfg = await call(who, `/api/site/${eventId}/page-config`, null, "GET");
   assert.equal(cfg.status, 200, JSON.stringify(cfg.json));
   const { config, head: suggested } = cfg.json.data as { config: Record<string, string>; head: { title: string; imageHash?: string } };
@@ -651,6 +651,7 @@ async function pageDeployBody(who: Wallet, eventId: string, head?: { title: stri
   const built = buildEventPageCollection({
     config: config as never,
     head: usedHead,
+    name,
     template: PAGE_RELEASE.template,
     release: PAGE_RELEASE.release,
     releaseRootNode: Binary.hexToUint8Array(PAGE_RELEASE.rootNode),
@@ -713,6 +714,46 @@ test("event page: a head that is not the one rendered, or a tampered page, is re
   const stale = await call(who, "/api/site/deploy", { ...d.body, collection: { ...d.body.collection, runtimeVersion: 1 } });
   assert.deepEqual([stale.status, stale.json.code], [409, "RUNTIME_RELEASE_CHANGED"]);
   assert.equal(contents.size, before, "nothing stored");
+});
+
+test("event page: the name the deploy sends is rendered into the page (#70); a build that disagrees is refused before any upload", async () => {
+  const who = await organiser();
+  const eventId = eventOf(who);
+  const before = contents.size;
+  const named = await pageDeployBody(who, eventId, { title: "Friday Gig" }, "friday-gig");
+  const html = Buffer.from(named.body.collection.objects[0]!, "base64").toString("utf8");
+  assert.match(html, /<link rel="canonical" href="https:\/\/friday-gig\.woco\.eth\.limo\/">/);
+  // Built with the name, sent without it; built without it, sent with it.
+  const unsent = await call(who, "/api/site/deploy", named.body);
+  assert.deepEqual([unsent.status, unsent.json.code], [409, "COLLECTION_MISMATCH"]);
+  const plain = await pageDeployBody(who, eventId, { title: "Friday Gig" });
+  const unbuilt = await call(who, "/api/site/deploy", { ...plain.body, subEnsLabel: "friday-gig" });
+  assert.deepEqual([unbuilt.status, unbuilt.json.code], [409, "COLLECTION_MISMATCH"]);
+  // Built and sent with the same name: the server's own rebuild is identical.
+  const { admitClientEventPage, decodeClientCollection } = await import("../src/lib/site/collection-publish.js");
+  const kit = { version: 2, line: "eventPage" as const, store: "etherna" as const, release: PAGE_RELEASE.release, rootNode: Binary.hexToUint8Array(PAGE_RELEASE.rootNode), template: PAGE_RELEASE.template };
+  const received = decodeClientCollection(named.body.collection)!;
+  const admitted = admitClientEventPage({ kit, config: named.config as never, head: { title: "Friday Gig" }, name: "friday-gig", received });
+  assert.ok(admitted.ok && admitted.collection.root === named.root);
+  assert.equal(contents.size, before, "nothing stored");
+});
+
+test("deploy: a website's name is checked like an event page's, and rendered alike (#70)", async () => {
+  const who = await organiser();
+  // A fresh site each time: repeated reads of one never-saved site trip bee's skip list first.
+  for (const bad of ["", "ab", "Acme", "a--b", 'a"><script>', 7]) {
+    const id = newSiteId();
+    const { body } = deployBody(who, id, "https://gateway.woco-net.com");
+    const r = await call(who, `/api/sites/${id}/deploy`, { ...body, site: { ...body.site, subEnsLabel: bad } });
+    assert.deepEqual([r.status, r.json.error], [400, "subEnsLabel is not a valid name"], String(bad));
+  }
+  // Built without the name, sent with it: the server renders the name, so the bytes differ.
+  const siteId = newSiteId();
+  const { body } = deployBody(who, siteId, "https://gateway.woco-net.com");
+  const r = await call(who, `/api/sites/${siteId}/deploy`, { ...body, site: { ...body.site, subEnsLabel: "acme-pub" } });
+  assert.deepEqual([r.status, r.json.code], [409, "COLLECTION_MISMATCH"]);
+  assert.deepEqual(bzzUploads, []);
+  assert.deepEqual(feedHistory(shared.multisiteFeedTopic(siteId)), [], "no pointer moved");
 });
 
 test("event page: page-config is a signed GET with a query string, and the server checks the path it was signed over", async () => {

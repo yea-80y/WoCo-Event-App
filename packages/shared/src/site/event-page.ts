@@ -11,7 +11,7 @@
  * one is attribute-escaped.
  */
 
-import { escapeHtmlAttribute, injectBeforeHeadClose, siteConfigScript } from "./render.js";
+import { canonicalLinkLine, escapeHtmlAttribute, injectBeforeHeadClose, siteConfigScript, withDocumentTitle } from "./render.js";
 
 /** An event page's index document in the runtime (`apps/web/dist-site`). */
 export const EVENT_PAGE_INDEX_DOCUMENT = "site.html";
@@ -58,21 +58,21 @@ function stripTrailingSlash(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
 }
 
-/** The runtime template's own `<title>` (site.html says "Event"). */
-const TEMPLATE_TITLE = /<title\b[^>]*>[^<]*<\/title>/i;
-
 /**
  * The title, icon + share tags baked into a single-event page. The event's own image
  * when it has one, WoCo's logo (bundled in dist-site) otherwise - the same rule
  * `deployHeadLines` (render.ts) applies to a site's logo. Any icon link the
  * template carries is dropped first, so the event's is the only one a browser
  * or the iOS home screen can pick. The `<title>` is written here, not only by the
- * runtime, because crawlers that run no script read the HTML as served (#70).
+ * runtime, because crawlers that run no script read the HTML as served (#70), and
+ * so is the canonical when the page is published under a WoCo name (`name`, the
+ * label the deploy carries).
  */
 export function withEventPageHead(
   html: string,
   event: EventPageHead | null,
   contentGatewayUrl: string,
+  name?: string,
 ): string {
   const ref = event?.imageHash ?? "";
   const image = escapeHtmlAttribute(
@@ -84,6 +84,7 @@ export function withEventPageHead(
     `  <link rel="manifest" href="./manifest.json">`,
     `  <link rel="icon" href="${image}">`,
     `  <link rel="apple-touch-icon" href="${image}">`,
+    canonicalLinkLine(name),
     `  <meta property="og:type" content="website">`,
     title ? `  <meta property="og:title" content="${title}">` : "",
     `  <meta property="og:image" content="${share}">`,
@@ -92,19 +93,13 @@ export function withEventPageHead(
     `  <meta name="twitter:image" content="${share}">`,
   ].filter(Boolean).join("\n");
   const stripped = html.replace(/\s*<link\b[^>]*\brel=["']?(?:shortcut )?icon["']?[^>]*>/gi, "");
-  // A replacer FUNCTION: a string would read `$&` or `` $` `` in the title as a pattern.
-  const titled = !title
-    ? stripped
-    : TEMPLATE_TITLE.test(stripped)
-      ? stripped.replace(TEMPLATE_TITLE, () => `<title>${title}</title>`)
-      : injectBeforeHeadClose(stripped, `  <title>${title}</title>`);
-  return injectBeforeHeadClose(titled, lines);
+  return injectBeforeHeadClose(withDocumentTitle(stripped, title), lines);
 }
 
 /** An event page's HTML: the runtime's template, the config script, then the head. */
-export function renderEventPageHtml(input: { template: string; config: EventPageConfig; head: EventPageHead | null }): string {
+export function renderEventPageHtml(input: { template: string; config: EventPageConfig; head: EventPageHead | null; name?: string }): string {
   const withConfig = injectBeforeHeadClose(input.template, `  ${siteConfigScript(input.config)}`);
-  return withEventPageHead(withConfig, input.head, input.config.contentGatewayUrl);
+  return withEventPageHead(withConfig, input.head, input.config.contentGatewayUrl, input.name);
 }
 
 /** WoCo's own colours (apps/web/public/manifest.json): a page's install surface. */

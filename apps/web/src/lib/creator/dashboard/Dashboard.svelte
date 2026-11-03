@@ -25,11 +25,11 @@
   import CancellationStatus from "./CancellationStatus.svelte";
   import UndeliveredTickets from "./UndeliveredTickets.svelte";
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
-  import { OpenedOrders, ORDERS_POLL_MS, createOrdersPoller, orderSlotKey } from "./live-orders.js";
+  import { OpenedOrders, ORDERS_POLL_MS, RunQueue, createOrdersPoller, orderSlotKey } from "./live-orders.js";
   import { BrowserOrders, OrdersStatusUnavailable } from "./browser-orders.js";
   import { canReadLedger, liveBrowserOrdersDeps, liveGatewayFetcher } from "./browser-orders-live.js";
   import { DetailQueue, type DetailState } from "./detail-queue.js";
-  import { OrderOpener, type OpenerPort } from "./order-opener.js";
+  import { OrderOpenerPool, poolWidth, type OpenerPort } from "./order-opener.js";
   import { DETAIL_CSV, listGate, rowDetail, shortfall, type RowDetail } from "./list-completeness.js";
   import { withoutSealedOrders } from "../../api/orders-cache.js";
   import type { RequestSigningOptions } from "../../auth/request-session.js";
@@ -44,7 +44,9 @@
 
   // State
   let event = $state<EventFeed | null>(null);
-  let ordersResponse = $state<EventOrdersResponse | null>(null);
+  // Raw, not deep: a list is only ever replaced whole, and proxying 24k rows and their
+  // sealed boxes made every walk of it slow (#1061).
+  let ordersResponse = $state.raw<EventOrdersResponse | null>(null);
   let decryptedOrders = $state<Map<number, DecryptedOrder>>(new Map());
   let loading = $state(true);
   let decrypting = $state(false);
@@ -213,6 +215,12 @@
     return map;
   }
 
+  /** The list by series, and each row's position in it: built once per list, not per render. */
+  const listIndex = $derived.by(() => {
+    const orders = ordersResponse?.orders ?? [];
+    return { bySeries: groupBySeries(orders), position: new Map(orders.map((o, i) => [o, i])) };
+  });
+
   /**
    * Each row's details standing (list-completeness.ts), for actions on the whole
    * list. Reads `detailTick` and the opened map, so a gate re-renders as details land.
@@ -220,7 +228,7 @@
   function rowDetailsOf(rows: OrderEntry[]): RowDetail[] {
     void detailTick;
     if (!ordersResponse) return [];
-    const position = new Map(ordersResponse.orders.map((o, i) => [o, i]));
+    const position = listIndex.position;
     return rows.map((o) => rowDetail(o, decryptedOrders.has(position.get(o) ?? -1), detailState(o), decrypting, ordersLocked));
   }
 
@@ -243,7 +251,7 @@
       return;
     }
     const headers = ["Edition", "Claimer", "Email", "Paid via", "Refund", "Claimed At", "Details", ...fields.map((f) => f.label)];
-    const position = new Map(ordersResponse!.orders.map((o, i) => [o, i]));
+    const position = listIndex.position;
     const rows = seriesOrders.map((order, i) => {
       const dec = decryptedOrders.get(position.get(order) ?? -1);
       return [
@@ -349,7 +357,7 @@
   }
 
   function unsentCount(seriesOrders: OrderEntry[]): number {
-    const position = new Map(ordersResponse!.orders.map((o, i) => [o, i]));
+    const position = listIndex.position;
     return seriesOrders.filter((o) => decryptedOrders.has(position.get(o) ?? -1) && !sentMap[orderKey(o)]).length;
   }
 
@@ -363,7 +371,7 @@
       return;
     }
     bulkSending = seriesId;
-    const position = new Map(ordersResponse!.orders.map((o, i) => [o, i]));
+    const position = listIndex.position;
     for (const order of seriesOrders) {
       const key = orderKey(order);
       const globalIdx = position.get(order) ?? -1;
@@ -491,31 +499,45 @@
 
   /** What this page has opened, by ticket - so a poll opens only the new orders. */
   const opened = new OpenedOrders<DecryptedOrder>();
-  let decryptChain: Promise<void> = Promise.resolve();
+  const openRuns = new RunQueue((err) => console.error("[dashboard] opening orders failed:", err));
+  /**
+   * During a run, what it opened reaches the screen at most this often: each update
+   * re-reads the whole list, and once per 50-order step held the page at 20k orders (#1061).
+   */
+  const SHOW_OPENED_MS = 500;
+  let openedShownAt = 0;
+  function showOpened(now = false): void {
+    if (!now && performance.now() - openedShownAt < SHOW_OPENED_MS) return;
+    openedShownAt = performance.now();
+    if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
+  }
   /** Bumped when the keys lock: an opening run still going stops and keeps nothing. */
   let openEpoch = 0;
   /** Opened per step when no worker runs, then the page gets a turn. */
   const OPEN_CHUNK = 20;
-  /** Orders per message to the opening worker. */
+  /** Orders per message to each opening worker. */
   const OPEN_BATCH = 50;
   /** Rows kept in the page's saved copy of the list (localStorage); none above it. */
   const ROW_CACHE_MAX = 5_000;
 
   /**
-   * Opening runs in a worker (order-opener.ts): thousands of orders never freeze the
-   * page. null = this browser has no workers; the page opens them itself.
+   * Opening runs in workers (order-opener.ts): thousands of orders never freeze the
+   * page, and a long list splits across several (#1061). null = this browser has no
+   * workers; the page opens them itself.
    */
-  let opener: OrderOpener | null | undefined;
-  /** The account whose keys the worker holds (auth.seedAddress at hand-over). */
+  let opener: OrderOpenerPool | null | undefined;
+  /** The account whose keys the workers hold (auth.seedAddress at hand-over). */
   let keyedAccount: string | null = null;
-  function orderOpener(): OrderOpener | null {
+  function orderOpener(): OrderOpenerPool | null {
     if (opener === undefined) {
       opener =
         typeof Worker === "undefined"
           ? null
-          : new OrderOpener(
+          : new OrderOpenerPool(
               () =>
                 new Worker(new URL("./order-opener.worker.ts", import.meta.url), { type: "module" }) as unknown as OpenerPort,
+              // Sized at each unlock, from the list then on screen.
+              () => poolWidth(ordersResponse?.orders.length ?? 0, navigator.hardwareConcurrency),
             );
     }
     return opener;
@@ -543,11 +565,8 @@
    * instead of a passkey or wallet sheet nobody asked for (#746 fix 1).
    */
   function decryptCurrent(prompt = false): Promise<void> {
-    const run = decryptChain.then(() => decryptOnce(prompt));
-    // Kept moving for the next run, but never silent: a swallowed throw here hid every
-    // attendee's details on 2026-11-02 with nothing on screen or in the console.
-    decryptChain = run.catch((err) => console.error("[dashboard] opening orders failed:", err));
-    return run;
+    // One run at a time, a call joining one still waiting to start (live-orders.ts RunQueue).
+    return openRuns.enqueue(prompt, decryptOnce);
   }
 
   async function decryptOnce(prompt: boolean): Promise<void> {
@@ -560,6 +579,10 @@
     try {
       await openOrders(prompt);
     } finally {
+      // Everything opened is on screen before "Opening..." stops, on every way out: a step
+      // that threw after its puts would otherwise read as "could not be opened" (Fable
+      // sign-off #1061 F1). After a lock this shows nothing, as endOpening left it.
+      showOpened(true);
       // Every way out - a lock, a failure, leaving the page - stops showing "Opening...".
       decrypting = false;
     }
@@ -613,8 +636,11 @@
     let pageKeys: Uint8Array[] | null = null;
     for (;;) {
       // Each step from the rows on screen NOW, so an order erased mid-run is never
-      // opened; one that would not open is recorded and not retried with this box.
-      const batch = ordersResponse ? opened.unopened(ordersResponse.orders).slice(0, useWorker ? OPEN_BATCH : OPEN_CHUNK) : [];
+      // opened (a new list is a new array, walked afresh); one that would not open is
+      // recorded and not retried with this box.
+      // A step is OPEN_BATCH per keyed worker (one before the first hand-over).
+      const step = worker && useWorker ? OPEN_BATCH * Math.max(1, worker.width) : OPEN_CHUNK;
+      const batch = ordersResponse ? opened.nextUnopened(ordersResponse.orders, step) : [];
       if (batch.length === 0) break;
       if (worker && useWorker) {
         if (!worker.keyedFor(epoch)) {
@@ -629,10 +655,13 @@
         const out = await worker.open(
           epoch,
           eventId,
-          // A snapshot: the rows are reactive proxies, which a worker message cannot copy.
+          // A plain copy: a worker message cannot carry a reactive proxy (2026-11-02), and the
+          // list is raw now only because nothing proxies it - this holds if that changes.
           batch.map(({ order }, id) => ({ id, seriesId: order.seriesId, box: $state.snapshot(order.encryptedOrder) })),
         );
         if (out.kind === "unavailable") {
+          // Locked, or left, meanwhile: stop here, never re-walk and re-derive keys for nothing.
+          if (epoch !== openEpoch || destroyed) return;
           // No worker after all: the rest open on this page.
           useWorker = false;
           continue;
@@ -646,7 +675,7 @@
           if (r?.data !== undefined) opened.put(order, r.data as DecryptedOrder);
           else opened.fail(order);
         });
-        if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
+        showOpened();
         continue;
       }
       // No worker (or it failed to start): open on this page, in steps.
@@ -666,12 +695,12 @@
         if (r.status === "fulfilled") opened.put(batch[k].order, r.value);
         else opened.fail(batch[k].order);
       });
-      // The list on screen now - a poll may have replaced it while this ran.
-      if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
+      // Against the list on screen now - a poll may have replaced it while this ran.
+      showOpened();
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (epoch !== openEpoch || destroyed) return;
     }
-    if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
+    // The rest of the run's openings go on screen in decryptOnce's finally.
     decryptError = opened.failures > 0 ? `Failed to decrypt ${opened.failures} order(s)` : null;
   }
 
@@ -744,10 +773,16 @@
     rebuildTimer = null;
   });
 
-  /** Boxes arrive one by one: show them in batches, not one repaint per order. */
+  /**
+   * Boxes arrive one by one: show them in batches, not one repaint per order. A rebuild
+   * walks the whole list, so a long one waits longer between them (#1061).
+   */
   let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  const REBUILD_MS = 250;
+  const REBUILD_MS_LONG_LIST = 1_000;
   function scheduleRebuild(): void {
     if (rebuildTimer !== null || destroyed) return;
+    const wait = (ordersResponse?.orders.length ?? 0) > ROW_CACHE_MAX ? REBUILD_MS_LONG_LIST : REBUILD_MS;
     rebuildTimer = setTimeout(() => {
       rebuildTimer = null;
       detailTick++;
@@ -755,7 +790,7 @@
       const { reader, queue } = browserOrders;
       showOrders(reader.build((root) => queue.box(root)));
       void decryptCurrent();
-    }, 250);
+    }, wait);
   }
 
   /**
@@ -858,7 +893,7 @@
     if (!ordersResponse || !browserOrders || ordersSource !== "browser") return;
     const { reader, queue } = browserOrders;
     const visible: string[] = [];
-    for (const [seriesId, rows] of groupBySeries(ordersResponse.orders)) {
+    for (const [seriesId, rows] of listIndex.bySeries) {
       const page = seriesPage[seriesId] ?? 0;
       for (const order of rows.slice(page * ORDERS_PAGE_SIZE, (page + 1) * ORDERS_PAGE_SIZE)) {
         const root = reader.rootOf(order);
@@ -1371,7 +1406,7 @@
          page. Shows every series with sold / total / remaining so the
          organiser sees real-time stock at a glance, including series that
          haven't sold yet. ─────────────────────────────────────────────── -->
-    {@const _grouped = groupBySeries(ordersResponse.orders)}
+    {@const _grouped = listIndex.bySeries}
     {@const _totalSold = ordersResponse.orders.length}
     {@const _totalSupply = event.series.reduce((acc, s) => acc + s.totalSupply, 0)}
     <div class="sales-panel">
@@ -1445,8 +1480,8 @@
         </p>
       {/if}
 
-      {@const grouped = groupBySeries(ordersResponse.orders)}
-      {@const rowIndex = new Map(ordersResponse.orders.map((o, i) => [o, i]))}
+      {@const grouped = listIndex.bySeries}
+      {@const rowIndex = listIndex.position}
       {#each event.series as series}
         {@const seriesOrders = grouped.get(series.seriesId) ?? []}
         {#if seriesOrders.length > 0}
