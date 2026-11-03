@@ -130,7 +130,6 @@ export class OpenedOrders<T> {
    * re-sealed: opened details never outlive the box they came from.
    */
   prune(orders: OrderEntry[]): void {
-    this.pending = null;
     const live = new Map(orders.map((o) => [orderSlotKey(o), boxId(o)]));
     for (const [key, hit] of this.byTicket) if (live.get(key) !== hit.box) this.byTicket.delete(key);
     for (const [key, box] of this.failed) if (live.get(key) !== box) this.failed.delete(key);

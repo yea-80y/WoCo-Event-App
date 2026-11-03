@@ -166,7 +166,7 @@ test("nextUnopened: a new list is walked afresh - an order erased mid-run is nev
   assert.equal(step[1].order.encryptedOrder && (step[1].order.encryptedOrder as { enc: string }).enc, "resealed");
 });
 
-test("nextUnopened: a relock, or a prune, starts the walk again", () => {
+test("nextUnopened: a relock starts the walk again; a failure stays with its box", () => {
   const opened = new OpenedOrders<{ n: number }>();
   opened.markOpened();
   const rows = list(3);
