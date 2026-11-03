@@ -17,7 +17,11 @@ export interface Ledger2Deployment {
 }
 
 /** Deployed WoCoTicketLedger v2 by chain id. Fill both fields from the deploy receipt. */
-export const LEDGER2_DEPLOYMENTS: Readonly<Record<number, Ledger2Deployment>> = {};
+export const LEDGER2_DEPLOYMENTS: Readonly<Record<number, Ledger2Deployment>> = {
+  // 2026-11-03, tx 0xac56acaeca67c232de4e363a3fac5e2e790a6c3c526ccb010382a9cc69965c0b
+  // (WoCo-Contracts deployments/42161-ledger2.json). Arbitrum's own block, not L1's.
+  42161: { address: "0x5cd8394ef7a4e50403ff72d6addd4582332a6050", deployBlock: 520749813 },
+};
 
 /** Deployed WoCoTicketLedger v2 by chain id, lowercase. */
 export const TICKET_LEDGER2_ADDRESSES: Readonly<Record<number, string>> = Object.fromEntries(
