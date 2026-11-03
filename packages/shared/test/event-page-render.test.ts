@@ -3,6 +3,8 @@
  * without changing a byte. `fixtures/event-page-render-vectors.json` was generated
  * from the server's own functions BEFORE the move (an image, none, a failed event
  * read, all-zero and uppercase refs, a trailing-slash gateway, hostile text).
+ * #70 then changed ONE line per titled vector: the template's `<title>` became the
+ * event's, escaped exactly as its pinned og:title.
  */
 
 import test from "node:test";
@@ -26,7 +28,7 @@ test("the vectors cover the cases that matter", () => {
 });
 
 for (const v of vectors) {
-  test(`renders exactly as the server did: ${v.name}`, () => {
+  test(`renders exactly as pinned: ${v.name}`, () => {
     assert.equal(renderEventPageHtml({ template: v.template, config: eventPageDeployConfig(v.config), head: v.event }), v.html);
   });
 }
@@ -47,6 +49,30 @@ test("hostile text stays data: one config script, one icon link, nothing escaped
   assert.equal((v.html.match(/<script>/g) ?? []).length, 1);
   assert.equal((v.html.match(/rel="icon"/g) ?? []).length, 1, "the template's icon link is replaced, not added to");
   for (const m of v.html.matchAll(/content="([^"]*)"/g)) assert.doesNotMatch(m[1]!, /[<>]/);
+});
+
+test("the page title is the event's, kept from the template only when there is none (#70)", () => {
+  const v = vectors[0]!;
+  const render = (head: EventPageHead | null, template = v.template) =>
+    renderEventPageHtml({ template, config: eventPageDeployConfig(v.config), head });
+  const titleOf = (html: string) => [...html.matchAll(/<title>([^<]*)<\/title>/g)].map((m) => m[1]);
+  assert.deepEqual(titleOf(render({ title: "  Gig  " })), ["Gig"]);
+  assert.deepEqual(titleOf(render(null)), ["Event"]);
+  assert.deepEqual(titleOf(render({ title: "   " })), ["Event"]);
+  const untitled = v.template.replace("<title>Event</title>", "");
+  assert.deepEqual(titleOf(render({ title: "Gig" }, untitled)), ["Gig"], "a template without one gets one");
+  for (const t of [`<title lang="en">Event</title>`, `<title >Event</title>`, `<TITLE>Event</TITLE>`]) {
+    const out = render({ title: "Gig" }, v.template.replace("<title>Event</title>", t));
+    assert.equal(out.match(/<title\b/gi)?.length, 1, t);
+    assert.deepEqual(titleOf(out), ["Gig"], t);
+  }
+  assert.ok(render({ title: "Gig" }, untitled).indexOf("<title>Gig</title>") < render({ title: "Gig" }, untitled).indexOf("</head>"));
+
+  // Rendered live, not read from the fixture: hostile text stays inside one title.
+  const hostile = vectors.find((x) => x.name === "hostile title")!;
+  const live = renderEventPageHtml({ template: hostile.template, config: eventPageDeployConfig(hostile.config), head: hostile.event });
+  assert.deepEqual(titleOf(live), ["$` $&amp; &lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt; &quot;&#39; &amp; &lt;b&gt;"]);
+  assert.equal((live.match(/<script>/g) ?? []).length, 1);
 });
 
 test("the head a browser sends is parsed strictly and never normalised", () => {
