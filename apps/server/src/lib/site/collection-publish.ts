@@ -186,7 +186,9 @@ export function admitBuild(input: {
     return { ok: false, code: "COLLECTION_MISMATCH", error: e instanceof Error ? e.message : "page could not be built" };
   }
   if (!sameSiteObjects(expected, input.received.objects)) {
-    return { ok: false, code: "COLLECTION_MISMATCH", error: "the uploaded page differs from the server's build" };
+    // Shown to the organiser as is. The usual cause is an app tab older than the
+    // server's renderer, which a reload fixes (#55).
+    return { ok: false, code: "COLLECTION_MISMATCH", error: "This page was built by an older version of the app - reload the page, then publish again." };
   }
   return { ok: true, collection: expected };
 }

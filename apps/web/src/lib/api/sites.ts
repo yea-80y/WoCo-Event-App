@@ -192,8 +192,10 @@ export async function deployEventPage(
   feedSigner?: ContentFeedSigner | null,
   retry: StorageBusyRetryOptions = {},
 ): Promise<ApiResponse<DeployEventPageResult> & { feedSigned: boolean }> {
+  // `head=2`: this app renders the description + schema.org facts (#55), so the
+  // server may suggest them. An app that does not ask never gets a head it cannot render.
   const cfg = await authGet<{ config: EventPageConfig; head: EventPageHead }>(
-    `/api/site/${encodeURIComponent(eventId)}/page-config?apiUrl=${encodeURIComponent(opts.apiUrl)}`,
+    `/api/site/${encodeURIComponent(eventId)}/page-config?apiUrl=${encodeURIComponent(opts.apiUrl)}&head=2`,
   );
   if (!cfg.ok || !cfg.data) return { ok: false, error: cfg.ok ? "The page could not be prepared" : (cfg.error ?? "The page could not be prepared"), feedSigned: false };
   const { config, head } = cfg.data;
