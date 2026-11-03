@@ -9,8 +9,15 @@
  * through ws-embed (a remote-signing embedded wallet) which never exposes the raw
  * key — `eth_private_key`/`private_key` 404 on its Torus controller. A chain with
  * namespace OTHER instead binds the provider to CommonPrivateKeyProvider, which
- * serves `private_key`. The derived secp256k1 key is the same app-scoped key
- * either way; only the exposure path changes.
+ * serves `private_key`: the login's `privKey`.
+ *
+ * That key is NOT the wallet the Web3Auth dashboard lists for the user (measured
+ * 2026-11-03: dashboard 0x85FA…77a4, this key 0x7b15…48c5 for one email login) -
+ * a login returns several keys (`privKey`, `coreKitKey`, two ed25519) and the
+ * dashboard's wallet is not this one. Every email account is the Kernel of THIS
+ * key, so the namespace, the key route and every input listed in
+ * docs/IDENTITY_AND_KEYS.md §8 must never change (#1051); web3auth-identity.ts
+ * refuses a returning person whose key moved.
  */
 
 import { resolveWeb3AuthNetwork, type Web3AuthNetworkName } from "./web3auth-network.js";

@@ -56,6 +56,8 @@ export type Web3AuthInstance = {
   connectTo?(connectorName: string, loginParams: Record<string, unknown>): Promise<KeyProvider | null>;
   /** The project's login methods as the modal holds them after init, or null. */
   loginMethods?(): Record<string, LoginMethodConfig> | null;
+  /** Who is signed in, read from the session itself where it can be (#1051); see the adapter. */
+  userIdentityInfo?(): Promise<unknown>;
 };
 
 /** The email/social login's connector name (`WALLET_CONNECTORS.AUTH`). */
@@ -140,6 +142,21 @@ export function adaptWeb3AuthSdk(sdk: Web3AuthV11Like): Web3AuthInstance {
         .modalConfig?.connectors?.[AUTH_CONNECTOR]?.loginMethods ?? null,
     logout: (options) => sdk.logout(options),
     getUserInfo: () => sdk.getUserInfo(),
+    // The session's own user info first: the connector's getUserInfo() also fetches
+    // linked accounts from Web3Auth's citadel service, which needs an access token -
+    // and that throws on a session without one (authConnector.js getLinkedAccounts).
+    // Internal (`authInstance`), so read defensively, then the public call.
+    userIdentityInfo: async () => {
+      const auth = (sdk.getConnector(AUTH_CONNECTOR) as { authInstance?: { getUserInfo?: () => Promise<unknown>; state?: { userInfo?: unknown } } } | null)?.authInstance;
+      try {
+        const info = await auth?.getUserInfo?.();
+        if (info) return info;
+      } catch {
+        /* falls through */
+      }
+      if (auth?.state?.userInfo) return auth.state.userInfo;
+      return sdk.getUserInfo();
+    },
     on: (event, fn) => void sdk.on(event, fn),
     removeListener: (event, fn) => void sdk.removeListener(event, fn),
   };

@@ -33,6 +33,15 @@ import {
 import { parseUpgradeMarker, upgradeMarkerKey } from "./upgrade-marker.js";
 import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
 import {
+  KEY_CHANGED_MESSAGE,
+  identityTag,
+  keyChanged,
+  readIdentityRecord,
+  writeIdentityRecord,
+  type IdentityRecord,
+  type Web3AuthIdentity,
+} from "./web3auth-identity.js";
+import {
   isWeb3AuthSignInError,
   WEB3AUTH_KEY_GONE_MESSAGE,
   WEB3AUTH_KEY_LOADING_MESSAGE,
@@ -1825,6 +1834,10 @@ async function init(): Promise<void> {
         // keeps the blob, but a device that only ever restored (never logged in on
         // this tab) still needs its signer resolvable for passive profile reads.
         await _establishFeedSignerEagerly();
+        // A device that only ever restores never passes the sign-in sheet, so it would
+        // have no reference for the key-change guard (#1051) until its next explicit
+        // sign-in. The restore check above has already paired this key with this identity.
+        _recordEmailIdentityIfAbsent(storedSeedAddr!, storedParent!);
       } else if (decision.action === "adopt-without-key") {
         // Web3Auth SDK couldn't init (dev dep-optimizer 504, or a network blip) —
         // a transient failure, NOT a logout. The WoCo session (session key,
@@ -2337,10 +2350,25 @@ async function _runWeb3AuthSignIn(
         // The cache makes no chain read: an account upgraded to a passkey from
         // another device is found here instead (#746).
         _verifyEmailKeyInBackground(cachedKernel, address);
+        // A device that signed in before the guard (#1051) has no reference yet.
+        _recordEmailIdentityIfAbsent(address, cachedKernel);
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         return true;
       }
+    }
+
+    // A known person with a NEW key (#1051): refuse before any account is opened or
+    // anything is written. Only here - the fast path above means this very key has
+    // opened an account on this device - and never for a recovered account, whose key
+    // moved on purpose (its binding is the authority). Who signed in must be readable:
+    // without it a changed key would look like a first sign-in.
+    step = "identity";
+    const who = await _currentEmailIdentity();
+    if (!fastOverride) {
+      if (!who) throw new Error("could not read who signed in to Web3Auth");
+      const known = readIdentityRecord(who.tag);
+      if (keyChanged(known, address)) throw await _refuseChangedEmailKey(address, known!, who.identity);
     }
 
     // Kernelize: build the ZeroDev Kernel from the raw Web3Auth key. The Kernel
@@ -2430,6 +2458,9 @@ async function _runWeb3AuthSignIn(
     if (!override) {
       writeCachedKernelAddress("web3auth", address, kernel.address);
     }
+    // This person's key and account, as of now (#1051) - a recovered account's too,
+    // so its new key is the reference from here on.
+    if (who) writeIdentityRecord(who.tag, { eoa: address, kernel: kernel.address, identity: who.identity });
 
     _cleanupAccountListener?.();
     _cleanupAccountListener = null;
@@ -4946,6 +4977,50 @@ function _upgradeUnfinishedFor(passkey: string, parent: string, owner: string): 
 }
 
 /** End an email sign-in whose account opens with a passkey now (#746). */
+/** Who is signed in to Web3Auth, and the guard's tag for them (#1051); null = unknown. */
+async function _currentEmailIdentity(): Promise<{ tag: string; identity: Web3AuthIdentity } | null> {
+  const { currentWeb3AuthIdentity } = await import("./web3auth-account.js");
+  const current = await currentWeb3AuthIdentity();
+  if (!current) return null;
+  return { tag: await identityTag(current.identity, current.project), identity: current.identity };
+}
+
+/** Best effort, never in the way of a sign-in: give a returning device its reference. */
+function _recordEmailIdentityIfAbsent(eoa: string, kernel: string): void {
+  void (async () => {
+    try {
+      const who = await _currentEmailIdentity();
+      if (who && !readIdentityRecord(who.tag)) writeIdentityRecord(who.tag, { eoa, kernel, identity: who.identity });
+    } catch (e) {
+      console.warn("[auth] could not record this email sign-in's identity:", e);
+    }
+  })();
+}
+
+/**
+ * A person this device knows signed in with a DIFFERENT key (#1051). Nothing has been
+ * opened or written. End the Web3Auth session (or the next tap re-adopts it silently)
+ * and say what happened; the evidence goes to the console only.
+ */
+async function _refuseChangedEmailKey(eoa: string, known: IdentityRecord, identity: Web3AuthIdentity): Promise<Error> {
+  try {
+    const { logoutWeb3Auth } = await import("./web3auth-account.js");
+    await logoutWeb3Auth();
+  } catch (e) {
+    console.warn("[auth] could not clear the Web3Auth session after a changed-key refusal:", e);
+  }
+  console.error("[auth] KEY CHANGED for a known email sign-in - refused before opening any account (#1051):", {
+    was: known.eoa,
+    now: eoa.toLowerCase(),
+    account: known.kernel,
+    connection: identity.authConnection,
+    connectionIdThen: known.authConnectionId ?? null,
+    connectionIdNow: identity.authConnectionId ?? null,
+  });
+  postOrphanedCredentialNotice("web3auth", undefined, KEY_CHANGED_MESSAGE);
+  return new OrphanedCredentialError("web3auth", known.kernel, KEY_CHANGED_MESSAGE);
+}
+
 async function _refuseUpgradedEmailLogin(eoa: string, kernel: string, passkey: string | null): Promise<Error> {
   clearCachedKernelAddress("web3auth", eoa);
   clearVerifiedBinding("web3auth", eoa);
