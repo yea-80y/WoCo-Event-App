@@ -20,9 +20,10 @@ const setTimer = (cb: () => void, ms: number): unknown => setTimeout(cb, ms);
 const clearTimer = (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>);
 
 /** One event's orders, read in the browser to the end (sync-orders.ts). */
-export function readOrders(eventId: string): Promise<SyncOrder[]> {
+export function readOrders(eventId: string, progress?: (done: number, total: number) => void): Promise<SyncOrder[]> {
   let verifier: BundleVerifier | null = null;
   return readEventOrders({
+    ...(progress ? { onProgress: progress } : {}),
     reader: new BrowserOrders(liveBrowserOrdersDeps(eventId), canReadLedger),
     makeQueue(hooks) {
       // Bundles checked in the key-free worker, off the page's thread (#1061).

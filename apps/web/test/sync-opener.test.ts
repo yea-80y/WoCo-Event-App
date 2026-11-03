@@ -196,3 +196,14 @@ test("wiring: the sync's own pool, at most SYNC_POOL_MAX workers, the dashboard'
   assert.match(live, /new OrderOpenerPool\([\s\S]*?order-opener\.worker\.ts[\s\S]*?\(\) => Math\.min\(SYNC_POOL_MAX, poolWidth\(jobs, navigator\.hardwareConcurrency\)\)/);
   assert.match(live, /orderSealContext\(eventId, seriesId\)/, "page opening bound to the event and the slot's series");
 });
+
+test("it says how many orders are done after each step, workers or page", async () => {
+  for (const workers of [true, false]) {
+    const w = world({ workers, width: 1 });
+    const jobs = Array.from({ length: WORKER_BATCH + 1 }, (_, i) => job(`p${i}@x.com`));
+    const told: number[] = [];
+    await w.opener.open("e1", jobs, (done) => void told.push(done));
+    assert.equal(told.at(-1), jobs.length, String(workers));
+    assert.ok(told.every((n, i) => i === 0 || n > told[i - 1]), "only ever forward");
+  }
+});

@@ -286,3 +286,30 @@ test("no fresh answer at the end: the event fails this run, nothing handed on", 
   assert.equal(h.counts.stopped, 1);
   assert.equal(h.counts.disposed, 1);
 });
+
+test("it says how many of the event's orders have arrived, ending at all of them", { timeout: 5000 }, async () => {
+  const h = harness([slot("a"), slot("b"), slot("c")]);
+  const told: string[] = [];
+  h.deps.onProgress = (done, total) => void told.push(`${done}/${total}`);
+  const out = await h.start();
+  await h.c.advance(10);
+  assert.ok(out()?.rows);
+  assert.equal(told.at(-1), "3/3");
+
+  // One order still retrying while the read looks again every second: told once, not per look.
+  const slow = harness([slot("a"), slot("b")]);
+  slow.st.answer = (r) => (r === root("b") ? { kind: "unavailable" } : { kind: "ok", box: box("a") });
+  const seen: string[] = [];
+  slow.deps.onProgress = (done, total) => void seen.push(`${done}/${total}`);
+  await slow.start();
+  await slow.c.advance(5_000);
+  assert.deepEqual(seen, ["0/2", "1/2"], "told only when it changes");
+  h.deps.onProgress = () => {
+    throw new Error("listener broke");
+  };
+  const again = harness([slot("a")]);
+  again.deps.onProgress = h.deps.onProgress;
+  const out2 = await again.start();
+  await again.c.advance(10);
+  assert.ok(out2()?.rows, "a listener that throws never stops the read");
+});

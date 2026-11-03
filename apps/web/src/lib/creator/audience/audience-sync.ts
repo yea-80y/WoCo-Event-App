@@ -275,8 +275,13 @@ export interface OpenKeys {
   /**
    * Each job's buyer, in job order; null where its box would not open. "locked" = the
    * keys locked or the account changed while it ran: nothing it opened may be used.
+   * `progress` is told how many jobs are done so far.
    */
-  openOrders(eventId: string, jobs: OpenJob[]): Promise<Array<DecryptedClaim | null> | "locked">;
+  openOrders(
+    eventId: string,
+    jobs: OpenJob[],
+    progress?: (done: number) => void,
+  ): Promise<Array<DecryptedClaim | null> | "locked">;
   openList(box: SealedBoxV2): Promise<MarketingListPayload>;
   /** Still the account and unlock this run began under. False = the run stops as "locked". */
   stillOpen(): boolean;
@@ -309,8 +314,11 @@ export interface SyncDeps {
   listStamp(): Promise<string | null>;
   /** Sold slots for the event - the cheap call. Throws when it cannot say. */
   orderCount(eventId: string): Promise<number>;
-  /** Every sold ticket, with its sealed order where it was fetched. Throws when the event cannot be read now. */
-  getOrders(eventId: string): Promise<SyncOrder[]>;
+  /**
+   * Every sold ticket, with its sealed order where it was fetched. Throws when the event
+   * cannot be read now. `progress` is told how many of the event's orders have arrived.
+   */
+  getOrders(eventId: string, progress?: (done: number, total: number) => void): Promise<SyncOrder[]>;
   /** The event's questions. Throws when unreadable. */
   getOrderFields(ev: EventDirectoryEntry): Promise<readonly OrderField[]>;
   check(emails: string[]): Promise<MarketingCheckResult>;
@@ -326,6 +334,18 @@ export interface SyncDeps {
   published?(payload: MarketingListPayload, meta: MarketingListMeta): void;
   watermark: WatermarkStore;
   now(): number;
+  /** What the run is doing, for the status line. Never asked to decide anything. */
+  onProgress?(p: SyncProgress): void;
+}
+
+/** Which event a running check is on, and how far: what the status line says meanwhile. */
+export interface SyncProgress {
+  title: string;
+  /** Sealed orders arriving, or being read with the organiser's key. */
+  phase: "downloading" | "reading";
+  done: number;
+  /** 0 = not known yet (the event's rows are still being read). */
+  total: number;
 }
 
 export type SyncStatus = "ok" | "partial" | "failed" | "locked";
@@ -370,6 +390,14 @@ export async function runAudienceSync(deps: SyncDeps): Promise<SyncResult> {
 }
 
 async function run(deps: SyncDeps): Promise<SyncResult> {
+  // The status line only: a listener that throws never stops the run.
+  const say = (p: SyncProgress) => {
+    try {
+      deps.onProgress?.(p);
+    } catch {
+      /* nothing decided here */
+    }
+  };
   const keys = await deps.openKeys();
   if (!keys) return result("locked");
 
@@ -426,8 +454,9 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
     }
 
     let orders: SyncOrder[];
+    say({ title: ev.title, phase: "downloading", done: 0, total: 0 });
     try {
-      orders = await deps.getOrders(ev.eventId);
+      orders = await deps.getOrders(ev.eventId, (done, total) => say({ title: ev.title, phase: "downloading", done, total }));
     } catch {
       failedEvents++;
       continue;
@@ -459,7 +488,9 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
       queued.set(box, series);
       jobs.push({ seriesId: o.seriesId, box });
     }
-    const opened = jobs.length > 0 ? await keys.openOrders(ev.eventId, jobs) : [];
+    const reading = (done: number) => say({ title: ev.title, phase: "reading", done, total: jobs.length });
+    if (jobs.length > 0) reading(0);
+    const opened = jobs.length > 0 ? await keys.openOrders(ev.eventId, jobs, reading) : [];
     // Locked part-way: what was opened is dropped with the run.
     if (opened === "locked") return result("locked", { failedEvents, unreadableOrders });
     // A box sealed to a key this device lacks, or damaged, costs only itself.
@@ -625,39 +656,57 @@ export interface SyncGate<T> {
   readonly running: boolean;
 }
 
-/** Where the last run's start is kept so a reload honours the interval. Reads null when it cannot say. */
+/** A time kept in storage (the last start, a run in progress). Reads null when it cannot say. */
 export interface StartStamp {
   read(): number | null;
   write(t: number | null): void;
 }
 
+/** A run in progress refreshes its mark this often. */
+export const LEASE_BEAT_MS = 30_000;
 /**
- * Never two runs at once, and at most one per `minIntervalMs` unless forced. A
- * run that `counts` returns false for (the account was locked, so nothing was
- * read) does not use up the window: unlocking should not wait an hour. The last
- * start is also kept in `stamp`, so a reload or another tab honours it; a stamp
- * that cannot be read, or lies in the future, is ignored - absent means run.
+ * A mark not refreshed for this long belongs to a run that stopped (its tab closed).
+ * A hidden tab's timers can slow to once a minute, so this is well above that.
+ */
+export const LEASE_STALE_MS = 3 * 60_000;
+
+/**
+ * Never two runs at once, and at most one per `minIntervalMs` unless forced. Only a
+ * run that FINISHED and `counts` uses up the window: a locked run read nothing, and a
+ * run cut short (the tab closed) found nothing out, so neither makes the organiser
+ * wait an hour. The start of the last run that counted is kept in `stamp`, written
+ * when it ends, so a reload or another tab honours it.
+ *
+ * While a run lasts it keeps a mark in `lease`, refreshed every LEASE_BEAT_MS and
+ * cleared at its end, and a background run elsewhere on this device waits while that
+ * mark is fresh - so two tabs do not both read every order. A run whose tab closed
+ * stops refreshing it, and after LEASE_STALE_MS the next visit runs. A forced run
+ * (Check now) goes ahead regardless. A stamp or mark that cannot be read, or lies in
+ * the future, is ignored - absent means run.
  */
 export function createSyncGate<T>(opts: {
   minIntervalMs: number;
   now: () => number;
   counts: (r: T) => boolean;
   stamp?: StartStamp;
+  lease?: StartStamp;
+  /** Calls `fn` every `ms` until the returned stop is called. */
+  every?: (ms: number, fn: () => void) => () => void;
 }): SyncGate<T> {
   let inFlight: Promise<T> | null = null;
   let lastStart: number | null = null;
-  const stored = (): number | null => {
+  const stored = (s: StartStamp | undefined): number | null => {
     let t: number | null = null;
     try {
-      t = opts.stamp?.read() ?? null;
+      t = s?.read() ?? null;
     } catch {
       return null;
     }
     return t !== null && Number.isFinite(t) && t <= opts.now() + 60_000 ? t : null;
   };
-  const keep = (t: number | null) => {
+  const keep = (s: StartStamp | undefined, t: number | null) => {
     try {
-      opts.stamp?.write(t);
+      s?.write(t);
     } catch {
       /* this tab still remembers it */
     }
@@ -665,20 +714,29 @@ export function createSyncGate<T>(opts: {
   return {
     run(force: boolean, fn: () => Promise<T>): Promise<T> | null {
       if (inFlight) return inFlight;
-      const persisted = stored();
-      const last = Math.max(lastStart ?? -Infinity, persisted ?? -Infinity);
-      if (!force && last > -Infinity && opts.now() - last < opts.minIntervalMs) return null;
-      const previous = lastStart;
-      lastStart = opts.now();
-      keep(lastStart);
+      const now = opts.now();
+      const last = Math.max(lastStart ?? -Infinity, stored(opts.stamp) ?? -Infinity);
+      if (!force && last > -Infinity && now - last < opts.minIntervalMs) return null;
+      const other = stored(opts.lease);
+      if (!force && other !== null && now - other < LEASE_STALE_MS) return null;
+      const start = now;
+      keep(opts.lease, start);
+      let stopBeat = () => {};
+      try {
+        stopBeat = opts.every?.(LEASE_BEAT_MS, () => keep(opts.lease, opts.now())) ?? stopBeat;
+      } catch {
+        /* no refresh: the mark goes stale sooner, which only lets another tab run */
+      }
       const p = fn().then((r) => {
-        if (!opts.counts(r)) {
-          lastStart = previous;
-          keep(persisted);
+        if (opts.counts(r)) {
+          lastStart = start;
+          keep(opts.stamp, start);
         }
         return r;
       });
       inFlight = p.finally(() => {
+        stopBeat();
+        keep(opts.lease, null);
         inFlight = null;
       });
       return inFlight;
@@ -726,7 +784,17 @@ export function agoText(ms: number): string {
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** One plain line, and whether it needs the organiser's attention. */
-export function describeSync(rec: SyncRecord | null, running: boolean, now: number): { text: string; warn: boolean } {
+export function describeSync(
+  rec: SyncRecord | null,
+  running: boolean,
+  now: number,
+  progress: SyncProgress | null = null,
+): { text: string; warn: boolean } {
+  if (running && progress) {
+    const of = progress.total > 0 ? ` (${progress.done.toLocaleString()} of ${progress.total.toLocaleString()})` : "";
+    const step = progress.total > 0 ? ` - ${progress.phase} orders${of}` : "";
+    return { text: `Checking ${progress.title} for new buyers${step}…`, warn: false };
+  }
   if (running) return { text: "Checking your events for new buyers…", warn: false };
   if (!rec) return { text: "Not checked on this device yet.", warn: false };
   const ago = agoText(now - rec.at);

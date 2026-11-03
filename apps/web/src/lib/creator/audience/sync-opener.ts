@@ -68,8 +68,19 @@ export class SyncOpener {
     this.release();
   }
 
-  /** Each job's buyer, in order; null where its box would not open; "locked" = keep nothing. */
-  async open(eventId: string, jobs: OpenJob[]): Promise<Array<DecryptedClaim | null> | "locked"> {
+  /** Each job's buyer, in order; null where its box would not open; "locked" = keep nothing. `progress`: jobs done so far. */
+  async open(
+    eventId: string,
+    jobs: OpenJob[],
+    progress?: (done: number) => void,
+  ): Promise<Array<DecryptedClaim | null> | "locked"> {
+    const tell = (done: number) => {
+      try {
+        progress?.(done);
+      } catch {
+        /* the status line only */
+      }
+    };
     if (this.gone()) return this.stop();
     const epoch = ++this.epoch;
     const out: Array<DecryptedClaim | null> = new Array<DecryptedClaim | null>(jobs.length).fill(null);
@@ -107,6 +118,7 @@ export class SyncOpener {
             out[i + id] = d !== undefined ? (d as DecryptedClaim) : null;
           });
           i += batch.length;
+          tell(i);
           continue;
         }
         if (!this.pageKeys) {
@@ -125,6 +137,7 @@ export class SyncOpener {
           out[i + k] = r.status === "fulfilled" ? r.value : null;
         });
         i += batch.length;
+        tell(i);
         await this.deps.pause();
       }
       if (this.gone()) return this.stop();

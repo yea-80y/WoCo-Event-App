@@ -27,7 +27,10 @@ import {
   SETTLE_MS,
   STALE_MS,
   SYNC_INTERVAL_MS,
+  LEASE_BEAT_MS,
+  LEASE_STALE_MS,
   type SyncDeps,
+  type SyncProgress,
   type SyncResult,
 } from "../src/lib/creator/audience/audience-sync.js";
 
@@ -119,11 +122,12 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
       w.log.push("openKeys");
       if (w.locked) return null;
       return {
-        async openOrders(eventId, jobs) {
+        async openOrders(eventId, jobs, progress) {
           w.log.push(`open:${eventId}:${jobs.length}`);
           w.opened.push(...jobs.map((j) => j.box));
           w.duringOpen?.(w);
           if (w.lockDuringOpen) return "locked";
+          progress?.(jobs.length);
           return jobs.map(({ box }) => {
             const b = box as unknown as Box;
             return b.bad ? null : b.claim!;
@@ -159,10 +163,11 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
       if (o === "throw" || !o) throw new Error("count unavailable");
       return w.counts?.[id] ?? o.length;
     },
-    async getOrders(id) {
+    async getOrders(id, progress) {
       w.log.push(`orders:${id}`);
       const o = w.orders[id];
       if (o === "throw" || !o) throw new Error("orders unavailable");
+      progress?.(o.length, o.length);
       return o;
     },
     async getOrderFields(ev) {
@@ -1081,6 +1086,111 @@ test("throttle: once per window per tab, never two at once, forced by Check now"
   now += SYNC_INTERVAL_MS;
   await gate.run(false, async () => (runs++, ok()));
   assert.equal(runs, 3);
+});
+
+/** A gate over one shared storage (one device), as each tab or reload makes it; `beats` runs the refresh timers. */
+function deviceGates() {
+  let now = 0;
+  const box = new Map<string, number | null>();
+  const slot = (k: string) => ({ read: () => box.get(k) ?? null, write: (t: number | null) => void box.set(k, t) });
+  const beats = new Set<() => void>();
+  const gate = () =>
+    createSyncGate<SyncResult>({
+      minIntervalMs: SYNC_INTERVAL_MS,
+      now: () => now,
+      counts: (r) => r.status !== "locked",
+      stamp: slot("start"),
+      lease: slot("running"),
+      every: (_ms, fn) => {
+        beats.add(fn);
+        return () => beats.delete(fn);
+      },
+    });
+  const ok = async (): Promise<SyncResult> => ({ status: "ok", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0 });
+  const never = () => new Promise<SyncResult>(() => {});
+  return {
+    gate,
+    ok,
+    never,
+    box,
+    beats,
+    at: (t: number) => void (now = t),
+    tick: () => beats.forEach((fn) => fn()),
+  };
+}
+
+test("a check cut short (its tab closed) does not use up the hour: the next visit runs once its mark goes stale", async () => {
+  const d = deviceGates();
+  assert.ok(d.gate().run(false, d.never), "the check starts - and its tab closes mid-run");
+  assert.equal(d.box.get("start") ?? null, null, "nothing says a check happened this hour");
+  d.at(LEASE_STALE_MS - 1);
+  assert.equal(d.gate().run(false, d.ok), null, "a reload right away waits: the mark looks like a check still running");
+  d.at(LEASE_STALE_MS);
+  assert.ok(d.gate().run(false, d.ok), "once the mark is stale the next visit runs, an hour early");
+});
+
+test("another tab checking: a background run waits while its mark is refreshed; Check now does not; the mark clears at the end", async () => {
+  const d = deviceGates();
+  let finish!: () => void;
+  const tabA = d.gate().run(false, () => new Promise<SyncResult>((res) => (finish = () => res({ status: "ok", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0 }))));
+  assert.ok(tabA);
+  d.at(LEASE_STALE_MS - 1);
+  d.tick(); // tab A's refresh, every LEASE_BEAT_MS
+  d.at(LEASE_STALE_MS + LEASE_BEAT_MS);
+  assert.equal(d.gate().run(false, d.ok), null, "a refreshed mark keeps tab B waiting past LEASE_STALE_MS");
+  const forced = d.gate().run(true, d.ok);
+  assert.ok(forced, "Check now in tab B goes ahead");
+  await forced;
+  finish();
+  await tabA;
+  assert.equal(d.box.get("running") ?? null, null, "cleared when tab A's check ends");
+  assert.equal(d.beats.size, 0, "and no refresh left running");
+  assert.equal(d.box.get("start"), 0, "the hour counts from tab A's start, written as it ended");
+});
+
+test("the hour is written when a check that counts ends - with its start - and never for a locked one", async () => {
+  const d = deviceGates();
+  d.at(1_000);
+  let finish!: (r: SyncResult) => void;
+  const run = d.gate().run(false, () => new Promise<SyncResult>((res) => (finish = res)));
+  assert.equal(d.box.get("start") ?? null, null, "not at the start");
+  d.at(90_000);
+  finish({ status: "failed", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0, error: "x" });
+  await run;
+  assert.equal(d.box.get("start"), 1_000, "a failed check counts, from when it started");
+  d.at(1_000 + SYNC_INTERVAL_MS);
+  await d.gate().run(false, async () => ({ status: "locked", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0 }));
+  assert.equal(d.box.get("start"), 1_000, "a locked one never writes it");
+  assert.equal(d.box.get("running") ?? null, null);
+});
+
+test("the status line while a check runs: which event, and how far - plain words, spaced hyphen", () => {
+  const p = (over: Partial<SyncProgress>): SyncProgress => ({ title: "30k Event", phase: "downloading", done: 0, total: 0, ...over });
+  assert.equal(describeSync(null, true, T0, p({})).text, "Checking 30k Event for new buyers…");
+  assert.equal(
+    describeSync(null, true, T0, p({ done: 12_400, total: 20_000 })).text,
+    "Checking 30k Event for new buyers - downloading orders (12,400 of 20,000)…",
+  );
+  assert.equal(
+    describeSync(null, true, T0, p({ phase: "reading", done: 8_000, total: 20_000 })).text,
+    "Checking 30k Event for new buyers - reading orders (8,000 of 20,000)…",
+  );
+  assert.equal(describeSync(null, false, T0, p({ done: 1, total: 2 })).text, "Not checked on this device yet.", "progress is shown only while running");
+  assert.doesNotMatch(describeSync(null, true, T0, p({ done: 1, total: 2 })).text, /[–—]/);
+});
+
+test("a run says which event it is on and how far, and a listener that throws never stops it", async () => {
+  const w = world({ orders: { e1: [order({ claimerEmail: "ada@x.com" }), order({ claimerEmail: "bo@x.com" })] } });
+  const seen: SyncProgress[] = [];
+  const r = await sync(w, { onProgress: (p) => void seen.push(p) });
+  assert.equal(r.status, "ok");
+  assert.deepEqual(
+    seen.map((p) => `${p.title}:${p.phase}:${p.done}/${p.total}`),
+    ["Event e1:downloading:0/0", "Event e1:downloading:2/2", "Event e1:reading:0/2", "Event e1:reading:2/2"],
+  );
+  const loud = world();
+  const r2 = await sync(loud, { onProgress: () => { throw new Error("listener broke"); } });
+  assert.equal(r2.added, 1);
 });
 
 test("throttle: a locked run does not use up the window; a failed one does", async () => {

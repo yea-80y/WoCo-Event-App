@@ -30,6 +30,7 @@ import {
   type StartStamp,
   type SyncDeps,
   type SyncGate,
+  type SyncProgress,
   type SyncRecord,
   type SyncResult,
 } from "./audience-sync.js";
@@ -96,6 +97,17 @@ function startStamp(parent: string): StartStamp {
   };
 }
 
+/** A run in progress on this device (any tab), refreshed while it lasts: `runningAt`. */
+function runningMark(parent: string): StartStamp {
+  return {
+    read: () => {
+      const t = readBlob(parent).runningAt;
+      return typeof t === "number" ? t : null;
+    },
+    write: (t) => writeBlob(parent, { runningAt: t ?? undefined }),
+  };
+}
+
 function readRecord(parent: string): SyncRecord | null {
   try {
     const r = readBlob(parent).last as Partial<SyncRecord> | undefined;
@@ -124,12 +136,15 @@ class AudienceSyncState {
   running = $state(false);
   /** The last run for the bound organiser, as the Audience screen shows it. */
   record = $state<SyncRecord | null>(null);
+  /** While a run lasts: which event it is on and how far, for the status line. */
+  progress = $state.raw<SyncProgress | null>(null);
   parent: string | null = null;
 
   bind(parent: string): void {
     if (this.parent === parent) return;
     this.parent = parent;
     this.record = readRecord(parent);
+    this.progress = null;
   }
 }
 
@@ -155,6 +170,12 @@ export function syncAudience(opts: { force?: boolean; manual?: boolean } = {}): 
       // A locked run read nothing; unlocking should not have to wait out the window.
       counts: (r) => r.status !== "locked",
       stamp: startStamp(parent),
+      // A run cut short (its tab closed) stops refreshing this, so it never costs the hour.
+      lease: runningMark(parent),
+      every: (ms, fn) => {
+        const h = setInterval(fn, ms);
+        return () => clearInterval(h);
+      },
     });
     gates.set(parent, gate);
   }
@@ -196,6 +217,7 @@ async function runFor(parent: string, manual: boolean): Promise<SyncResult> {
   } finally {
     // Every worker's keys go with the run, whatever ended it.
     run?.dispose();
+    if (audienceSync.parent === parent) audienceSync.progress = null;
     audienceSync.running = false;
   }
 }
@@ -245,7 +267,7 @@ function liveDeps(parent: string, manual: boolean, live: SyncLive): { deps: Sync
       const secrets = await auth.getAccountSecrets();
       if (!secrets || !bound()) return null;
       return {
-        openOrders: (eventId, jobs) => opener.open(eventId, jobs),
+        openOrders: (eventId, jobs, progress) => opener.open(eventId, jobs, progress),
         async openList(box) {
           const held = await auth.getAccountSecrets();
           if (!held || !bound()) throw new Error("Your account locked before your list could be opened.");
@@ -291,7 +313,7 @@ function liveDeps(parent: string, manual: boolean, live: SyncLive): { deps: Sync
     orderCount: (eventId) => getEventOrderCount(eventId),
     // In the browser, as the dashboard reads them (#201): never the server's full read,
     // except for a ledger this browser cannot read (sync-orders.ts).
-    getOrders: (eventId) => live.readOrders(eventId),
+    getOrders: (eventId, progress) => live.readOrders(eventId, progress),
     async getOrderFields(ev) {
       const res = await getEventSWR(ev.eventId).refresh();
       if (!res.ok || !res.data) throw new Error(res.error || "Could not read this event's questions.");
@@ -316,6 +338,9 @@ function liveDeps(parent: string, manual: boolean, live: SyncLive): { deps: Sync
     },
     watermark: watermarkStore(storage(), parent),
     now: Date.now,
+    onProgress(p) {
+      if (audienceSync.parent === parent) audienceSync.progress = p;
+    },
   };
   return {
     deps,

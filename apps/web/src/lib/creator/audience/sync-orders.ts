@@ -68,6 +68,8 @@ export interface SyncOrdersDeps {
   clearTimer(handle: unknown): void;
   /** Called once on every way out. */
   dispose?(): void;
+  /** How many of the event's orders have arrived (or ended unfetchable), of how many. */
+  onProgress?(done: number, total: number): void;
 }
 
 /** A background read never starts a sign-in. */
@@ -139,6 +141,17 @@ function drain(deps: SyncOrdersDeps, q: SyncQueue, deadline: number, onChange: (
     let idleSince: number | null = null;
     let timer: unknown = null;
     let done = false;
+    let told = -1;
+    const tell = (p: DetailProgress) => {
+      const settled = p.ready + p.missing + p.unreadable;
+      if (settled === told) return;
+      told = settled;
+      try {
+        deps.onProgress?.(settled, p.total);
+      } catch {
+        /* the status line only */
+      }
+    };
     const finish = () => {
       done = true;
       if (timer !== null) deps.clearTimer(timer);
@@ -150,6 +163,7 @@ function drain(deps: SyncOrdersDeps, q: SyncQueue, deadline: number, onChange: (
       if (done) return;
       const now = deps.now();
       const p = q.progress();
+      tell(p);
       if (now >= deadline) return finish();
       if (p.waiting === 0 && p.retrying === 0) return finish();
       // The grace runs ONCE, from the first moment only retries were left: a retry going

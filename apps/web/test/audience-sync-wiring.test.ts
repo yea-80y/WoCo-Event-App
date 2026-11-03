@@ -99,7 +99,7 @@ test("a failed background check is logged, and shown only on the Audience screen
   assert.match(run, /if \(res\.added > 0\) markAudienceImported\(parent\);/);
   assert.doesNotMatch(RUNTIME, /alert\(|confirm\(|toast/i);
   // The status component is the one place that reads the record.
-  assert.match(STATUS, /describeSync\(audienceSync\.record, audienceSync\.running, now\)/);
+  assert.match(STATUS, /describeSync\(audienceSync\.record, audienceSync\.running, now, audienceSync\.progress\)/);
 });
 
 test("the runtime re-confirms the seal key before the upload, and names the list it merged onto", () => {
@@ -172,7 +172,7 @@ const ORDERS = code(read("lib/creator/audience/sync-orders.ts"));
 const DASH = code(read("lib/creator/dashboard/Dashboard.svelte"));
 
 test("orders are read in the browser; the server's full read only for a ledger the browser cannot read", () => {
-  assert.match(RUNTIME, /getOrders: \(eventId\) => live\.readOrders\(eventId\),/);
+  assert.match(RUNTIME, /getOrders: \(eventId, progress\) => live\.readOrders\(eventId, progress\),/);
   assert.doesNotMatch(RUNTIME, /getEventOrders\b/, "the runtime never calls the full read itself");
   assert.equal(LIVE.match(/getEventOrders\(/g)?.length, 1);
   assert.match(LIVE, /serverRead: async \(\) => \(await getEventOrders\(eventId, \{ establish: false \}\)\)\.orders,/);
@@ -213,4 +213,14 @@ test("the run holds no key: bound to its account and unlock, read directly, a wa
   assert.match(run, /live = await import\("\.\/sync-live\.js"\);/, "loaded on first use, not with the organiser pages");
   assert.doesNotMatch(RUNTIME, /from "\.\/sync-live\.js"/);
   assert.doesNotMatch(RUNTIME + LIVE, /Dashboard\.svelte/, "never a dashboard's pool or keys");
+});
+
+test("a check cut short never costs the hour: the live gate keeps a refreshed in-progress mark", () => {
+  const sync = fn(RUNTIME, "export function syncAudience");
+  assert.match(sync, /lease: runningMark\(parent\),/);
+  assert.match(sync, /every: \(ms, fn\) => \{\s*const h = setInterval\(fn, ms\);\s*return \(\) => clearInterval\(h\);/);
+  assert.match(RUNTIME, /write: \(t\) => writeBlob\(parent, \{ runningAt: t \?\? undefined \}\),/);
+  // Progress reaches the status line for the bound organiser only, and goes when the run does.
+  assert.match(RUNTIME, /onProgress\(p\) \{\s*if \(audienceSync\.parent === parent\) audienceSync\.progress = p;/);
+  assert.match(fn(RUNTIME, "async function runFor"), /if \(audienceSync\.parent === parent\) audienceSync\.progress = null;/);
 });
