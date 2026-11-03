@@ -7,6 +7,7 @@ COPY package.json package-lock.json ./
 COPY apps/server/package.json       ./apps/server/
 COPY packages/shared/package.json   ./packages/shared/
 COPY packages/embed/package.json    ./packages/embed/
+COPY packages/seatmap/package.json  ./packages/seatmap/
 
 # Install all workspace deps (includes tsx + vite needed at runtime/build)
 RUN npm install
@@ -14,6 +15,8 @@ RUN npm install
 # ── Source ──────────────────────────────────────────────────────────────────
 COPY packages/shared/   ./packages/shared/
 COPY packages/embed/    ./packages/embed/
+# The embed's seat map frame (woco-seatmap.js) is built from the shared seat map.
+COPY packages/seatmap/  ./packages/seatmap/
 COPY apps/server/src    ./apps/server/src
 COPY apps/server/tsconfig.json ./apps/server/
 
