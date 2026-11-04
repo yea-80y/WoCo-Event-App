@@ -87,6 +87,17 @@ function seatRect(g: Element, x: number, y: number, f: { fill: string; stroke: s
   }, g);
 }
 
+/** An organiser-map seat that is not free, by why (`SeatMark`): shape and tone, never hue. */
+function drawMark(g: Element, x: number, y: number, m: SeatMark, svgId: string, p: SeatmapPalette): void {
+  if (m === "sold") seatRect(g, x, y, { fill: p.lineStrong, stroke: p.lineStrong, width: 1 });
+  else if (m === "held") seatRect(g, x, y, { fill: `url(#${svgId}-held)`, stroke: p.text2, width: 1 });
+  else if (m === "basket") seatRect(g, x, y, { fill: "none", stroke: p.text, width: 1, dash: "2 2" });
+  else if (m === "offsale") {
+    seatRect(g, x, y, { fill: "none", stroke: p.text2, width: 1 });
+    el("line", { x1: r2(x + 2.5), y1: r2(y + SEAT_SIZE - 2.5), x2: r2(x + SEAT_SIZE - 2.5), y2: r2(y + 2.5), stroke: p.text2, "stroke-width": 1 }, g);
+  }
+}
+
 /** A small wheelchair mark on a seat whose top-left corner is (x, y). */
 function wheelMark(g: Element, x: number, y: number, color: string): void {
   el("circle", { cx: r2(x + 8), cy: r2(y + 4.2), r: 1.6, fill: color }, g);
@@ -141,7 +152,16 @@ export interface BuyerView {
   number(k: number): number;
   /** Choosing is paused (a hold is running). */
   locked: boolean;
+  /**
+   * The organiser's map (S6) says WHY a seat is not free, by shape - the buyer's map
+   * leaves this out and draws every such seat as one small mark. `dim`: drawn quieter
+   * (a filter is showing other seats).
+   */
+  mark?(k: number): SeatMark | null;
 }
+
+/** sold: a ticket sits in it. held: kept back. basket: being bought. offsale: emptied by a change, not yet back on sale. */
+export type SeatMark = "sold" | "held" | "basket" | "offsale" | "dim";
 
 export type DrawMode = "layout" | "seats" | "buy" | "thumb";
 
@@ -273,10 +293,14 @@ export function drawItem(parent: Element, it: LayoutItem, o: DrawOptions): SVGGE
           "pointer-events": "none", transform: turn ? `rotate(${r2(turn)} ${r2(s.x)} ${r2(s.y)})` : null,
         }, sg);
         n.textContent = String(o.buyer.number(k));
+      } else if (o.buyer.mark?.(k) === "dim") {
+        el("rect", { x: x + 4, y: y + 4, width: SEAT_SIZE - 8, height: SEAT_SIZE - 8, rx: 1, fill: p.line, opacity: 0.6 }, sg);
       } else if (free) {
         seatRect(sg, x, y, fill);
         if (seat.a) wheelMark(sg, x, y, st.ink);
         if (seat.c) companionMark(sg, x, y, st.ink);
+      } else if (o.buyer.mark?.(k)) {
+        drawMark(sg, x, y, o.buyer.mark(k)!, svgId, p);
       } else {
         // Sold, held, or not in the chosen price: a small mark, so free seats read first.
         el("rect", { x: x + 4, y: y + 4, width: SEAT_SIZE - 8, height: SEAT_SIZE - 8, rx: 1, fill: p.line }, sg);

@@ -1,6 +1,6 @@
 # Allocated seating
 
-Status (2026-11-04): S1 to S5 built, S6 planned. Seated events stay off behind
+Status (2026-11-04): S1 to S6 built. Seated events stay off behind
 `seatedEventsAllowed` (`packages/shared/src/features.ts`, UI and server in lockstep) until every
 slice in "Build order" has shipped.
 
@@ -34,7 +34,7 @@ Design consult 2026-11-03 (Fable, 59/59) on prototype v3.1, reconciled with Opus
    Fable put the confirmed seat nonces in a server `.data` file; Opus puts them in the organiser's
    seat-state feed (written by the dashboard under the organiser unlock, signed by the feed signer, a
    different key from the organiser key the header worries about). Same rule, no new server state, and
-   the buyer map can apply it without our server. Goes to the S6 sign-off by name.
+   the buyer map can apply it without our server. Accepted at the S6 design consult (Fable, 2026-11-04).
 6. **The buyer map reads Swarm and the chain directly; our server adds only the live holds.** The plan is
    content-addressed (fetched by ref, checked against its digest), taken seats and `remaining()` come from
    the chain in one multicall (`seatWord` = 256 seats per word), as the app already reads Arbitrum from
@@ -52,7 +52,7 @@ Design consult 2026-11-03 (Fable, 59/59) on prototype v3.1, reconciled with Opus
 | Layout library (`woco.seatlayout.v1`, band names, no prices) | `woco/seating/layouts/{address}` index + `woco/seating/layout/{address}/{id}` | organiser feed signer | yes, never touches live events |
 | Event plan (items, bands, canonical seat list) | content-addressed blob, `woco.seatplan.v1` | committed by the manifest digest | never |
 | Band prices | event feed, beside `series.payment` | organiser feed signer | no (fixed at publish, as today) |
-| Held seats + confirmed seat nonces | `woco/event/{eventId}/seats`, `woco.seatstate.v1` | organiser feed signer | yes |
+| Held seats (by kind) + confirmed seat nonces | `woco/event/{eventId}/seats/{seriesId}`, `woco.seatstate.v1` | organiser feed signer | yes |
 | Who holds which seat | ledger2 `seatOf` / `seatWord` | chain | by organiser-signed moves only |
 | 10-minute holds | server reservation store | server | ephemeral |
 
@@ -169,7 +169,7 @@ Each slice is one PR. Fable signs off S2 to S6 (server, CSP and cross-origin mes
 4. **S4 money path** (built): see "Selling a seat". Hosts: `SeatedSeries` holds, the host page's
    ClaimButton pays (`hold` prop); the embed widget holds from its frame and runs its own checkout.
 5. **S5 door + tickets** (built): see "Door + tickets (S5)".
-6. **S6 dashboard**: held / release, seat moves through the relay, confirm freed seats, relay refusals.
+6. **S6 dashboard** (built): see "Dashboard (S6)".
 
 Carried into later slices from the S1+S2 sign-off: S6 sizes seat-state writes against the SOC relay's
 per-account limits (a 200,000-seat state is ~50 KB). (Done in S4: a recovered registration is recorded
@@ -302,3 +302,49 @@ replica never shortens the list below slots already read; `isSeated` decoded str
 answer). For S6: a slot never read before, first read from a replica behind its mint, caches "unclaimed" for up
 to 30 s - read `getEvent` (nextSlot) inside the slot batch so count and owners share one block. `TicketSuccess.svelte` (an
 in-app ticket download) has no importer: left over from the v1 claim rail, not changed.
+
+## Dashboard (S6)
+
+Incumbent look first (Ticket Tailor, TicketSource, Eventbrite, Seats.io, SimpleTix, vivenu, OnTheStage, Humanitix),
+then a design consult (Fable 117/117, 2026-11-04). Code: shared `seating/state.ts`; server `lib/seating/{seat-state-gate,
+seat-moved}.ts`, `routes/seat-moved.ts`, the relay's seat claims (`claimRelaySeats`); web `creator/seating/{seat-state,
+seat-state-saver,organiser-seats,organiser-seat-data}.ts`, `SeatsPanel.svelte`, `ledger2/seat-moves.ts`.
+
+- **Seat state** (`woco.seatstate.v1`, one per seated ticket type): holds by fixed kind (house, guest, press, access,
+  unavailable, other - never free text: the feed is public), seats in at most one; confirmed `[seat, nonce]`; `seq`.
+  Short fields lead the JSON, so the first 4 KB page of a paged state names the ticket type and `seq`.
+- **Saving** (`writeSeatState`): the organiser unlock every time, a thorough read, the change applied to it, `seq` + 1,
+  read back; taps coalesce into one save (~1.5 s); chunks pace on the relay's budget (~100 chunks at 200,000 seats).
+- **Reading on the money path** (`seat-state-gate.ts`): under the event's carrier signer, beside the chain read, under the
+  series lock; 30 s memory keyed by signer, plan and seat count. The SOC relay sees a seat-state write (gated like the
+  notice) and refuses anything below its `seq` until it reads back - the floor never lapses (an Etherna-stored save can
+  take minutes). Below the highest `seq` seen, absent after found, or another ticket type's / plan's = unavailable (503).
+- **Rotation**: `copyEvents` copies each seated ticket type's state, same `seq`, before the flip.
+- **Seats tab**: sold / held by kind / being bought / emptied by a change / free, drawn by shape (`SeatMark`); counts
+  filter the map; a sold seat is selected on its own; Select row / section; Hold as, Release, Put back on sale; the
+  emptied list (from `SlotReseated` logs) is never pre-selected. Read-only past the sales cutoff or once cancelled.
+- **Moves**: `reseatBearer` only (every card ticket is bearer). Move, swap (a dependent three-move sequence), or a
+  refunded ticket out of its seat. First move checked against the ledger's digest view, an abort revoke on every
+  request, the outcome settled from `seatOf`. The relay claims the target seats for 3 min under the series lock
+  (`seat_on_hold` when a buyer holds one); a seated series' capacity is refused (`seated_supply`). The old seat goes
+  back on sale (pre-ticked) at the nonce read where the move already shows.
+- **Email** (`POST /api/events/:id/seat-moved`): no ticket or QR; only that sale's buyer (its order record's hash, or a
+  #983 resend address), never an erased order; the seat the ledger has now; reply `sent` / `not_sent` only; every
+  comparison counts against the barriers.
+- **Order rows / CSV**: the seat now, "moved from" after a move, read in the browser.
+
+Departures from the consult, for the S6 sign-off by name: D1 `BearerMintsOff` already maps to `seat_moves_off` (client
+message only); D2 a 200,000-seat state is ~100 chunks, not ~50 - the saver paces, no format change; D3 one PR; D4 state
+per ticket type, not per event (the server allows two seated types on one event); D5 the announced `seq` is a floor that
+never lapses; D6 a group order moves one ticket at a time; D7 the move email needs the orders opened on that device;
+D8 holds keyed by kind with no separate id (two holds of one kind could not be told apart without names).
+The sign-off (Fable 61/61, 2026-11-04) signed off with changes and accepted D1-D12, all applied: a trailing `digest`
+(keccak256 over every other field) so a torn paged save never validates, the writer stepping past an invalid head to
+the last whole version, the exact version written read back (another device's bytes = a conflict the saver sends again
+on top, 3 tries), the signal acted on only under the event's current carrier signer, `/api/health` `seatState` red for a
+save unreadable 2+ min, a client revoke after a revert whose abort did not land, and a failed send watched ~30 s. The
+automated security review added: the read-back validated in full, no stepping past a missed read (no rollback), the new
+`seq` above a stepped-past head's, and signals only for a ticket type registered seated.
+
+For the launch list: DATA_INVENTORY lines - the seat state is public organiser content with no personal data; the move
+email shows the server the address once and keeps nothing; relay claims are memory only.

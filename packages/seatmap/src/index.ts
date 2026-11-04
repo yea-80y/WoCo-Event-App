@@ -3,7 +3,7 @@
 export { APP_PALETTE, paletteFromCss, bandStyle, type SeatmapPalette, type BandStyle, type BandFillKind } from "./palette.js";
 export {
   el, drawDefs, drawItem, drawThumb, drawOverviewThumb, drawOrder, handlesFor, swatchSvg, layoutSeatAt,
-  type BuyerView, type DrawMode, type DrawOptions, type HandleKind,
+  type BuyerView, type DrawMode, type DrawOptions, type HandleKind, type SeatMark,
 } from "./draw.js";
 export { ADD_ICONS, MARK_ICONS } from "./icons.js";
 export {

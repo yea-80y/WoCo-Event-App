@@ -18,9 +18,9 @@ export {
 } from "./ticket-seat.js";
 export { seriesSeatingRefusal, bandPricesMinor, priceMinor } from "./series.js";
 export {
-  SEAT_STATE_FORMAT, heldBytes, encodeHeld, decodeHeld, validateSeatState, buildSeatState, seatStateView,
-  organiserAllowsSale,
-  type SeatState, type SeatStateView,
+  SEAT_STATE_FORMAT, SEAT_HOLD_KINDS, PLAN_HOLD_KIND, heldBytes, encodeHeld, decodeHeld, validateSeatState, buildSeatState,
+  seatStateView, organiserAllowsSale, seatStateWriteSignal, seatStateDigest,
+  type SeatState, type SeatStateView, type SeatHold, type SeatHoldKind,
 } from "./state.js";
 export {
   SEAT_PITCH, SEAT_SIZE, roundTableRadius, longTableLength, headTableLength, itemGeometry, toWorld, toLocal,
@@ -33,12 +33,12 @@ export {
   saleState, seatStates, pickable, seatReason,
   type ChainSeats, type SaleState, type SeatCode, type SeatStateInput, type SeatStates,
 } from "./availability.js";
-export { SEAT_WORDS_PER_BATCH, seatBatch, seatWordCount, type SeatBatch, type SeatBatchRead, type SeatEventRead } from "./chain.js";
+export { SEAT_WORDS_PER_BATCH, SLOT_SEATS_PER_BATCH, seatBatch, slotSeatsBatch, seatWordCount, type SeatBatch, type SeatBatchRead, type SeatEventRead } from "./chain.js";
 export {
   parseSeatedReserve, seatedReserveRefusal, seatedHoldFees, SEAT_HOLD_LOST_CODES, isSeatHoldLost,
   type SeatedHold, type SeatedReserveRequest, type SeatedReserveRefusal,
 } from "./reserve.js";
-export { seatLayoutLibraryTopic, seatLayoutTopic, eventSeatStateTopic } from "./topics.js";
+export { seatLayoutLibraryTopic, seatLayoutTopic, seatStateTopic } from "./topics.js";
 export {
   rowLetters, labelsAfter, normRot, labelWidth, idMaker, makeRow, rowsBlock, table, shape, LAYOUT_TEMPLATES,
   type LayoutTemplate,

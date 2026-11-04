@@ -22,10 +22,12 @@ import {
   classifyRelayPayload,
   isSocialPayload,
   isPrivacyNoticePayload,
+  seatStatePayloadSignal,
   SOC_RELAY_MAX_BODY_BYTES,
   BYTES_RELAY_MAX_BODY_BYTES,
 } from "../lib/swarm/soc-relay-limits.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
+import { seatStateRelayed } from "../lib/seating/seat-state-gate.js";
 
 /**
  * Generic client-signed Single-Owner-Chunk write rail (Phase A of
@@ -80,7 +82,8 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
   // Stripe, or a confirmed invite). Same refusal as routes/profiles.ts, which
   // the client matches to open its unlock flow. After the rate gate, so a flood
   // is refused before it costs a gate lookup.
-  if (isSocialPayload(b.payload) || isPrivacyNoticePayload(b.payload)) {
+  const seatSignal = seatStatePayloadSignal(b.payload);
+  if (isSocialPayload(b.payload) || isPrivacyNoticePayload(b.payload) || seatSignal) {
     const unlock = await checkAttendeeGate((c.get("parentAddress") as string).toLowerCase());
     if (!unlock.gated) return c.json({ ok: false, error: "ticket_required" }, 403);
   }
@@ -119,6 +122,9 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
       noticeWritten(parent);
       invalidateContentFeedVersion(b.owner.toLowerCase().replace(/^0x/, ""), organiserNoticeContentTopic(parent));
     }
+    // An organiser's seat state for their own event: the money path stops trusting
+    // older reads at once (seat-state-gate.ts).
+    if (seatSignal) await seatStateRelayed(seatSignal, parentAddress, b.owner);
     return c.json({ ok: true, data: ref });
   } catch (err) {
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);

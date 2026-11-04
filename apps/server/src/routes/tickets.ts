@@ -420,3 +420,34 @@ export async function sendTicketEmail(
     },
   );
 }
+
+/**
+ * "Your seat has changed" (S6, `lib/seating/seat-moved.ts`): the new seat of each ticket,
+ * as the ledger has it now. No ticket image, link or QR - the buyer keeps the ticket they
+ * already have, and the door reads the new seat. Everything in it is built here.
+ */
+export async function sendSeatChangedEmail(
+  a: { to: string; eventTitle: string; seats: Array<{ edition: number; seat: TicketSeat }> },
+  send: typeof sendEmail = sendEmail,
+): Promise<void> {
+  const one = a.seats.length === 1;
+  const subject = `${one ? "Your seat has changed" : "Your seats have changed"} - ${a.eventTitle}`;
+  const lines = a.seats.map((s) => {
+    const note = ticketSeatNote(s.seat);
+    return { edition: s.edition, text: `${ticketSeatText(s.seat)}${note ? ` (${note})` : ""}` };
+  });
+  const intro = `The organiser of ${a.eventTitle} has changed ${one ? "your seat" : "your seats"}.`;
+  const keep = `Your ${one ? "ticket and its code are" : "tickets and their codes are"} unchanged: show the ${one ? "ticket" : "tickets"} you already have at the door.`;
+  const html =
+    `<div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#1d1c17;">` +
+    `<p style="margin:0 0 16px;font-size:16px;">${escHtml(intro)}</p>` +
+    lines.map((l) => `<p style="margin:0 0 8px;font-size:18px;font-weight:600;">Ticket ${l.edition}: ${escHtml(l.text)}</p>`).join("") +
+    `<p style="margin:16px 0 0;font-size:14px;">${escHtml(keep)}</p>` +
+    companyFooterHtml("#6b6a63") +
+    `</div>`;
+  const text = `${intro}\n\n${lines.map((l) => `Ticket ${l.edition}: ${l.text}`).join("\n")}\n\n${keep}\n${companyFooterText()}`;
+  await send(
+    { from: `"${a.eventTitle.slice(0, 40)}" <${getFromAddress()}>`, to: [a.to], subject, html, text },
+    { priority: "transactional" },
+  );
+}

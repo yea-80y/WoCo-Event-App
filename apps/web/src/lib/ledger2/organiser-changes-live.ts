@@ -9,10 +9,16 @@ const READ_ABI = [
   "function getOrganiserKey(bytes32 eventId) view returns (address)",
   "function getRegisteredSupply(bytes32 eventId) view returns (uint64)",
   "function termsNonces(bytes32 eventId) view returns (uint256)",
+  "function isSeated(bytes32 eventId) view returns (bool)",
   "function setSupplyDigest(bytes32 eventId, uint64 supply, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
   "function extendSalesEndDigest(bytes32 eventId, uint64 eventEndTs, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
   "function cancelEventDigest(bytes32 eventId, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
   "function revokeSignaturesDigest(bytes32 eventId, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
+  "function reseatBearerDigest(bytes32 eventId, uint256 slot, uint256 toSeat, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
+  "function slotOwner(bytes32 eventId, uint256 slot) view returns (address)",
+  "function transferNonces(bytes32 eventId, uint256 slot) view returns (uint256)",
+  "function seatOf(bytes32 eventId, uint256 slot) view returns (uint256)",
+  "function seatNonces(bytes32 eventId, uint256 seat) view returns (uint256)",
   "error EventNotFound()",
 ] as const;
 
@@ -45,17 +51,18 @@ export const liveLedger2ClientIO: Ledger2ClientIO = {
     if (ids.length === 0) return [];
     const [{ pc, abi }, { BaseError }] = await Promise.all([client(), import("viem")]);
     const address = ledger as Hex;
-    const fns = ["getEvent", "getEventStatus", "getOrganiserKey", "getRegisteredSupply", "termsNonces"] as const;
+    const fns = ["getEvent", "getEventStatus", "getOrganiserKey", "getRegisteredSupply", "termsNonces", "isSeated"] as const;
     const res = await pc.multicall({
       contracts: ids.flatMap((id) => fns.map((functionName) => ({ address, abi, functionName, args: [id as Hex] }))),
       allowFailure: true,
     });
     const notFound = (e: unknown) =>
       e instanceof BaseError && !!e.walk((x) => (x as { data?: { errorName?: string } }).data?.errorName === "EventNotFound");
+    const n = fns.length;
     return ids.map((_, i): SeriesRead | null => {
-      const [ev, status, key, registered, nonce] = res.slice(i * 5, i * 5 + 5);
+      const [ev, status, key, registered, nonce, seated] = res.slice(i * n, i * n + n);
       if (ev!.status === "failure" && notFound(ev!.error)) return null;
-      for (const r of [ev, status, key, registered, nonce]) {
+      for (const r of [ev, status, key, registered, nonce, seated]) {
         if (r!.status !== "success") throw new Error("Couldn't read your event's tickets just now.");
       }
       const [totalSupply, nextSlot, organiser] = ev!.result as readonly [bigint, bigint, string, string];
@@ -69,6 +76,7 @@ export const liveLedger2ClientIO: Ledger2ClientIO = {
         eventEndTs: Number(eventEndTs),
         cancelled,
         termsNonce: nonce!.result as bigint,
+        seated: seated!.result === true,
       };
     });
   },
@@ -93,9 +101,40 @@ export const liveLedger2ClientIO: Ledger2ClientIO = {
         return pc.readContract({ address, abi, functionName: "cancelEventDigest", args: [id, ...w] });
       case "revoke":
         return pc.readContract({ address, abi, functionName: "revokeSignaturesDigest", args: [id, ...w] });
+      case "reseatBearer":
+        return pc.readContract({ address, abi, functionName: "reseatBearerDigest", args: [id, BigInt(a.slot), a.toSeat, ...w] });
       default:
-        throw new Error("seat moves are signed by the seating editor");
+        throw new Error("a two-party seat move is not signed here");
     }
+  },
+
+  async slots(ledger, eventId, slots) {
+    const { pc, abi } = await client();
+    const address = ledger as Hex;
+    const fns = ["slotOwner", "transferNonces", "seatOf"] as const;
+    const res = await pc.multicall({
+      contracts: slots.flatMap((slot) => fns.map((functionName) => ({ address, abi, functionName, args: [eventId as Hex, BigInt(slot)] }))),
+      allowFailure: false,
+    });
+    const out = new Map<number, { owner: string; transferNonce: bigint; seat: bigint }>();
+    slots.forEach((slot, i) => {
+      out.set(slot, {
+        owner: (res[i * 3] as string).toLowerCase(),
+        transferNonce: res[i * 3 + 1] as bigint,
+        // The view answers NO_SEAT itself; 0 is seat 0.
+        seat: res[i * 3 + 2] as bigint,
+      });
+    });
+    return out;
+  },
+
+  async seatNonces(ledger, eventId, seats) {
+    const { pc, abi } = await client();
+    const res = await pc.multicall({
+      contracts: seats.map((seat) => ({ address: ledger as Hex, abi, functionName: "seatNonces" as const, args: [eventId as Hex, seat] })),
+      allowFailure: false,
+    });
+    return new Map(seats.map((seat, i) => [seat, res[i] as bigint]));
   },
 
   async organiserKey() {

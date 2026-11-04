@@ -74,6 +74,11 @@ export interface Ledger2RelayDeps {
   slotState(chainId: number, ledger: string, onChainEventId: string, slot: number): Promise<SlotChainState>;
   seatNonce(chainId: number, ledger: string, onChainEventId: string, seat: bigint): Promise<bigint>;
   holds(eventId: string, seriesId: string): { held: number; expiresBy: number | null };
+  /**
+   * Take the seats a move is aiming at, under the series lock: refused, naming them, if
+   * a buyer holds or just paid for one (`reservation-store.ts` `claimRelaySeats`).
+   */
+  claimSeats(eventId: string, seriesId: string, seats: readonly number[]): Promise<RelaySeatClaim>;
   cancellationGate(eventId: string): "open" | "cancelled" | "unknown";
   simulate(chainId: number, ledger: string, calls: readonly RelayCall[]): Promise<SimulatedCall[]>;
   send(chainId: number, ledger: string, calls: readonly RelayCall[], label: string): Promise<RelayTx>;
@@ -82,6 +87,8 @@ export interface Ledger2RelayDeps {
   onExtended(contract: EventContractTarget, onChainEventId: string): void;
   log(msg: string): void;
 }
+
+export type RelaySeatClaim = { ok: true; release(): void } | { ok: false; conflicts: number[] };
 
 export type RelayRefusal = {
   ok: false;
@@ -224,7 +231,11 @@ export interface PreparedRelay {
   itemCount: number;
   aborts: RelayCall[];
   label: string;
+  /** Per series, the seats its moves aim at (not ones a ticket of this request sits in). */
+  seatTargets: Map<string, number[]>;
   release(): void;
+  /** Give the target seats back: only when the move certainly did not land. */
+  releaseSeats(): void;
 }
 
 const LOG_FOR: Record<Ledger2Kind, LandedLog["name"]> = {
@@ -324,7 +335,23 @@ export async function prepareLedger2Relay(
       release();
       return outcome;
     }
-    return { ok: true, prepared: { ...outcome.prepared, release } };
+    // Last, right before sending: a buyer's hold and this claim take the same series
+    // lock, so whichever comes second sees the other.
+    const claims: Array<() => void> = [];
+    const releaseSeats = () => {
+      for (const r of claims.splice(0)) r();
+    };
+    for (const [seriesId, seats] of outcome.prepared.seatTargets) {
+      if (seats.length === 0) continue;
+      const claim = await deps.claimSeats(input.eventId, seriesId, seats);
+      if (!claim.ok) {
+        releaseSeats();
+        release();
+        return refuse(409, "seat_on_hold", { seriesId, seats: claim.conflicts });
+      }
+      claims.push(claim.release);
+    }
+    return { ok: true, prepared: { ...outcome.prepared, release, releaseSeats } };
   } catch (err) {
     release();
     throw err;
@@ -342,7 +369,7 @@ async function checkAndSimulate(
     contract: EventContractTarget;
     ids: Map<string, string>;
   },
-): Promise<{ ok: true; prepared: Omit<PreparedRelay, "release"> } | RelayRefusal> {
+): Promise<{ ok: true; prepared: Omit<PreparedRelay, "release" | "releaseSeats"> } | RelayRefusal> {
   const { items, aborts, chainId, ledger, contract, ids } = ctx;
   const target: Ledger2Target = { chainId, address: ledger };
 
@@ -401,6 +428,18 @@ async function checkAndSimulate(
     }
   }
 
+  // The seats each series' moves aim at, less the ones a ticket of this request sits in
+  // now (a swap's targets are taken by its own tickets: the chain is their guard).
+  const seatTargets = new Map<string, number[]>();
+  for (const [seriesId, sl] of slots) {
+    const own = new Set([...sl.values()].map((s) => s.seat));
+    const targets = new Set<number>();
+    for (const i of seatItems) {
+      if (i.seriesId === seriesId && i.toSeat !== LEDGER2_NO_SEAT && !own.has(i.toSeat!)) targets.add(Number(i.toSeat!));
+    }
+    seatTargets.set(seriesId, [...targets].sort((a, b) => a - b));
+  }
+
   // Each series' seat moves, in request order, with the nonces earlier moves leave.
   const seatPlan = new Map<number, { holder: string; nonce: bigint; termsNonce: bigint; seatNonce: bigint }>();
   for (const [seriesId, sl] of slots) {
@@ -420,6 +459,9 @@ async function checkAndSimulate(
     let action: Ledger2Action;
     switch (it.kind) {
       case "setSupply": {
+        // A seated series' supply is its plan's seats: capacity is hold / release, and
+        // a cut below the seats would strand seats the map shows free (SEATING.md "Relay").
+        if (s.seated) return refuse(409, "seated_supply", at);
         if (s.cancelled) return refuse(409, "event_cancelled", at);
         if (closed) return refuse(409, "sales_closed", at);
         if (it.supply! > s.registeredSupply) return refuse(400, "supply_above_registered", { ...at, max: s.registeredSupply });
@@ -523,7 +565,7 @@ async function checkAndSimulate(
 
   return {
     ok: true,
-    prepared: { chainId, ledger, contract, calls, expect, itemCount: items.length, aborts: abortCalls, label: input.label },
+    prepared: { chainId, ledger, contract, calls, expect, itemCount: items.length, aborts: abortCalls, label: input.label, seatTargets },
   };
 }
 
@@ -576,7 +618,10 @@ export async function submitLedger2Relay(
     try {
       tx = await deps.send(prepared.chainId, prepared.ledger, prepared.calls, prepared.label);
     } catch (err) {
-      if (err instanceof RelayGasCeilingError) return refuse(413, "batch_too_large");
+      if (err instanceof RelayGasCeilingError) {
+        prepared.releaseSeats(); // refused before sending
+        return refuse(413, "batch_too_large");
+      }
       logFailure(deps, `${prepared.label} send`, err);
       // A send that threw may still have been broadcast: the client decides from chain.
       return refuse(502, "relay_failed");
@@ -593,6 +638,7 @@ export async function submitLedger2Relay(
 
     if (receipt.status !== 1) {
       deps.log(`[ledger2-relay] ${prepared.label} reverted on chain txHash=${tx.hash}`);
+      prepared.releaseSeats();
       const aborted = prepared.aborts.length > 0 ? await submitAborts(prepared, deps) : false;
       return { ok: true, result: { status: "reverted_on_chain", txHash: tx.hash, aborted } };
     }

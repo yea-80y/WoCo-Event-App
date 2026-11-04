@@ -360,12 +360,70 @@ export function heldFor(eventId: string, seriesId: string): number {
 export function heldSeatsFor(eventId: string, seriesId: string): number[] {
   ensureLoaded();
   const now = Date.now();
-  const out = new Set<number>();
+  const out = new Set<number>(relayHeldSeats(eventId, seriesId, now));
   for (const r of reservations.values()) {
     if (r.eventId !== eventId || r.seriesId !== seriesId || !r.seats) continue;
     if (seatsOffSale(r, now)) for (const k of r.seats) out.add(k);
   }
   return [...out].sort((a, b) => a - b);
+}
+
+// ── Seats a relayed seat move is aiming at (S6) ─────────────────────────────
+
+/**
+ * How long the seats an organiser's move is aiming at stay off sale (S6 consult,
+ * Fable 2026-11-04). A move and a buyer both reading the seat's bit clear would end
+ * with the buyer paid and their mint refused (SeatTaken) - a full refund. So the relay
+ * takes the target seats here, under the series lock, refused if any is already in a
+ * buyer's hold or paid in the last few minutes; a hold check then refuses them. They
+ * stay off sale for the whole window even after the move lands, as a paid hold's
+ * seats do, so a reserve reading a replica that has not seen the move yet cannot sell
+ * them. Memory only: a restart costs at most one refundable race.
+ */
+export const RELAY_SEAT_HOLD_MS = 3 * 60_000;
+/** series key -> seat -> until (epoch ms). */
+const relaySeats = new Map<string, Map<number, number>>();
+
+function relayHeldSeats(eventId: string, seriesId: string, now: number): number[] {
+  const key = `${eventId}\u0000${seriesId}`;
+  const m = relaySeats.get(key);
+  if (!m) return [];
+  for (const [k, until] of m) if (until <= now) m.delete(k);
+  if (m.size === 0) relaySeats.delete(key);
+  return [...m.keys()];
+}
+
+export type RelaySeatClaim = { ok: true; release(): void } | { ok: false; conflicts: number[] };
+
+/**
+ * Take `seats` for a relayed move: refused, naming them, if any is off sale (a live
+ * hold, a recent sale, another move in flight). `release` gives back only what this
+ * claim still holds - call it when the move certainly did not land.
+ */
+export function claimRelaySeats(eventId: string, seriesId: string, seats: readonly number[]): Promise<RelaySeatClaim> {
+  ensureLoaded();
+  return withSeriesLock(eventId, seriesId, () => {
+    const now = Date.now();
+    const wanted = new Set(seats);
+    const conflicts = new Set(relayHeldSeats(eventId, seriesId, now).filter((k) => wanted.has(k)));
+    for (const r of reservations.values()) {
+      if (r.eventId !== eventId || r.seriesId !== seriesId || !r.seats || !seatsOffSale(r, now)) continue;
+      for (const k of r.seats) if (wanted.has(k)) conflicts.add(k);
+    }
+    if (conflicts.size) return { ok: false as const, conflicts: [...conflicts].sort((a, b) => a - b) };
+    const key = `${eventId}\u0000${seriesId}`;
+    const m = relaySeats.get(key) ?? new Map<number, number>();
+    relaySeats.set(key, m);
+    const until = now + RELAY_SEAT_HOLD_MS;
+    for (const k of wanted) m.set(k, until);
+    return {
+      ok: true as const,
+      release: () => {
+        for (const k of wanted) if (m.get(k) === until) m.delete(k);
+        if (m.size === 0 && relaySeats.get(key) === m) relaySeats.delete(key);
+      },
+    };
+  });
 }
 
 /**
@@ -739,7 +797,7 @@ export async function reserveSeats(a: {
     // INVARIANT: synchronous from here to the insert (see the per-IP note in `reserve`).
     const t = Date.now();
     const wanted = new Set(a.seats);
-    const conflicts = new Set<number>();
+    const conflicts = new Set<number>(relayHeldSeats(eventId, seriesId, t).filter((k) => wanted.has(k)));
     for (const r of reservations.values()) {
       if (!here(r) || !r.seats || !seatsOffSale(r, t)) continue;
       for (const k of r.seats) if (wanted.has(k)) conflicts.add(k);
@@ -935,6 +993,7 @@ export function __sweepForTests(): void {
 /** Test seam: the store is process-lifetime state. */
 export function __resetReservationsForTests(): void {
   reservations.clear();
+  relaySeats.clear();
   loaded = false;
   fileUnreadable = null;
 }

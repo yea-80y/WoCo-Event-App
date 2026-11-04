@@ -67,7 +67,81 @@
   let seriesPage = $state<Record<string, number>>({});
   const ORDERS_PAGE_SIZE = 100;
 
-  let activeTab = $state<"orders" | "broadcast" | "payments" | "door" | "edit">("orders");
+  let activeTab = $state<"orders" | "seats" | "broadcast" | "payments" | "door" | "edit">("orders");
+  // Allocated seating (docs/SEATING.md S6): its own tab, an operational surface like Door.
+  const hasSeats = $derived(
+    FEATURES.seatedEventsAllowed && !!event?.series.some((s) => !!s.seating && !!s.onChainEventId && !!s.swarmManifestRef),
+  );
+  const seatsPanel = () => import("../seating/SeatsPanel.svelte");
+  /**
+   * Seated ticket types (S6): where each sold ticket sits now, and where it sat before its
+   * last move - read from the chain in the browser, labelled from the plan. Keyed like the
+   * rows (`orderSlotKey`). Missing = not read yet (the cell says so), never "no seat".
+   */
+  let orderSeats = $state.raw<Map<string, { seat: string; from?: string }>>(new Map());
+  let orderSeatsFor = "";
+  async function loadOrderSeats(): Promise<void> {
+    const ev = event;
+    const orders = ordersResponse?.orders ?? [];
+    if (!ev || !hasSeats || orders.length === 0) return;
+    const [{ seatMapFor }, data, { seatLabel, formatSeatLabel }, { ticketLedger2Address }, { KERNEL_CHAIN_ID }, { ownLedger2Deployment }] = await Promise.all([
+      import("../../seating/seat-map-source.js"),
+      import("../seating/organiser-seat-data.js"),
+      import("@woco/shared/seating/plan"),
+      import("@woco/shared/ticket/ledger2"),
+      import("@woco/shared/kernel/chain"),
+      import("../../keyring/organiser-event-scan.js"),
+    ]);
+    const ledger = ticketLedger2Address(KERNEL_CHAIN_ID);
+    const call = await data.liveMulticall();
+    if (!ledger || !call) return;
+    const deployment = await ownLedger2Deployment();
+    const out = new Map<string, { seat: string; from?: string }>();
+    for (const s of ev.series) {
+      if (!s.seating || !s.onChainEventId || !s.swarmManifestRef) continue;
+      const loaded = await seatMapFor(ev.eventId, s, import.meta.env.VITE_API_URL || "");
+      if (!loaded.ok) continue;
+      const plan = loaded.map.plan.plan;
+      const text = (k: number) => {
+        const l = seatLabel(plan, k);
+        return l ? formatSeatLabel(l) : `Seat ${k + 1}`;
+      };
+      const last = Math.max(0, ...orders.filter((o) => o.seriesId === s.seriesId).map((o) => o.edition));
+      const [seats, moves] = await Promise.all([
+        data.readTicketSeats(call, ledger, s.onChainEventId, last),
+        deployment
+          ? data.scanSeatMoves(await data.liveMoveLogIO(ledger, s.onChainEventId), deployment.deployBlock).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      const from = moves ? data.movedFrom(moves.moves) : new Map<number, number>();
+      for (const [slot, k] of seats.seats) {
+        const f = from.get(slot);
+        out.set(orderSlotKey({ seriesId: s.seriesId, edition: slot + 1 }), {
+          seat: k < 0 ? "No seat" : text(k),
+          ...(f !== undefined ? { from: text(f) } : {}),
+        });
+      }
+    }
+    orderSeats = out;
+  }
+  $effect(() => {
+    const key = hasSeats && ordersResponse ? `${eventId}:${ordersResponse.orders.length}` : "";
+    if (!key || key === orderSeatsFor) return;
+    orderSeatsFor = key;
+    untrack(() => void loadOrderSeats().catch(() => {}));
+  });
+
+  /** What the Seats tab may know about a ticket: its buyer's email once orders are open here. */
+  function seatTicketInfo(seriesId: string, edition: number) {
+    const order = ordersResponse?.orders.find((o) => o.seriesId === seriesId && o.edition === edition);
+    if (!order) return null;
+    const dec = decryptedOrders.get(listIndex.position.get(order) ?? -1);
+    return {
+      ...(dec?.claimerEmail && !order.erased ? { email: dec.claimerEmail } : {}),
+      refunded: order.refund === "refunded",
+      erased: !!order.erased,
+    };
+  }
 
   // Webhook state
   interface WebhookConfig {
@@ -252,12 +326,14 @@
     ) {
       return;
     }
-    const headers = ["Edition", "Claimer", "Email", "Paid via", "Refund", "Claimed At", "Details", ...fields.map((f) => f.label)];
+    const seated = seriesOrders.some((o) => orderSeats.has(orderSlotKey(o)));
+    const headers = ["Edition", ...(seated ? ["Seat"] : []), "Claimer", "Email", "Paid via", "Refund", "Claimed At", "Details", ...fields.map((f) => f.label)];
     const position = listIndex.position;
     const rows = seriesOrders.map((order, i) => {
       const dec = decryptedOrders.get(position.get(order) ?? -1);
       return [
         String(order.edition),
+        ...(seated ? [orderSeats.get(orderSlotKey(order))?.seat ?? "Not read"] : []),
         order.erased
           ? "Erased on request"
           : order.claimerAddress.startsWith("email:") || order.claimerAddress.startsWith("wallet:")
@@ -1091,6 +1167,15 @@
       >
         Orders
       </button>
+      {#if hasSeats}
+        <button
+          class="tab-btn"
+          class:active={activeTab === "seats"}
+          onclick={() => (activeTab = "seats")}
+        >
+          Seats
+        </button>
+      {/if}
       <button
         class="tab-btn"
         class:active={activeTab === "broadcast"}
@@ -1121,7 +1206,15 @@
       </button>
     </div>
 
-    {#if activeTab === "edit"}
+    {#if activeTab === "seats" && hasSeats}
+      {#await seatsPanel()}
+        <p class="seats-loading">Loading seats…</p>
+      {:then { default: SeatsPanel }}
+        <SeatsPanel {event} apiUrl={import.meta.env.VITE_API_URL || ""} ticketInfo={seatTicketInfo} />
+      {:catch}
+        <p class="seats-loading">Seats couldn't be loaded. Reload the page to try again.</p>
+      {/await}
+    {:else if activeTab === "edit"}
       <!-- Edit tab — event-level metadata (tiers/pricing are on-chain committed) -->
       <EditEventPanel
         {event}
@@ -1549,6 +1642,7 @@
                 <thead>
                   <tr>
                     <th>Edition</th>
+                    {#if series.seating && hasSeats}<th>Seat</th>{/if}
                     <th>Claimer</th>
                     <th>Paid via</th>
                     <th>Claimed At</th>
@@ -1569,6 +1663,13 @@
                     {@const isSending = sending.has(key)}
                     <tr>
                       <td>#{order.edition}</td>
+                      {#if series.seating && hasSeats}
+                        {@const placed = orderSeats.get(orderSlotKey(order))}
+                        <td class="seat-cell">
+                          {placed?.seat ?? "…"}
+                          {#if placed?.from}<span class="moved">moved from {placed.from}</span>{/if}
+                        </td>
+                      {/if}
                       <td class="address" title={order.erased ? "" : order.claimerAddress}>
                         {#if order.erased}
                           <!-- #546: the record is gone; the address left is only the
@@ -2149,6 +2250,16 @@
     gap: 0;
     border-bottom: 1px solid var(--border);
     margin-bottom: 1.5rem;
+  }
+
+  .seats-loading {
+    color: var(--text-muted);
+  }
+
+  .seat-cell .moved {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.8rem;
   }
 
   .tab-btn {

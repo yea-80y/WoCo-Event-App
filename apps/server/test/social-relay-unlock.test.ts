@@ -171,6 +171,32 @@ test("a Stripe-verified account gets past the unlock", async () => {
   }
 });
 
+// ── Seat state (S6): organiser content under woco/event/*, gated like the notice ──
+
+const SEAT_STATE = hexJson({
+  format: "woco.seatstate.v1", eventId: "evt-1", seriesId: "ser-1", planDigest: `0x${"cd".repeat(32)}`, seats: 10, seq: 3,
+  updatedAt: "2026-11-04T00:00:00Z", holds: [], confirmed: [],
+});
+// The first page of a paged state: the opening of the JSON, cut off mid-way.
+const SEAT_STATE_PAGE_1 = Buffer.from(
+  `{"format":"woco.seatstate.v1","eventId":"evt-1","seriesId":"ser-1","planDigest":"0x${"cd".repeat(32)}","seats":200000,"seq":9,"updatedAt":"2026-11-04T00:00:00Z","holds":[{"kind":"house","held":"0f0f`,
+  "utf-8",
+).toString("hex");
+
+test("a fresh account cannot write a seat state, whole or its first page", async () => {
+  const fresh = await mintDelegation();
+  for (const [label, payload] of [["whole", SEAT_STATE], ["page 1", SEAT_STATE_PAGE_1]]) {
+    const r = await relay(fresh, payload);
+    assert.ok(refusedForUnlock(r), `${label}: ${r.status} ${JSON.stringify(r.json)}`);
+  }
+});
+
+test("a Stripe-verified organiser gets past the unlock with a seat state", async () => {
+  const verified = await mintDelegation();
+  setStripeAccount(verified.parent.address.toLowerCase(), "acct_seat_state", true);
+  for (const payload of [SEAT_STATE, SEAT_STATE_PAGE_1]) assert.ok(!refusedForUnlock(await relay(verified, payload)));
+});
+
 test("a Stripe account that has not finished verifying is still locked", async () => {
   const pending = await mintDelegation();
   setStripeAccount(pending.parent.address.toLowerCase(), "acct_social_pending", false);

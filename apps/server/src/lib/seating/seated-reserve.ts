@@ -24,6 +24,8 @@ import { mintedSeats } from "../stripe/ticket-sales.js";
 import { checkSeats, SEATS_NOT_ON_SALE, SEATS_UNREADABLE } from "./seat-check.js";
 import { holdFeeKey, seatedPriceRefusal } from "./seated-checkout.js";
 import { pinnedSeatPlan, readSeatChain } from "./seat-reads.js";
+import { seatStateRead } from "./seat-state-gate.js";
+import { seatStateView } from "@woco/shared/seating/state";
 
 export interface Reply {
   status: ContentfulStatusCode;
@@ -37,6 +39,7 @@ export interface SeatedReserveDeps {
   lookupOnChainEventId(eventId: string, seriesId: string): string | null;
   noteChainCancelled(eventId: string, onChainEventId: string): void;
   expireSession(c: HoldCheckout): Promise<SessionExpiry>;
+  seatStateRead: typeof seatStateRead;
 }
 
 const liveDeps: SeatedReserveDeps = {
@@ -46,6 +49,7 @@ const liveDeps: SeatedReserveDeps = {
   lookupOnChainEventId,
   noteChainCancelled,
   expireSession: expireCheckoutSession,
+  seatStateRead,
 };
 
 const refuse = (status: ContentfulStatusCode, error: string, extra: Record<string, unknown> = {}): Reply =>
@@ -59,6 +63,8 @@ export async function reserveSeated(
     planDigest: string;
     series: Pick<SeriesSummary, "swarmManifestRef" | "seating" | "payment">;
     contract: EventContractTarget;
+    /** The event's carrier signer (`eventKeys`): whose seat-state feed is the organiser's. */
+    feedSigner: string;
     seatCap: { sawLiveSupply(n: number): void; cap(): number };
     replaceReservationId?: string;
     clientKey?: string;
@@ -88,13 +94,25 @@ export async function reserveSeated(
     reusable: (h) => seatedPriceRefusal(h, a.series.seating, payment) === null,
     expireSession: deps.expireSession,
     verify: async () => {
-      let chain;
-      try {
-        chain = await deps.readSeatChain(a.contract, onChainEventId, a.seats);
-      } catch (err) {
+      // The organiser's holds and confirmations, beside the chain read they are checked
+      // with: unreadable refuses, like the chain (seat-state-gate.ts).
+      const [chainRead, organiser] = await Promise.all([
+        deps.readSeatChain(a.contract, onChainEventId, a.seats).then(
+          (v) => ({ ok: true as const, v }),
+          (err: unknown) => ({ ok: false as const, err }),
+        ),
+        deps.seatStateRead({ eventId: a.eventId, seriesId: a.seriesId, signer: a.feedSigner, planDigest: a.planDigest, seats: plan.seats.length }),
+      ]);
+      if (!chainRead.ok) {
+        const err = chainRead.err;
         console.warn(`[reserve/seats] chain read failed for ${a.eventId.slice(0, 8)}:`, err instanceof Error ? err.message : String(err));
         return { ok: false, status: 503, error: SEATS_UNREADABLE };
       }
+      if (organiser.status === "unavailable") {
+        console.warn(`[reserve/seats] seat state unreadable for ${a.eventId.slice(0, 8)}: ${organiser.reason}`);
+        return { ok: false, status: 503, error: SEATS_UNREADABLE };
+      }
+      const chain = chainRead.v;
       if (chain.event) {
         a.seatCap.sawLiveSupply(Number(chain.event.totalSupply));
         if (chain.event.cancelled) deps.noteChainCancelled(a.eventId, onChainEventId);
@@ -107,6 +125,7 @@ export async function reserveSeated(
         seats: a.seats,
         minted: deps.mintedSeats(onChainEventId, contractKey(a.contract)),
         chain,
+        organiser: seatStateView(plan, a.planDigest, organiser.status === "found" ? organiser.state : null),
       });
     },
   });

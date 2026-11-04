@@ -3,7 +3,8 @@
  * Multicall3 batch reads a run of slots - `slotOwner` and, for a seated series,
  * `seatOf` - plus ArbSys `arbBlockNumber`, so a slot's owner and seat come from one
  * block and the cache (`slot-owners.ts`) can keep the highest. A batch with no block is
- * dropped whole.
+ * dropped whole. The batch also reads the event's `nextSlot` at that block; a slot at or
+ * past it is left unread, so a replica behind a fresh mint cannot cache "no ticket".
  *
  * `isSeated` is fixed at registration, so it is read until one read succeeds and then
  * remembered; a lagging replica that does not know the event yet fails the call
@@ -18,7 +19,9 @@ import { LEDGER2_NO_SEAT } from "@woco/shared/ticket/ledger2-terms";
 import { getChainRpcUrl, type EventContractTarget } from "../chain/event-contract.js";
 import { cachedSlots, type SlotRead } from "./slot-owners.js";
 
-const SEL = { slotOwner: "17e7f2ff", seatOf: "4eb29918", isSeated: "b2db691d" } as const;
+const SEL = { slotOwner: "17e7f2ff", seatOf: "4eb29918", isSeated: "b2db691d", getEvent: "8c172fa2" } as const;
+/** `getEvent` answers four words; `nextSlot` is the second. */
+const GET_EVENT_BYTES = 128;
 
 /** Slots per batch: 1,024 calls for a seated series, ~96 KB of answer. */
 export const SLOTS_PER_BATCH = 512;
@@ -94,14 +97,23 @@ async function readBatch(
 ): Promise<void> {
   const askSeated = seatedFor !== null && !seatedKnown.has(seatedFor);
   const calls: ViewCall[] = [{ target: ARBSYS_ADDRESS, data: ARB_BLOCK_NUMBER }];
-  if (askSeated) calls.push({ target: ledger, data: staticCall(SEL.isSeated, eventId) });
+  const expect: number[] = [32];
+  const ask = (data: string, len = 32) => {
+    calls.push({ target: ledger, data });
+    expect.push(len);
+  };
+  if (askSeated) ask(staticCall(SEL.isSeated, eventId));
+  // The event's own count at THIS block (S5 sign-off F3): the caller's `nextSlot` came
+  // from another read, maybe a replica ahead of this one, where a ticket bought a second
+  // ago reads "nobody" - which the cache would keep for its whole window.
+  if (slots.length > 0) ask(staticCall(SEL.getEvent, eventId), GET_EVENT_BYTES);
   for (const slot of slots) {
-    calls.push({ target: ledger, data: staticCall(SEL.slotOwner, eventId, slot) });
-    if (seats) calls.push({ target: ledger, data: staticCall(SEL.seatOf, eventId, slot) });
+    ask(staticCall(SEL.slotOwner, eventId, slot));
+    if (seats) ask(staticCall(SEL.seatOf, eventId, slot));
   }
   let results: CallResult[];
   try {
-    results = await call(chainId, calls, calls.map(() => 32));
+    results = await call(chainId, calls, expect);
   } catch {
     return;
   }
@@ -115,9 +127,15 @@ async function readBatch(
     const v = r ? boolAt(r, 0) : null;
     if (v !== null) seatedKnown.set(seatedFor!, v); // anything but 0 or 1 is no answer
   }
+  if (slots.length === 0) return;
+  const ev = take();
+  if (!ev) return; // no count at this block: nothing in the batch can be told from "not minted yet"
+  const minted = uintAt(ev, 1);
   for (const slot of slots) {
     const o = take();
     const s = seats ? take() : null;
+    // A slot at or past this block's count is not minted HERE yet: unread, asked again.
+    if (BigInt(slot) >= minted) continue;
     if (o && (!seats || s)) out.set(slot, { value: { owner: ownerOf(o), seat: s ? seatIndexOf(uintAt(s, 0)) : null }, block });
   }
 }

@@ -36,11 +36,13 @@
   let preparing = $state(false);
   let running: Ledger2Change | null = null;
 
-  const closed = $derived(view.series.every((s) => s.cancelled || view.chainNow >= s.eventEndTs));
+  // Seated ticket types follow their plan: hold / release seats instead (the relay refuses).
+  const series = $derived(view.series.filter((s) => !s.seated));
+  const closed = $derived(series.every((s) => s.cancelled || view.chainNow >= s.eventEndTs));
   const busy = $derived(preparing || phase?.phase === "saving" || phase?.phase === "cancelling");
 
   function invalid(seriesId: string): string | null {
-    const s = view.series.find((x) => x.seriesId === seriesId)!;
+    const s = series.find((x) => x.seriesId === seriesId)!;
     const n = drafts[seriesId];
     if (typeof n !== "number" || !Number.isInteger(n)) return "Enter a whole number.";
     if (n < Math.max(1, s.nextSlot)) return `At least ${Math.max(1, s.nextSlot)} - that many are sold.`;
@@ -48,7 +50,7 @@
     return null;
   }
 
-  const changed = $derived(view.series.filter((s) => !s.cancelled && drafts[s.seriesId] !== s.totalSupply));
+  const changed = $derived(series.filter((s) => !s.cancelled && drafts[s.seriesId] !== s.totalSupply));
   const canSave = $derived(!busy && !closed && changed.length > 0 && changed.every((s) => !invalid(s.seriesId)));
 
   async function save() {
@@ -98,7 +100,7 @@
     </p>
   {/if}
 
-  {#each view.series as s (s.seriesId)}
+  {#each series as s (s.seriesId)}
     <label class="type">
       <span class="name">{s.name}</span>
       <span class="sold">{s.nextSlot} sold</span>

@@ -100,7 +100,7 @@ function deps(rpc: ReturnType<typeof chain>, opts: { manifest?: unknown; plan?: 
   return { fetch: fakeFetch, gatewayUrl: "https://gw", rpcUrl: "https://rpc", apiUrl: "https://api", ledger: LEDGER, setTimeout: () => 0, clearTimeout: () => {} };
 }
 
-const none = { held: new Set<number>(), confirmed: new Map<number, number>() };
+const none = { held: new Set<number>(), holds: new Map(), confirmed: new Map<number, number>() };
 const statesOf = (snap: Awaited<ReturnType<typeof loadSeatMap>> & { ok: true }, mine: number[] = []) => {
   const s = snap.map.snapshot();
   return seatStates(snap.map.plan.plan, { chain: s.chain, organiser: none, onHold: s.onHold, mine, bandPrices: snap.map.bandPrices });

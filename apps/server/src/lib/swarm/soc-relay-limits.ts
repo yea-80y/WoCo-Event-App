@@ -40,6 +40,7 @@ import {
   ORGANISER_NOTICE_FORMAT,
 } from "@woco/shared";
 import { SlidingWindowLimiter, type RateWindow } from "../http/rate-limit.js";
+import { seatStateWriteSignal } from "@woco/shared/seating/state";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -102,6 +103,22 @@ export function isSocialPayload(payloadHex: string): boolean {
  */
 export function isPrivacyNoticePayload(payloadHex: string): boolean {
   return payloadFormat(payloadHex) === ORGANISER_NOTICE_FORMAT;
+}
+
+/**
+ * A seat-state write (`woco.seatstate.v1`): the whole state, or the first page of a
+ * paged one (`seatStateWriteSignal`). Gated like the notice - organiser content under
+ * a `woco/event/*` topic, up to ~100 chunks a save at the largest plans - and the
+ * relay tells the money path a newer state is on its way. Null for anything else.
+ */
+export function seatStatePayloadSignal(payloadHex: string): { eventId: string; seriesId: string; seq: number } | null {
+  const clean = payloadHex.startsWith("0x") ? payloadHex.slice(2) : payloadHex;
+  // The signal sits in the first 512 bytes; nothing past them is decoded.
+  const head = clean.slice(0, 1024);
+  if (head.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(head)) return null;
+  const bytes = new Uint8Array(head.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(head.slice(i * 2, i * 2 + 2), 16);
+  return seatStateWriteSignal(bytes);
 }
 
 /**

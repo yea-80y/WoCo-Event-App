@@ -227,12 +227,20 @@ export async function writeContentFeed(args: {
    * single-writer flow. Anything else must probe.
    */
   knownVersion?: number;
+  /**
+   * Wait out the relay's write budget instead of failing (`relay-pacing.ts`): for a write
+   * larger than a minute's budget. Everyday writes leave it off and fail fast.
+   */
+  paceWhenBusy?: boolean;
 }): Promise<number> {
   const [{ Wallet }, { probeSoc }, { signSoc }, post] = await Promise.all([
     import("ethers"),
     import("./probe-soc.js"),
     import("./soc-sign.js"),
-    args.transport ?? import("./client-soc.js").then((m): SocTransport => m.postSignedSoc),
+    args.transport ??
+      Promise.all([import("./client-soc.js"), import("./relay-pacing.js")]).then(([m, pace]): SocTransport =>
+        args.paceWhenBusy ? (body) => pace.pacedSend(() => m.postSignedSoc(body), (ms) => new Promise((r) => setTimeout(r, ms))) : m.postSignedSoc,
+      ),
   ]);
   const key = args.signerPrivKey.startsWith("0x") ? args.signerPrivKey : `0x${args.signerPrivKey}`;
   const owner = new Wallet(key).address.toLowerCase();

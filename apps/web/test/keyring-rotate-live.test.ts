@@ -40,6 +40,11 @@ test("own feeds are read thorough, and an unreadable or inconclusive one stops t
   assert.match(r, /if \(res\.status === "unavailable" \|\| \(res\.status === "found" && !res\.scanClean\)\) \{\s*throw/);
 });
 
+test("each copied event's seated ticket types carry their seat state to the new signer, before the flip (S6)", () => {
+  const c = body("copyEvents: async");
+  assert.match(c, /await signEventFeedSoc\(next[^\n]*\n[\s\S]*?if \(seatIO\) await seats\.copySeatStates\(seatIO, feed, h\.oldSigner\.address, keys\.feedSigner\.privKey\);/);
+});
+
 test("the server is counted as told only when it names the ring just set", () => {
   assert.match(LIVE, /if \(res\.data\?\.ref !== ctx\.ring\) throw new Error/);
 });

@@ -15,7 +15,7 @@ import {
 import { cancellationGate } from "./cancellations.js";
 import { invalidateChainEnd } from "./end-date-guard.js";
 import { lookupOnChainEventId, registrationContractFor } from "./onchain-registry.js";
-import { holdsFor } from "./reservation-store.js";
+import { claimRelaySeats, holdsFor } from "./reservation-store.js";
 import type { Ledger2RelayDeps, RelayTx } from "./ledger2-relay.js";
 import type { TransactionResponse } from "ethers";
 
@@ -34,6 +34,7 @@ export const liveLedger2RelayDeps: Ledger2RelayDeps = {
   slotState: readSlotChainState,
   seatNonce: readSeatNonce,
   holds: holdsFor,
+  claimSeats: claimRelaySeats,
   cancellationGate,
   simulate: simulateRelayBatch,
   send: sendRelayBatch,

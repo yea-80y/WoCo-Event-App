@@ -22,12 +22,12 @@
 import { MULTICALL3_ADDRESS, RpcError, decodeAggregate3, encodeAggregate3, ethCall, type ViewCall } from "@woco/shared/chain/multicall";
 // By path: `edition/index` also re-exports the Merkle code, which the map never needs.
 import { manifestV2Digest } from "@woco/shared/edition/canonical";
-import { MAX_SEAT_PLAN_BYTES, initialHeldSeats } from "@woco/shared/seating/plan";
+import { MAX_SEAT_PLAN_BYTES } from "@woco/shared/seating/plan";
 import { seatPlanTemplateOf } from "@woco/shared/seating/template";
 import { bandPricesMinor } from "@woco/shared/seating/series";
 import { SEAT_WORDS_PER_BATCH, seatBatch, seatWordCount, type SeatBatchRead, type SeatEventRead } from "@woco/shared/seating/chain";
 import type { ChainSeats } from "@woco/shared/seating/availability";
-import type { SeatStateView } from "@woco/shared/seating/state";
+import { seatStateView, type SeatStateView } from "@woco/shared/seating/state";
 import type { SeriesSeating } from "@woco/shared/event/types";
 import { buyerPlan, type BuyerPlan } from "./buyer.js";
 import { parsePlan } from "./parse.js";
@@ -187,7 +187,7 @@ export async function loadSeatMap(series: SeatMapSeries, deps: SeatMapDeps): Pro
   const bp = buyerPlan(plan, template.digest);
   const prices = bandPricesMinor(series.seating);
   const bandPrices = plan.bands.map((b) => prices.get(b.id) ?? null);
-  const organiser = deps.organiserState ? await deps.organiserState(bp) : { held: initialHeldSeats(plan), confirmed: new Map<number, number>() };
+  const organiser = deps.organiserState ? await deps.organiserState(bp) : seatStateView(plan, template.digest, null);
 
   // ── The live part ───────────────────────────────────────────────────────────
   const nWords = seatWordCount(bp.seats);

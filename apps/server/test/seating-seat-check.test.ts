@@ -12,6 +12,7 @@ import { freezeSeatPlan, initialHeldSeats, ticketSeatOf } from "@woco/shared/sea
 import type { SeatBatchRead } from "@woco/shared/seating/chain";
 import type { PaymentConfig } from "@woco/shared";
 import { checkSeats } from "../src/lib/seating/seat-check.js";
+import { seatStateView } from "@woco/shared/seating/state";
 
 const plan = freezeSeatPlan(LAYOUT_TEMPLATES.find((t) => t.id === "theatre")!.make());
 const n = plan.seats.length;
@@ -42,7 +43,7 @@ function read(over: { taken?: number[]; nonces?: Array<[number, bigint]>; drop?:
 }
 
 const check = (seats: number[], chain: SeatBatchRead, extra: { minted?: number[]; seating?: unknown } = {}) => checkSeats({
-  plan, planDigest: DIGEST, seating: extra.seating ?? seating, payment, seats, minted: new Set(extra.minted ?? []), chain,
+  plan, planDigest: DIGEST, seating: extra.seating ?? seating, payment, seats, minted: new Set(extra.minted ?? []), chain, organiser: seatStateView(plan, DIGEST, null),
 });
 
 test("free seats are held with the label, band and price pinned for checkout", () => {
@@ -88,7 +89,7 @@ test("a seat the plan keeps back, or one not on the plan, is refused", () => {
   const galaSeating = { bands: gala.bands.map((b) => ({ id: b.id, price: "20.00" })) };
   const r = checkSeats({
     plan: gala, planDigest: DIGEST, seating: galaSeating, payment: { ...payment, price: "20.00" },
-    seats: [kept[0]], minted: new Set(), chain: read({}, [kept[0]]),
+    seats: [kept[0]], minted: new Set(), chain: read({}, [kept[0]]), organiser: seatStateView(gala, DIGEST, null),
   });
   assert.ok(!r.ok);
   assert.deepEqual(r.conflicts, [kept[0]]);
@@ -130,7 +131,7 @@ test("feed prices that no longer cover the plan stop the sale", () => {
   assert.equal(r.conflicts, undefined, "the whole series is off sale, not one seat");
   // Every band priced, but the listed "from" price is not the lowest: re-signed, refused.
   const notLowest = checkSeats({
-    plan, planDigest: DIGEST, seating, payment: { ...payment, price: "99.00" }, seats, minted: new Set(), chain: read({}, seats),
+    plan, planDigest: DIGEST, seating, payment: { ...payment, price: "99.00" }, seats, minted: new Set(), chain: read({}, seats), organiser: seatStateView(plan, DIGEST, null),
   });
   assert.ok(!notLowest.ok);
   assert.match(notLowest.error, /not currently on sale/);

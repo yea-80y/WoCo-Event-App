@@ -47,6 +47,7 @@ function deps(over: Partial<import("../src/lib/seating/seated-reserve.js").Seate
     lookupOnChainEventId: () => ONCHAIN,
     noteChainCancelled: () => {},
     expireSession: async () => "expired" as const,
+    seatStateRead: async () => ({ status: "absent" as const }),
     ...over,
   };
 }
@@ -55,7 +56,8 @@ let n = 0;
 const args = (seats: number[], over: Record<string, unknown> = {}) => ({
   eventId: `e0000000-0000-4000-8000-00000000${String(++n).padStart(4, "0")}`, seriesId: "s0000000-0000-4000-8000-0000000005e5",
   seats, planDigest: DIGEST, series: { swarmManifestRef: "aa".repeat(32), seating, payment },
-  contract: LEDGER2, seatCap: { sawLiveSupply: () => {}, cap: () => 30 }, clientKey: `client-${n}`, ip: "203.0.113.7", ...over,
+  contract: LEDGER2, seatCap: { sawLiveSupply: () => {}, cap: () => 30 }, clientKey: `client-${n}`, ip: "203.0.113.7",
+  feedSigner: `0x${"fe".repeat(20)}`, ...over,
 });
 
 test("a hold answers with each seat's pinned price and the total checkout will charge", async () => {
@@ -111,6 +113,30 @@ test("a plan other than the pin says so; an unreadable chain is a 503 that holds
   assert.equal(changed.status, 409);
   assert.equal((changed.body as { code?: string }).code, "PLAN_CHANGED");
   const down = await mod.reserveSeated(args([1]), deps({ readSeatChain: async () => { throw new Error("rpc down"); } }));
+  assert.equal(down.status, 503);
+});
+
+test("the organiser's seat state is the hold check's: a held seat conflicts, a confirmed freed seat sells, unreadable is a 503", async () => {
+  const { buildSeatState } = await import("@woco/shared/seating/state");
+  const a = args([1, 2]);
+  const seen: unknown[] = [];
+  const state = buildSeatState({
+    eventId: a.eventId, seriesId: a.seriesId, planDigest: DIGEST, seats: plan.seats.length, holds: new Map([[2, "press"]]),
+    confirmed: new Map([[1, 3]]), seq: 2, updatedAt: "2026-11-04T00:00:00Z",
+  });
+  const freedChain = async (_c: unknown, _id: string, seats: readonly number[]) => ({ ...chain([...seats]), nonces: new Map(seats.map((k) => [k, k === 1 ? 3n : 0n])) });
+  const held = await mod.reserveSeated(a, deps({
+    readSeatChain: freedChain,
+    seatStateRead: async (x) => { seen.push(x); return { status: "found", state }; },
+  }));
+  assert.equal(held.status, 409);
+  assert.deepEqual((held.body as { conflicts?: number[] }).conflicts, [2], "seat 2 is a press hold; seat 1 was freed and confirmed at 3");
+  assert.deepEqual(seen, [{ eventId: a.eventId, seriesId: a.seriesId, signer: a.feedSigner, planDigest: DIGEST, seats: plan.seats.length }], "read under the carrier's signer");
+  const ok = await mod.reserveSeated(args([1]), deps({ readSeatChain: freedChain, seatStateRead: async () => ({ status: "found", state: { ...state, eventId: "x" } }) }));
+  assert.equal(ok.status, 200, "the gate already bound the state to the event: the reserve uses what it is given");
+  const unconfirmed = await mod.reserveSeated(args([1]), deps({ readSeatChain: freedChain }));
+  assert.equal(unconfirmed.status, 409, "no state: a freed seat waits for the organiser");
+  const down = await mod.reserveSeated(args([1]), deps({ seatStateRead: async () => ({ status: "unavailable", reason: "x" }) }));
   assert.equal(down.status, 503);
 });
 

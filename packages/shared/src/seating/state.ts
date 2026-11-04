@@ -1,10 +1,13 @@
 /**
  * A seated event's seat state (`woco.seatstate.v1`), the organiser-signed feed at
- * `eventSeatStateTopic(eventId)`, owned by the same feed signer as the event feed.
+ * `seatStateTopic(eventId, seriesId)`, owned by the same feed signer as the event feed.
  * Latest version wins. It carries what changes after publish; the seats do not:
  *
- * - `held`: seats kept back from sale, a bitmap over the plan's seats. Absent feed =
- *   the plan's own `h` flags (`initialHeldSeats`).
+ * - `holds`: seats kept back from sale, one bitmap per KIND of hold ("house seats",
+ *   "press"...), a seat in at most one. Kinds are a fixed list, never free text: the
+ *   feed is public, and a hold called after a sponsor or a fault would be public for
+ *   good. Buyers only ever see "unavailable". Absent feed = the plan's own `h` flags
+ *   (`initialHeldSeats`), read as house seats.
  * - `confirmed`: `[seat, seatNonce]` pairs. The ledger bumps a seat's `seatNonces`
  *   whenever a ticket leaves it (`_freeSeat`). The contract header asks every seat
  *   picker not to sell a seat an organiser-only move freed "until the account
@@ -12,33 +15,65 @@
  *   names that exact nonce. The organiser's dashboard writes it, signed by the feed
  *   signer - a different key from the organiser key a seat move is signed with - so a
  *   leaked organiser key alone cannot put a seat it emptied back on sale.
+ * - `eventId` + `seriesId`: which seated ticket type the state is for (one plan = one
+ *   seated series, and an event may have more than one). The plan digest alone is not
+ *   unique (a plan can be reused), and the server keys its memory on the series.
+ *
+ * - `digest`: written LAST, keccak256 over every other field (`seatStateDigest`). A paged
+ *   state retried at the same version keeps the pages that landed the first time (a SOC
+ *   at an existing address is a no-op), so a retry with different holds can seal a torn
+ *   mix that still parses (S6 sign-off F1). The digest makes any tear read as invalid:
+ *   the money path refuses it, and the next save starts from the last whole version.
  *
  * Bitmap encoding: lowercase hex of ceil(seats / 8) bytes; seat k is byte k >> 3,
  * bit (k & 7), least significant first. Bits at or past `seats` are zero. (Not the
- * ledger's `seatWord` layout, which packs 256 seats per uint256.)
+ * ledger's `seatWord` layout, which packs 256 seats per uint256.) An empty hold is
+ * left out, so a state names only the kinds in use.
  */
 
+import { keccak_256 } from "@noble/hashes/sha3.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { hasExactKeys, isIntIn, isPlainRecord } from "../validate.js";
 import { MAX_PLAN_SEATS } from "./layout.js";
 import { initialHeldSeats, type SeatPlan } from "./plan.js";
 
 export const SEAT_STATE_FORMAT = "woco.seatstate.v1";
 
+/** The kinds of hold, in the order a state lists them. Display names are the app's. */
+export const SEAT_HOLD_KINDS = ["house", "guest", "press", "access", "unavailable", "other"] as const;
+export type SeatHoldKind = (typeof SEAT_HOLD_KINDS)[number];
+/** What the plan's own held flags read as before the organiser writes a state. */
+export const PLAN_HOLD_KIND: SeatHoldKind = "house";
+
+export interface SeatHold {
+  kind: SeatHoldKind;
+  /** Bitmap of the seats in this hold; at least one bit set. */
+  held: string;
+}
+
 export interface SeatState {
   format: typeof SEAT_STATE_FORMAT;
+  eventId: string;
+  seriesId: string;
   /** The plan this state is for (its `seatPlanDigest`). */
   planDigest: string;
   seats: number;
-  held: string;
+  /** In `SEAT_HOLD_KINDS` order, each kind once, no seat in two. */
+  holds: SeatHold[];
   /** Ascending by seat, each seat once, nonce >= 1. */
   confirmed: [number, number][];
   /** Counts the organiser's writes; never goes down. */
   seq: number;
   updatedAt: string;
+  /** keccak256 of every other field (`seatStateDigest`); the last key written. */
+  digest: string;
 }
 
 const DIGEST_RE = /^0x[0-9a-f]{64}$/;
 const HEX_RE = /^[0-9a-f]*$/;
+/** As the event routes accept them (door-keys.ts, the ledger2 relay). */
+const EVENT_ID_RE = /^[0-9A-Za-z_-]{1,128}$/;
+const SERIES_ID_RE = /^[0-9A-Za-z_-]{1,100}$/;
 
 export const heldBytes = (seats: number) => Math.ceil(seats / 8);
 
@@ -72,15 +107,43 @@ function validHeld(hex: unknown, seats: number): hex is string {
   return (last >> tailBits) === 0;
 }
 
-/** Closed-schema check. With `expect`, also that it belongs to that plan. */
-export function validateSeatState(value: unknown, expect?: { planDigest: string; seats: number }): value is SeatState {
+/** Each hold well formed, in kind order, non-empty, and no seat in two of them. */
+function validHolds(holds: unknown, seats: number): boolean {
+  if (!Array.isArray(holds) || holds.length > SEAT_HOLD_KINDS.length) return false;
+  let prev = -1;
+  const union = new Uint8Array(heldBytes(seats));
+  for (const h of holds) {
+    if (!isPlainRecord(h) || !hasExactKeys(h, ["kind", "held"])) return false;
+    const order = SEAT_HOLD_KINDS.indexOf(h.kind as SeatHoldKind);
+    if (order <= prev) return false;
+    prev = order;
+    if (!validHeld(h.held, seats)) return false;
+    let any = false;
+    for (let i = 0; i < union.length; i++) {
+      const byte = parseInt(h.held.slice(i * 2, i * 2 + 2), 16);
+      if (byte & union[i]) return false;
+      union[i] |= byte;
+      if (byte) any = true;
+    }
+    if (!any) return false;
+  }
+  return true;
+}
+
+/** Closed-schema check. With `expect`, also that it belongs to that series and plan. */
+export function validateSeatState(
+  value: unknown,
+  expect?: { eventId: string; seriesId: string; planDigest: string; seats: number },
+): value is SeatState {
   if (!isPlainRecord(value)) return false;
-  if (!hasExactKeys(value, ["format", "planDigest", "seats", "held", "confirmed", "seq", "updatedAt"])) return false;
+  if (!hasExactKeys(value, ["format", "eventId", "seriesId", "planDigest", "seats", "holds", "confirmed", "seq", "updatedAt", "digest"])) return false;
   if (value.format !== SEAT_STATE_FORMAT) return false;
+  if (typeof value.eventId !== "string" || !EVENT_ID_RE.test(value.eventId)) return false;
+  if (typeof value.seriesId !== "string" || !SERIES_ID_RE.test(value.seriesId)) return false;
   if (typeof value.planDigest !== "string" || !DIGEST_RE.test(value.planDigest)) return false;
   if (!isIntIn(value.seats, 1, MAX_PLAN_SEATS)) return false;
   const seats = value.seats;
-  if (!validHeld(value.held, seats)) return false;
+  if (!validHolds(value.holds, seats)) return false;
   if (!Array.isArray(value.confirmed) || value.confirmed.length > seats) return false;
   let prev = -1;
   for (const pair of value.confirmed) {
@@ -91,46 +154,107 @@ export function validateSeatState(value: unknown, expect?: { planDigest: string;
   }
   if (!isIntIn(value.seq, 0, Number.MAX_SAFE_INTEGER)) return false;
   if (typeof value.updatedAt !== "string" || value.updatedAt.length > 40 || Number.isNaN(Date.parse(value.updatedAt))) return false;
-  if (expect && (value.planDigest !== expect.planDigest.toLowerCase() || seats !== expect.seats)) return false;
+  if (typeof value.digest !== "string" || value.digest !== seatStateDigest(value as unknown as Omit<SeatState, "digest">)) return false;
+  if (
+    expect &&
+    (value.eventId !== expect.eventId || value.seriesId !== expect.seriesId ||
+      value.planDigest !== expect.planDigest.toLowerCase() || seats !== expect.seats)
+  ) {
+    return false;
+  }
   return true;
 }
 
 export function buildSeatState(input: {
+  eventId: string;
+  seriesId: string;
   planDigest: string;
   seats: number;
-  held: Iterable<number>;
+  /** Seat -> its hold. */
+  holds: ReadonlyMap<number, SeatHoldKind>;
   confirmed: ReadonlyMap<number, number>;
   seq: number;
   updatedAt: string;
 }): SeatState {
-  const state: SeatState = {
+  const byKind = new Map<SeatHoldKind, number[]>();
+  for (const [k, kind] of input.holds) {
+    const list = byKind.get(kind) ?? [];
+    list.push(k);
+    byKind.set(kind, list);
+  }
+  // Key order is the wire order: the short fields first, so the first 4 KB page of a
+  // large state still names the series and `seq` (`seatStateWriteSignal`).
+  const body: Omit<SeatState, "digest"> = {
     format: SEAT_STATE_FORMAT,
+    eventId: input.eventId,
+    seriesId: input.seriesId,
     planDigest: input.planDigest.toLowerCase(),
     seats: input.seats,
-    held: encodeHeld(input.held, input.seats),
-    confirmed: [...input.confirmed].filter(([, n]) => n > 0).sort((a, b) => a[0] - b[0]),
     seq: input.seq,
     updatedAt: input.updatedAt,
+    holds: SEAT_HOLD_KINDS.filter((kind) => byKind.has(kind)).map((kind) => ({ kind, held: encodeHeld(byKind.get(kind)!, input.seats) })),
+    confirmed: [...input.confirmed].filter(([, n]) => n > 0).sort((a, b) => a[0] - b[0]),
   };
+  const state: SeatState = { ...body, digest: seatStateDigest(body) };
   if (!validateSeatState(state)) throw new Error("invalid seat state");
   return state;
 }
 
+/**
+ * `0x` + keccak256 of every field but `digest`, in a fixed order whatever order the keys
+ * were parsed in: what a torn paged write cannot reproduce.
+ */
+export function seatStateDigest(s: Omit<SeatState, "digest">): string {
+  const canonical = JSON.stringify([
+    s.format, s.eventId, s.seriesId, s.planDigest, s.seats, s.seq, s.updatedAt,
+    s.holds.map((h) => [h.kind, h.held]),
+    s.confirmed,
+  ]);
+  return `0x${bytesToHex(keccak_256(new TextEncoder().encode(canonical)))}`;
+}
+
+const SIGNAL_RE =
+  /^\{"format":"woco\.seatstate\.v1","eventId":"([0-9A-Za-z_-]{1,128})","seriesId":"([0-9A-Za-z_-]{1,100})","planDigest":"0x[0-9a-f]{64}","seats":[1-9]\d{0,5},"seq":(0|[1-9]\d{0,15}),/;
+
+/**
+ * What a relayed chunk says about a seat-state write about to land: the event and the
+ * new `seq`, read from the START of the payload - the whole state when it fits one
+ * chunk, else its first page (pages go up before the version's head, and the head of a
+ * paged state is a bare page count). Only `buildSeatState`'s key order matches. Null for
+ * anything else. A signal is a claim, not a state: the server only uses it to stop
+ * trusting OLDER reads for a short while.
+ */
+export function seatStateWriteSignal(payload: Uint8Array): { eventId: string; seriesId: string; seq: number } | null {
+  const head = new TextDecoder().decode(payload.subarray(0, 512));
+  const m = SIGNAL_RE.exec(head);
+  if (!m) return null;
+  const seq = Number(m[3]);
+  return Number.isSafeInteger(seq) ? { eventId: m[1], seriesId: m[2], seq } : null;
+}
+
 /** What the seat state says about each seat, with the plan's own flags when there is no state yet. */
 export interface SeatStateView {
+  /** Every held seat, whatever its hold. */
   held: ReadonlySet<number>;
+  /** Each held seat's kind of hold. */
+  holds: ReadonlyMap<number, SeatHoldKind>;
   confirmed: ReadonlyMap<number, number>;
 }
 
 /**
- * The view to sell from. `state` must already be validated against this plan; a
- * state for another plan is ignored (the plan's flags apply, nothing confirmed).
+ * The view to sell from. `state` must already be validated; a state for another plan is
+ * ignored here (the plan's flags apply, nothing confirmed). The buyer map takes that
+ * lenient reading; the server treats such a state as unreadable instead
+ * (`lib/seating/seat-state-gate.ts`).
  */
 export function seatStateView(plan: Pick<SeatPlan, "items" | "seats">, planDigest: string, state: SeatState | null): SeatStateView {
   if (!state || state.planDigest !== planDigest.toLowerCase() || state.seats !== plan.seats.length) {
-    return { held: initialHeldSeats(plan), confirmed: new Map() };
+    const held = initialHeldSeats(plan);
+    return { held, holds: new Map([...held].map((k) => [k, PLAN_HOLD_KIND])), confirmed: new Map() };
   }
-  return { held: decodeHeld(state.held, state.seats), confirmed: new Map(state.confirmed) };
+  const holds = new Map<number, SeatHoldKind>();
+  for (const h of state.holds) for (const k of decodeHeld(h.held, state.seats)) holds.set(k, h.kind);
+  return { held: new Set(holds.keys()), holds, confirmed: new Map(state.confirmed) };
 }
 
 /**
