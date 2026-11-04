@@ -8,7 +8,13 @@ import assert from "node:assert/strict";
 
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../src/lib/stripe/checkout-fees.js";
 import { readFileSync } from "node:fs";
-import { BUYER_FEE_FLOOR_PCT, COVER_FEE_RATES, headlinePrice, type PaymentConfig } from "@woco/shared";
+import { BUYER_FEE_FLOOR_PCT, COVER_FEE_RATES, headlinePrice, MIN_TICKET_PRICE, platformFeeMinor, type PaymentConfig } from "@woco/shared";
+
+// Allocated seating (S4 departure D3): one seat of the cheapest band a plan may price
+// already carries a fee our provenance check can prove, so no per-band check is needed.
+it("the minimum ticket price carries at least the minimum application fee, per seat", () => {
+  assert.ok(platformFeeMinor(MIN_TICKET_PRICE * 100) >= MIN_APPLICATION_FEE_MINOR);
+});
 
 describe("computeCardFees", () => {
   it("pass-through: buyer pays ticket × (1 + pct/100), platform takes 1.5% of subtotal", () => {

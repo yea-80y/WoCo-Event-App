@@ -1,6 +1,6 @@
 # Allocated seating
 
-Status (2026-11-03): S1, S2 and S3 built, the rest planned. Seated events stay off behind
+Status (2026-11-04): S1 to S4 built, S5 and S6 planned. Seated events stay off behind
 `seatedEventsAllowed` (`packages/shared/src/features.ts`, UI and server in lockstep) until every
 slice in "Build order" has shipped.
 
@@ -77,19 +77,32 @@ The event copy keeps the library plan id (read-only) so an organiser can see whe
 
 ## Selling a seat
 
-- **Reserve** names seat indices (at most `RESERVATION_MAX_QTY`). Under the per-series lock, in order:
-  index < registered supply; sellable in the pinned plan; not held; not in the server's own minted set
-  (a fresh chain read can lag); seat nonce confirmed (decision 5); chain bit clear; not in a live hold;
-  count <= remaining - held; the per-IP cap counts seats. A 409 returns the conflicting indices.
-- **Checkout** prices per seat: one Stripe line item per band, one order-level cover fee, application
-  fee on the subtotal (`cardOrderAmountsMulti` in `packages/shared/src/event/fees.ts`; rates stay in
-  `PRICING_AND_EMAIL.md`). The hold is extended to the Stripe session's expiry (>= 30 min), and a new
-  `checkout.session.expired` handler releases it early. Today a 10-minute hold can lapse while the buyer
-  is still on Stripe's page.
-- **Mint** `batchClaimSeatsBearer` from the server's reservation record only, never from Stripe
-  metadata or the client. No fallback when the reservation is missing, expired or consumed: refund.
-  `SeatTaken` and friends go through the existing failed-mint refund + email; never a substitute seat.
-  `SeatAssigned` from the receipt fills the sale record and the ticket email.
+As built (S4, Fable consult 2026-11-04, 61/61). Code: `server/lib/seating/{seated-reserve,seat-check,
+seat-reads,seated-checkout}.ts`, the seated half of `lib/event/reservation-store.ts`, `fulfilment.ts`.
+
+- **Reserve** `{ seats, planDigest }` for a series registered seated; refused for a plan other than the
+  pin. The plan is found through the manifest's `seatPlan.ref` and trusted only for the pinned digest.
+  ONE chain read (event views, the seats' words and nonces), then the buyer map's own rules plus our
+  minted seats (`ticket-sales.json`, a lagging replica's cover); under the series lock, no other live
+  hold, `count <= remaining - held`, the per-IP cap by seats. A 409 lists the conflicting seats. The
+  hold pins each seat's label, band and price; its reply (`SeatedHold`) is the only price a page shows.
+  The same browser asking for the same seats gets its hold back unchanged.
+- **One payable session per hold.** Checkout prices from the hold (refused if the feed's band prices
+  differ): one Stripe line per band, the cover fee one order line, our fee on the subtotal
+  (`cardOrderAmountsMulti`; rates stay in `PRICING_AND_EMAIL.md`). The session gets Stripe's floor
+  (30 min + 2 min skew); the hold runs to its `expires_at` + 5 min. A hold with an open session is never
+  released without closing that session at Stripe first (a new checkout, a new hold from the same
+  browser, the release route): `complete` = a sale, kept; Stripe unreachable = 503, nothing released.
+  At most 3 sessions per hold. `checkout.session.expired` ends the hold bound to that session id.
+- **Mint** from the hold record only: fulfilment claims it synchronously before its first await (bound
+  to this session, pinned plan, count = paid quantity) and keeps it in force while it mints (bounded,
+  20 min). A lapsed hold still mints if nobody else held or bought its seats. Anything else refunds in
+  full, never a substitute seat. One `batchClaimSeatsBearer`, all or nothing; each slot's seat is the
+  one asked beside its owner, checked against `SeatAssigned` when the receipt is in hand. Then the hold
+  is settled: minted, unresolved (kept off sale, #994), or not minted (seats back at once).
+- **Sale record** `seats[]` beside `slots` is the seat AT MINT; where a ticket sits now is `seatOf`.
+- **Health** `reservations`: hold file unreadable (seated sales paused), seated holds running out with
+  no expiry event seen, a seat recorded differently from the one asked.
 - **Refunded seats** keep their chain bit set: unsellable until reissue exists (#983 step 5). The map
   shows them unavailable.
 - **Door** pack carries `seats[]` beside `slotOwners` (from `seatOf`); the scanner refuses a seated
@@ -150,20 +163,21 @@ Each slice is one PR. Fable signs off S2 to S6 (server, CSP and cross-origin mes
    would meet the SOC relay's per-account limits. Until then reuse = templates, plus (next) "start from an
    earlier event's plan", which needs no new storage: those plans are already content-addressed.
 3. **S3 buyer map** (built; design consult 2026-11-03, Fable 68/68): see "The buyer map (S3)" below.
-4. **S4 money path**: per-seat holds, multi-band checkout (`cardOrderAmountsMulti` beside
-   `cardOrderAmounts`, reviewed with the checkout that uses it), hold extension + expiry handler, seated mint,
-   receipt parsing, revert decoding, seat in the sale record and email.
-5. **S5 door + tickets**: door pack `seats[]`, scanner refusal + label, seat on the passport and ticket page.
+4. **S4 money path** (built): see "Selling a seat". Hosts: `SeatedSeries` holds, the host page's
+   ClaimButton pays (`hold` prop); the embed widget holds from its frame and runs its own checkout.
+5. **S5 door + tickets**: door pack `seats[]`, scanner refusal + label, seat on the passport, the ticket
+   page and card, and on the #983 resend copy (a sealed frozen format, so moved here from S4).
 6. **S6 dashboard**: held / release, seat moves through the relay, confirm freed seats, relay refusals.
 
-Carried into later slices from the S1+S2 sign-off: S4 reads `isSeated` before recording a recovered
-registration (pending tx or intent marker) and refuses a mismatch; S4/S6 read `seatWord` and `seatNonces`
-in one multicall; S6 sizes seat-state writes against the SOC relay's per-account limits (a 200,000-seat
-state is ~50 KB).
+Carried into later slices from the S1+S2 sign-off: S6 sizes seat-state writes against the SOC relay's
+per-account limits (a 200,000-seat state is ~50 KB). (Done in S4: a recovered registration is recorded
+only if `isSeated` agrees; reserve reads words and nonces in one multicall.)
 
-Before the flag flips: scanner deploy, a site runtime release (organisers republish), the
-`onchain-events.json` rollback note for the new fields, `docs/legal/DATA_INVENTORY.md` + privacy-notice
-line (the seat is order data). The app's CSP already allows the map's RPC (`arb1.arbitrum.io`).
+Before the flag flips: scanner deploy, a site runtime release (organisers republish), a server deploy
+(embed `?v=25`), the `onchain-events.json` rollback note for the new fields, `checkout.session.expired`
+enabled on the connected-accounts webhook endpoint (health `reservations` goes red without it),
+`docs/legal/DATA_INVENTORY.md` + privacy-notice line (the seat is order data: holds, sale records,
+ticket email). The app's CSP already allows the map's RPC (`arb1.arbitrum.io`).
 
 ## The buyer map (S3)
 
@@ -208,11 +222,12 @@ storage layout is decided there; until then the plan's held flags); the picker r
 picks (`canPick` from the host serves S6's dashboard). Open: #1087 (the parse Worker is cross-origin on
 woco.eth.limo, so plans above 20,000 seats parse on the main thread there).
 
-S4 must (pinned by tests where marked):
-- hold by seat with `{ seats, planDigest }` and refuse a plan other than the pin
-  (`shared/seating/reserve.ts`, tested); fill `Reservation.seats`; dedupe a buyer's holds by seat set, not
-  quantity; lift the seated refusal on `/reserve` and create-checkout (`server/lib/seating/seated-sale.ts`);
-- pass `onhold` + the `checkout` snippet to SeatPicker; in the widget, send `canHold: true` and answer
-  `picked` with `hold` / `refused`;
-- extend the hold to the Stripe session's expiry and release it on `checkout.session.expired`;
-- never hold eagerly for a seated series (the hold is the buyer's "Hold" press).
+S4 met each of these (see "Selling a seat"): holds by seat on the pin, deduped by seat set; the seated
+refusal lifted behind the flag (`seated-sale.ts` is now the flag-off refusal, and the agent rail's);
+SeatPicker's `onhold` + `checkout`; the widget's `canHold: true` and `hold` / `refused`; the hold extended
+to the session and released on `checkout.session.expired`; no eager hold for a seated series.
+
+Departures from the S4 consult, for the S4 sign-off by name: D1 the fulfilment pin is bounded (20 min, so a
+process that dies mid-sale cannot hold seats for good); D2 no resale `rail` marker in checkout metadata yet
+(absent = primary works the same when #13 lands); D3 no per-band minimum-fee check at publish
+(`MIN_TICKET_PRICE` 1.00 already gives 2p of fee per seat); D4 the seat on the #983 resend copy moved to S5.
