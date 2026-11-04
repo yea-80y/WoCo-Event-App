@@ -254,7 +254,8 @@ test("the verify worker holds no keys and imports nothing that does", () => {
 test("bundles go through the verifier; a single read is still checked on the page", () => {
   const live = SRC("browser-orders-live.ts");
   assert.match(live, /parse: \(roots, body\) => verifier\.parse\(roots, body\),/);
-  assert.match(live, /new Worker\(new URL\("\.\/bundle-verify\.worker\.ts", import\.meta\.url\), \{ type: "module" \}\)/);
+  assert.match(live, /^import bundleVerifyWorkerUrl from "\.\/bundle-verify\.worker\.ts\?worker&url";$/m);
+  assert.match(live, /return startModuleWorker\(bundleVerifyWorkerUrl\) as unknown as VerifierPort;/);
   assert.match(live, /return \{ \.\.\.boxFromBytes\(root, bytes\), budget \};/);
 });
 

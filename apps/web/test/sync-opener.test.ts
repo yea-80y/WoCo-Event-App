@@ -193,7 +193,7 @@ test("unbound while opening on the page: no further step is opened, locked, keys
 test("wiring: the sync's own pool, at most SYNC_POOL_MAX workers, the dashboard's worker code", () => {
   assert.equal(SYNC_POOL_MAX, 2);
   const live = readFileSync(new URL("../src/lib/creator/audience/sync-live.ts", import.meta.url), "utf-8");
-  assert.match(live, /new OrderOpenerPool\([\s\S]*?order-opener\.worker\.ts[\s\S]*?\(\) => Math\.min\(SYNC_POOL_MAX, poolWidth\(jobs, navigator\.hardwareConcurrency\)\)/);
+  assert.match(live, /new OrderOpenerPool\(\s*liveOrderOpenerWorker,\s*\(\) => Math\.min\(SYNC_POOL_MAX, poolWidth\(jobs, navigator\.hardwareConcurrency\)\)/);
   assert.match(live, /orderSealContext\(eventId, seriesId\)/, "page opening bound to the event and the slot's series");
 });
 

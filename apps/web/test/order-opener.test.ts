@@ -256,7 +256,16 @@ test("Dashboard: the worker's keys belong to one signed-in account (security rev
   );
   const locked = DASH.slice(DASH.indexOf("    if (!secrets) {\n      // No keys"), DASH.indexOf("    ordersLocked = false;"));
   assert.match(locked, /endOpening\(\);/, "no keys on the device now: nothing opened earlier survives");
-  assert.match(DASH, /new Worker\(new URL\("\.\/order-opener\.worker\.ts", import\.meta\.url\), \{ type: "module" \}\)/);
+  assert.match(DASH, /new OrderOpenerPool\(\s*liveOrderOpenerWorker,/);
+});
+
+test("the opening worker starts through the shared starter, from its URL only (#1087)", () => {
+  const live = readFileSync(new URL("../src/lib/creator/dashboard/browser-orders-live.ts", import.meta.url), "utf-8");
+  assert.match(live, /^import orderOpenerWorkerUrl from "\.\/order-opener\.worker\.ts\?worker&url";$/m);
+  assert.match(
+    live,
+    /export function liveOrderOpenerWorker\(\): OpenerPort \{\s*return startModuleWorker\(orderOpenerWorkerUrl\) as unknown as OpenerPort;\s*\}/,
+  );
 });
 
 test("the worker only wires the core: no storage, no channels", () => {
@@ -515,7 +524,7 @@ test("pool: with every worker gone the step is unavailable, and so is every late
 test("Dashboard: opens through the pool, sized from the list on screen at each unlock", () => {
   assert.match(
     DASH,
-    /new OrderOpenerPool\(\s*\(\) =>\s*new Worker\(new URL\("\.\/order-opener\.worker\.ts", import\.meta\.url\), \{ type: "module" \}\) as unknown as OpenerPort,\s*\/\/[^\n]*\n\s*\(\) => poolWidth\(ordersResponse\?\.orders\.length \?\? 0, navigator\.hardwareConcurrency\),/,
+    /new OrderOpenerPool\(\s*liveOrderOpenerWorker,\s*\/\/[^\n]*\n\s*\(\) => poolWidth\(ordersResponse\?\.orders\.length \?\? 0, navigator\.hardwareConcurrency\),/,
   );
   assert.doesNotMatch(DASH, /new OrderOpener\(/, "no single-worker path left beside the pool");
 });

@@ -27,10 +27,10 @@
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
   import { OpenedOrders, ORDERS_POLL_MS, RunQueue, createOrdersPoller, orderSlotKey } from "./live-orders.js";
   import { BrowserOrders, OrdersStatusUnavailable } from "./browser-orders.js";
-  import { canReadLedger, liveBrowserOrdersDeps, liveBundleVerifier, liveGatewayFetcher } from "./browser-orders-live.js";
+  import { canReadLedger, liveBrowserOrdersDeps, liveBundleVerifier, liveGatewayFetcher, liveOrderOpenerWorker } from "./browser-orders-live.js";
   import type { BundleVerifier } from "./bundle-verifier.js";
   import { DetailQueue, type DetailState } from "./detail-queue.js";
-  import { OrderOpenerPool, poolWidth, type OpenerPort } from "./order-opener.js";
+  import { OrderOpenerPool, poolWidth } from "./order-opener.js";
   import { registerForeground } from "./gateway-share.js";
   import { DETAIL_CSV, listGate, rowDetail, shortfall, type RowDetail } from "./list-completeness.js";
   import { withoutSealedOrders } from "../../api/orders-cache.js";
@@ -612,8 +612,7 @@
         typeof Worker === "undefined"
           ? null
           : new OrderOpenerPool(
-              () =>
-                new Worker(new URL("./order-opener.worker.ts", import.meta.url), { type: "module" }) as unknown as OpenerPort,
+              liveOrderOpenerWorker,
               // Sized at each unlock, from the list then on screen.
               () => poolWidth(ordersResponse?.orders.length ?? 0, navigator.hardwareConcurrency),
             );

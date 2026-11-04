@@ -6,11 +6,11 @@
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import { getEventOrders } from "../../api/events.js";
 import { BrowserOrders } from "../dashboard/browser-orders.js";
-import { canReadLedger, liveBrowserOrdersDeps, liveBundleVerifier, liveGatewayFetcher } from "../dashboard/browser-orders-live.js";
+import { canReadLedger, liveBrowserOrdersDeps, liveBundleVerifier, liveGatewayFetcher, liveOrderOpenerWorker } from "../dashboard/browser-orders-live.js";
 import type { BundleVerifier } from "../dashboard/bundle-verifier.js";
 import { DetailQueue } from "../dashboard/detail-queue.js";
 import { foregroundBusy } from "../dashboard/gateway-share.js";
-import { OrderOpenerPool, poolWidth, type OpenerPort } from "../dashboard/order-opener.js";
+import { OrderOpenerPool, poolWidth } from "../dashboard/order-opener.js";
 import type { SyncOrder } from "./audience-sync.js";
 import type { DecryptedClaim } from "./attendee-drain.js";
 import { SYNC_POOL_MAX, SyncOpener } from "./sync-opener.js";
@@ -58,7 +58,7 @@ export function syncOpener(deps: { bound(): boolean; keys(): Promise<Uint8Array[
       typeof Worker === "undefined"
         ? null
         : new OrderOpenerPool(
-            () => new Worker(new URL("../dashboard/order-opener.worker.ts", import.meta.url), { type: "module" }) as unknown as OpenerPort,
+            liveOrderOpenerWorker,
             () => Math.min(SYNC_POOL_MAX, poolWidth(jobs, navigator.hardwareConcurrency)),
           ),
     async openOnPage(keys: Uint8Array[], box: SealedBoxV2, eventId: string, seriesId: string) {
