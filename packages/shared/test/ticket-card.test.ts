@@ -118,7 +118,8 @@ test("everything sits inside the card, and the QR clears the dash and the captio
       assert.ok(qr.y > dash.y, "QR below the tear line");
       assert.ok(qr.y + qr.size < firstCaption.y - firstCaption.size, "QR above the captions");
       assert.ok(qr.x >= 0 && qr.x + qr.size <= TICKET_CARD_WIDTH);
-      assert.ok(qr.size >= 420, "the QR stays large enough to scan");
+      // A seated card gives the photo's height to its seat band, so the QR stays near full size.
+      assert.ok(qr.size >= (hasPhoto ? 480 : 500), `QR ${qr.size} px`);
     }
   }
 });

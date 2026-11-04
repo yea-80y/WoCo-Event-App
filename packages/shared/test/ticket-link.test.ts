@@ -143,7 +143,12 @@ test("an edited seat that does not make a valid one shows no seat, and never cos
 test("a long link gives up series, location, date and image before the seat, and the seat before the title", () => {
   const seat = { area: "Rear stalls", row: "D", seat: 7 };
   const full = { title: "Rooftop Sessions", location: "l".repeat(400), series: "s".repeat(400), image: IMAGE, date: "2026-10-12T21:00:00Z", seat };
-  const parsed = parseTicketFragment(new URL(buildTicketLink("https://woco.eth.limo", TICKET, full)).hash)!;
+  // A ticket part long enough that the display text must give way.
+  const long = { ...TICKET, seriesId: "x".repeat(560) };
+  const link = buildTicketLink("https://woco.eth.limo", long, full);
+  assert.ok(link.length <= TICKET_LINK_MAX_CHARS);
+  const parsed = parseTicketFragment(new URL(link).hash)!;
+  assert.equal(parsed.display.series, undefined, "series went first");
   assert.deepEqual(parsed.display.seat, seat);
   assert.equal(parsed.display.title, "Rooftop Sessions");
   const tight = parseTicketFragment(new URL(buildTicketLink("https://woco.eth.limo", { ...TICKET, seriesId: "x".repeat(700) }, { title: "t".repeat(80), seat })).hash)!;

@@ -35,6 +35,8 @@ interface Model {
   seated: boolean | "revert";
   /** Slots whose calls fail inside an otherwise good batch. */
   failSlots?: Set<number>;
+  /** Slots whose seat call alone fails. */
+  failSeatSlots?: Set<number>;
   down?: boolean;
   noBlock?: boolean;
 }
@@ -50,6 +52,7 @@ function chain(m: Model) {
       if (c.target === "0x0000000000000000000000000000000000000064") return m.noBlock ? null : word(m.block);
       if (sel === "b2db691d") return m.seated === "revert" ? null : word(m.seated ? 1n : 0n);
       if (m.failSlots?.has(slot)) return null;
+      if (sel === "4eb29918" && m.failSeatSlots?.has(slot)) return null;
       if (sel === "17e7f2ff") return addressWord(m.owners[slot] ?? "0x0");
       if (sel === "4eb29918") return word(m.seats[slot] ?? LEDGER2_NO_SEAT);
       return null;
@@ -115,11 +118,31 @@ test("a batch with no block is dropped whole: unread, never 'no ticket'", async 
   assert.equal(r.seated, null);
 });
 
-test("a slot whose seat call failed is unread, not seatless", async () => {
+test("a slot whose calls failed is unread, not seatless", async () => {
   const c = chain({ block: 10n, owners: { 0: A, 1: B }, seats: { 0: 1n, 1: 2n }, seated: true, failSlots: new Set([1]) });
   const r = await readSlotStates(LEDGER, EVENT, 2, { seats: true, supply: 2 }, c.call, () => 1_000);
   assert.deepEqual(r.owners, [A, null]);
   assert.deepEqual(r.seats, [1, null]);
+});
+
+test("a slot whose SEAT call alone failed is unread as a whole: an owner with no seat is never a pair", async () => {
+  const c = chain({ block: 10n, owners: { 0: A, 1: B }, seats: { 0: 1n, 1: 2n }, seated: true, failSeatSlots: new Set([1]) });
+  const r = await readSlotStates(LEDGER, EVENT, 2, { seats: true, supply: 2 }, c.call, () => 1_000);
+  assert.deepEqual(r.owners, [A, null]);
+  assert.deepEqual(r.seats, [1, null]);
+});
+
+test("a lagging answer inside the cache window is asked again on the next pack, not left for the window", async () => {
+  let t = 1_000;
+  const m: Model = { block: 20n, owners: { 0: B }, seats: { 0: 4n }, seated: true };
+  const c = chain(m);
+  await readSlotStates(LEDGER, EVENT, 1, { seats: true, supply: 1 }, c.call, () => t);
+  t += OWNER_CACHE_MS;
+  Object.assign(m, { block: 19n, owners: { 0: A } }); // the full re-read hits a replica behind us
+  assert.deepEqual((await readSlotStates(LEDGER, EVENT, 1, { seats: true, supply: 1 }, c.call, () => t)).owners, [B]);
+  Object.assign(m, { block: 21n, owners: { 0: A } }); // the ticket really moved, at block 21
+  t += 1_000; // inside the new window
+  assert.deepEqual((await readSlotStates(LEDGER, EVENT, 1, { seats: true, supply: 1 }, c.call, () => t)).owners, [A]);
 });
 
 test("a lagging replica cannot roll a moved seat or a transferred owner back", async () => {
