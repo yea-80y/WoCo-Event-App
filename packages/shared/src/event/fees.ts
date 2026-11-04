@@ -137,6 +137,52 @@ export function cardOrderAmounts(payment: FeeSettings, unitMinor: number, quanti
   };
 }
 
+export interface CardOrderAmountsMulti {
+  mode: BookingFeeMode;
+  /** Percent mode only; 0 otherwise. */
+  feePercent: number;
+  /** Per ticket, aligned with the input: its price plus, in percent mode, its own rounded fee. */
+  chargeMinor: number[];
+  /** Ticket prices only. */
+  subtotalMinor: number;
+  /** Separate order-level "Booking fee" line in cover mode; 0 otherwise. */
+  orderFeeMinor: number;
+  /** All booking fee in the order, either mode. */
+  bookingFeeMinor: number;
+  /** What the buyer pays. */
+  totalMinor: number;
+  applicationFeeMinor: number;
+}
+
+/**
+ * `cardOrderAmounts` for tickets at different prices (allocated seating: one price per
+ * band). The same rules: percent mode rounds each ticket's fee and folds it into that
+ * ticket, cover mode is one order-level fee on the subtotal, our fee is on the subtotal.
+ * With every price equal it is exactly `cardOrderAmounts` (test/event/fees.test.ts).
+ * Throws on no tickets or a price that is not a whole number of minor units.
+ */
+export function cardOrderAmountsMulti(payment: FeeSettings, unitMinors: readonly number[]): CardOrderAmountsMulti {
+  if (unitMinors.length === 0 || !unitMinors.every((u) => Number.isSafeInteger(u) && u >= 0)) {
+    throw new RangeError("card order needs one or more whole, non-negative prices");
+  }
+  const mode = bookingFeeMode(payment);
+  const feePercent = bookingFeePercent(payment);
+  const chargeMinor = unitMinors.map((u) => u + Math.round((u * feePercent) / 100));
+  const subtotal = unitMinors.reduce((s, u) => s + u, 0);
+  const charged = chargeMinor.reduce((s, c) => s + c, 0);
+  const orderFee = mode === "cover" ? coverFeeMinor(subtotal, payment.coverFees!) : 0;
+  return {
+    mode,
+    feePercent,
+    chargeMinor,
+    subtotalMinor: subtotal,
+    orderFeeMinor: orderFee,
+    bookingFeeMinor: charged - subtotal + orderFee,
+    totalMinor: charged + orderFee,
+    applicationFeeMinor: platformFeeMinor(subtotal),
+  };
+}
+
 export interface HeadlinePrice {
   /** One ticket, booking fee included, in major units. */
   amount: number;
