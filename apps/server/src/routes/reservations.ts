@@ -197,6 +197,7 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   if (seating && seatReq) {
     const r = await reserveSeated({
       eventId, seriesId, seats: seatReq.seats, planDigest: seating.planDigest, series, contract, seatCap,
+      feedSigner: keyVerdict.keys.feedSigner,
       replaceReservationId, clientKey, ip,
     });
     return c.json(r.body, r.status);

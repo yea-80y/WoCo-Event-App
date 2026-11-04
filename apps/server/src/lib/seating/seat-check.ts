@@ -11,7 +11,7 @@ import { SEAT_FREE, seatStates, type ChainSeats } from "@woco/shared/seating/ava
 import type { SeatBatchRead } from "@woco/shared/seating/chain";
 import { formatSeatLabel, seatLabel, ticketSeatOf, type SeatPlan } from "@woco/shared/seating/plan";
 import { bandPricesMinor, seriesSeatingRefusal } from "@woco/shared/seating/series";
-import { seatStateView } from "@woco/shared/seating/state";
+import type { SeatStateView } from "@woco/shared/seating/state";
 import type { SeriesSeating } from "@woco/shared";
 import type { SeatedHoldSeat, SeatVerify } from "../event/reservation-store.js";
 
@@ -28,6 +28,8 @@ export function checkSeats(input: {
   seats: readonly number[];
   minted: ReadonlySet<number>;
   chain: SeatBatchRead;
+  /** The organiser's seat state for this plan (`seat-state-gate.ts`), or the plan's flags. */
+  organiser: SeatStateView;
 }): SeatVerify {
   const { plan, seats, chain } = input;
   const n = plan.seats.length;
@@ -55,9 +57,7 @@ export function checkSeats(input: {
     blockTs: ev.blockTs,
     nonces: chain.nonces,
   };
-  // The organiser's seat-state feed arrives with S6; until then the plan's own held
-  // flags, and nothing confirmed, so a freed seat (nonce > 0) never sells.
-  const states = seatStates(plan, { chain: read, organiser: seatStateView(plan, input.planDigest, null), onHold: [], bandPrices });
+  const states = seatStates(plan, { chain: read, organiser: input.organiser, onHold: [], bandPrices });
   if (states.sale === "cancelled") return { ok: false, status: 409, error: "This event has been cancelled" };
   if (states.sale === "closed") return { ok: false, status: 409, error: "Ticket sales for this event have closed" };
   if (states.sale === "sold-out") return { ok: false, status: 409, error: "Sold out" };
