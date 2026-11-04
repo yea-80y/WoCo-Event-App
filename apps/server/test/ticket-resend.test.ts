@@ -22,6 +22,8 @@ import type { EmailFailure } from "../src/lib/email/failure-ledger.js";
 import type { TicketSale } from "../src/lib/stripe/ticket-sales.js";
 import type { TicketEmailOpts } from "../src/routes/tickets.js";
 import { ticketQrHash, TicketHoldUnreadableError, type TicketHold } from "../src/lib/ticket-hold/store.js";
+import type { CurrentSeats } from "../src/lib/seating/ticket-seats.js";
+import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
 import {
   heldCopy,
   listUndelivered,
@@ -55,6 +57,8 @@ interface World {
   feed: EventFeed | null;
   recordFails: boolean;
   suppressionUnreadable: boolean;
+  /** Allocated seating: where the sale's slots sit now. */
+  seats: CurrentSeats;
 }
 
 function world(): World {
@@ -78,6 +82,7 @@ function world(): World {
     recordFails: false,
     suppressionUnreadable: false,
     feed: { title: "Warehouse Party", startDate: "2026-11-01T20:00:00Z", location: "London", series: [{ seriesId: SERIES, name: "General", totalSupply: 100 }], creatorAddress: FEED_CREATOR } as unknown as EventFeed,
+    seats: { kind: "unseated" },
   };
 }
 
@@ -95,6 +100,7 @@ function fakes(w: World) {
   const resolved: Array<{ id: string; by: string; sentTo: { hash: string; address?: string } }> = [];
   const door: Array<{ tickets: Array<{ seriesId: string; edition: number }>; who: { email?: string; buyerName?: string } }> = [];
   const attendees: string[] = [];
+  const seatAsks: number[][] = [];
   const deps: ResendDeps = {
     eventKeys: async () => w.keys,
     getSale: (sid) => (w.sale?.sessionId === sid ? w.sale : undefined),
@@ -118,6 +124,10 @@ function fakes(w: World) {
     suppressionUnreadable: () => w.suppressionUnreadable,
     getSiteTheme: async (siteId, eventId) => (siteId === "site-1" && eventId === EVENT ? { palette: { accent: "#ff0055" } as never, contactEmail: "hello@venue.example" } : null),
     getEvent: async () => w.feed,
+    currentSeats: async (a) => {
+      seatAsks.push([...a.slots]);
+      return w.seats;
+    },
     sendTicketEmail: async (opts) => {
       if (w.sendFails) throw Object.assign(new Error("MessageRejected: x@y.com"), { ledgered: true });
       sent.push(opts);
@@ -149,7 +159,7 @@ function fakes(w: World) {
     },
     now: () => NOW,
   };
-  return { deps, sent, resends, resolved, door, attendees };
+  return { deps, sent, resends, resolved, door, attendees, seatAsks };
 }
 
 const goodBody = (to = "buyer@example.com") => ({ to, tickets: [1, 2].map((edition) => ({ edition, qrContent: qr(edition) })) });
@@ -494,4 +504,60 @@ test("step 4: the name the organiser types goes to the door list, trimmed and bo
   const plain = fakes(world());
   await resendTickets(plain.deps, EVENT, SALE, ORGANISER, { ...goodBody(), buyerName: 42 });
   assert.deepEqual(plain.door[0]!.who, { email: "buyer@example.com" }, "no name, no name field");
+});
+
+// ── Allocated seating (S5) ──────────────────────────────────────────────────
+
+const D7: TicketSeat = { area: "Stalls", row: "D", seat: 7 };
+const D8: TicketSeat = { area: "Stalls", row: "D", seat: 8 };
+
+test("seated: the resend prints each ticket's seat NOW, read for exactly its slots", async () => {
+  const w = world();
+  w.seats = { kind: "seats", seats: new Map<number, TicketSeat | "none">([[0, D7], [1, D8]]) };
+  const f = fakes(w);
+  const v = await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody());
+  assert.ok(v.ok);
+  assert.deepEqual(f.sent[0]!.tickets.map((t) => t.seat), [D7, D8]);
+  assert.deepEqual(f.seatAsks, [[0, 1]]);
+});
+
+test("seated: a ticket with no seat now is refused - nothing sent, nothing recorded", async () => {
+  const w = world();
+  w.seats = { kind: "seats", seats: new Map<number, TicketSeat | "none">([[0, D7], [1, "none"]]) };
+  const f = fakes(w);
+  const v = await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody());
+  assert.ok(!v.ok && v.status === 409 && v.code === "TICKET_HAS_NO_SEAT");
+  assert.equal(f.sent.length, 0);
+  assert.equal(f.resends.length, 0);
+});
+
+test("seated: seats that cannot be read refuse with 503, never a stale seat or none", async () => {
+  const w = world();
+  w.seats = { kind: "unreadable" };
+  const f = fakes(w);
+  const v = await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody());
+  assert.ok(!v.ok && v.status === 503 && v.code === "SEATS_UNREADABLE");
+  assert.equal(f.sent.length, 0);
+  assert.equal(f.resends.length, 0, "the cap is not spent on a refusal");
+});
+
+test("general admission resends carry no seat", async () => {
+  const f = fakes(world());
+  await resendTickets(f.deps, EVENT, SALE, ORGANISER, goodBody());
+  assert.equal(f.sent[0]!.tickets.some((t) => "seat" in t), false);
+});
+
+test("the undelivered list shows each ticket's seat; an unreadable seat is null, never a failed list", async () => {
+  const w = world();
+  w.seats = { kind: "seats", seats: new Map<number, TicketSeat | "none">([[0, D7], [1, "none"]]) };
+  const v = await listUndelivered(fakes(w).deps, EVENT, ORGANISER);
+  assert.ok(v.ok);
+  assert.deepEqual(v.data[0]!.seats, [D7, null]);
+  w.seats = { kind: "unreadable" };
+  const down = await listUndelivered(fakes(w).deps, EVENT, ORGANISER);
+  assert.ok(down.ok);
+  assert.deepEqual(down.data[0]!.seats, [null, null]);
+  w.seats = { kind: "unseated" };
+  const ga = await listUndelivered(fakes(w).deps, EVENT, ORGANISER);
+  assert.ok(ga.ok && !("seats" in ga.data[0]!));
 });

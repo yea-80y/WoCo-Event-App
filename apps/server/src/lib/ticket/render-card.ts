@@ -19,6 +19,7 @@
 import { fileURLToPath } from "node:url";
 import { renderAsync, type ResvgRenderOptions } from "@resvg/resvg-js";
 import type { SitePalette } from "@woco/shared";
+import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
 import {
   TICKET_CARD_HEIGHT,
   TICKET_CARD_WIDTH,
@@ -46,6 +47,8 @@ export interface TicketCardData {
   palette?: SitePalette;
   /** The event photo, when it could be read. */
   photo?: EventPhoto | null;
+  /** Allocated seating: the seat it was issued in. */
+  seat?: TicketSeat;
 }
 
 /** Sharp on a phone, small enough to attach a group order's worth. */
@@ -87,6 +90,7 @@ export async function renderTicketCardPng(data: TicketCardData): Promise<Buffer>
     location: data.eventLocation,
     series: data.seriesName,
     position: data.position ?? undefined,
+    seat: data.seat,
     hasPhoto: !!data.photo,
     colours,
   });

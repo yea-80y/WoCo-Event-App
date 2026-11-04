@@ -46,7 +46,8 @@ import { marketingFromMetadata } from "../marketing/checkout-choice.js";
 import type { TicketEmailOpts } from "../../routes/tickets.js";
 import { contractKey, type EventContractTarget } from "../chain/event-contract.js";
 import type { SaleContract } from "../event/onchain-registry.js";
-import type { SeatedClaim } from "../event/reservation-store.js";
+import type { SeatedClaim, SeatedHoldSeat } from "../event/reservation-store.js";
+import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -457,7 +458,7 @@ export async function fulfilPaidSession(
   } catch (err) {
     console.error("[fulfilment] seating lookup threw — continuing as general admission:", err);
   }
-  let seated: { seats: number[]; labels: Map<number, string> } | null = null;
+  let seated: SeatedMint | null = null;
   let seatedStop: string | null = null;
   /** This sale holds the claim: it settles the hold whatever happens next. */
   let seatedClaimed = false;
@@ -474,7 +475,7 @@ export async function fulfilPaidSession(
     if (!claim.ok) seatedStop = `Seats not sold: ${claim.reason} — refunding`;
     else if (claim.planDigest.toLowerCase() !== seatingPin.planDigest.toLowerCase()) seatedStop = "Seats not sold: the seating plan changed — refunding";
     // The count against the payment is mintV2's check (one call, all or nothing).
-    else seated = { seats: claim.seats, labels: new Map(claim.seats.map((k, i) => [k, claim.seatInfo?.[i]?.label ?? ""])) };
+    else seated = { seats: claim.seats, labels: new Map(claim.seats.map((k, i) => [k, claim.seatInfo?.[i] ?? null])) };
     if (seatedStop) console.error(`[fulfilment] ${session.id}: ${seatedStop}`);
   }
 
@@ -771,7 +772,7 @@ export async function fulfilPaidSession(
     );
   }
 
-  const claimedResults: Array<{ edition: number; qrContent: string; seatLabel?: string }> = [];
+  const claimedResults: ClaimedTicket[] = [];
   let stoppedReason: string | null = bindingStopReason ?? seatedStop;
   /** Whether the signed-in buyer's first ticket landed in their account (#582). */
   let accountClaimBound = false;
@@ -1275,11 +1276,20 @@ interface MintV2Args {
   retainMonths: number | undefined;
   accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
-  claimedResults: Array<{ edition: number; qrContent: string; seatLabel?: string }>;
+  claimedResults: ClaimedTicket[];
   /** Allocated seating: burner i is minted in `seats[i]`, from the claimed hold. */
-  seated?: { seats: number[]; labels: Map<number, string> };
+  seated?: SeatedMint;
   setStopped(reason: string): void;
 }
+
+/** A seated sale's seats, and each one as the hold pinned it (label and parts). */
+interface SeatedMint {
+  seats: number[];
+  labels: Map<number, SeatedHoldSeat | null>;
+}
+
+/** One minted ticket, as the ticket email gets it. `seat`: the seat it was issued in. */
+type ClaimedTicket = { edition: number; qrContent: string; seatLabel?: string; seat?: TicketSeat };
 
 /**
  * The on-chain rail. Every KNOWN failure sets a stop reason and returns — the
@@ -1398,8 +1408,13 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean; unre
     //   recovered = ecrecover(personalHash(canonical), ticketSig)
     //   require(recovered == slotOwner[onChainEventId][edition - 1])
     const qrContent = `woco://t/${eventId}/${seriesId}/${edition}/${ticketSig}`;
-    const seatLabel = a.seated ? a.seated.labels.get(seatsForBurners[i]) : undefined;
-    claimedResults.push({ edition, qrContent, ...(seatLabel ? { seatLabel } : {}) });
+    const pinned = a.seated?.labels.get(seatsForBurners[i]) ?? null;
+    claimedResults.push({
+      edition,
+      qrContent,
+      ...(pinned?.label ? { seatLabel: pinned.label } : {}),
+      ...(pinned?.ticketSeat ? { seat: pinned.ticketSeat } : {}),
+    });
   }
   // burners[] goes out of scope here — private keys are unreferenced
   // and eligible for garbage collection.

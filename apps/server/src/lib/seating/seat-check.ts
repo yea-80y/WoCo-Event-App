@@ -9,7 +9,7 @@
 import type { PaymentConfig } from "@woco/shared";
 import { SEAT_FREE, seatStates, type ChainSeats } from "@woco/shared/seating/availability";
 import type { SeatBatchRead } from "@woco/shared/seating/chain";
-import { formatSeatLabel, seatLabel, type SeatPlan } from "@woco/shared/seating/plan";
+import { formatSeatLabel, seatLabel, ticketSeatOf, type SeatPlan } from "@woco/shared/seating/plan";
 import { bandPricesMinor, seriesSeatingRefusal } from "@woco/shared/seating/series";
 import { seatStateView } from "@woco/shared/seating/state";
 import type { SeriesSeating } from "@woco/shared";
@@ -70,9 +70,10 @@ export function checkSeats(input: {
   for (const k of seats) {
     const band = plan.bands[plan.seats[k].b];
     const label = seatLabel(plan, k);
+    const ticketSeat = ticketSeatOf(plan, k);
     const price = bandPrices[plan.seats[k].b];
-    if (!band || !label || price === null) return { ok: false, status: 409, error: SEATS_NOT_ON_SALE };
-    out.push({ band: band.id, bandName: band.name, label: formatSeatLabel(label), priceMinor: price });
+    if (!band || !label || !ticketSeat || price === null) return { ok: false, status: 409, error: SEATS_NOT_ON_SALE };
+    out.push({ band: band.id, bandName: band.name, label: formatSeatLabel(label), ticketSeat, priceMinor: price });
   }
   return { ok: true, remaining: Number(ev.remaining), seats: out };
 }
