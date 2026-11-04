@@ -79,17 +79,8 @@ import { alreadyApplied, noteApplied, reconcileChargeEvent } from "../lib/stripe
 import { liveSaleRefundReads } from "../lib/stripe/sale-refunds-live.js";
 import { liveFulfilmentDeps } from "../lib/stripe/fulfilment-live.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
-import {
-  bindCheckout,
-  getReservation,
-  MAX_SESSIONS_PER_HOLD,
-  releaseForExpiredSession,
-  reservationsPersisting,
-  SEAT_SALES_PAUSED,
-  type Reservation,
-} from "../lib/event/reservation-store.js";
-import { seatedCheckoutLines, seatedPriceRefusal } from "../lib/seating/seated-checkout.js";
-import { expireCheckoutSession } from "../lib/stripe/checkout-session-expire.js";
+import { getReservation, releaseForExpiredSession, reservationsPersisting, type Reservation } from "../lib/event/reservation-store.js";
+import { openSeatedSession, seatedCheckoutLines, seatedCheckoutRefusal } from "../lib/seating/seated-checkout.js";
 import { FEATURES } from "@woco/shared";
 import { validateReturnUrl, getFrontendUrl } from "../lib/stripe/return-url.js";
 import { checkoutRedirectUrls } from "../lib/stripe/checkout-urls.js";
@@ -904,15 +895,10 @@ stripe.post("/create-checkout", async (c) => {
     const flagOff = FEATURES.seatedEventsAllowed ? null : seatedSaleRefusal(eventId, seriesId);
     if (flagOff) return c.json(flagOff.body, flagOff.status);
     const held = reservationId ? getReservation(reservationId) : null;
-    if (!held?.seats || !held.seatInfo || held.planDigest !== seating.planDigest || mintTarget.version !== "ledger2") {
-      return c.json({ ok: false, error: "Choose your seats again to continue.", code: "SEATS_REQUIRED" }, 409);
-    }
-    if (!reservationsPersisting()) return c.json({ ok: false, error: SEAT_SALES_PAUSED }, 503);
-    if ((held.checkout?.sessions ?? 0) >= MAX_SESSIONS_PER_HOLD) {
-      return c.json({ ok: false, error: "Hold your seats again to continue.", code: "HOLD_AGAIN" }, 409);
-    }
-    const priceProblem = seatedPriceRefusal(held.seatInfo, series.seating);
-    if (priceProblem) return c.json({ ok: false, error: priceProblem, code: "PRICES_CHANGED" }, 409);
+    const refused = seatedCheckoutRefusal({
+      held, pin: seating, contractVersion: mintTarget.version, persisting: reservationsPersisting(), feedSeating: series.seating,
+    });
+    if (refused) return c.json(refused.body, refused.status);
     seatedHold = held;
   }
 
@@ -1186,17 +1172,6 @@ stripe.post("/create-checkout", async (c) => {
   // A seated session gets Stripe's shortest life: its hold runs as long as it does.
   const expiresAt = seatedHold ? seatedCheckoutExpiresAt(Date.now()) : checkoutExpiresAt(event, Date.now(), chainEndMs);
 
-  // One payable session per seated hold: the one it has is closed at Stripe first.
-  // "complete" means it was paid - no second sale of the same seats.
-  const prevSessionId = seatedHold?.checkout?.sessionId ?? null;
-  if (seatedHold?.checkout && Date.parse(seatedHold.checkout.expiresAt) > Date.now()) {
-    const closed = await expireCheckoutSession(seatedHold.checkout);
-    if (closed === "complete") {
-      return c.json({ ok: false, error: "These seats have been paid for. Your tickets are on the way by email.", code: "HOLD_PAID" }, 409);
-    }
-    if (closed === "error") return c.json({ ok: false, error: "We couldn't start a new payment just now. Try again in a moment." }, 503);
-  }
-
   try {
     const s = getStripe();
     const tStripe = performance.now();
@@ -1273,7 +1248,7 @@ stripe.post("/create-checkout", async (c) => {
       applicationFee: totalApplicationFee,
       metadata: sessionMetadata,
     });
-    const session = await s.checkout.sessions.create(
+    const createSession = () => s.checkout.sessions.create(
       {
         mode: "payment",
         allowed_payment_method_types: CHECKOUT_PAYMENT_METHOD_TYPES,
@@ -1326,18 +1301,16 @@ stripe.post("/create-checkout", async (c) => {
       },
       { stripeAccount: organiserRecord.stripeAccountId },
     );
-    const stripeMs = performance.now() - tStripe;
-
-    // The seats are held for as long as this session can be paid - if the hold is still
-    // there to bind. If it ran out meanwhile, the new session is closed, never left payable.
-    if (seatedHold && !bindCheckout(seatedHold.id, prevSessionId, {
-      sessionId: session.id,
-      account: organiserRecord.stripeAccountId,
-      expiresAtMs: (session.expires_at ?? expiresAt!) * 1000,
-    })) {
-      await expireCheckoutSession({ sessionId: session.id, account: organiserRecord.stripeAccountId, expiresAt: new Date().toISOString(), sessions: 1 });
-      return c.json({ ok: false, error: "Your hold on these seats ran out. Hold them again to continue.", code: "HOLD_EXPIRED" }, 410);
+    // A seated hold has one payable session at a time (seated-checkout.ts).
+    let session: Awaited<ReturnType<typeof createSession>>;
+    if (seatedHold) {
+      const opened = await openSeatedSession(seatedHold, organiserRecord.stripeAccountId, expiresAt!, createSession);
+      if (!opened.ok) return c.json(opened.body, opened.status);
+      session = opened.session;
+    } else {
+      session = await createSession();
     }
+    const stripeMs = performance.now() - tStripe;
 
     console.log(
       `[stripe/create-checkout] timings — swarm=${swarmMs.toFixed(0)}ms ` +

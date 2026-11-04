@@ -122,5 +122,6 @@ test("create-checkout applies the same refusal (wiring: no seated sale without t
   const branch = src.slice(seated, firstChainRead);
   assert.match(branch, /FEATURES\.seatedEventsAllowed \? null : seatedSaleRefusal\(eventId, seriesId\)/);
   assert.match(branch, /if \(flagOff\) return c\.json\(flagOff\.body, flagOff\.status\)/);
-  assert.match(branch, /SEATS_REQUIRED/);
+  assert.match(branch, /seatedCheckoutRefusal\(\{/);
+  assert.match(branch, /if \(refused\) return c\.json\(refused\.body, refused\.status\)/);
 });
