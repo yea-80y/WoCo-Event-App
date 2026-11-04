@@ -69,6 +69,7 @@ writeFileSync(join(out, "sw-update.js"), "export const takeoverIfNewer = () => P
 writeFileSync(
   join(out, "verify.js"),
   `import { verifyTicket as real } from ${JSON.stringify(moduleUrl("verify.ts"))};
+export { doorSeat } from ${JSON.stringify(moduleUrl("verify.ts"))};
 export async function verifyTicket(raw, pack) {
   await globalThis.__scannerVerifyGate?.();
   return real(raw, pack);

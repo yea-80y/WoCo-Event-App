@@ -5,6 +5,7 @@
  */
 
 import type { ApiResponse } from "@woco/shared";
+import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
 import { authGet, authPost, post } from "./client.js";
 
 export interface GateBindingSummary {
@@ -12,6 +13,21 @@ export interface GateBindingSummary {
   seriesId: string;
   edition: number;
   boundAt: string;
+  /** Allocated seating: where it sits comes from `getTicketSeats`, asked only when shown. */
+  seated?: true;
+}
+
+export interface TicketSeatNow {
+  eventId: string;
+  seriesId: string;
+  edition: number;
+  /** Null when it has no seat now, or the seat could not be read. */
+  seat: TicketSeat | null;
+}
+
+/** Where the account's seated tickets sit now. Never asks for a signature: no session, no answer. */
+export function getTicketSeats(): Promise<ApiResponse<{ seats: TicketSeatNow[] }>> {
+  return authGet<{ seats: TicketSeatNow[] }>("/api/attendee-gate/seats", undefined, { establish: false });
 }
 
 export interface GateStatusData {

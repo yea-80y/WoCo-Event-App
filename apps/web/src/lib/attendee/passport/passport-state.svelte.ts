@@ -11,8 +11,11 @@ import type { EventFeed, SnapshotCard } from "@woco/shared";
 import { getEvent, listEvents } from "../../api/events.js";
 import { cacheGet, cacheKey, cacheSet, TTL } from "../../cache/cache.js";
 import { settleInBatches } from "../../utils/settle-in-batches.js";
+import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
+import { getTicketSeats } from "../../api/attendee-gate.js";
+import { auth } from "../../auth/auth-store.svelte.js";
 import { gate } from "../gate/gate.svelte.js";
-import { eventsIndex, passportTickets, type PassportEvent, type PassportTickets } from "./passport.js";
+import { eventsIndex, passportTickets, type PassportEvent, type PassportTicket, type PassportTickets } from "./passport.js";
 
 function cachedEvents(ids: readonly string[]): Record<string, PassportEvent> {
   const directory = cacheGet<SnapshotCard[]>(cacheKey.directory()) ?? [];
@@ -38,12 +41,29 @@ export function passportState(): {
   /** Event details are still being fetched. */
   readonly loading: boolean;
   readonly now: number;
+  /** Allocated seating: where this ticket sits now; null/undefined shows no seat. */
+  seatOf(ticket: Pick<PassportTicket, "seriesId" | "edition">): TicketSeat | null | undefined;
 } {
   let events = $state<Record<string, PassportEvent>>({});
   let loading = $state(false);
   let now = $state(Date.now());
+  let seats = $state<Record<string, TicketSeat | null>>({});
 
   const bindings = $derived(gate.status?.bindings ?? []);
+  // Only seated tickets, and only with a session already here: the passport never prompts.
+  const seatedKey = $derived(JSON.stringify(bindings.filter((b) => b.seated).map((b) => `${b.seriesId}#${b.edition}`).sort()));
+  $effect(() => {
+    const wanted: string[] = JSON.parse(seatedKey);
+    if (wanted.length === 0 || !auth.hasSession) return;
+    let current = true;
+    getTicketSeats()
+      .then((r) => {
+        if (!current || !r.ok || !r.data) return;
+        seats = Object.fromEntries(r.data.seats.map((s) => [`${s.seriesId}#${s.edition}`, s.seat]));
+      })
+      .catch(() => { /* no seat shown */ });
+    return () => { current = false; };
+  });
   // Keyed on the SET of events, so a status refresh that returns the same
   // tickets does not fetch again.
   const idsKey = $derived(JSON.stringify([...new Set(bindings.map((b) => b.eventId))].sort()));
@@ -72,5 +92,6 @@ export function passportState(): {
     get tickets() { return tickets; },
     get loading() { return loading; },
     get now() { return now; },
+    seatOf: (t) => seats[`${t.seriesId}#${t.edition}`],
   };
 }

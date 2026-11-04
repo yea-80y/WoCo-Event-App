@@ -18,16 +18,13 @@
  */
 
 import type { TicketQr } from "../checkin/types.js";
+import { isTicketSeat, type TicketSeat } from "../seating/ticket-seat.js";
+import { TICKET_IMAGE_GATEWAYS } from "./gateways.js";
+
+export { TICKET_IMAGE_GATEWAYS };
 
 /** Path of the static ticket page inside the frontend collection. */
 export const TICKET_PAGE_PATH = "/ticket.html";
-
-/** The first two content gateways the page may load an event image from. Index
- *  into this list travels in the link as `g`, so the link names no host. */
-export const TICKET_IMAGE_GATEWAYS = [
-  "https://gateway.woco-net.com",
-  "https://gateway.etherna.io",
-] as const;
 
 /** Ceiling on the whole link. Display fields are dropped to fit it; the four
  *  ticket parts never are. Mail clients' own limits are unknown, so stay short. */
@@ -50,13 +47,42 @@ export interface TicketDisplay {
   image?: string;
   /** Index into TICKET_IMAGE_GATEWAYS the image is stored on. */
   gateway?: number;
+  /** Allocated seating: the seat it was issued in. The door reads the current seat from the ledger. */
+  seat?: TicketSeat;
 }
 
 /** Per-field caps, applied before the length ceiling. */
 const CAPS: Record<"title" | "location" | "series", number> = { title: 80, location: 80, series: 40 };
 
 /** Order display fields are given up in when the link runs long: least useful first. */
-const DROP_ORDER: Array<keyof TicketDisplay> = ["series", "location", "date", "image", "title"];
+const DROP_ORDER: Array<keyof TicketDisplay> = ["series", "location", "date", "image", "seat", "title"];
+
+/** Seat parts in the query: sa area, sr row, sn number, and st / sw / sc flags (table, wheelchair, companion). */
+function seatQuery(q: URLSearchParams, s: TicketSeat): void {
+  q.set("sa", s.area);
+  if (s.row !== undefined) q.set("sr", s.row);
+  q.set("sn", String(s.seat));
+  if (s.table) q.set("st", "1");
+  if (s.wheelchair) q.set("sw", "1");
+  if (s.companion) q.set("sc", "1");
+}
+
+/** A seat only when the parts make a valid one; an edited link that does not shows no seat. */
+function seatFromQuery(p: URLSearchParams): TicketSeat | undefined {
+  const area = p.get("sa");
+  const n = p.get("sn");
+  if (area === null || n === null || !/^[1-9][0-9]{0,5}$/.test(n)) return undefined;
+  const row = p.get("sr");
+  const seat = {
+    area,
+    ...(row !== null ? { row } : {}),
+    seat: Number(n),
+    ...(p.get("st") === "1" ? { table: true as const } : {}),
+    ...(p.get("sw") === "1" ? { wheelchair: true as const } : {}),
+    ...(p.get("sc") === "1" ? { companion: true as const } : {}),
+  };
+  return isTicketSeat(seat) ? seat : undefined;
+}
 
 function clip(s: string, max: number): string {
   const t = s.trim();
@@ -69,6 +95,7 @@ function displayQuery(d: TicketDisplay): string {
   if (d.date) q.set("d", d.date);
   if (d.location) q.set("l", clip(d.location, CAPS.location));
   if (d.series) q.set("n", clip(d.series, CAPS.series));
+  if (d.seat && isTicketSeat(d.seat)) seatQuery(q, d.seat);
   if (d.image && isImageRef(d.image)) {
     q.set("i", d.image);
     if (d.gateway !== undefined && d.gateway > 0 && d.gateway < TICKET_IMAGE_GATEWAYS.length) {
@@ -130,6 +157,8 @@ export function parseTicketFragment(hash: string): { ticket: TicketQr; display: 
     if (d && !Number.isNaN(Date.parse(d))) display.date = d;
     if (l) display.location = clip(l, CAPS.location);
     if (n) display.series = clip(n, CAPS.series);
+    const seat = seatFromQuery(p);
+    if (seat) display.seat = seat;
     if (i && isImageRef(i)) {
       display.image = i;
       display.gateway = Number.isInteger(g) && g >= 0 && g < TICKET_IMAGE_GATEWAYS.length ? g : 0;

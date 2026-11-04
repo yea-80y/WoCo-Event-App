@@ -26,6 +26,7 @@ import {
   validateSeatLayout,
 } from "./layout.js";
 import { hasExactKeys, isIntIn, isPlainRecord, labelIdentity } from "../validate.js";
+import { ticketSeatText, type TicketSeat } from "./ticket-seat.js";
 
 export const SEAT_PLAN_FORMAT = "woco.seatplan.v1";
 
@@ -136,7 +137,22 @@ export function seatLabel(plan: Pick<SeatPlan, "items" | "seats">, index: number
 
 /** "Stalls, Row D, seat 7" / "Table 3, seat 5". */
 export function formatSeatLabel(l: SeatLabel): string {
-  return l.row !== undefined ? `${l.area}, Row ${l.row}, seat ${l.seat}` : `${l.area}, seat ${l.seat}`;
+  return ticketSeatText(l);
+}
+
+/** Seat `index` as printed on its ticket, wheelchair and companion flags included. */
+export function ticketSeatOf(plan: Pick<SeatPlan, "items" | "seats">, index: number): TicketSeat | null {
+  const l = seatLabel(plan, index);
+  if (!l) return null;
+  const s = plan.seats[index];
+  return {
+    area: l.area,
+    ...(l.row !== undefined ? { row: l.row } : {}),
+    seat: l.seat,
+    ...(l.atTable ? { table: true as const } : {}),
+    ...(s.a ? { wheelchair: true as const } : {}),
+    ...(s.c ? { companion: true as const } : {}),
+  };
 }
 
 /** Two seats print the same label when these keys match (case and spacing do not tell them apart). */

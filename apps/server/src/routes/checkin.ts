@@ -26,8 +26,10 @@
 
 import { Hono, type Context } from "hono";
 import {
+  CHECKIN_PACK_VERSION,
   SCANNER_DEVICE_HEADER,
   SCANNER_OUTDATED_REASON,
+  SCANNER_PACK_HEADER,
   SCANNER_WRONG_EVENT_REASON,
   type CheckinClaimRequest,
   type CheckinClaimResponse,
@@ -44,9 +46,12 @@ import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getEventForOwner, getEventBySigner } from "../lib/event/service.js";
 import { eventKeys } from "../lib/keyring/event-keys.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
-import { registrationContractFor } from "../lib/event/onchain-registry.js";
+import { onchainRegistryHealth, registrationContractFor, registrationSeatingFor } from "../lib/event/onchain-registry.js";
 import { contractKey } from "../lib/chain/event-contract.js";
 import { voidedSlots } from "../lib/stripe/ticket-sales.js";
+import { pinnedSeatPlan } from "../lib/seating/seat-reads.js";
+import { isSeatedAtDoor, packSeries, type PackSeriesDeps } from "../lib/checkin/pack-series.js";
+import { readSlotStates } from "../lib/checkin/slot-state.js";
 import {
   issueDoorPass,
   verifyDoorPass,
@@ -63,6 +68,26 @@ import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { DoorEntriesUnreadableError, issueWithNewDoorEntries, readDoorEntriesPage } from "../lib/checkin/door-entries.js";
 import { slotOwners } from "../lib/checkin/slot-owners.js";
 import { eventSeries, ofEventSeries, rememberEventSeries } from "../lib/checkin/event-series.js";
+
+const packSeriesDeps: PackSeriesDeps = {
+  contractFor: registrationContractFor,
+  seatingFor: registrationSeatingFor,
+  nextSlot: async (contract, id) => {
+    const ev = await getOnChainEventAt(contract, id);
+    return ev ? Number(ev.nextSlot) : null;
+  },
+  slotStates: (contract, id, nextSlot, opts) => readSlotStates(contract, id, nextSlot, opts),
+  slotOwners: (contract, id, nextSlot, supply) =>
+    slotOwners(`${contractKey(contract)}|${id}`, nextSlot, async (slot) => (await getSlotDataAt(contract, id, slot)).owner, Date.now, supply),
+  voidedSlots: (id, contract) => voidedSlots(id, contractKey(contract)),
+  plan: (ref, digest) => pinnedSeatPlan(ref, digest),
+};
+
+/** The highest pack version the scanner reads (`X-Scanner-Pack`); none sent = 1. */
+function scannerPackVersion(c: Context<AppEnv>): number {
+  const v = Number(c.req.header(SCANNER_PACK_HEADER) ?? "1");
+  return Number.isSafeInteger(v) && v >= 1 ? v : 1;
+}
 
 const MAX_ROSTER_CIPHERTEXT = 4 * 1024 * 1024;
 const MAX_SYNC_RECORDS = 5000;
@@ -332,49 +357,18 @@ checkin.get("/:eventId/pack", async (c) => {
       ?? await getEvent(eventId);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
     rememberEventSeries(eventId, event.series.map((s) => s.seriesId));
+    const packVersion = scannerPackVersion(c);
+    // A scanner that reads no seats is refused before any chain read when the record
+    // already says seated, and after them when the ledger does (pack-series.ts).
+    const outdatedForSeats = () => c.json({ ok: false, error: OUTDATED, reason: SCANNER_OUTDATED_REASON }, 400);
+    if (packVersion < 2 && event.series.some((s) => registrationSeatingFor(eventId, s.seriesId))) return outdatedForSeats();
 
     const series: CheckinSeries[] = [];
-
-    for (const s of event.series) {
-      const entry: CheckinSeries = {
-        seriesId: s.seriesId,
-        name: s.name,
-        totalSupply: s.totalSupply,
-      };
-
-      // Slot owners come from the contract, which is the only ticket ledger. A
-      // series that never finished registering has no slots, so it contributes an
-      // empty entry rather than falling back to a Swarm feed no longer written.
-      if (s.swarmManifestRef && s.onChainEventId) {
-        entry.onChainEventId = s.onChainEventId as CheckinSeries["onChainEventId"];
-        // Owners are read on the contract the registration lives on (#563), so
-        // a ticket on an older contract still verifies at the door after a
-        // cutover. None resolvable reads as no slots: the door refuses.
-        const contract = registrationContractFor(eventId, s.seriesId);
-        const onChainEventId = s.onChainEventId;
-        const onChain = contract
-          ? await getOnChainEventAt(contract, onChainEventId).catch(() => null)
-          : null;
-        const slotCount = contract && onChain ? Number(onChain.nextSlot) : 0;
-        entry.slotOwners = contract
-          ? await slotOwners(`${contractKey(contract)}|${onChainEventId}`, slotCount, async (slot) => {
-              const data = await getSlotDataAt(contract, onChainEventId, slot);
-              return data.owner ? data.owner.toLowerCase() : null;
-            })
-          : [];
-        // Refunded sales (#645): keyed by the same (event, slot) the owners are,
-        // on the same contract. The scanner checks these only after the
-        // signature verifies, so listing a slot here never makes a forgery pass.
-        if (contract) {
-          const refunded = voidedSlots(onChainEventId, contractKey(contract));
-          if (refunded.length > 0) entry.voidSlots = refunded;
-        }
-      }
-      series.push(entry);
-    }
+    for (const s of event.series) series.push(await packSeries(eventId, s, packSeriesDeps));
+    if (packVersion < 2 && series.some((s) => s.seated)) return outdatedForSeats();
 
     const pack: CheckinPack = {
-      v: 1,
+      v: packVersion >= 2 ? CHECKIN_PACK_VERSION : 1,
       eventId,
       eventTitle: event.title,
       eventDate: event.startDate,
@@ -484,6 +478,17 @@ checkin.post("/:eventId/claim", async (c) => {
   const series = eventSeries(c.req.param("eventId"));
   if (series && typeof body?.seriesId === "string" && !series.has(body.seriesId)) {
     return c.json({ ok: false, error: "This ticket is not for this event", reason: SCANNER_WRONG_EVENT_REASON }, 400);
+  }
+  // The server records a claim it never verified: a scanner that reads no seats must not
+  // admit a seated ticket - by the record, or by the last pack (a record that lost its
+  // seating fields) - nor one whose seatedness is unknown (registrations unreadable).
+  if (
+    scannerPackVersion(c) < 2 &&
+    (onchainRegistryHealth().fileUnreadable ||
+      (typeof body?.seriesId === "string" &&
+        (registrationSeatingFor(c.req.param("eventId"), body.seriesId) || isSeatedAtDoor(c.req.param("eventId"), body.seriesId))))
+  ) {
+    return c.json({ ok: false, error: OUTDATED, reason: SCANNER_OUTDATED_REASON }, 400);
   }
   const record: CheckinRecord = {
     seriesId: body?.seriesId as string,

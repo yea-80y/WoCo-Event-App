@@ -1,6 +1,6 @@
 # Allocated seating
 
-Status (2026-11-04): S1 to S4 built, S5 and S6 planned. Seated events stay off behind
+Status (2026-11-04): S1 to S5 built, S6 planned. Seated events stay off behind
 `seatedEventsAllowed` (`packages/shared/src/features.ts`, UI and server in lockstep) until every
 slice in "Build order" has shipped.
 
@@ -109,8 +109,7 @@ seat-reads,seated-checkout}.ts`, the seated half of `lib/event/reservation-store
   no expiry event seen, a seat recorded differently from the one asked.
 - **Refunded seats** keep their chain bit set: unsellable until reissue exists (#983 step 5). The map
   shows them unavailable.
-- **Door** pack carries `seats[]` beside `slotOwners` (from `seatOf`); the scanner refuses a seated
-  ticket with no seat, or a seated series with no `seats` (old pack), and shows "Stalls, Row D, seat 7".
+- **Door** and tickets: see "Door + tickets (S5)".
 - **Map states**: free only if the bit is clear AND `remaining() > 0`; "Sold out" when remaining is 0
   with bits free; "Sales closed" when it is 0 for the cutoff or a cancellation, never "sold out".
 - **Relay**: refuses a seat move into a held seat (per-seat holds, new), and refuses `setSupply` on a
@@ -169,8 +168,7 @@ Each slice is one PR. Fable signs off S2 to S6 (server, CSP and cross-origin mes
 3. **S3 buyer map** (built; design consult 2026-11-03, Fable 68/68): see "The buyer map (S3)" below.
 4. **S4 money path** (built): see "Selling a seat". Hosts: `SeatedSeries` holds, the host page's
    ClaimButton pays (`hold` prop); the embed widget holds from its frame and runs its own checkout.
-5. **S5 door + tickets**: door pack `seats[]`, scanner refusal + label, seat on the passport, the ticket
-   page and card, and on the #983 resend copy (a sealed frozen format, so moved here from S4).
+5. **S5 door + tickets** (built): see "Door + tickets (S5)".
 6. **S6 dashboard**: held / release, seat moves through the relay, confirm freed seats, relay refusals.
 
 Carried into later slices from the S1+S2 sign-off: S6 sizes seat-state writes against the SOC relay's
@@ -239,3 +237,68 @@ process that dies mid-sale cannot hold seats for good); D2 no resale `rail` mark
 The sign-off (Fable, 2026-11-04) accepted all four and E1-E11; its fixes are in: one off-sale rule for the
 map and the hold check, a session checkout closed itself not ending its hold, the fee settings pinned
 like the prices, the hold re-read before a new session, and no hold handed back that checkout refuses.
+
+## Door + tickets (S5)
+
+Incumbent look first (wallet passes, Ticketmaster, AXS, Humanitix, UK theatre systems), then a design consult
+(Fable 67/67, 2026-11-04). A seat is shown as PARTS - Section / Row / Seat, or Table / Seat - never one
+sentence (`@woco/shared/seating/ticket-seat`: `TicketSeat`, `ticketSeatFields`, `isTicketSeat`; the one
+sentence, `ticketSeatText`, is for email text and screen readers). "Wheelchair space" / "Companion seat"
+print as a note, as incumbents print them in the ticket type. Code: server `lib/checkin/{slot-owners,
+slot-state,pack-series}.ts`, `lib/seating/ticket-seats.ts`; scanner `scanner/verify.ts` (`doorSeat`).
+
+- **Door pack, version 2** (`CHECKIN_PACK_VERSION`). Per seated series: `seated: true`, `seats[]` per slot
+  (seat index, `NO_SEAT_INDEX` -1, or `null` = not read) and `seatLabels[]` (display only, from the pinned
+  plan). The seat decides admission; a missing label never refuses ("Seat not shown"). Owners are
+  `null` where not read too, so an RPC failure is "couldn't confirm", never "no ticket" (it used to be: a
+  failed read and an unclaimed slot both came out "", which the scanner turned red).
+- **One slot cache** for every contract (`cachedSlots`): fresh for 30 s after a full read, new slots
+  always read, a failed slot keeps what it last read for up to 10 minutes after that read and is read
+  again on every pack (an RPC blip does not stop the door; past the bound it is "couldn't confirm", so a
+  long outage never admits on an owner or seat since moved), highest block wins. Ledger2 reads owner + seat per slot in one
+  Multicall3 batch (512 slots) with ArbSys `arbBlockNumber`; older contracts keep one call per slot.
+- **Seated or not at the door** = the registration record AND the ledger's `isSeated` (read once, fixed
+  at registration). They disagree (an older build dropped the record's seating fields, or a record is
+  missing): the series goes out seated with no seats, the scanner refuses its tickets as "list out of
+  date", and `/api/health` `doorSeats` is red. Never the manifest or the feed.
+- **Old scanners**: a scanner sends `X-Scanner-Pack: 2`. Without it, `/pack` for an event with a seated
+  series, and `/claim` for a seated series (or with the registrations unreadable), answer
+  `outdated-client`, which scanners since #641 turn into a self-update. `/sync` is never refused.
+- **Scanner**: order is owner + signature, then refunded, then seat: `-1` = NO SEAT (red, no check-in
+  recorded, like a refund), `null` or no seats = "couldn't confirm" after one refresh, never red. The
+  roster's manual check-in applies the same rule (`doorSeat`) and lists each attendee's seat. CHECKED IN
+  and ALREADY IN lead with the seat as large labelled fields; a seated card stays 4 s.
+- **Tickets carry the seat they were issued in**, as display data like the title: the email rows, each
+  card image (a seat band above the tear line; a seated card's photo is shorter so the QR keeps its
+  size), and each ticket link (`sa`/`sr`/`sn` + `st`/`sw`/`sc` flags, validated on read, dropped just
+  before the title when the link runs long). The static page prints the seat as real text and in Save
+  image. Fulfilment takes the parts from the hold (`SeatedHoldSeat.ticketSeat`, pinned at reserve).
+- **Where a ticket sits NOW** (`currentTicketSeats`: `seatOf` + the pinned plan, all or nothing) is what
+  the #983 resend prints (refused 409 if the ticket has no seat now, 503 if unreadable - never the seat at
+  mint) and what the organiser's undelivered list shows. No new sealed format: the seat is public (chain
+  + plan), the sealed copy exists only because the QR exists nowhere else.
+- **Passport** (Profile tab tickets, Home "Next up"): `/attendee-gate/status` marks a binding `seated`
+  from the registry (zero I/O, it answers on every app load); the passport then asks `GET
+  /attendee-gate/seats` (current seat, null when none or unreadable) only with a session already on the
+  device. The stub's tear-off end shows "Seat 7", the main column "Stalls, Row D". Only the bound ticket
+  of a group order is shown (friends bind their own).
+- A move (S6) leaves printed seats stale by design: the door reads the live seat, and S6's move sends the
+  buyer the ticket again with the new seat (same QR). Nothing printed hedges the seat.
+
+Departures from the S5 consult, for the S5 sign-off by name: D1 a failed slot read keeps its last value
+for up to 10 minutes (`STALE_MAX_MS`) instead of reading `null` at once, so an RPC blip mid-event does
+not stop the door (an automated security review flagged the first, unbounded version; the bound is its
+fix); D2 general-admission series on older contracts keep the per-slot reader but
+take the `null` = not read fix now (it was live for GA); ledger2 GA series already use the batch reader
+(needed for the `isSeated` agreement); D3 no `reason` variant on `sendTicketEmail` yet - S6 adds it with
+its caller; D4 `isSeated` is remembered once read (fixed at registration) rather than read per pack; D5 a
+seated record on a contract with no seats is treated as a disagreement (refused). Seam recorded: refunds
+(`voidSlots`) are keyed per slot, so when #983 step 5 reissues a refunded seated slot to a new buyer the
+new ticket would read REFUNDED - a void needs the sale's slot epoch then.
+
+The sign-off (Fable, 2026-11-04, 59/59) signed off and accepted D1-D5. Applied: `/claim` also refuses an old
+scanner for a type the last pack sent as seated (a record that lost its fields); a slot count from a lagging
+replica never shortens the list below slots already read; `isSeated` decoded strictly (anything but 0/1 is no
+answer). For S6: a slot never read before, first read from a replica behind its mint, caches "unclaimed" for up
+to 30 s - read `getEvent` (nextSlot) inside the slot batch so count and owners share one block. `TicketSuccess.svelte` (an
+in-app ticket download) has no importer: left over from the v1 claim rail, not changed.

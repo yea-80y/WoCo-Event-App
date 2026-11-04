@@ -14,8 +14,10 @@ import {
   base64UrlDecode,
   decodeDoorPassToken,
   doorPassFragment,
+  CHECKIN_PACK_VERSION,
   SCANNER_DEVICE_HEADER,
   SCANNER_OUTDATED_REASON,
+  SCANNER_PACK_HEADER,
   type DoorMode,
   type CheckinConflict,
   type CheckinPack,
@@ -26,7 +28,8 @@ import {
 } from "@woco/shared";
 import * as db from "./db.js";
 import { decryptRoster, pickRosterEntries } from "./roster-crypto.js";
-import { verifyTicket } from "./verify.js";
+import { doorSeat, verifyTicket, type DoorSeat } from "./verify.js";
+import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
 import { claimAdmission, newClaimId, type ClaimAnswer } from "./claim.js";
 import { admit, doorModeOf, EVENT_CHANGED_MESSAGE, withConfirmed, type Admission } from "./admission.js";
 import {
@@ -73,11 +76,16 @@ const REFRESH_TICK_MS = 15_000;
 /** Pages of door entries one poll follows; the rest wait for the next tick. */
 const MAX_ENTRY_PAGES = 40;
 
+/** Allocated seating: `seat` present (null = details unavailable) on a seated ticket only. */
+type SeatOf = { seat?: TicketSeat | null };
+
 export type ScanOutcome =
-  | { kind: "checked-in"; strength: "onchain"; seriesName: string; edition: number; attendee?: RosterEntry }
-  | { kind: "duplicate"; record: CheckinRecord; seriesName?: string; edition: number; attendee?: RosterEntry }
+  | ({ kind: "checked-in"; strength: "onchain"; seriesName: string; edition: number; attendee?: RosterEntry } & SeatOf)
+  | ({ kind: "duplicate"; record: CheckinRecord; seriesName?: string; edition: number; attendee?: RosterEntry } & SeatOf)
   /** Genuine ticket whose sale was refunded (#645). Not admitted; no check-in recorded. */
   | { kind: "refunded"; seriesName: string; edition: number; attendee?: RosterEntry }
+  /** Genuine seated ticket with no seat now (moved out of it). Not admitted; no check-in recorded. */
+  | { kind: "no-seat"; seriesName: string; edition: number; attendee?: RosterEntry }
   | { kind: "rejected"; reason: string }
   /** Genuine ticket, but the server could not be asked or did not answer in
    *  time (#641). NOT admitted - with several scanners, another may hold it. */
@@ -96,6 +104,7 @@ export type ManualCheckinResult =
   | { kind: "checked-in" }
   | { kind: "duplicate"; record: CheckinRecord }
   | { kind: "refunded" }
+  | { kind: "no-seat" }
   | { kind: "cant-confirm"; message: string };
 
 class ScannerStore {
@@ -450,6 +459,11 @@ class ScannerStore {
         attendee: this.findAttendee(ticket.seriesId, ticket.edition),
       };
     }
+    if (verdict.status === "no-seat") {
+      // Like a refund: no nullifier, so once the organiser seats it the ticket works.
+      const { ticket } = verdict;
+      return { kind: "no-seat", seriesName: verdict.seriesName, edition: ticket.edition, attendee: this.findAttendee(ticket.seriesId, ticket.edition) };
+    }
 
     const { ticket } = verdict;
     // Checked with no await before `admitTicket` reads the pass, so nothing can switch in between.
@@ -457,7 +471,7 @@ class ScannerStore {
       return { kind: "cant-confirm", message: EVENT_CHANGED_MESSAGE, seriesName: verdict.seriesName, edition: ticket.edition };
     }
     const attendee = this.findAttendee(ticket.seriesId, ticket.edition);
-    const base = { seriesName: verdict.seriesName, edition: ticket.edition, attendee };
+    const base = { seriesName: verdict.seriesName, edition: ticket.edition, attendee, ...("seat" in verdict ? { seat: verdict.seat } : {}) };
 
     const answer = await this.admitTicket(ticket.seriesId, ticket.edition, "scan");
     if (answer.kind === "admitted") return { kind: "checked-in", strength: verdict.strength, ...base };
@@ -472,11 +486,21 @@ class ScannerStore {
    */
   async manualCheckin(seriesId: string, edition: number): Promise<ManualCheckinResult> {
     if (this.isRefunded(seriesId, edition)) return { kind: "refunded" };
+    // The same seat rule as the camera: no QR here, but the seat still decides.
+    const place = this.seatOf(seriesId, edition);
+    if (place?.kind === "no-seat") return { kind: "no-seat" };
+    if (place?.kind === "unread") return { kind: "cant-confirm", message: place.reason };
     this.lastScanAt = Date.now();
     const answer = await this.admitTicket(seriesId, edition, "manual");
     if (answer.kind === "admitted") return { kind: "checked-in" };
     if (answer.kind === "already-in") return { kind: "duplicate", record: answer.record };
     return answer;
+  }
+
+  /** Allocated seating: where this ticket sits by the pack; null for a type the pack does not have. */
+  seatOf(seriesId: string, edition: number): DoorSeat | null {
+    const series = this.pack?.series.find((s) => s.seriesId === seriesId);
+    return series ? doorSeat(series, edition) : null;
   }
 
   /** Whether the pack lists this ticket's sale as refunded (#645). */
@@ -986,7 +1010,7 @@ class ScannerStore {
     let resp: Response;
     try {
       resp = await fetch(`${API_BASE}/api/checkin/${encodeURIComponent(eventId)}/pack`, {
-        headers: { "X-Door-Pass": token, [SCANNER_DEVICE_HEADER]: this.deviceId },
+        headers: { "X-Door-Pass": token, [SCANNER_DEVICE_HEADER]: this.deviceId, [SCANNER_PACK_HEADER]: String(CHECKIN_PACK_VERSION) },
       });
     } catch {
       throw new PackError({ kind: "error", message: NO_CONNECTION_MESSAGE });

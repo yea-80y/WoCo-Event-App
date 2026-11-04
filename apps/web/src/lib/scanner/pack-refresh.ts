@@ -117,12 +117,15 @@ export type MissOutcome = { kind: "verdict"; verdict: VerifyVerdict } | { kind: 
  * NOT_FOUND_LAG_MS after that still lacks it, or NOT_FOUND_BOUND_MS after it
  * whatever the fetches did. Offline, a dead pass and a claim in flight stay
  * "couldn't confirm". Ticket types and editions the event does not have are red
- * once the re-check is done, as are signatures that do not match.
+ * once the re-check is done, as are signatures that do not match. A ticket the list
+ * could not read (owner or seat) is never red: "couldn't confirm" after the re-check.
  */
 export async function resolveMiss(verdict: VerifyVerdict, c: MissContext): Promise<MissOutcome> {
   const step = await c.recheck();
   if (step.kind === "cant-confirm") return step;
   const v = step.kind === "refreshed" ? await c.reverify() : verdict;
+  // The list could not read this ticket: a fresher list may, but nothing here is a refusal.
+  if (v.status === "invalid" && v.code === "unread") return { kind: "cant-confirm", message: v.reason };
   const noOwner = v.status === "invalid" && v.code === "no-owner";
   if (!noOwner) {
     // A newer pack could still place it, but none could be fetched: not a verdict.

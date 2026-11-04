@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LAYOUT_TEMPLATES } from "@woco/shared/seating/templates";
-import { freezeSeatPlan, initialHeldSeats } from "@woco/shared/seating/plan";
+import { freezeSeatPlan, initialHeldSeats, ticketSeatOf } from "@woco/shared/seating/plan";
 import type { SeatBatchRead } from "@woco/shared/seating/chain";
 import type { PaymentConfig } from "@woco/shared";
 import { checkSeats } from "../src/lib/seating/seat-check.js";
@@ -56,6 +56,8 @@ test("free seats are held with the label, band and price pinned for checkout", (
     assert.equal(r.seats[i].bandName, plan.bands[b].name);
     assert.equal(r.seats[i].priceMinor, Math.round(parseFloat(priceOf(b)) * 100));
     assert.match(r.seats[i].label, /seat \d+$/);
+    // S5: the same seat as parts, for the ticket card and link fulfilment prints.
+    assert.deepEqual(r.seats[i].ticketSeat, ticketSeatOf(plan, k));
   }
 });
 

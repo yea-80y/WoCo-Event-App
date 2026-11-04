@@ -19,7 +19,7 @@
  *
  * A resend must carry exactly the tickets emailed: every held edition, each QR's
  * sha256 equal to the one kept at the sale. With the signing key discarded at mint,
- * nothing else can be a valid ticket for that seat, so no chain read is needed - and
+ * nothing else can be a valid ticket for that edition, so no chain read is needed - and
  * a re-encoded signature, which the chain would accept, is refused.
  *
  * The server sees the QR in plaintext once more, to render and send it; it is never
@@ -28,7 +28,7 @@
  * door list's line, and the attendee index.
  */
 
-import { MAILABLE_EMAIL_RE, ticketQrNamesSeat, type EventFeed, type SitePalette } from "@woco/shared";
+import { MAILABLE_EMAIL_RE, ticketQrNamesEdition, type EventFeed, type SitePalette } from "@woco/shared";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type { EmailFailure, FailureRecipient } from "../email/failure-ledger.js";
 import type { EventKeys } from "../keyring/event-keys.js";
@@ -37,6 +37,8 @@ import type { TicketEmailOpts } from "../../routes/tickets.js";
 import { SlidingWindowLimiter } from "../http/rate-limit.js";
 import { errorClass } from "../http/error-class.js";
 import { ticketQrHash, TicketHoldUnreadableError, type TicketHold } from "./store.js";
+import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
+import type { CurrentSeats } from "../seating/ticket-seats.js";
 
 /**
  * Accepted resends a sale may have, ever: how many addresses one buyer's ticket may be
@@ -77,6 +79,8 @@ export interface ResendDeps {
   getSiteTheme(siteId: string, eventId: string): Promise<{ palette: SitePalette; contactEmail?: string } | null>;
   /** Display fields for the email; null keeps the defaults. */
   getEvent(eventId: string): Promise<EventFeed | null>;
+  /** Allocated seating: where these slots sit now (`lib/seating/ticket-seats.ts`). */
+  currentSeats(a: { eventId: string; seriesId: string; onChainEventId: string; swarmManifestRef?: string; slots: readonly number[] }): Promise<CurrentSeats>;
   sendTicketEmail(opts: TicketEmailOpts): Promise<void>;
   recordResend(sessionId: string, entry: NonNullable<TicketSale["resends"]>[number]): boolean;
   markResendAccepted(sessionId: string, at: string): boolean;
@@ -157,9 +161,31 @@ export interface UndeliveredRow {
   /** What the buyer typed at checkout - the organiser checks the buyer against it. */
   typedAddress: string | null;
   editions: number[];
+  /** Allocated seating: each edition's seat now, aligned with `editions`; null where it has
+   *  none or it could not be read. Absent for general admission. */
+  seats?: (TicketSeat | null)[];
   resendsLeft: number;
   /** Why it cannot be resent here, when it cannot. */
   blocked: string | null;
+}
+
+/** Where a sale's tickets sit now, by edition; "unseated" for general admission. */
+async function seatsOfSale(
+  deps: ResendDeps,
+  eventId: string,
+  seriesId: string,
+  sale: TicketSale,
+  editions: readonly number[],
+  ev: EventFeed | null,
+): Promise<CurrentSeats> {
+  if (!sale.onChainEventId) return { kind: "unseated" };
+  return deps.currentSeats({
+    eventId,
+    seriesId,
+    onChainEventId: sale.onChainEventId,
+    swarmManifestRef: ev?.series.find((s) => s.seriesId === seriesId)?.swarmManifestRef,
+    slots: editions.map((e) => e - 1),
+  });
 }
 
 /** The event's sales whose tickets did not arrive, newest first. */
@@ -168,18 +194,30 @@ export async function listUndelivered(deps: ResendDeps, eventId: string, parent:
   if (who) return who;
   const seen = new Set<string>();
   const rows: UndeliveredRow[] = [];
+  let ev: EventFeed | null | undefined;
   for (const row of deps.unresolvedTicketFailures(eventId)) {
     const sessionId = row.context!.stripeSessionId!;
     if (seen.has(sessionId)) continue;
     seen.add(sessionId);
     const g = await gate(deps, eventId, sessionId);
     const sale = deps.getSale(sessionId);
+    const editions = g.ok ? g.hold.tickets.map((t) => t.edition) : (sale?.slots ?? []).map((s) => s + 1);
+    // The seat is shown so the organiser can check the buyer against it; never a reason to fail the list.
+    let seats: UndeliveredRow["seats"];
+    const seriesId = g.ok ? g.hold.seriesId : sale?.seriesId;
+    if (sale && seriesId) {
+      ev ??= await deps.getEvent(eventId).catch(() => null);
+      const now = await seatsOfSale(deps, eventId, seriesId, sale, editions, ev).catch((): CurrentSeats => ({ kind: "unreadable" }));
+      if (now.kind === "seats") seats = editions.map((e) => { const s = now.seats.get(e - 1); return s && s !== "none" ? s : null; });
+      else if (now.kind === "unreadable") seats = editions.map(() => null);
+    }
     rows.push({
       sessionId,
       failedAt: row.ts,
       reason: row.code ?? "undelivered",
       typedAddress: row.recipients.find((r) => r.address)?.address ?? null,
-      editions: g.ok ? g.hold.tickets.map((t) => t.edition) : (sale?.slots ?? []).map((s) => s + 1),
+      editions,
+      ...(seats ? { seats } : {}),
       resendsLeft: sale ? Math.max(0, RESENDS_PER_SALE - acceptedResends(sale)) : 0,
       blocked: g.ok ? null : g.code,
     });
@@ -253,6 +291,20 @@ export async function resendTickets(
   if (!tickets || !sameTickets(tickets, hold, eventId)) {
     return refuse(400, "TICKETS_MISMATCH", "These are not this order's tickets. Reload and try again.");
   }
+  // The seat each ticket has NOW: a resend after a seat move must not print the old one.
+  const ev = await deps.getEvent(eventId).catch(() => null);
+  const now = await seatsOfSale(deps, eventId, hold.seriesId, sale, tickets.map((t) => t.edition), ev);
+  if (now.kind === "unreadable") {
+    return refuse(503, "SEATS_UNREADABLE", "Can't read these tickets' seats right now - nothing was sent. Try again shortly.");
+  }
+  const seats = new Map<number, TicketSeat>();
+  if (now.kind === "seats") {
+    for (const t of tickets) {
+      const s = now.seats.get(t.edition - 1);
+      if (!s || s === "none") return refuse(409, "TICKET_HAS_NO_SEAT", "A ticket in this order has no seat right now. Seat it first, then resend.");
+      seats.set(t.edition, s);
+    }
+  }
 
   if (acceptedResends(sale) >= RESENDS_PER_SALE) {
     return refuse(429, "RESEND_LIMIT", `This order has been resent ${RESENDS_PER_SALE} times. Contact WoCo support.`);
@@ -262,7 +314,7 @@ export async function resendTickets(
   if (!perOrganiser.allow(key, deps.now())) return refuse(429, "RATE_LIMITED", "Too many resends - try again later.");
   inFlight.add(sessionId);
   try {
-    return await sendAndRecord(deps, { eventId, sessionId, key, to, toHash, buyerName, tickets, sale, row, hold });
+    return await sendAndRecord(deps, { eventId, sessionId, key, to, toHash, buyerName, tickets, seats, ev, sale, row, hold });
   } finally {
     inFlight.delete(sessionId);
   }
@@ -278,19 +330,21 @@ async function sendAndRecord(
     toHash: string;
     buyerName: string;
     tickets: Array<{ edition: number; qrContent: string }>;
+    /** Allocated seating: each edition's seat now. Empty for general admission. */
+    seats: Map<number, TicketSeat>;
+    ev: EventFeed | null;
     sale: TicketSale;
     row: EmailFailure;
     hold: TicketHold;
   },
 ): Promise<{ ok: true; data: { sentTo: string; resendsLeft: number } } | Refusal> {
-  const { eventId, sessionId, key, to, toHash, buyerName, tickets, sale, row, hold } = a;
+  const { eventId, sessionId, key, to, toHash, buyerName, tickets, seats, ev, sale, row, hold } = a;
   const at = new Date(deps.now()).toISOString();
   // Recorded before the send, so a crash mid-send still leaves the attempt; a cap that
   // lived only in memory would reset on restart.
   if (!deps.recordResend(sessionId, { at, toHash, by: key, accepted: false })) {
     return refuse(503, "RESEND_NOT_RECORDED", "Can't record the resend right now - nothing was sent. Try again shortly.");
   }
-  const ev = await deps.getEvent(eventId).catch(() => null);
   const siteId = row.context?.siteId;
   const theme = siteId ? await deps.getSiteTheme(siteId, eventId).catch(() => null) : null;
   const series = ev?.series.find((s) => s.seriesId === hold.seriesId);
@@ -306,7 +360,10 @@ async function sendAndRecord(
       eventLocation: ev?.location ?? "",
       seriesName: series?.name ?? "",
       totalSupply: series?.totalSupply ?? 0,
-      tickets: tickets.map(({ edition, qrContent }) => ({ edition, qrContent })),
+      tickets: tickets.map(({ edition, qrContent }) => {
+        const seat = seats.get(edition);
+        return { edition, qrContent, ...(seat ? { seat } : {}) };
+      }),
       imageHash: ev?.imageHash || undefined,
       imageGateway: ev?.gatewayUrl || undefined,
       palette: theme?.palette,
@@ -361,7 +418,7 @@ function parseTickets(raw: unknown): Array<{ edition: number; qrContent: string 
   return out;
 }
 
-/** Every held edition exactly once, each QR naming its seat and hashing to what was emailed. */
+/** Every held edition exactly once, each QR naming its edition and hashing to what was emailed. */
 function sameTickets(tickets: Array<{ edition: number; qrContent: string }>, hold: TicketHold, eventId: string): boolean {
   if (tickets.length !== hold.tickets.length) return false;
   const want = new Map(hold.tickets.map((t) => [t.edition, t.qrHash]));
@@ -371,7 +428,7 @@ function sameTickets(tickets: Array<{ edition: number; qrContent: string }>, hol
     seen.add(t.edition);
     const hash = want.get(t.edition);
     if (!hash || ticketQrHash(t.qrContent) !== hash) return false;
-    if (!ticketQrNamesSeat(t.qrContent, eventId, hold.seriesId, t.edition)) return false;
+    if (!ticketQrNamesEdition(t.qrContent, eventId, hold.seriesId, t.edition)) return false;
   }
   return true;
 }

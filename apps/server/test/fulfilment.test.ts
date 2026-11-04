@@ -397,7 +397,11 @@ function fakeDeps(o: FakeOpts = {}) {
         ok: true,
         seats: [10, 11],
         planDigest: SEAT_PLAN,
-        seatInfo: [10, 11].map((k) => ({ band: "b1", bandName: "Stalls", label: `Stalls, Row A, seat ${k}`, priceMinor: 2200 })),
+        seatInfo: [10, 11].map((k) => ({
+          band: "b1", bandName: "Stalls", label: `Stalls, Row A, seat ${k}`,
+          ticketSeat: { area: "Stalls", row: "A", seat: k, ...(k === 11 ? { wheelchair: true as const } : {}) },
+          priceMinor: 2200,
+        })),
       };
     },
     batchClaimSeatsOnChain: async (ev, burners, seats, _ref, contract) => {
@@ -1477,6 +1481,10 @@ describe("allocated seating (docs/SEATING.md S4)", () => {
     assert.equal(f.calls.includes("batchClaimForOnChain"), false, "never the general-admission mint");
     assert.deepEqual(f.saleSlots[0].seats, [10, 11]);
     assert.deepEqual(f.emails[0].tickets.map((t) => t.seatLabel), ["Stalls, Row A, seat 10", "Stalls, Row A, seat 11"]);
+    // S5: each ticket carries its seat as parts for the card and the ticket page, seat i with burner i.
+    assert.deepEqual(f.emails[0].tickets.map((t) => t.seat), [
+      { area: "Stalls", row: "A", seat: 10 }, { area: "Stalls", row: "A", seat: 11, wheelchair: true },
+    ]);
     assert.deepEqual(f.settles, [{ id: "res-1", sessionId: "cs_test_1", outcome: "minted" }]);
     assert.deepEqual(f.consumed, [], "a seated hold is settled, not consumed by count");
   });

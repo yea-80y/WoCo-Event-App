@@ -82,7 +82,7 @@
 {#snippet list(rows: typeof tickets.upcoming)}
   <ul class="list">
     {#each rows as ticket (`${ticket.seriesId}#${ticket.edition}`)}
-      <li><PassportTicket {ticket} now={passport.now} pending={passport.loading} /></li>
+      <li><PassportTicket {ticket} now={passport.now} pending={passport.loading} seat={passport.seatOf(ticket)} /></li>
     {/each}
   </ul>
 {/snippet}
