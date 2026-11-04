@@ -23,6 +23,7 @@ import type {
   Ledger2RelayRequest,
   Ledger2RelayResult,
   Ledger2Target,
+  SeatSlotState,
 } from "@woco/shared/ticket/ledger2-terms";
 
 /** One ticket type of the event, as its ledger2 registration reads now. */
@@ -74,6 +75,10 @@ export interface Ledger2ClientIO {
   organiserKey(): Promise<{ privateKey: Uint8Array; address: string }>;
   /** POST the relay; throws an `ApiError` carrying the server's code. */
   relay(eventId: string, request: Ledger2RelayRequest): Promise<Ledger2RelayResult>;
+  /** Seat moves (S6): each slot's owner, transfer nonce and seat (`LEDGER2_NO_SEAT` = none). Throws when unread. */
+  slots(ledger: string, eventId: string, slots: readonly number[]): Promise<Map<number, SeatSlotState>>;
+  /** Seat moves (S6): each seat's `seatNonces`. Throws when unread. */
+  seatNonces(ledger: string, eventId: string, seats: readonly bigint[]): Promise<Map<bigint, bigint>>;
   sleep(ms: number): Promise<void>;
 }
 
@@ -441,6 +446,8 @@ const RELAY_CODES = new Set([
   "rate_limited", "in_flight", "cancellation_unknown", "not_available", "digest_mismatch", "relay_failed",
   "relay_unavailable", "chain_unverified", "invalid_request", "invalid_item", "window_invalid",
   "signature_not_yet_valid", "signature_expiring", "deadline_too_far", "series_not_found", "not_organiser",
+  "seat_on_hold", "seat_taken", "seat_move_invalid", "invalid_seat", "seat_unchanged", "seat_moves_off",
+  "seat_move_needs_holder", "slot_unclaimed", "not_seated",
 ]);
 
 /**
@@ -472,6 +479,21 @@ export function messageFor(err: unknown): string {
       return "That's already the number on sale.";
     case "seated_supply":
       return "Seated tickets follow your seating plan - hold or release seats on the Seats tab instead.";
+    case "seat_on_hold":
+      return "Someone is buying that seat right now. Choose another, or try again in about 10 minutes.";
+    case "seat_taken":
+      return "That seat has just been sold. Choose another.";
+    case "seat_move_invalid":
+    case "invalid_seat":
+    case "seat_unchanged":
+      return "That seat can't be chosen for this ticket.";
+    case "seat_moves_off":
+    case "seat_move_needs_holder":
+      return "This ticket's seat can't be changed here.";
+    case "slot_unclaimed":
+      return "That ticket isn't sold yet.";
+    case "not_seated":
+      return "This ticket type has no seats.";
     case "sales_closed":
       return "Ticket sales for this event have ended, so this can't be changed any more.";
     case "event_cancelled":

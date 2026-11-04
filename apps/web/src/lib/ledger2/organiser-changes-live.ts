@@ -14,6 +14,11 @@ const READ_ABI = [
   "function extendSalesEndDigest(bytes32 eventId, uint64 eventEndTs, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
   "function cancelEventDigest(bytes32 eventId, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
   "function revokeSignaturesDigest(bytes32 eventId, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
+  "function reseatBearerDigest(bytes32 eventId, uint256 slot, uint256 toSeat, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
+  "function slotOwner(bytes32 eventId, uint256 slot) view returns (address)",
+  "function transferNonces(bytes32 eventId, uint256 slot) view returns (uint256)",
+  "function seatOf(bytes32 eventId, uint256 slot) view returns (uint256)",
+  "function seatNonces(bytes32 eventId, uint256 seat) view returns (uint256)",
   "error EventNotFound()",
 ] as const;
 
@@ -96,9 +101,40 @@ export const liveLedger2ClientIO: Ledger2ClientIO = {
         return pc.readContract({ address, abi, functionName: "cancelEventDigest", args: [id, ...w] });
       case "revoke":
         return pc.readContract({ address, abi, functionName: "revokeSignaturesDigest", args: [id, ...w] });
+      case "reseatBearer":
+        return pc.readContract({ address, abi, functionName: "reseatBearerDigest", args: [id, BigInt(a.slot), a.toSeat, ...w] });
       default:
-        throw new Error("seat moves are signed by the seating editor");
+        throw new Error("a two-party seat move is not signed here");
     }
+  },
+
+  async slots(ledger, eventId, slots) {
+    const { pc, abi } = await client();
+    const address = ledger as Hex;
+    const fns = ["slotOwner", "transferNonces", "seatOf"] as const;
+    const res = await pc.multicall({
+      contracts: slots.flatMap((slot) => fns.map((functionName) => ({ address, abi, functionName, args: [eventId as Hex, BigInt(slot)] }))),
+      allowFailure: false,
+    });
+    const out = new Map<number, { owner: string; transferNonce: bigint; seat: bigint }>();
+    slots.forEach((slot, i) => {
+      out.set(slot, {
+        owner: (res[i * 3] as string).toLowerCase(),
+        transferNonce: res[i * 3 + 1] as bigint,
+        // The view answers NO_SEAT itself; 0 is seat 0.
+        seat: res[i * 3 + 2] as bigint,
+      });
+    });
+    return out;
+  },
+
+  async seatNonces(ledger, eventId, seats) {
+    const { pc, abi } = await client();
+    const res = await pc.multicall({
+      contracts: seats.map((seat) => ({ address: ledger as Hex, abi, functionName: "seatNonces" as const, args: [eventId as Hex, seat] })),
+      allowFailure: false,
+    });
+    return new Map(seats.map((seat, i) => [seat, res[i] as bigint]));
   },
 
   async organiserKey() {
