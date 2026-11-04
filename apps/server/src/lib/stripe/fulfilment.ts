@@ -46,6 +46,7 @@ import { marketingFromMetadata } from "../marketing/checkout-choice.js";
 import type { TicketEmailOpts } from "../../routes/tickets.js";
 import { contractKey, type EventContractTarget } from "../chain/event-contract.js";
 import type { SaleContract } from "../event/onchain-registry.js";
+import type { SeatedClaim } from "../event/reservation-store.js";
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -158,6 +159,25 @@ export interface FulfilmentDeps {
   onChainBatchMax: number;
 
   /**
+   * Allocated seating (docs/SEATING.md). `registrationSeatingFor`: the plan this server
+   * registered the series seated with, or null - zero I/O. `claimSeatedHold`: the
+   * SYNCHRONOUS claim on the hold this session was made from (reservation-store.ts),
+   * checked against our own minted seats. `batchClaimSeatsOnChain`: owner i in seat
+   * `seats[i]`, all or nothing; rejects like `batchClaimForOnChain`. `settleSeatedHold`:
+   * what became of the claimed hold.
+   */
+  registrationSeatingFor(eventId: string, seriesId: string): { planDigest: string } | null;
+  claimSeatedHold(reservationId: string, sessionId: string, eventId: string, seriesId: string): SeatedClaim;
+  batchClaimSeatsOnChain(
+    onChainEventId: string,
+    burners: string[],
+    seats: number[],
+    orderRefBytes32: string,
+    contract: EventContractTarget,
+  ): Promise<Array<{ slot: number; seat: number }>>;
+  settleSeatedHold(reservationId: string, sessionId: string, outcome: "minted" | "unresolved" | "not-minted"): void;
+
+  /**
    * Sale record (#645 part C): the slots one mint chunk produced, keyed to the
    * on-chain event minted against — what a refund or dispute later voids. Must
    * not throw; fenced anyway, because a missing record costs a void, never a
@@ -169,6 +189,7 @@ export interface FulfilmentDeps {
     contract: string,
     slots: number[],
     orderRef?: string,
+    seats?: number[],
   ): void;
   /**
    * What fulfilment itself refunds, recorded BEFORE the refund call so the
@@ -423,6 +444,36 @@ export async function fulfilPaidSession(
   const accountClaim = claimerAddress
     ? { parentAddress: claimerAddress.toLowerCase() }
     : undefined;
+
+  // ── 0. Allocated seating: claim the seat hold NOW, before any await ──
+  // A seated sale mints exactly the seats its hold names, from this server's hold
+  // record and nothing else (never metadata, never the client). The claim keeps the
+  // hold in force while the mint resolves. Anything wrong with it refunds in full -
+  // never a substitute seat. A registration lookup that throws reads as general
+  // admission, whose mint the ledger refuses on a seated event (SeatedEvent): a refund.
+  let seatingPin: { planDigest: string } | null = null;
+  try {
+    seatingPin = deps.registrationSeatingFor(eventId, seriesId);
+  } catch (err) {
+    console.error("[fulfilment] seating lookup threw — continuing as general admission:", err);
+  }
+  let seated: { seats: number[]; labels: Map<number, string> } | null = null;
+  let seatedStop: string | null = null;
+  if (seatingPin) {
+    let claim: SeatedClaim;
+    try {
+      claim = metaReservationId
+        ? deps.claimSeatedHold(metaReservationId, session.id, eventId, seriesId)
+        : { ok: false, reason: "the payment names no seat hold" };
+    } catch (err) {
+      claim = { ok: false, reason: `the seat hold could not be read (${errMessage(err)})` };
+    }
+    if (!claim.ok) seatedStop = `Seats not sold: ${claim.reason} — refunding`;
+    else if (claim.planDigest.toLowerCase() !== seatingPin.planDigest.toLowerCase()) seatedStop = "Seats not sold: the seating plan changed — refunding";
+    else if (claim.seats.length !== quantity) seatedStop = "Seats not sold: the hold and the payment disagree — refunding";
+    else seated = { seats: claim.seats, labels: new Map(claim.seats.map((k, i) => [k, claim.seatInfo?.[i]?.label ?? ""])) };
+    if (seatedStop) console.error(`[fulfilment] ${session.id}: ${seatedStop}`);
+  }
 
   // Attendee data: prefer the client's pre-uploaded full-form order ref (passed
   // via session metadata). Falls back to a minimal server-built seal for the
@@ -717,10 +768,12 @@ export async function fulfilPaidSession(
     );
   }
 
-  const claimedResults: Array<{ edition: number; qrContent: string }> = [];
-  let stoppedReason: string | null = bindingStopReason;
+  const claimedResults: Array<{ edition: number; qrContent: string; seatLabel?: string }> = [];
+  let stoppedReason: string | null = bindingStopReason ?? seatedStop;
   /** Whether the signed-in buyer's first ticket landed in their account (#582). */
   let accountClaimBound = false;
+  /** The seat mint's outcome is unknown (it may yet land): its hold is kept off sale. */
+  let mintUnresolved = false;
 
   // ── 3. Sales-window re-checks (fail OPEN on anything but a definitive "ended") ──
   // #300 rider: a payment can complete after the event's end — inside the
@@ -828,11 +881,13 @@ export async function fulfilPaidSession(
         retainMonths,
         accountClaim,
         claimedResults,
+        ...(seated ? { seated } : {}),
         setStopped: (reason) => {
           stoppedReason = reason;
         },
       });
       accountClaimBound = minted.accountClaimBound;
+      mintUnresolved = minted.unresolved;
     } catch (err) {
       // Nothing inside mintV2 is meant to reach here — every known failure sets
       // stoppedReason and returns. This is the fence for the unknown one: a
@@ -847,6 +902,8 @@ export async function fulfilPaidSession(
         err,
       );
       stoppedReason = `Fulfilment failed: ${msg}`;
+      // Seats may be on chain already: their hold is kept, never released to resell.
+      mintUnresolved = true;
     }
   } else {
     // No fallback rail: the contract is the only ticket ledger, and a series
@@ -887,7 +944,20 @@ export async function fulfilPaidSession(
   // Now release the seat hold — all claims that were going to land have
   // landed. Doing this here (vs. at webhook entry) means concurrent /reserve
   // calls saw the correct held count throughout the slow mint phase.
-  if (metaReservationId) {
+  // A seated hold this sale claimed: minted or unknown keeps its seats taken; nothing
+  // minted puts them back on sale at once. One this sale could NOT claim is another
+  // session's (or gone): left alone.
+  if (metaReservationId && seated) {
+    const outcome = claimedResults.length > 0 ? "minted" : mintUnresolved ? "unresolved" : "not-minted";
+    if (claimedResults.length > 0 && claimedResults.length !== quantity) {
+      console.error(`[fulfilment] ${session.id}: seated mint issued ${claimedResults.length}/${quantity} — INVARIANT BROKEN (one call, all or nothing)`);
+    }
+    try {
+      deps.settleSeatedHold(metaReservationId, session.id, outcome);
+    } catch (err) {
+      console.error("[fulfilment] settleSeatedHold threw (continuing):", err);
+    }
+  } else if (metaReservationId && !seatingPin) {
     try {
       const consumed = deps.consumeReservation(metaReservationId);
       if (consumed) {
@@ -1202,7 +1272,9 @@ interface MintV2Args {
   retainMonths: number | undefined;
   accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
-  claimedResults: Array<{ edition: number; qrContent: string }>;
+  claimedResults: Array<{ edition: number; qrContent: string; seatLabel?: string }>;
+  /** Allocated seating: burner i is minted in `seats[i]`, from the claimed hold. */
+  seated?: { seats: number[]; labels: Map<number, string> };
   setStopped(reason: string): void;
 }
 
@@ -1214,8 +1286,9 @@ interface MintV2Args {
  * Returns whether the buyer's account claim was actually bound, so the email
  * can offer Add to WoCo exactly when there is something left to add (#582).
  */
-async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
+async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean; unresolved: boolean }> {
   const { deps, eventId, seriesId, quantity, claimedResults } = a;
+  let unresolved = false;
 
   // Resolve the orderRef once for the whole batch (all tickets share one
   // encrypted order blob — same buyer, same form submission).
@@ -1242,7 +1315,12 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
 
   if (!batchOrderRef) {
     a.setStopped("No orderRef available for on-chain claim");
-    return { accountClaimBound: false };
+    return { accountClaimBound: false, unresolved };
+  }
+  // A seated sale is ONE call, all or nothing: never a partial order of seats.
+  if (a.seated && (a.seated.seats.length !== quantity || quantity > deps.onChainBatchMax)) {
+    a.setStopped("Seated order does not fit one mint — refunding");
+    return { accountClaimBound: false, unresolved };
   }
 
   const orderRefBytes32 = "0x" + batchOrderRef;
@@ -1259,17 +1337,28 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
   // partial-refund logic handles cross-chunk partial failure (chunk 1
   // succeeds, chunk 2 fails on supply exhaustion).
   const slotsForBurners: number[] = [];
+  /** Seated only: the seat each of `slotsForBurners` was minted in. */
+  const seatsForBurners: number[] = [];
   let stopped = false;
   for (let chunkStart = 0; chunkStart < burners.length && !stopped; chunkStart += deps.onChainBatchMax) {
     const chunk = burners.slice(chunkStart, chunkStart + deps.onChainBatchMax);
     const chunkAddresses = chunk.map((w) => w.address);
     try {
-      const chunkSlots = await deps.batchClaimForOnChain(a.v2OnChainEventId, chunkAddresses, orderRefBytes32, a.mintContract);
+      let chunkSlots: number[];
+      let chunkSeats: number[] | undefined;
+      if (a.seated) {
+        const minted = await deps.batchClaimSeatsOnChain(a.v2OnChainEventId, chunkAddresses, a.seated.seats, orderRefBytes32, a.mintContract);
+        chunkSlots = minted.map((m) => m.slot);
+        chunkSeats = minted.map((m) => m.seat);
+        seatsForBurners.push(...chunkSeats);
+      } else {
+        chunkSlots = await deps.batchClaimForOnChain(a.v2OnChainEventId, chunkAddresses, orderRefBytes32, a.mintContract);
+      }
       slotsForBurners.push(...chunkSlots);
       // Per chunk, from the contract's own answer: these slots exist on chain
       // whatever happens to the rest of the batch, so a refund must reach them.
       try {
-        deps.recordSaleSlots(a.sessionId, a.v2OnChainEventId, contractKey(a.mintContract), chunkSlots, batchOrderRef);
+        deps.recordSaleSlots(a.sessionId, a.v2OnChainEventId, contractKey(a.mintContract), chunkSlots, batchOrderRef, chunkSeats);
       } catch (err) {
         console.error(`[fulfilment/v2] recordSaleSlots threw — a refund will not void these slots:`, err);
       }
@@ -1285,6 +1374,8 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
       // we keep whatever slotsForBurners has from prior chunks and refund the rest.
       a.setStopped(msg);
       stopped = true;
+      // #994: it may yet land - a seated hold is then kept, never resold.
+      if ((err as { name?: unknown } | null)?.name === "MintUnresolvedError") unresolved = true;
     }
   }
 
@@ -1304,7 +1395,8 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
     //   recovered = ecrecover(personalHash(canonical), ticketSig)
     //   require(recovered == slotOwner[onChainEventId][edition - 1])
     const qrContent = `woco://t/${eventId}/${seriesId}/${edition}/${ticketSig}`;
-    claimedResults.push({ edition, qrContent });
+    const seatLabel = a.seated ? a.seated.labels.get(seatsForBurners[i]) : undefined;
+    claimedResults.push({ edition, qrContent, ...(seatLabel ? { seatLabel } : {}) });
   }
   // burners[] goes out of scope here — private keys are unreferenced
   // and eligible for garbage collection.
@@ -1350,5 +1442,5 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
       );
     }
   }
-  return { accountClaimBound };
+  return { accountClaimBound, unresolved };
 }
