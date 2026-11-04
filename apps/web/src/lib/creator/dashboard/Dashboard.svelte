@@ -73,6 +73,17 @@
     FEATURES.seatedEventsAllowed && !!event?.series.some((s) => !!s.seating && !!s.onChainEventId && !!s.swarmManifestRef),
   );
   const seatsPanel = () => import("../seating/SeatsPanel.svelte");
+  /** What the Seats tab may know about a ticket: its buyer's email once orders are open here. */
+  function seatTicketInfo(seriesId: string, edition: number) {
+    const order = ordersResponse?.orders.find((o) => o.seriesId === seriesId && o.edition === edition);
+    if (!order) return null;
+    const dec = decryptedOrders.get(listIndex.position.get(order) ?? -1);
+    return {
+      ...(dec?.claimerEmail && !order.erased ? { email: dec.claimerEmail } : {}),
+      refunded: order.refund === "refunded",
+      erased: !!order.erased,
+    };
+  }
 
   // Webhook state
   interface WebhookConfig {
@@ -1139,7 +1150,7 @@
       {#await seatsPanel()}
         <p class="seats-loading">Loading seats…</p>
       {:then { default: SeatsPanel }}
-        <SeatsPanel {event} apiUrl={import.meta.env.VITE_API_URL || ""} />
+        <SeatsPanel {event} apiUrl={import.meta.env.VITE_API_URL || ""} ticketInfo={seatTicketInfo} />
       {:catch}
         <p class="seats-loading">Seats couldn't be loaded. Reload the page to try again.</p>
       {/await}

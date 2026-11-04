@@ -20,13 +20,26 @@
   import type { SeatMove } from "./organiser-seat-data.js";
   import { SEAT_HOLD_KINDS } from "@woco/shared/seating/state";
 
+  interface TicketInfo {
+    /** The buyer's address, once the organiser has opened the orders on this device. */
+    email?: string;
+    refunded: boolean;
+    erased: boolean;
+  }
   interface Props {
     event: EventFeed;
     apiUrl: string;
-    /** "Change seat" on a sold seat: the ticket (slot) and the seat it sits in. */
-    onchangeseat?: (a: { seriesId: string; slot: number; seat: number }) => void;
+    /** What the dashboard knows about ticket `edition` of a ticket type. */
+    ticketInfo?: (seriesId: string, edition: number) => TicketInfo | null;
   }
-  let { event, apiUrl, onchangeseat }: Props = $props();
+  let { event, apiUrl, ticketInfo }: Props = $props();
+
+  /** "Change seat": the ticket being moved and where it sits; then the seat chosen. */
+  let moving = $state<{ slot: number; seat: number } | null>(null);
+  let moveTarget = $state<number | null>(null);
+  let putBackOld = $state(true);
+  let emailBuyer = $state(true);
+  let movePhase = $state<{ phase: "idle" | "moving" } | { phase: "done"; text: string } | { phase: "failed"; text: string }>({ phase: "idle" });
 
   type Ready = SeriesSummary & Required<Pick<SeriesSummary, "seating" | "onChainEventId" | "swarmManifestRef">>;
   const seated = $derived(event.series.filter((s): s is Ready => !!s.seating && !!s.onChainEventId && !!s.swarmManifestRef));
@@ -271,8 +284,120 @@
   });
 
   function tap(k: number): void {
+    if (moving) {
+      // Choosing where the ticket goes: a free, held or emptied seat, or another ticket's (a swap).
+      const st = orgSeat(k, inputs);
+      if (k === moving.seat || movePhase.phase === "moving") return;
+      if (st.status === "basket" || st.status === "unknown" || (st.status === "sold" && st.slot === null)) return;
+      moveTarget = k;
+      picks = [moving.seat, k].sort((a, b) => a - b);
+      return;
+    }
     picks = orgToggle(picks, k, inputs);
     lastTap = picks.includes(k) ? k : null;
+  }
+
+  function startMove(t: { slot: number; seat: number }): void {
+    moving = t;
+    moveTarget = null;
+    putBackOld = !inputs.holds.has(t.seat);
+    emailBuyer = true;
+    movePhase = { phase: "idle" };
+    picks = [t.seat];
+  }
+
+  function endMove(): void {
+    moving = null;
+    moveTarget = null;
+    picks = [];
+    if (movePhase.phase === "failed") movePhase = { phase: "idle" };
+  }
+
+  /** The move the organiser chose: a seat, out of its seat (a refunded ticket), or a swap. */
+  const plannedMove = $derived.by(() => {
+    if (!moving) return null;
+    if (moveTarget === -1) return { kind: "move" as const, slot: moving.slot, to: "none" as const };
+    if (moveTarget === null) return null;
+    const st = orgSeat(moveTarget, inputs);
+    return st.status === "sold" && st.slot !== null
+      ? { kind: "swap" as const, a: moving.slot, b: st.slot, other: st.slot }
+      : { kind: "move" as const, slot: moving.slot, to: moveTarget };
+  });
+
+  async function runMove(): Promise<void> {
+    const m = plannedMove;
+    if (!m || !moving || !series || !map) return;
+    movePhase = { phase: "moving" };
+    const s = series;
+    const req = m.kind === "swap" ? { kind: "swap" as const, a: m.a, b: m.b } : { kind: "move" as const, slot: m.slot, to: m.to };
+    try {
+      const [{ auth }, changes, { liveLedger2ClientIO: io }, moves, data] = await Promise.all([
+        import("../../auth/auth-store.svelte.js"),
+        import("../../ledger2/organiser-changes.js"),
+        import("../../ledger2/organiser-changes-live.js"),
+        import("../../ledger2/seat-moves.js"),
+        import("./organiser-seat-data.js"),
+      ]);
+      const parent = auth.parent?.toLowerCase();
+      if (!parent) throw new Error("Sign in again to change seats.");
+      const view = await changes.readLedger2Event(event, parent, io);
+      if (!view) throw new Error("Couldn't read your tickets just now. Try again in a moment.");
+      const signed = await moves.signSeatMoves(view, s.seriesId, req, io);
+      const out = await moves.sendSeatMoves(event.eventId, view.target.address, signed, io, changes.messageFor);
+      if (out.phase === "failed") {
+        movePhase = { phase: "failed", text: out.message };
+        return;
+      }
+      if (out.phase === "unconfirmed") {
+        movePhase = { phase: "failed", text: "The change was sent but hasn't shown up yet. Check this ticket again in a few minutes before trying again." };
+        return;
+      }
+      void map.refresh(true);
+      // The seat left empty goes back on sale at the nonce the move gave it - read where the
+      // move already shows, so a replica behind it cannot hand back the old one.
+      let putBack = "";
+      if (putBackOld && signed.planned.emptied.length) {
+        const call = await data.liveMulticall();
+        const left = signed.planned.emptied.map(Number);
+        const asMoves = left.map((seat) => ({ slot: -1, from: seat, to: -1, block: 0 }));
+        for (let i = 0; call && i < 6; i++) {
+          const e = await data.readEmptiedSeats(call, view.target.address, s.onChainEventId, asMoves, new Map(own?.confirmed ?? []));
+          if (e && left.every((k) => e.has(k))) {
+            saver?.add(putBackDelta(left, { emptied: e }));
+            putBack = ` ${left.map(label).join("; ")} is back on sale.`;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 3_000));
+        }
+        if (!putBack) putBack = " The old seat stays off sale for now - put it back from the list below.";
+      }
+      let mailed = "";
+      if (emailBuyer && ticketInfo) {
+        const slots = m.kind === "swap" ? [m.a, m.b] : [m.slot];
+        const { authPost } = await import("../../api/client.js");
+        const byEmail = new Map<string, number[]>();
+        for (const slot of slots) {
+          const to = ticketInfo(s.seriesId, slot + 1)?.email;
+          if (to) byEmail.set(to, [...(byEmail.get(to) ?? []), slot]);
+        }
+        let ok = 0;
+        for (const [to, ss] of byEmail) {
+          const r = await authPost<{ slots: Array<{ slot: number; outcome: string }> }>(
+            `/api/events/${encodeURIComponent(event.eventId)}/seat-moved`, { seriesId: s.seriesId, slots: ss, to },
+          ).catch(() => null);
+          if (r?.ok && r.data?.slots.every((o) => o.outcome === "sent")) ok++;
+        }
+        mailed = ok === byEmail.size && ok > 0 ? " The buyer has been emailed their new seat." : " The email to the buyer couldn't be sent.";
+      }
+      movePhase = { phase: "done", text: `Moved.${putBack}${mailed}` };
+      moving = null;
+      moveTarget = null;
+      picks = [];
+      const deployment = await (await import("../../keyring/organiser-event-scan.js")).ownLedger2Deployment();
+      void readTickets(data, view.target.address, s.onChainEventId, deployment);
+    } catch (e) {
+      movePhase = { phase: "failed", text: e instanceof Error && e.message ? e.message : "Couldn't change the seat just now. Nothing was moved." };
+    }
   }
 
   function selectRow(): void {
@@ -372,8 +497,60 @@
       <div class="map" bind:this={mapEl}></div>
 
       <aside class="panel">
-        <div class="selection" class:active={picks.length > 0}>
-          {#if actions.ticket}
+        <div class="selection" class:active={picks.length > 0 || !!moving}>
+          {#if moving}
+            {@const m = plannedMove}
+            {@const info = ticketInfo?.(series!.seriesId, moving.slot + 1) ?? null}
+            <h3>Change the seat of Ticket #{moving.slot + 1}</h3>
+            <p class="codes">Now: {label(moving.seat)}</p>
+            {#if !m}
+              <p class="quiet">Tap the new seat on the map - a free or held seat, or another ticket's seat to swap the two.</p>
+              {#if info?.refunded}
+                <button type="button" class="btn btn--ghost wide" onclick={() => { moveTarget = -1; picks = [moving!.seat]; }}>
+                  Free this seat - the ticket was refunded
+                </button>
+              {/if}
+            {:else}
+              {#if m.kind === "swap"}
+                <p class="seat-name">Swap with Ticket #{m.other + 1} in {label(moveTarget!)}</p>
+              {:else if m.to === "none"}
+                <p class="seat-name">Take this refunded ticket out of its seat</p>
+                {#if snap?.chain && snap.chain.remaining === 0n}
+                  <p class="quiet">Every ticket is sold, so the seat can't sell again until tickets are available.</p>
+                {/if}
+              {:else}
+                {@const tst = orgSeat(m.to, inputs)}
+                <p class="seat-name">To: {label(m.to)}</p>
+                {#if tst.status === "held"}
+                  <p class="quiet">It's one of your {HOLD_KIND_NAMES[tst.kind].toLowerCase()}: it stays held after this ticket moves on.</p>
+                {/if}
+                {#if plan && plan.seats[m.to]?.b !== plan.seats[moving.seat]?.b}
+                  <p class="quiet">It's in a different price band. No money changes hands.</p>
+                {/if}
+              {/if}
+              {#if m.kind === "move" && !inputs.holds.has(moving.seat)}
+                <label class="check"><input type="checkbox" bind:checked={putBackOld} /> Put {label(moving.seat)} back on sale</label>
+              {:else if m.kind === "move"}
+                <p class="quiet">{label(moving.seat)} stays held.</p>
+              {/if}
+              {#if m.to !== "none"}
+                {#if info?.email}
+                  <label class="check"><input type="checkbox" bind:checked={emailBuyer} /> Email the {m.kind === "swap" ? "buyers their" : "buyer their"} new seat</label>
+                {:else}
+                  <p class="quiet">Open this event's orders first to email the buyer their new seat.</p>
+                {/if}
+              {/if}
+              <div class="row-actions">
+                <button type="button" class="btn btn--primary" disabled={movePhase.phase === "moving" || closed} onclick={runMove}>
+                  {movePhase.phase === "moving" ? "Moving…" : m.kind === "swap" ? "Swap tickets" : m.to === "none" ? "Free seat" : "Move ticket"}
+                </button>
+                <button type="button" class="btn btn--ghost" disabled={movePhase.phase === "moving"} onclick={endMove}>Cancel</button>
+              </div>
+            {/if}
+            {#if movePhase.phase === "failed"}
+              <p class="save failed" role="alert">{movePhase.text}</p>
+            {/if}
+          {:else if actions.ticket}
             {@const st = orgSeat(actions.ticket.seat, inputs)}
             <h3>Ticket #{actions.ticket.slot + 1}</h3>
             <p class="seat-name">{label(actions.ticket.seat)}</p>
@@ -381,10 +558,11 @@
               <p class="quiet">This is {HOLD_KIND_SEAT[st.held]}: it stays held after this ticket moves on.</p>
             {/if}
             <div class="row-actions">
-              <button type="button" class="btn btn--primary" disabled={closed || !onchangeseat}
-                onclick={() => onchangeseat?.({ seriesId: series!.seriesId, slot: actions.ticket!.slot, seat: actions.ticket!.seat })}>Change seat</button>
+              <button type="button" class="btn btn--primary" disabled={closed}
+                onclick={() => startMove({ slot: actions.ticket!.slot, seat: actions.ticket!.seat })}>Change seat</button>
               <button type="button" class="btn btn--ghost" onclick={() => (picks = [])}>Done</button>
             </div>
+            <p class="quiet">Seats can be changed until ticket sales end.</p>
           {:else if picks.length > 0}
             <h3>{picks.length} {seatWord(picks.length)}</h3>
             <p class="codes">{picks.slice(0, 6).map(label).join("; ")}{picks.length > 6 ? `; and ${picks.length - 6} more` : ""}</p>
@@ -409,6 +587,7 @@
               <button type="button" class="btn btn--ghost wide" onclick={() => putBack(actions.putBack)} disabled={closed}>Put {actions.putBack.length} back on sale</button>
             {/if}
           {:else}
+            {#if movePhase.phase === "done"}<p class="save" role="status">{movePhase.text}</p>{/if}
             <p class="quiet">Tap seats to hold or release them. Tap a sold seat to move its ticket.</p>
           {/if}
 
@@ -481,6 +660,8 @@
   .hold label { color: var(--text-secondary); font-size: 0.9rem; }
   .hold select { font: inherit; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.45rem; min-width: 0; }
   .wide { width: 100%; }
+  .check { display: flex; gap: 0.5rem; align-items: center; color: var(--text-secondary); font-size: 0.9rem; }
+  .check input { accent-color: var(--accent); }
   .save { margin: 0; color: var(--text-muted); font-size: 0.85rem; }
   .save.failed { color: var(--error); display: flex; flex-direction: column; gap: 0.4rem; }
   .save.failed p { margin: 0; }
