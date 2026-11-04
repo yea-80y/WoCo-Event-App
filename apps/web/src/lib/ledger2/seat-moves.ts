@@ -134,6 +134,8 @@ export type SeatMoveOutcome =
 
 const BACKOFF = [2_000, 5_000, 10_000];
 const WATCH_MS = 120_000;
+/** A send that failed may still have been broadcast: how long the chain is watched for it. */
+const FAILED_SEND_WATCH_MS = 30_000;
 
 /** Whether the moved tickets sit where `planned` put them now. */
 async function landedOnChain(planned: PlannedMoves, io: Ledger2ClientIO, ledger: string): Promise<boolean> {
@@ -160,14 +162,28 @@ export async function sendSeatMoves(
         await io.sleep(BACKOFF[attempt]!);
         continue;
       }
-      // A send that failed after it may have been broadcast: the chain decides.
-      if (code === "relay_failed" && (await landedOnChain(signed.planned, io, ledger))) return { phase: "moved" };
+      // A send that failed after it may have been broadcast: the chain decides, given a
+      // little time to mine it (S6 sign-off change 7).
+      if (code === "relay_failed") {
+        const until = Date.now() + FAILED_SEND_WATCH_MS;
+        while (true) {
+          if (await landedOnChain(signed.planned, io, ledger)) return { phase: "moved" };
+          if (Date.now() >= until) break;
+          await io.sleep(5_000);
+        }
+      }
       const seats = (err as { body?: { seats?: unknown } })?.body?.seats;
       return { phase: "failed", code, message: message(err), ...(Array.isArray(seats) ? { seats: seats as number[] } : {}) };
     }
   }
   if (result.status === "landed" && result.landed?.every(Boolean)) return { phase: "moved" };
   if (result.status === "reverted_on_chain") {
+    // The reverted batch published the move signatures, live for up to an hour: if the
+    // relay's own abort did not land, revoke them from here (S6 sign-off change 5). Best effort.
+    const abort = signed.request.aborts?.[0];
+    if (result.aborted === false && abort) {
+      await io.relay(eventId, { items: [{ kind: "revoke", ...abort }] }).catch(() => undefined);
+    }
     return { phase: "failed", code: "reverted", message: "The change didn't go through - the seats were changed meanwhile. Nothing was moved." };
   }
   const until = Date.now() + WATCH_MS;
