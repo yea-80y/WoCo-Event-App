@@ -7,6 +7,7 @@
  */
 
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { Wallet } from "ethers";
 import { hexToBytes } from "@noble/hashes/utils.js";
@@ -350,4 +351,10 @@ test("organiser-facing copy never mentions the chain, a signature or a revoke", 
     const m = messageFor({ code, body: { minSupply: 5, held: 2, holdsExpireBy: "2027-01-01T00:00:00Z", max: 9, sold: 3 } });
     assert.doesNotMatch(m, /chain|ledger|revoke|signature|sign(ed)? |nonce|relay|gas|blockchain|onchain/i, `${code}: ${m}`);
   }
+});
+
+test("the capacity panel lists general-admission ticket types only (seated ones are hold / release)", () => {
+  const src = readFileSync(new URL("../src/lib/creator/events/TicketNumbersPanel.svelte", import.meta.url), "utf8");
+  assert.match(src, /const series = \$derived\(view\.series\.filter\(\(s\) => !s\.seated\)\);/);
+  assert.doesNotMatch(src, /\{#each view\.series /);
 });

@@ -97,6 +97,9 @@ test("a swap signs three moves against the nonces each leaves, and empties nothi
 });
 
 test("refused before signing: a disagreeing digest, an old key, cut-off, cancelled, unseated", async () => {
+  const moveOnly = fake({ digest: (a) => (a.kind === "reseatBearer" ? `0x${"00".repeat(32)}` : ledger2Digest(TARGET, a)) });
+  await assert.rejects(signSeatMoves(view(), "stalls", { kind: "move", slot: 1, to: 30 }, moveOnly.io), (e: { code?: string }) => e.code === "digest_mismatch", "the move's own digest");
+  assert.equal(moveOnly.keys.length, 0);
   const bad = fake({ digest: () => `0x${"00".repeat(32)}` });
   await assert.rejects(signSeatMoves(view(), "stalls", { kind: "move", slot: 1, to: 30 }, bad.io), (e: { code?: string }) => e.code === "digest_mismatch");
   assert.equal(bad.keys.length, 0, "no key derived");

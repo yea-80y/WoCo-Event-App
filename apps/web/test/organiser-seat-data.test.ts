@@ -86,5 +86,10 @@ test("emptied and still off sale: bit clear, nonce above 0, not confirmed at tha
   const r = await readEmptiedSeats(c, LEDGER, EVENT, moves, new Map([[5, 1], [300, 1]]));
   assert.deepEqual([...r!], [[3, 1], [300, 2]]);
   assert.equal(await readEmptiedSeats(chain({ fail: true }), LEDGER, EVENT, moves, new Map()), null, "unread is not 'nothing emptied'");
+  const oneMissing: MulticallFn = async (calls, expect) => {
+    const r = await c(calls, expect);
+    return r.map((x, i) => (calls[i]!.data.startsWith("0x287af508") && argOf(calls[i]!, 1) === 3n ? null : x));
+  };
+  assert.equal(await readEmptiedSeats(oneMissing, LEDGER, EVENT, moves, new Map()), null, "one seat unread: the whole answer is unread");
   assert.deepEqual([...(await readEmptiedSeats(c, LEDGER, EVENT, [], new Map()))!], []);
 });

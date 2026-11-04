@@ -99,7 +99,16 @@ export interface SeatStateExpect {
   seats: number;
 }
 
-async function readOnce(x: SeatStateExpect, key: string): Promise<SeatStateRead> {
+/**
+ * One read, its verdict, and - in the same synchronous step as the floor check - the
+ * memory of a definitive one: a write announced after this point deletes it, and one
+ * announced before it was seen here. No await sits between the check and the memory.
+ */
+async function readOnce(x: SeatStateExpect, key: string, forWhat: string): Promise<SeatStateRead> {
+  const remember = (r: Extract<SeatStateRead, { status: "found" | "absent" }>) => {
+    bounded(cache, key, { for: forWhat, read: r, at: clock() });
+    return r;
+  };
   let res: VersionedFeedRead;
   try {
     res = await reader(x.signer.replace(/^0x/, ""), seatStateTopic(x.eventId, x.seriesId));
@@ -112,7 +121,7 @@ async function readOnce(x: SeatStateExpect, key: string): Promise<SeatStateRead>
   if (res.status === "absent") {
     if (top !== undefined) return { status: "unavailable", reason: "seat state read absent after it was found" };
     if (pending !== null) return { status: "unavailable", reason: "seat state write not readable yet" };
-    return { status: "absent" };
+    return remember({ status: "absent" });
   }
   let raw: unknown;
   try {
@@ -131,7 +140,7 @@ async function readOnce(x: SeatStateExpect, key: string): Promise<SeatStateRead>
   if (pending !== null && raw.seq < pending) return { status: "unavailable", reason: "seat state write not readable yet" };
   if (pending !== null) expected.delete(key);
   bounded(highest, key, raw.seq);
-  return { status: "found", state: raw };
+  return remember({ status: "found", state: raw });
 }
 
 /**
@@ -149,9 +158,8 @@ export async function seatStateRead(input: SeatStateExpect): Promise<SeatStateRe
   if (running) return running;
   const p = (async () => {
     try {
-      const r = await readOnce(x, key);
-      if (r.status !== "unavailable") bounded(cache, key, { for: forWhat, read: r, at: clock() });
-      else cache.delete(key);
+      const r = await readOnce(x, key, forWhat);
+      if (r.status === "unavailable") cache.delete(key);
       return r;
     } finally {
       inflight.delete(flight);
