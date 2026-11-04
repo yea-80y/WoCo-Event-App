@@ -42,8 +42,8 @@ const liveDeps: SeatedReserveDeps = {
   readSeatChain,
   mintedSeats,
   lookupOnChainEventId,
-  noteChainCancelled: (eventId, id) => noteChainCancelled(eventId, id),
-  expireSession: (c) => expireCheckoutSession(c),
+  noteChainCancelled,
+  expireSession: expireCheckoutSession,
 };
 
 const refuse = (status: ContentfulStatusCode, error: string, extra: Record<string, unknown> = {}): Reply =>
@@ -115,27 +115,13 @@ export async function reserveSeated(
   return { status: 200, body: { ok: true, data: seatedHoldView(r.reservation, payment) } };
 }
 
-export interface SeatedHoldView {
-  reservationId: string;
-  expiresAt: string;
-  quantity: number;
-  planDigest: string;
-  seats: Array<{ seat: number; label: string; band: string; bandName: string; priceMinor: number; chargeMinor: number }>;
-  amounts: {
-    currency: string;
-    mode: string;
-    feePercent: number;
-    subtotalMinor: number;
-    orderFeeMinor: number;
-    bookingFeeMinor: number;
-    totalMinor: number;
-  };
-  /** A Stripe page is open for this hold: the page offers "Pay" again, not a new hold. */
-  checkout: boolean;
-}
+export type SeatedHoldView = ReturnType<typeof seatedHoldView>;
 
-/** The hold as a page shows it: each seat's pinned price and charge, and the order's total. */
-export function seatedHoldView(h: Reservation, payment: Pick<PaymentConfig, "currency" | "feePassedToCustomer" | "buyerFeePercent" | "coverFees">): SeatedHoldView {
+/**
+ * The hold as a page shows it: each seat's pinned price and charge, and the order's total.
+ * `checkout`: a Stripe page is open for it, so the page offers "Pay" again, not a new hold.
+ */
+export function seatedHoldView(h: Reservation, payment: Pick<PaymentConfig, "currency" | "feePassedToCustomer" | "buyerFeePercent" | "coverFees">) {
   const info = h.seatInfo ?? [];
   const seats = h.seats ?? [];
   const a = cardOrderAmountsMulti(payment, info.map((s) => s.priceMinor));

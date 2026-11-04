@@ -22,9 +22,7 @@ export type PinnedPlan =
 export const PLAN_CHANGED = "This seating plan has changed. Reload the page to see the current one.";
 const PLAN_UNREADABLE = "The seating plan could not be read. Try again in a moment.";
 
-/** swarmManifestRef → its seat plan's Swarm ref. Content-addressed both sides, so never stale. */
-const planRefByManifest = new Map<string, string>();
-
+/** The manifest is read only when the plan is not already in memory (plan-store's memo). */
 export async function pinnedSeatPlan(
   swarmManifestRef: string | undefined,
   planDigest: string,
@@ -34,29 +32,24 @@ export async function pinnedSeatPlan(
   const hit = cachedSeatPlan(digest);
   if (hit) return { ok: true, plan: hit };
   if (!swarmManifestRef) return { ok: false, status: 409, error: PLAN_CHANGED };
-  let ref = planRefByManifest.get(swarmManifestRef.toLowerCase());
-  if (!ref) {
-    let raw: string;
-    try {
-      raw = await deps.download(swarmManifestRef);
-    } catch {
-      return { ok: false, status: 503, error: PLAN_UNREADABLE };
-    }
-    let blob: unknown;
-    try {
-      blob = JSON.parse(raw);
-    } catch {
-      return { ok: false, status: 409, error: PLAN_CHANGED };
-    }
-    const m = (blob as { signedManifest?: unknown } | null)?.signedManifest;
-    if (!validateSignedManifestV2(m)) return { ok: false, status: 409, error: PLAN_CHANGED };
-    const t = seatPlanTemplateOf(m.body);
-    if (!t || t === "invalid" || t.digest.toLowerCase() !== digest) return { ok: false, status: 409, error: PLAN_CHANGED };
-    ref = t.ref;
-    planRefByManifest.set(swarmManifestRef.toLowerCase(), ref);
-  }
+  let raw: string;
   try {
-    const plan = await deps.loadSeatPlan(ref, digest);
+    raw = await deps.download(swarmManifestRef);
+  } catch {
+    return { ok: false, status: 503, error: PLAN_UNREADABLE };
+  }
+  let blob: unknown;
+  try {
+    blob = JSON.parse(raw);
+  } catch {
+    return { ok: false, status: 409, error: PLAN_CHANGED };
+  }
+  const m = (blob as { signedManifest?: unknown } | null)?.signedManifest;
+  if (!validateSignedManifestV2(m)) return { ok: false, status: 409, error: PLAN_CHANGED };
+  const t = seatPlanTemplateOf(m.body);
+  if (!t || t === "invalid" || t.digest.toLowerCase() !== digest) return { ok: false, status: 409, error: PLAN_CHANGED };
+  try {
+    const plan = await deps.loadSeatPlan(t.ref, digest);
     return plan ? { ok: true, plan } : { ok: false, status: 409, error: PLAN_CHANGED };
   } catch (err) {
     if (err instanceof SeatPlanUnavailableError) return { ok: false, status: 503, error: PLAN_UNREADABLE };

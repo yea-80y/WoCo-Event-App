@@ -628,6 +628,29 @@ function endHold(r: Reservation, by: NonNullable<Reservation["releasedBy"]>): vo
 }
 
 /**
+ * Close a hold's open session at Stripe, then end the hold. "kept": it is paid (Stripe
+ * says complete, or fulfilment has it). "error": Stripe unreachable, or a newer session
+ * was bound while we asked - either way something may still pay, so nothing is released.
+ */
+async function closeThenEnd(
+  r: Reservation,
+  by: NonNullable<Reservation["releasedBy"]>,
+  expire: (c: HoldCheckout) => Promise<SessionExpiry>,
+): Promise<"ended" | "kept" | "error"> {
+  if (r.consumedAt || r.fulfilling) return "kept";
+  if (sessionOpen(r, Date.now())) {
+    const closing = r.checkout!;
+    const verdict = await expire(closing);
+    if (verdict === "error") return "error";
+    if (verdict === "complete") return "kept";
+    if (r.checkout?.sessionId !== closing.sessionId) return "error";
+  }
+  if (r.consumedAt || r.fulfilling) return "kept";
+  if (!r.releasedBy) endHold(r, by);
+  return "ended";
+}
+
+/**
  * Hold seats. Under the series lock: this browser's hold on exactly these seats comes
  * back unchanged (its clock and checkout kept); otherwise this browser's other holds on
  * the series end first (an open checkout closed at Stripe before its seats return);
@@ -669,18 +692,12 @@ export async function reserveSeats(a: {
 
     const own = [...reservations.values()].filter((r) => here(r) && isActive(r, now) && !r.fulfilling &&
       (r.id === a.replaceReservationId || (!!a.clientKey && r.clientKey === a.clientKey)));
-    const busy = { ok: false as const, status: 503 as const, error: "We couldn't let go of your other seats just now. Try again in a moment." };
     for (const r of own) {
-      if (sessionOpen(r, now)) {
-        const closing = r.checkout!;
-        const verdict = await a.expireSession(closing);
-        if (verdict === "error") return busy;
-        // Paid, or being paid while we asked: that order stands, its seats stay with it.
-        if (verdict === "complete" || r.consumedAt || r.fulfilling) continue;
-        // A newer session was bound meanwhile: it is payable, so the hold stays.
-        if (r.checkout?.sessionId !== closing.sessionId) return busy;
+      // A paid one ("kept") stands as its own order, its seats with it.
+      if ((await closeThenEnd(r, "replaced", a.expireSession)) === "error") {
+        persistToDisk();
+        return { ok: false, status: 503, error: "We couldn't let go of your other seats just now. Try again in a moment." };
       }
-      endHold(r, "replaced");
     }
     if (own.length) persistToDisk();
 
@@ -822,31 +839,17 @@ export function releaseForExpiredSession(sessionId: string): boolean {
   return false;
 }
 
-/**
- * The buyer lets go of a seated hold. An open session is closed at Stripe first; one
- * Stripe says is complete keeps the hold (it is a sale). Idempotent.
- */
+/** The buyer lets go of a seated hold: its open session closed at Stripe first. Idempotent. */
 export async function releaseSeatedHold(
   id: string,
   expireSession: (c: HoldCheckout) => Promise<SessionExpiry>,
 ): Promise<"released" | "paid" | "error"> {
   ensureLoaded();
   const r = reservations.get(id);
-  if (!r || r.consumedAt) return r?.consumedAt ? "paid" : "released";
-  if (r.fulfilling) return "paid";
-  if (sessionOpen(r, Date.now())) {
-    const closing = r.checkout!;
-    const verdict = await expireSession(closing);
-    if (verdict === "error") return "error";
-    if (verdict === "complete") return "paid";
-    if (r.checkout?.sessionId !== closing.sessionId) return "error";
-  }
-  if (r.consumedAt || r.fulfilling) return "paid";
-  if (!r.releasedBy && isActive(r, Date.now())) {
-    endHold(r, "buyer");
-    persistToDisk();
-  }
-  return "released";
+  if (!r) return "released";
+  const out = await closeThenEnd(r, "buyer", expireSession);
+  persistToDisk();
+  return out === "ended" ? "released" : out === "kept" ? "paid" : "error";
 }
 
 export interface ReservationsHealth {

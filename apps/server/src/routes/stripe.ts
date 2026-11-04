@@ -43,7 +43,7 @@ import {
 } from "@woco/shared";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
-import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
+import { checkoutExpiresAt, seatedCheckoutExpiresAt } from "../lib/event/checkout-expiry.js";
 import { chainEventEndMsAt } from "../lib/event/end-date-guard.js";
 import { ledger2SaleStatus, noteChainCancelled } from "../lib/event/ledger2-sale-status.js";
 import { hashEmail } from "../lib/event/claim-service.js";
@@ -61,7 +61,7 @@ import {
   EventContractConfigError,
 } from "../lib/chain/event-contract.js";
 import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
-import { lookupOnChainEventId, saleContractFor } from "../lib/event/onchain-registry.js";
+import { lookupOnChainEventId, registrationSeatingFor, saleContractFor } from "../lib/event/onchain-registry.js";
 import { seatedSaleRefusal } from "../lib/seating/seated-sale.js";
 import { attendeeCheckoutRefusal, orderRefOf } from "../lib/attendee-batch/writer.js";
 import { getOrderRecord, isOrderErased } from "../lib/attendee-batch/ledger.js";
@@ -79,7 +79,18 @@ import { alreadyApplied, noteApplied, reconcileChargeEvent } from "../lib/stripe
 import { liveSaleRefundReads } from "../lib/stripe/sale-refunds-live.js";
 import { liveFulfilmentDeps } from "../lib/stripe/fulfilment-live.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
-import { getReservation } from "../lib/event/reservation-store.js";
+import {
+  bindCheckout,
+  getReservation,
+  MAX_SESSIONS_PER_HOLD,
+  releaseForExpiredSession,
+  reservationsPersisting,
+  SEAT_SALES_PAUSED,
+  type Reservation,
+} from "../lib/event/reservation-store.js";
+import { seatedCheckoutLines, seatedPriceRefusal } from "../lib/seating/seated-checkout.js";
+import { expireCheckoutSession } from "../lib/stripe/checkout-session-expire.js";
+import { FEATURES } from "@woco/shared";
 import { validateReturnUrl, getFrontendUrl } from "../lib/stripe/return-url.js";
 import { checkoutRedirectUrls } from "../lib/stripe/checkout-urls.js";
 import { checkoutStatusView, isCheckoutSessionId } from "../lib/stripe/checkout-status.js";
@@ -883,11 +894,27 @@ stripe.post("/create-checkout", async (c) => {
       409,
     );
   }
-  // Allocated seating: sold by seat, from a seat hold; refused here as at /reserve
-  // until the seated checkout ships (seated-sale.ts).
-  const seatedRefusal = seatedSaleRefusal(eventId, seriesId);
-  if (seatedRefusal) return c.json(seatedRefusal.body, seatedRefusal.status);
   const mintTarget = sale.contract;
+  // Allocated seating (docs/SEATING.md "Selling a seat"): a series registered seated
+  // sells only from a seat hold on its pinned plan, at the prices that hold showed; the
+  // mint takes its seats from that hold and nowhere else.
+  const seating = registrationSeatingFor(eventId, seriesId);
+  let seatedHold: Reservation | null = null;
+  if (seating) {
+    const flagOff = FEATURES.seatedEventsAllowed ? null : seatedSaleRefusal(eventId, seriesId);
+    if (flagOff) return c.json(flagOff.body, flagOff.status);
+    const held = reservationId ? getReservation(reservationId) : null;
+    if (!held?.seats || !held.seatInfo || held.planDigest !== seating.planDigest || mintTarget.version !== "ledger2") {
+      return c.json({ ok: false, error: "Choose your seats again to continue.", code: "SEATS_REQUIRED" }, 409);
+    }
+    if (!reservationsPersisting()) return c.json({ ok: false, error: SEAT_SALES_PAUSED }, 503);
+    if ((held.checkout?.sessions ?? 0) >= MAX_SESSIONS_PER_HOLD) {
+      return c.json({ ok: false, error: "Hold your seats again to continue.", code: "HOLD_AGAIN" }, 409);
+    }
+    const priceProblem = seatedPriceRefusal(held.seatInfo, series.seating);
+    if (priceProblem) return c.json({ ok: false, error: priceProblem, code: "PRICES_CHANGED" }, 409);
+    seatedHold = held;
+  }
 
   // Past-event gate (#241). The "This event has ended" banner is client-side
   // only — a stale tab, deep link, or direct API call otherwise reaches a
@@ -1083,7 +1110,18 @@ stripe.post("/create-checkout", async (c) => {
   if (series.payment.coverFees !== undefined && !acceptedCoverFeeRates(series.payment.coverFees)) {
     return c.json({ ok: false, error: "This ticket's booking fee is out of date - the organiser needs to republish the event" }, 409);
   }
-  const { chargeAmount, orderFeeAmount, sessionAmount, totalApplicationFee } = computeCardFees(series.payment, priceFloat, quantity);
+  // A seated order is priced seat by seat from its hold (one Stripe line per band).
+  const seatedLines = seatedHold
+    ? seatedCheckoutLines(seatedHold.seatInfo!, series.payment, stripeCurrency, { series: series.name, event: event.title })
+    : null;
+  const { chargeAmount, orderFeeAmount, sessionAmount, totalApplicationFee } = seatedLines
+    ? {
+        chargeAmount: 0,
+        orderFeeAmount: seatedLines.amounts.orderFeeMinor,
+        sessionAmount: seatedLines.amounts.totalMinor,
+        totalApplicationFee: seatedLines.amounts.applicationFeeMinor,
+      }
+    : computeCardFees(series.payment, priceFloat, quantity);
   if (totalApplicationFee < MIN_APPLICATION_FEE_MINOR) {
     return c.json({ ok: false, error: "This ticket's price is too low to sell by card" }, 400);
   }
@@ -1145,7 +1183,19 @@ stripe.post("/create-checkout", async (c) => {
 
   // #300: the session must not outlive the event it sells for. Undefined keeps
   // Stripe's 24 h default (event end is 24 h+ away, so the default is tighter).
-  const expiresAt = checkoutExpiresAt(event, Date.now(), chainEndMs);
+  // A seated session gets Stripe's shortest life: its hold runs as long as it does.
+  const expiresAt = seatedHold ? seatedCheckoutExpiresAt(Date.now()) : checkoutExpiresAt(event, Date.now(), chainEndMs);
+
+  // One payable session per seated hold: the one it has is closed at Stripe first.
+  // "complete" means it was paid - no second sale of the same seats.
+  const prevSessionId = seatedHold?.checkout?.sessionId ?? null;
+  if (seatedHold?.checkout && Date.parse(seatedHold.checkout.expiresAt) > Date.now()) {
+    const closed = await expireCheckoutSession(seatedHold.checkout);
+    if (closed === "complete") {
+      return c.json({ ok: false, error: "These seats have been paid for. Your tickets are on the way by email.", code: "HOLD_PAID" }, 409);
+    }
+    if (closed === "error") return c.json({ ok: false, error: "We couldn't start a new payment just now. Try again in a moment." }, 503);
+  }
 
   try {
     const s = getStripe();
@@ -1228,7 +1278,7 @@ stripe.post("/create-checkout", async (c) => {
         mode: "payment",
         allowed_payment_method_types: CHECKOUT_PAYMENT_METHOD_TYPES,
         ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
-        line_items: [
+        line_items: seatedLines ? seatedLines.lineItems : [
           {
             price_data: {
               currency: stripeCurrency,
@@ -1277,6 +1327,17 @@ stripe.post("/create-checkout", async (c) => {
       { stripeAccount: organiserRecord.stripeAccountId },
     );
     const stripeMs = performance.now() - tStripe;
+
+    // The seats are held for as long as this session can be paid - if the hold is still
+    // there to bind. If it ran out meanwhile, the new session is closed, never left payable.
+    if (seatedHold && !bindCheckout(seatedHold.id, prevSessionId, {
+      sessionId: session.id,
+      account: organiserRecord.stripeAccountId,
+      expiresAtMs: (session.expires_at ?? expiresAt!) * 1000,
+    })) {
+      await expireCheckoutSession({ sessionId: session.id, account: organiserRecord.stripeAccountId, expiresAt: new Date().toISOString(), sessions: 1 });
+      return c.json({ ok: false, error: "Your hold on these seats ran out. Hold them again to continue.", code: "HOLD_EXPIRED" }, 410);
+    }
 
     console.log(
       `[stripe/create-checkout] timings — swarm=${swarmMs.toFixed(0)}ms ` +
@@ -1556,6 +1617,19 @@ stripe.post("/webhook", async (c) => {
             // Cannot happen by contract; if it ever does, the log is the only trace.
             console.error("[stripe-webhook] fulfilPaidSession rejected — INVARIANT BROKEN:", err);
           });
+      }
+      break;
+    }
+
+    case "checkout.session.expired": {
+      // A seated hold waits on its session: once Stripe says the session can never be
+      // paid, its seats go back on sale at once rather than at the hold's own time. The
+      // authority is the session id the hold recorded when it was bound, never this
+      // event's metadata, so no provenance read is needed; any other session (general
+      // admission, a shop order, an organiser's own) changes nothing.
+      const session = event.data.object as import("stripe").Stripe.Checkout.Session;
+      if (releaseForExpiredSession(session.id)) {
+        console.log(`[stripe-webhook] ${session.id} expired - its seat hold is released`);
       }
       break;
     }

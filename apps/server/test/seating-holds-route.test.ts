@@ -113,11 +113,14 @@ test("the agent rail refuses a seated series in the one resolver its quote and b
   assert.equal((src.match(/resolveSeriesPayment\(eventId, seriesId\)/g) ?? []).length, 2, "quote and buy both resolve through it");
 });
 
-test("create-checkout applies the same refusal (wiring: the quantity checkout cannot sell a seated series)", () => {
+test("create-checkout applies the same refusal (wiring: no seated sale without the flag, or without a seat hold)", () => {
   const src = readFileSync(join(cwd, "src/routes/stripe.ts"), "utf-8");
   const gate = src.indexOf("const sale = saleContractFor(eventId, seriesId);");
-  const refusal = src.indexOf("seatedSaleRefusal(eventId, seriesId)");
-  const mint = src.indexOf("const mintTarget = sale.contract;");
-  assert.ok(gate > 0 && refusal > gate && refusal < mint, "refused right after the contract gate, before any chain read");
-  assert.match(src.slice(refusal, mint), /return c\.json\(seatedRefusal\.body, seatedRefusal\.status\)/);
+  const seated = src.indexOf("const seating = registrationSeatingFor(eventId, seriesId);");
+  const firstChainRead = src.indexOf("getOnChainEventAt(mintTarget");
+  assert.ok(gate > 0 && seated > gate && seated < firstChainRead, "decided right after the contract gate, before any chain read");
+  const branch = src.slice(seated, firstChainRead);
+  assert.match(branch, /FEATURES\.seatedEventsAllowed \? null : seatedSaleRefusal\(eventId, seriesId\)/);
+  assert.match(branch, /if \(flagOff\) return c\.json\(flagOff\.body, flagOff\.status\)/);
+  assert.match(branch, /SEATS_REQUIRED/);
 });
