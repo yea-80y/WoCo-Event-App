@@ -15,6 +15,7 @@
 import { encode } from "uqr";
 import { parseTicketFragment, TICKET_IMAGE_GATEWAYS, type TicketDisplay } from "@woco/shared/ticket/link";
 import { WOCO_TICKET_COLOURS } from "@woco/shared/ticket/card";
+import { ticketSeatFields, ticketSeatNote, type TicketSeat } from "@woco/shared/seating/ticket-seat";
 import { downloadCanvas, drawTicketCard, loadCorsImage } from "../lib/ticket-card/draw.js";
 
 const INK = "#0c0d12";
@@ -73,11 +74,29 @@ async function saveImage(payload: string, title: string, display: TicketDisplay)
     : [];
   const photo = urls.length ? await loadCorsImage(urls) : null;
   const canvas = drawTicketCard(
-    { title, startIso: display.date, location: display.location, series: display.series, colours: WOCO_TICKET_COLOURS },
+    { title, startIso: display.date, location: display.location, series: display.series, seat: display.seat, colours: WOCO_TICKET_COLOURS },
     payload,
     photo,
   );
   await downloadCanvas(canvas, "ticket.png");
+}
+
+/** Allocated seating: the seat as labelled fields, in real text (the saved image is not read aloud). */
+function showSeat(seat: TicketSeat): void {
+  const box = byId("seat");
+  const list = byId("seat-fields");
+  if (!box || !list) return;
+  for (const f of ticketSeatFields(seat)) {
+    const field = document.createElement("div");
+    const dt = document.createElement("dt");
+    const dd = document.createElement("dd");
+    dt.textContent = f.label;
+    dd.textContent = f.value;
+    field.append(dt, dd);
+    list.appendChild(field);
+  }
+  setText("seat-note", ticketSeatNote(seat) ?? undefined);
+  box.hidden = false;
 }
 
 /** The event image, from the gateway the link names, falling back to the other. */
@@ -133,6 +152,7 @@ function run(): void {
   setText("date", display.date ? formatDate(display.date) : undefined);
   setText("loc", display.location);
   setText("series", display.series);
+  if (display.seat) showSeat(display.seat);
   document.title = `${title} - ticket`;
   if (display.image) showImage(display.image, display.gateway ?? 0);
 

@@ -13,11 +13,15 @@
   import { attendeeName } from "./attendee-search.js";
   import { armAudio, feedbackSuccess, feedbackDuplicate, feedbackInvalid, feedbackCantConfirm } from "./feedback.js";
   import QrCamera from "./QrCamera.svelte";
+  import SeatFields from "../components/seating/SeatFields.svelte";
+  import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
 
   const REARM_MS = 3000;
   const CARD_MS = 2600;
   /** Longer: staff need time to read why, and to decide to scan again. */
   const CANT_CONFIRM_CARD_MS = 5000;
+  /** A seat is read out to the guest; the next scan replaces the card at once anyway. */
+  const SEATED_CARD_MS = 4000;
 
   let outcome = $state<ScanOutcome | null>(null);
   let manualValue = $state("");
@@ -64,7 +68,8 @@
 
     outcome = result;
     if (cardTimer) clearTimeout(cardTimer);
-    cardTimer = setTimeout(() => (outcome = null), result.kind === "cant-confirm" ? CANT_CONFIRM_CARD_MS : CARD_MS);
+    const ms = result.kind === "cant-confirm" ? CANT_CONFIRM_CARD_MS : "seat" in result && result.seat ? SEATED_CARD_MS : CARD_MS;
+    cardTimer = setTimeout(() => (outcome = null), ms);
     busy = false;
   }
 
@@ -105,22 +110,31 @@
         <span class="verdict-who">{attendeeName(attendee)}</span>
       {/if}
     {/snippet}
+    {#snippet seatBlock(seat: TicketSeat | null | undefined)}
+      {#if seat}
+        <SeatFields {seat} />
+      {:else if seat === null}
+        <span class="verdict-detail">Seat not shown - refresh the ticket list to see it</span>
+      {/if}
+    {/snippet}
     <button
       class="verdict"
       class:ok={kind === "checked-in"}
       class:dup={kind === "duplicate"}
-      class:bad={kind === "rejected" || kind === "wrong-event" || kind === "refunded"}
+      class:bad={kind === "rejected" || kind === "wrong-event" || kind === "refunded" || kind === "no-seat"}
       class:unsure={kind === "cant-confirm"}
       onclick={dismiss}
     >
       {#if outcome.kind === "checked-in"}
         <span class="verdict-title">CHECKED IN</span>
         {@render who(outcome.attendee)}
+        {@render seatBlock(outcome.seat)}
         <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
         <span class="verdict-badge">✓ Ticket verified</span>
       {:else if outcome.kind === "duplicate"}
         <span class="verdict-title">ALREADY IN</span>
         {@render who(outcome.attendee)}
+        {@render seatBlock(outcome.seat)}
         <span class="verdict-detail">
           #{String(outcome.edition).padStart(3, "0")} · {formatTime(outcome.record.at)}
           {outcome.record.method === "manual" ? " (manual)" : ""}
@@ -130,6 +144,11 @@
         {@render who(outcome.attendee)}
         <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
         <span class="verdict-detail">The payment for this ticket was refunded or reversed. Not valid for entry.</span>
+      {:else if outcome.kind === "no-seat"}
+        <span class="verdict-title">NO SEAT</span>
+        {@render who(outcome.attendee)}
+        <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
+        <span class="verdict-detail">This ticket is genuine but has no seat right now. Send the guest to the organiser to be seated.</span>
       {:else if outcome.kind === "cant-confirm"}
         <span class="verdict-title">COULDN'T CONFIRM</span>
         {@render who(outcome.attendee)}

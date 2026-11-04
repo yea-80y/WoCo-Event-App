@@ -552,7 +552,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     ONLY source for choosing the seat path and the plan (the chain cannot say
     which plan). A build from before seating reads it as ordinary and drops both
     fields on its next write: those series then refund rather than mint (the
-    ledger refuses the general path), and the plan link must be restored from
+    ledger refuses the general path), the door refuses their tickets until the
+    record is restored (the ledger still says seated: `/api/health` `doorSeats`
+    red), and the plan link must be restored from
     the backup - and those series must NOT be re-registered, which would mint a
     second on-chain event)
   kernel-deployed.json (which Kernels have been seen with an on-chain owner, WHICH

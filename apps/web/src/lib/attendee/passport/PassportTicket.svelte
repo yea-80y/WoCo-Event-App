@@ -7,19 +7,25 @@
 <script lang="ts">
   import { openEvent } from "../events/open-event.js";
   import { daysUntil, whenLabel, type PassportTicket as Ticket } from "./passport.js";
+  import { ticketSeatNote, ticketSeatPlace, ticketSeatText, type TicketSeat } from "@woco/shared/seating/ticket-seat";
 
   let {
     ticket,
     now,
     size = "row",
     pending = false,
+    seat = null,
   }: {
     ticket: Ticket;
     now: number;
     size?: "row" | "large";
     /** Event details are still being fetched. */
     pending?: boolean;
+    /** Allocated seating: where it sits now - printed on the stub, as paper tickets do. */
+    seat?: TicketSeat | null;
   } = $props();
+
+  const seatNote = $derived(seat ? ticketSeatNote(seat) : null);
 
   const event = $derived(ticket.event);
   const start = $derived.by(() => {
@@ -48,23 +54,32 @@
     <span class="meta">
       {#if start}
         <span class="sr-only">{start.toLocaleDateString(undefined, { day: "numeric", month: "long" })},</span>
-        {start.toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" })}{#if event?.location}<span aria-hidden="true"> · </span>{event.location}{/if}
+        {start.toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" })}{#if event?.location}<span aria-hidden="true">&nbsp;·&nbsp;</span>{event.location}{/if}
       {:else if event}
         {event.location}
       {:else}
         {pending ? "Loading event details" : "Event details couldn't load right now"}
       {/if}
     </span>
+    {#if seat}
+      <span class="seat-line">
+        <span class="sr-only">Seat: {ticketSeatText(seat)}.</span>
+        <span aria-hidden="true">{ticketSeatPlace(seat)}</span>{#if seatNote}<span class="seat-note">{seatNote}</span>{/if}
+      </span>
+    {/if}
     {#if when}<span class="when">{when}</span>{/if}
   </span>
-  <!-- The stub, without the edition: its sequence would tell the buyer how many have sold. -->
-  <span class="stub" aria-hidden="true"></span>
+  <!-- The stub, without the edition: its sequence would tell the buyer how many have sold.
+       A seated ticket's stub carries its seat number, as a paper ticket's does. -->
+  <span class="perf" aria-hidden="true">
+    {#if seat}<span class="tear"><span class="tear-label">Seat</span><span class="tear-seat">{seat.seat}</span></span>{/if}
+  </span>
 {/snippet}
 
 {#if event}
-  <button type="button" class="stub stub--{size}" onclick={open}>{@render face()}</button>
+  <button type="button" class="stub stub--{size}" class:seated={!!seat} onclick={open}>{@render face()}</button>
 {:else}
-  <div class="stub stub--{size}">{@render face()}</div>
+  <div class="stub stub--{size}" class:seated={!!seat}>{@render face()}</div>
 {/if}
 
 <style>
@@ -139,7 +154,9 @@
   .meta { font-size: 0.8125rem; color: var(--text-muted); }
   .when { margin-top: 0.125rem; font-size: 0.75rem; font-weight: 600; color: var(--accent); }
 
-  .stub {
+  /* Its own class: sharing `.stub` with the card turned the card's grid into flex and
+     drew the card's border and mask on the perforation. */
+  .perf {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -148,6 +165,39 @@
     color: var(--text-muted);
     border-left: 1px dashed var(--text-dim);
   }
+
+  .seated { --perf: 4.5rem; }
+  .seat-line {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .seat-note { margin-left: 0.5em; font-weight: 500; color: var(--accent); }
+  .tear {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    line-height: 1;
+  }
+  .tear-label {
+    font-family: var(--font-body);
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+  .tear-seat {
+    margin-top: 0.25rem;
+    font-family: var(--font-display);
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .stub--large .tear-seat { font-size: 2rem; }
 
   .stub--large .date { min-width: 4rem; padding: 0.875rem 0.625rem; }
   .stub--large .day { font-size: 1.875rem; }

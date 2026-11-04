@@ -6,6 +6,7 @@
  */
 import type { ApiResponse } from "@woco/shared";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
 import { authGet, authPost } from "./client.js";
 import { openHeldTickets, type HeldCopy } from "../creator/dashboard/held-tickets.js";
 
@@ -17,6 +18,8 @@ export interface UndeliveredRow {
   reason: string;
   typedAddress: string | null;
   editions: number[];
+  /** Allocated seating: each edition's seat now (null: none, or unreadable). Absent otherwise. */
+  seats?: (TicketSeat | null)[];
   resendsLeft: number;
   blocked: string | null;
 }
