@@ -33,7 +33,7 @@ export {
   saleState, seatStates, pickable, seatReason,
   type ChainSeats, type SaleState, type SeatCode, type SeatStateInput, type SeatStates,
 } from "./availability.js";
-export { SEAT_WORDS_PER_BATCH, seatBatch, seatWordCount, type SeatBatch, type SeatBatchRead, type SeatEventRead } from "./chain.js";
+export { SEAT_WORDS_PER_BATCH, SLOT_SEATS_PER_BATCH, seatBatch, slotSeatsBatch, seatWordCount, type SeatBatch, type SeatBatchRead, type SeatEventRead } from "./chain.js";
 export {
   parseSeatedReserve, seatedReserveRefusal, seatedHoldFees, SEAT_HOLD_LOST_CODES, isSeatHoldLost,
   type SeatedHold, type SeatedReserveRequest, type SeatedReserveRefusal,

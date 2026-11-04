@@ -23,6 +23,7 @@ const SEL = {
   isSeated: "b2db691d",
   seatWord: "10173035",
   seatNonces: "287af508",
+  seatOf: "4eb29918",
   /** Multicall3 `getCurrentBlockTimestamp()`. */
   blockTimestamp: "0f28c97d",
 } as const;
@@ -106,3 +107,37 @@ export function seatBatch(ledger: string, eventId: string, req: { event: boolean
 }
 
 export const seatWordCount = (seats: number): number => Math.ceil(seats / 256);
+
+/** Slots per batch for `slotSeatsBatch` (the door's batch size). */
+export const SLOT_SEATS_PER_BATCH = 512;
+
+/**
+ * Where each of `slots` sits now (`seatOf`: a seat index, or `NO_SEAT` = 2^64-1), with
+ * the block, and the event's `nextSlot` at that block: a slot at or past it is not
+ * minted on the replica that answered, so it is left out rather than read as seatless.
+ * The organiser's order rows and Seats tab (S6).
+ */
+export function slotSeatsBatch(ledger: string, eventId: string, slots: readonly number[]) {
+  const calls: ViewCall[] = [
+    { target: ARBSYS_ADDRESS, data: ARB_BLOCK_NUMBER },
+    { target: ledger, data: staticCall(SEL.getEvent, eventId) },
+    ...slots.map((s) => ({ target: ledger, data: staticCall(SEL.seatOf, eventId, s) })),
+  ];
+  const expect = [32, 128, ...slots.map(() => 32)];
+  return {
+    calls,
+    expect,
+    decode(results: readonly CallResult[]): { block: bigint | null; seats: Map<number, bigint> } {
+      const b = results[0];
+      const ev = results[1];
+      const seats = new Map<number, bigint>();
+      if (!b || !ev) return { block: null, seats };
+      const minted = uintAt(ev, 1);
+      slots.forEach((s, i) => {
+        const r = results[i + 2];
+        if (r && BigInt(s) < minted) seats.set(s, uintAt(r, 0));
+      });
+      return { block: uintAt(b, 0), seats };
+    },
+  };
+}
