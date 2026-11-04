@@ -118,7 +118,7 @@ test("F1: a torn head is stepped past - the save starts from the last whole vers
   const torn = { ...existing(7, [[3, "press"]]), holds: whole.holds }; // pages from two saves: the digest no longer matches
   const f = writer({ versions: [existing(5, []), whole, torn] });
   const r = await writeSeatState(f.w, FEED, SERIES, PLAN, { hold: new Map([[4, "house"]]) });
-  assert.equal(r.state.seq, 7, "on top of seq 6, the last whole state");
+  assert.equal(r.state.seq, 8, "on top of seq 6's holds, above the torn head's own seq 7");
   assert.deepEqual([...heldOf(r.state)].sort((x, y) => x[0] - y[0]), [[2, "guest"], [4, "house"]]);
   assert.equal(f.versions.length, 4, "landed after the torn version");
   const unusable = writer({ versions: [whole], head: () => ({ status: "unavailable", unusableAt: 1 }) });
@@ -144,6 +144,34 @@ test("F2: another device's bytes at the version written are a conflict, never 's
   const slow = writer({ versions: [existing(4, [])], lagging: true });
   const r = await writeSeatState(slow.w, FEED, SERIES, PLAN, { hold: new Map([[5, "press"]]) });
   assert.equal(r.settled, false, "written, not read back yet");
+});
+
+test("review: a missed read below an existing head is unreadable, never stepped past (no rollback)", async () => {
+  const f = writer({
+    versions: [existing(5, [[2, "guest"]]), existing(6, [[3, "press"]]), { bad: 1 }],
+    readVersion: (v) => (v === 1 ? { status: "absent" } : { status: "found", value: existing(5, [[2, "guest"]]), version: v, scanClean: true }),
+  });
+  await assert.rejects(writeSeatState(f.w, FEED, SERIES, PLAN, { hold: new Map([[4, "house"]]) }), SeatStateUnreadableError);
+  assert.equal(f.writes.length, 0);
+});
+
+test("review: the new seq goes above a stepped-past head's own seq", async () => {
+  const torn = { ...existing(9, [[3, "press"]]), holds: [] }; // claims seq 9, does not validate
+  const f = writer({ versions: [existing(6, [[2, "guest"]]), torn] });
+  const r = await writeSeatState(f.w, FEED, SERIES, PLAN, { hold: new Map([[4, "house"]]) });
+  assert.equal(r.state.seq, 10);
+});
+
+test("review: a read-back torn under our own digest field is a conflict, not 'saved'", async () => {
+  const f = writer({ versions: [existing(4, [])] });
+  const origWrite = f.w.write;
+  f.w.write = async (a) => {
+    const v = await origWrite(a);
+    const mine = a.data as SeatState;
+    f.versions[v] = { ...mine, holds: [] }; // earlier pages from another save, our last page (and digest field)
+    return v;
+  };
+  await assert.rejects(writeSeatState(f.w, FEED, SERIES, PLAN, { hold: new Map([[2, "guest"]]) }), SeatStateConflictError);
 });
 
 test("refused, nothing written: unreadable, inconclusive, absent on a device that has seen it, another plan's", async () => {

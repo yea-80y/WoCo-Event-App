@@ -157,7 +157,10 @@ export async function writeSeatState(
     const lowest = Math.max(0, from - TORN_READ_DOWN);
     for (let v = from - 1; v >= lowest; v--) {
       const r = await w.readVersion(signer.address, topic, route, v);
-      if (r.status === "unavailable" && r.unusableAt === undefined) throw new SeatStateUnreadableError();
+      // Below a head that exists every version exists: absent is a miss, not a gap, and
+      // stepping past it could roll holds back. Only a version that reads but does not
+      // validate, or can never be read, is stepped past.
+      if (r.status === "absent" || (r.status === "unavailable" && r.unusableAt === undefined)) throw new SeatStateUnreadableError();
       const own = r.status === "found" ? await ownSeatState(r.value, feed.eventId, seriesId) : null;
       if (own) return own;
     }
@@ -166,6 +169,10 @@ export async function writeSeatState(
     throw new SeatStateUnreadableError();
   };
   const head = await w.read(signer.address, topic, route);
+  // A stepped-past head may have announced its seq to the server: the new one goes above it.
+  const headSeq = head.status === "found" && Number.isSafeInteger((head.value as { seq?: unknown } | null)?.seq)
+    ? ((head.value as { seq: number }).seq)
+    : -1;
   let base: SeatState | null;
   if (head.status === "absent") {
     if (w.hadVersion(signer.address, topic)) throw new SeatStateUnreadableError();
@@ -196,7 +203,7 @@ export async function writeSeatState(
     seats: plan.seats,
     holds,
     confirmed,
-    seq: base ? base.seq + 1 : 0,
+    seq: Math.max(base ? base.seq : -1, headSeq) + 1,
     updatedAt: w.now(),
   });
   const version = await w.write({ signerPrivKey: signer.privKey, topic, data: state, route });
@@ -205,7 +212,10 @@ export async function writeSeatState(
   // write was dropped - a SOC at an existing address keeps the first - and so does a tear.
   const back = await w.readVersion(signer.address, topic, route, version).catch(() => null);
   if (back?.status === "found") {
-    if ((back.value as { digest?: unknown } | null)?.digest !== state.digest) throw new SeatStateConflictError();
+    // Validated in full: the digest is the last field, so a tear whose last page is ours
+    // would match on the field alone. Validation recomputes it over what was read.
+    const own = await ownSeatState(back.value, feed.eventId, seriesId);
+    if (!own || own.digest !== state.digest) throw new SeatStateConflictError();
     return { state, settled: true };
   }
   return { state, settled: false };
