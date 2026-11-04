@@ -132,6 +132,13 @@ test("pinned prices and fee settings must still be the feed's", () => {
     { ...PAY, feePassedToCustomer: false }, { ...PAY, buyerFeePercent: 12 }, { ...PAY, currency: "EUR" },
     { currency: "GBP", feePassedToCustomer: true, coverFees: COVER_FEE_RATES },
   ]) assert.equal(seatedPriceRefusal(h, feed, other as never), PRICES_CHANGED, JSON.stringify(other));
+  // An edit that changes no figure changes no key: a percent under the floor still prices at
+  // the floor; cover rates count only in cover mode.
+  const under = { currency: "GBP", feePassedToCustomer: true, buyerFeePercent: 1 };
+  assert.equal(holdFeeKey(under), holdFeeKey({ ...under, buyerFeePercent: 2 }));
+  const none = { currency: "GBP", feePassedToCustomer: false };
+  assert.equal(holdFeeKey(none), holdFeeKey({ ...none, coverFees: COVER_FEE_RATES, buyerFeePercent: 12 }));
+  assert.notEqual(holdFeeKey(none), holdFeeKey(PAY));
   assert.equal(seatedPriceRefusal({ seatInfo: info }, feed, PAY), PRICES_CHANGED, "no fee key pinned");
   assert.equal(seatedPriceRefusal({ feeKey: h.feeKey }, feed, PAY), PRICES_CHANGED, "no prices pinned");
   assert.equal(seatedPriceRefusal(h, feed, undefined), PRICES_CHANGED, "no payment on the feed");

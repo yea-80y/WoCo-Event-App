@@ -625,6 +625,7 @@ export type SeatedReserveResult =
 
 export const SEAT_SALES_PAUSED = "Seat sales are paused for a moment. Please try again shortly.";
 export const SEATS_GONE = "Some of these seats have just been taken. Choose others.";
+export const SEATS_PAID = "These seats have been paid for. Your tickets are on the way by email.";
 
 const sessionOpen = (r: Reservation, now: number): boolean =>
   !!r.checkout && Date.parse(r.checkout.expiresAt) > now;
@@ -713,14 +714,19 @@ export async function reserveSeats(a: {
 
     const own = [...reservations.values()].filter((r) => here(r) && isActive(r, now) && !r.fulfilling &&
       (r.id === a.replaceReservationId || (!!a.clientKey && r.clientKey === a.clientKey)));
+    let paidForThese = false;
     for (const r of own) {
       // A paid one ("kept") stands as its own order, its seats with it.
-      if ((await closeThenEnd(r, "replaced", a.expireSession)) === "error") {
+      const out = await closeThenEnd(r, "replaced", a.expireSession);
+      if (out === "error") {
         persistToDisk();
         return { ok: false, status: 503, error: "We couldn't let go of your other seats just now. Try again in a moment." };
       }
+      if (out === "kept" && r.seats && sameSeats(r.seats, a.seats)) paidForThese = true;
     }
     if (own.length) persistToDisk();
+    // This browser just paid for exactly these (another tab): say so, not "taken".
+    if (paidForThese) return { ok: false, status: 409, error: SEATS_PAID };
 
     const v = await a.verify();
     if (!v.ok) return v;

@@ -7,7 +7,7 @@
  */
 
 import type { Stripe } from "stripe";
-import { cardOrderAmountsMulti, type CardOrderAmountsMulti, type PaymentConfig } from "@woco/shared";
+import { bookingFeeMode, bookingFeePercent, cardOrderAmountsMulti, type CardOrderAmountsMulti, type PaymentConfig } from "@woco/shared";
 import { bandPricesMinor } from "@woco/shared/seating/series";
 import type { SeriesSeating } from "@woco/shared";
 import { isPlainRecord } from "@woco/shared/validate";
@@ -17,6 +17,7 @@ import {
   markCheckoutClosed,
   MAX_SESSIONS_PER_HOLD,
   SEAT_SALES_PAUSED,
+  SEATS_PAID,
   type HoldCheckout,
   type Reservation,
   type SeatedHoldSeat,
@@ -28,10 +29,15 @@ export const PRICES_CHANGED = "Seat prices for this event have changed. Hold you
 
 type FeeSettings = Pick<PaymentConfig, "currency" | "feePassedToCustomer" | "buyerFeePercent" | "coverFees">;
 
-/** Everything besides the band prices that a seated hold's amounts depend on, as one comparable value. */
+/**
+ * Everything besides the band prices that a seated hold's amounts depend on, as one
+ * comparable value: the fee as the arithmetic applies it (mode, clamped percent, cover
+ * rates in cover mode only), so an edit that changes no figure changes no key.
+ */
 export function holdFeeKey(p: FeeSettings): string {
+  const mode = bookingFeeMode(p);
   const c = p.coverFees;
-  return JSON.stringify([p.currency, !!p.feePassedToCustomer, p.buyerFeePercent ?? null, c ? [c.stripeBp, c.stripeFixedMinor, c.radarMinor] : null]);
+  return JSON.stringify([p.currency, mode, bookingFeePercent(p), mode === "cover" && c ? [c.stripeBp, c.stripeFixedMinor, c.radarMinor] : null]);
 }
 
 type Refusal = { status: 409 | 410 | 503; body: { ok: false; error: string; code?: string } };
@@ -85,7 +91,7 @@ export async function openSeatedSession<S extends { id: string; expires_at?: num
   const prev = hold.checkout ?? null;
   if (prev && Date.parse(prev.expiresAt) > Date.now()) {
     const closed = await deps.expire(prev);
-    if (closed === "complete") return { ok: false, ...refusal(409, "These seats have been paid for. Your tickets are on the way by email.", "HOLD_PAID") };
+    if (closed === "complete") return { ok: false, ...refusal(409, SEATS_PAID, "HOLD_PAID") };
     if (closed === "error") return { ok: false, ...refusal(503, "We couldn't start a new payment just now. Try again in a moment.") };
     deps.markClosed(hold.id, prev.sessionId);
   }

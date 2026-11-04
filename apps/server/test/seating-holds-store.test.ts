@@ -274,6 +274,25 @@ test("a hold that checkout would refuse is not handed back: the buyer told to ho
   assert.ok(fresh.reservation.seatInfo);
 });
 
+test("holding again seats this browser has just paid for (another tab) says they are paid, not taken", async () => {
+  const a = await hold([3, 4]);
+  assert.ok(a.ok);
+  assert.ok(store.bindCheckout(a.reservation.id, null, { sessionId: "cs_paid", account: "acct_1", expiresAtMs: Date.now() + 32 * min }));
+  const paid = async () => "complete" as const;
+  const again = await hold([3, 4], { expireSession: paid, reusable: () => false });
+  assert.ok(!again.ok);
+  assert.equal(again.status, 409);
+  assert.equal(again.error, store.SEATS_PAID);
+  assert.equal(store.getReservation(a.reservation.id)!.releasedBy, undefined, "the paid hold is kept");
+  // Other seats while that one is paid: a new hold as usual.
+  seed([]);
+  const b = await hold([5]);
+  assert.ok(b.ok);
+  store.bindCheckout(b.reservation.id, null, { sessionId: "cs_b", account: "acct_1", expiresAtMs: Date.now() + 32 * min });
+  const other = await hold([6], { expireSession: paid });
+  assert.ok(other.ok, "a different seat set is not the paid one");
+});
+
 test("the fee settings a hold was priced under are recorded with it", async () => {
   const a = await hold([3], { feeKey: '["GBP",true,10,null]' });
   assert.ok(a.ok);
