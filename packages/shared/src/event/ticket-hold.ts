@@ -20,21 +20,22 @@ export interface TicketHoldPlaintext {
   qrContent: string;
 }
 
-/** The QR fulfilment emails for one seat: `woco://t/{eventId}/{seriesId}/{edition}/{sig}`. */
-export function ticketQrNamesSeat(qrContent: string, eventId: string, seriesId: string, edition: number): boolean {
+/** The QR fulfilment emails for one edition: `woco://t/{eventId}/{seriesId}/{edition}/{sig}`.
+ *  (An edition is a ticket slot, not an allocated seat: the seat lives on chain, `seatOf`.) */
+export function ticketQrNamesEdition(qrContent: string, eventId: string, seriesId: string, edition: number): boolean {
   const m = /^woco:\/\/t\/([0-9a-z-]{1,64})\/([0-9a-z-]{1,64})\/([1-9][0-9]{0,9})\/0x[0-9a-fA-F]{130}$/.exec(qrContent);
   return !!m && m[1] === eventId && m[2] === seriesId && Number(m[3]) === edition;
 }
 
-/** A box that opens to anything but this seat's held ticket is refused, never shown. */
+/** A box that opens to anything but this edition's held ticket is refused, never shown. */
 export function isTicketHoldPlaintext(
   x: unknown,
-  seat: { eventId: string; seriesId: string; edition: number; sessionId: string },
+  ticket: { eventId: string; seriesId: string; edition: number; sessionId: string },
 ): x is TicketHoldPlaintext {
-  const { eventId, seriesId, edition, sessionId } = seat;
+  const { eventId, seriesId, edition, sessionId } = ticket;
   const p = x as Partial<TicketHoldPlaintext> | null;
   return (
     !!p && p.v === 1 && p.sessionId === sessionId && p.seriesId === seriesId && p.edition === edition &&
-    typeof p.qrContent === "string" && ticketQrNamesSeat(p.qrContent, eventId, seriesId, edition)
+    typeof p.qrContent === "string" && ticketQrNamesEdition(p.qrContent, eventId, seriesId, edition)
   );
 }

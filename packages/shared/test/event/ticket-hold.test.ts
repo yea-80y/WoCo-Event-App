@@ -18,7 +18,7 @@ import {
   ticketHoldSealContext,
 } from "../../src/crypto/sealed-box.js";
 import { deriveXWingKeypairFromSeed } from "../../src/crypto/xwing.js";
-import { isTicketHoldPlaintext, ticketQrNamesSeat, type TicketHoldPlaintext } from "../../src/event/ticket-hold.js";
+import { isTicketHoldPlaintext, ticketQrNamesEdition, type TicketHoldPlaintext } from "../../src/event/ticket-hold.js";
 
 const EVENT = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 const SERIES = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
@@ -58,12 +58,12 @@ test("a held ticket opens under its own seat and sale, and nowhere else", async 
 });
 
 test("the QR names this seat - event, ticket type and edition", () => {
-  assert.equal(ticketQrNamesSeat(qr(2), EVENT, SERIES, 2), true);
-  assert.equal(ticketQrNamesSeat(qr(3), EVENT, SERIES, 2), false);
-  assert.equal(ticketQrNamesSeat(qr(2, "0e8b2c1a-0000-4000-8000-000000000000"), EVENT, SERIES, 2), false);
-  assert.equal(ticketQrNamesSeat(qr(2, EVENT, "0e8b2c1a-0000-4000-8000-000000000000"), EVENT, SERIES, 2), false);
-  assert.equal(ticketQrNamesSeat(`${qr(2)}x`, EVENT, SERIES, 2), false);
-  assert.equal(ticketQrNamesSeat(`woco://t/${EVENT}/${SERIES}/2/0xabc`, EVENT, SERIES, 2), false, "a whole signature");
+  assert.equal(ticketQrNamesEdition(qr(2), EVENT, SERIES, 2), true);
+  assert.equal(ticketQrNamesEdition(qr(3), EVENT, SERIES, 2), false);
+  assert.equal(ticketQrNamesEdition(qr(2, "0e8b2c1a-0000-4000-8000-000000000000"), EVENT, SERIES, 2), false);
+  assert.equal(ticketQrNamesEdition(qr(2, EVENT, "0e8b2c1a-0000-4000-8000-000000000000"), EVENT, SERIES, 2), false);
+  assert.equal(ticketQrNamesEdition(`${qr(2)}x`, EVENT, SERIES, 2), false);
+  assert.equal(ticketQrNamesEdition(`woco://t/${EVENT}/${SERIES}/2/0xabc`, EVENT, SERIES, 2), false, "a whole signature");
 });
 
 test("an opened box is shown only when it is this seat's held ticket", () => {

@@ -93,10 +93,18 @@ test("a long title wraps to at most two lines, each inside the card", () => {
   for (const l of lines) assert.ok(estimateTextWidth(l.text, 64, "sans", 700) <= TICKET_CARD_WIDTH - 112);
 });
 
+const SEATS = [
+  undefined,
+  { area: "Rear stalls", row: "D", seat: 7 },
+  { area: "Stalls", row: "AA", seat: 112, wheelchair: true as const },
+  { area: "Table 3", seat: 5, table: true as const },
+  { area: "The Grand Upper Circle Balcony Overlooking The Stage", row: "ZZ12", seat: 999_999, companion: true as const },
+];
+
 test("everything sits inside the card, and the QR clears the dash and the captions", () => {
   for (const title of ["X", base.title, "Two Words Two Words Two Words Two Words Two Words"]) {
-    for (const hasPhoto of [true, false]) {
-      const ops = ticketCardOps({ ...base, title, hasPhoto });
+    for (const hasPhoto of [true, false]) for (const seat of SEATS) {
+      const ops = ticketCardOps({ ...base, title, hasPhoto, seat });
       for (const t of texts(ops)) {
         assert.ok(t.y > 0 && t.y < TICKET_CARD_HEIGHT, `${t.text} y=${t.y}`);
         const w = estimateTextWidth(t.text, t.size, t.font, t.weight, t.letterSpacing ?? 0);
@@ -110,8 +118,24 @@ test("everything sits inside the card, and the QR clears the dash and the captio
       assert.ok(qr.y > dash.y, "QR below the tear line");
       assert.ok(qr.y + qr.size < firstCaption.y - firstCaption.size, "QR above the captions");
       assert.ok(qr.x >= 0 && qr.x + qr.size <= TICKET_CARD_WIDTH);
+      assert.ok(qr.size >= 420, "the QR stays large enough to scan");
     }
   }
+});
+
+test("a seated card prints the seat as labelled fields above the tear line; general admission prints none", () => {
+  const rows = texts(ticketCardOps({ ...base, seat: { area: "Rear stalls", row: "D", seat: 7 } }));
+  const at = (s: string) => rows.find((t) => t.text === s);
+  for (const s of ["SECTION", "ROW", "SEAT", "Rear stalls", "D", "7"]) assert.ok(at(s), s);
+  assert.ok(at("SECTION")!.x < at("ROW")!.x && at("ROW")!.x < at("SEAT")!.x, "Section, Row, Seat in reading order");
+  const dash = ticketCardOps({ ...base, seat: { area: "Rear stalls", row: "D", seat: 7 } }).find((o) => o.kind === "dash")!;
+  assert.ok(dash.kind === "dash" && at("7")!.y < dash.y);
+  const table = texts(ticketCardOps({ ...base, seat: { area: "Table 3", seat: 5, table: true } })).map((t) => t.text);
+  assert.ok(table.includes("TABLE") && table.includes("3") && table.includes("5") && !table.includes("ROW"));
+  const wheel = texts(ticketCardOps({ ...base, seat: { area: "Stalls", row: "A", seat: 1, wheelchair: true } })).map((t) => t.text);
+  assert.ok(wheel.includes("Wheelchair space"));
+  const ga = texts(ticketCardOps(base)).map((t) => t.text);
+  for (const s of ["SECTION", "SEAT", "TABLE"]) assert.equal(ga.includes(s), false, s);
 });
 
 test("an organiser palette recolours the card; none keeps WoCo's look", () => {

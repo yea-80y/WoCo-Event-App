@@ -101,3 +101,52 @@ test("an all-zero image reference means no image, on both sides", () => {
   const hand = `https://woco.eth.limo/ticket.html#${TICKET.eventId}/s/7/${TICKET.sig}?i=${"0".repeat(64)}`;
   assert.equal(parseTicketFragment(new URL(hand).hash)!.display.image, undefined);
 });
+
+// ── Allocated seating (S5) ──────────────────────────────────────────────────
+
+test("a seat round-trips as parts: rows, a table, wheelchair and companion flags", () => {
+  for (const seat of [
+    { area: "Rear stalls", row: "D", seat: 7 },
+    { area: "Table 3", seat: 5, table: true as const },
+    { area: "Stalls", row: "AA", seat: 112, wheelchair: true as const },
+    { area: "Circle", row: "B", seat: 2, companion: true as const },
+    { area: "Café & Bar", row: "Ä", seat: 999_999 },
+  ]) {
+    const link = buildTicketLink("https://woco.eth.limo", TICKET, { title: "Night", seat });
+    assert.deepEqual(parseTicketFragment(new URL(link).hash)!.display.seat, seat);
+  }
+});
+
+test("an edited seat that does not make a valid one shows no seat, and never costs the ticket", () => {
+  const head = `https://woco.eth.limo/ticket.html#${TICKET.eventId}/s/7/${TICKET.sig}?t=Night`;
+  for (const q of [
+    "&sa=Stalls",                        // no number
+    "&sa=Stalls&sn=0",                    // not a seat number
+    "&sa=Stalls&sn=07",                   // not as printed
+    "&sa=Stalls&sn=1234567",              // too long
+    "&sa=%20Stalls&sn=7",                 // outer space
+    "&sa=Sta%E2%80%8Blls&sn=7",           // an invisible character
+    `&sa=${"a".repeat(81)}&sn=7`,         // past the layout's cap
+    "&sa=Stalls&sr=ROWLABELTOOLONG&sn=7", // row past its cap
+    "&sa=&sn=7",                          // empty
+  ]) {
+    const parsed = parseTicketFragment(new URL(head + q).hash)!;
+    assert.equal(parsed.display.seat, undefined, q);
+    assert.equal(parsed.display.title, "Night");
+    assert.deepEqual(parsed.ticket.edition, 7);
+  }
+  // A flag only as "1": anything else is no flag.
+  const odd = parseTicketFragment(new URL(`${head}&sa=Stalls&sn=7&sw=yes`).hash)!;
+  assert.deepEqual(odd.display.seat, { area: "Stalls", seat: 7 });
+});
+
+test("a long link gives up series, location, date and image before the seat, and the seat before the title", () => {
+  const seat = { area: "Rear stalls", row: "D", seat: 7 };
+  const full = { title: "Rooftop Sessions", location: "l".repeat(400), series: "s".repeat(400), image: IMAGE, date: "2026-10-12T21:00:00Z", seat };
+  const parsed = parseTicketFragment(new URL(buildTicketLink("https://woco.eth.limo", TICKET, full)).hash)!;
+  assert.deepEqual(parsed.display.seat, seat);
+  assert.equal(parsed.display.title, "Rooftop Sessions");
+  const tight = parseTicketFragment(new URL(buildTicketLink("https://woco.eth.limo", { ...TICKET, seriesId: "x".repeat(700) }, { title: "t".repeat(80), seat })).hash)!;
+  assert.equal(tight.display.seat, undefined, "the seat goes before the title");
+  assert.ok(tight.display.title);
+});
