@@ -39,7 +39,15 @@ interface Model {
   failSeatSlots?: Set<number>;
   down?: boolean;
   noBlock?: boolean;
+  /** The event's `nextSlot` as this replica sees it (default: every slot minted); "revert" fails the call. */
+  minted?: number | "revert";
 }
+
+const getEventAnswer = (nextSlot: number) => {
+  const out = new Uint8Array(128);
+  out.set(word(BigInt(nextSlot)), 32);
+  return out;
+};
 
 function chain(m: Model) {
   const batches: ViewCall[][] = [];
@@ -51,6 +59,7 @@ function chain(m: Model) {
       const slot = c.data.length > 74 ? Number(BigInt(`0x${c.data.slice(74, 138)}`)) : -1;
       if (c.target === "0x0000000000000000000000000000000000000064") return m.noBlock ? null : word(m.block);
       if (sel === "b2db691d") return m.seated === "revert" ? null : word(m.seated ? 1n : 0n);
+      if (sel === "8c172fa2") return m.minted === "revert" ? null : getEventAnswer(m.minted ?? 1_000_000);
       if (m.failSlots?.has(slot)) return null;
       if (sel === "4eb29918" && m.failSeatSlots?.has(slot)) return null;
       if (sel === "17e7f2ff") return addressWord(m.owners[slot] ?? "0x0");
@@ -67,8 +76,32 @@ test("owner and seat per slot, NO_SEAT as -1, an unclaimed slot as no owner", as
   assert.deepEqual(r.owners, [A, B, ""]);
   assert.deepEqual(r.seats, [4, NO_SEAT_INDEX, NO_SEAT_INDEX]);
   assert.equal(r.seated, true);
-  assert.equal(c.batches.length, 1, "one batch: block, isSeated, owner + seat per slot");
-  assert.equal(c.batches[0].length, 1 + 1 + 3 * 2);
+  assert.equal(c.batches.length, 1, "one batch: block, isSeated, the event's count, owner + seat per slot");
+  assert.equal(c.batches[0].length, 1 + 1 + 1 + 3 * 2);
+});
+
+test("F3: a replica behind a fresh mint leaves that slot unread, never cached as 'no ticket'", async () => {
+  let t = 1_000;
+  // The caller's count (3) came from a replica that has the third ticket; this one does not yet.
+  const m: Model = { block: 10n, owners: { 0: A, 1: B }, seats: { 0: 1n, 1: 2n }, seated: true, minted: 2 };
+  const c = chain(m);
+  const r = await readSlotStates(LEDGER, EVENT, 3, { seats: true, supply: 5 }, c.call, () => t);
+  assert.deepEqual(r.owners, [A, B, null]);
+  assert.deepEqual(r.seats, [1, 2, null]);
+  // Next pack, inside the cache window: the slot is read again and now found.
+  Object.assign(m, { block: 11n, minted: 3, owners: { 0: A, 1: B, 2: A }, seats: { 0: 1n, 1: 2n, 2: 7n } });
+  t += 1_000;
+  const again = await readSlotStates(LEDGER, EVENT, 3, { seats: true, supply: 5 }, c.call, () => t);
+  assert.deepEqual(again.owners, [A, B, A]);
+  assert.deepEqual(again.seats, [1, 2, 7]);
+});
+
+test("F3: a batch whose count could not be read is dropped whole", async () => {
+  const c = chain({ block: 10n, owners: { 0: A }, seats: { 0: 1n }, seated: true, minted: "revert" });
+  const r = await readSlotStates(LEDGER, EVENT, 1, { seats: true, supply: 1 }, c.call, () => 1_000);
+  assert.deepEqual(r.owners, [null]);
+  assert.deepEqual(r.seats, [null]);
+  assert.equal(r.seated, true, "isSeated still read: it does not depend on the count");
 });
 
 test("a general-admission read asks no seats", async () => {
@@ -77,7 +110,7 @@ test("a general-admission read asks no seats", async () => {
   assert.deepEqual(r.owners, [A]);
   assert.deepEqual(r.seats, []);
   assert.equal(r.seated, false);
-  assert.equal(c.batches[0].length, 3);
+  assert.equal(c.batches[0].length, 4);
 });
 
 test("slots are read in batches of SLOTS_PER_BATCH", async () => {
