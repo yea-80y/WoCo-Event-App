@@ -81,3 +81,12 @@ test("the pay panel shows Confirm email under its email box, and its Pay waits f
   assert.match(block, /onEmailConfirmChange/);
   assert.match(claim, /onEmailConfirmChange=\{\(v\) => \{ emailConfirm = v; \}\}/);
 });
+
+test("the pay panel asks for the email before Pay: details first, Pay last", () => {
+  const box = panel.indexOf("{#if showEmailInput}");
+  const pay = panel.indexOf("Pay with card");
+  assert.ok(box > 0 && pay > 0);
+  assert.ok(box < panel.indexOf("<MarketingControl"), "the opt-in follows the address it is about");
+  assert.ok(box < pay, "the boxes Pay waits for sit above it");
+  assert.match(panel, /placeholder="Email for your ticket"\s+aria-label="Email for your ticket"/);
+});
