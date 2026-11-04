@@ -21,7 +21,13 @@ import {
 } from "../lib/event/reservation-store.js";
 import { seatCapForReserve } from "../lib/event/seat-cap.js";
 import { seatedSaleRefusal } from "../lib/seating/seated-sale.js";
+import { reserveSeated, releaseSeated } from "../lib/seating/seated-reserve.js";
+import { PLAN_CHANGED } from "../lib/seating/seat-reads.js";
+import { reservationsPersisting, SEAT_SALES_PAUSED } from "../lib/event/reservation-store.js";
 import { clientIp } from "../lib/http/client-ip.js";
+import { FEATURES } from "@woco/shared";
+import { MAX_PLAN_SEATS } from "@woco/shared/seating/layout";
+import { parseSeatedReserve, seatedReserveRefusal, type SeatedReserveRequest } from "@woco/shared/seating/reserve";
 
 const reservations = new Hono<AppEnv>();
 
@@ -73,9 +79,13 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   if (gate === "cancelled") return c.json({ ok: false, error: "This event has been cancelled" }, 409);
   if (gate === "unknown") return c.json({ ok: false, error: "Ticket sales are temporarily unavailable" }, 503);
 
-  // Allocated seating: held by seat, and this route holds by quantity (seated-sale.ts).
-  const seatedRefusal = seatedSaleRefusal(eventId, seriesId);
-  if (seatedRefusal) return c.json(seatedRefusal.body, seatedRefusal.status);
+  // Allocated seating: a series registered seated is held by SEAT (decision 4: keyed on
+  // the registration record, never the feed), and only once seated sales are on.
+  const seating = registrationSeatingFor(eventId, seriesId);
+  if (seating && !FEATURES.seatedEventsAllowed) {
+    const seatedRefusal = seatedSaleRefusal(eventId, seriesId);
+    if (seatedRefusal) return c.json(seatedRefusal.body, seatedRefusal.status);
+  }
 
   let body: Record<string, unknown>;
   try {
@@ -84,10 +94,21 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const rawQty = body.quantity;
-  const quantity = Number.isInteger(rawQty) ? Number(rawQty) : NaN;
-  if (!Number.isFinite(quantity) || quantity < 1 || quantity > RESERVATION_MAX_QTY) {
-    return c.json({ ok: false, error: "Invalid quantity" }, 400);
+  let quantity = NaN;
+  let seatReq: SeatedReserveRequest | null = null;
+  if (seating) {
+    // Range against the plan comes later, with the plan in hand.
+    seatReq = parseSeatedReserve(body, MAX_PLAN_SEATS);
+    if (!seatReq) return c.json({ ok: false, error: "Choose the seats to hold" }, 400);
+    if (seatedReserveRefusal(seatReq, seating)) return c.json({ ok: false, error: PLAN_CHANGED, code: "PLAN_CHANGED" }, 409);
+    if (!reservationsPersisting()) return c.json({ ok: false, error: SEAT_SALES_PAUSED }, 503);
+    quantity = seatReq.seats.length;
+  } else {
+    const rawQty = body.quantity;
+    quantity = Number.isInteger(rawQty) ? Number(rawQty) : NaN;
+    if (!Number.isFinite(quantity) || quantity < 1 || quantity > RESERVATION_MAX_QTY) {
+      return c.json({ ok: false, error: "Invalid quantity" }, 400);
+    }
   }
 
   // Optional: release this prior reservation atomically inside the per-series
@@ -172,6 +193,14 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   // at no more than the live supply the read below sees (a ledger2 cut). The store
   // evaluates it after that read, synchronously - see the invariant note at the check.
   const seatCap = seatCapForReserve(event.series, seriesId);
+
+  if (seating && seatReq) {
+    const r = await reserveSeated({
+      eventId, seriesId, seats: seatReq.seats, planDigest: seating.planDigest, series, contract, seatCap,
+      replaceReservationId, clientKey, ip,
+    });
+    return c.json(r.body, r.status);
+  }
 
   // Closure that the reservation store uses to ask "what is available right
   // now?" — the contract is the only supply ledger.
@@ -273,6 +302,14 @@ reservations.post("/:eventId/series/:seriesId/reserve/release", async (c) => {
   const r = getReservation(reservationId);
   if (r && (r.seriesId !== seriesId || r.eventId !== eventId)) {
     return c.json({ ok: false, error: "Reservation series mismatch" }, 400);
+  }
+
+  // A seated hold may have a Stripe session open: it is closed there before the seats
+  // return (one Stripe call, so rate limited like a hold).
+  if (r?.seats) {
+    if (!checkRate(clientIp(c))) return c.json({ ok: false, error: "Rate limit exceeded" }, 429);
+    const out = await releaseSeated(reservationId);
+    return c.json(out.body, out.status);
   }
 
   release(reservationId);

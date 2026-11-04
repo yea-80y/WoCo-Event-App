@@ -6,6 +6,7 @@
 import { formatMinor, seatText, type BuyerPlan } from "./buyer.js";
 import type { SeatMapProblem } from "./load.js";
 import { SEAT_FREE, type SaleState, type SeatStates } from "@woco/shared/seating/availability";
+import { cardOrderAmounts, cardOrderAmountsMulti } from "@woco/shared/event/fees";
 
 /** A sentence for why the map cannot sell right now, or null when it can. */
 export function mapNotice(o: { problem?: SeatMapProblem | null; sale?: SaleState | null; serverOk?: boolean }): { text: string; retry: boolean } | null {
@@ -43,14 +44,28 @@ export function seatsText(bp: BuyerPlan, seats: readonly number[]): string {
 export const seatPriceMinor = (bp: BuyerPlan, bandPrices: readonly (number | null)[], k: number): number | null =>
   bandPrices[bp.plan.seats[k]?.b] ?? null;
 
-export function picksTotal(bp: BuyerPlan, bandPrices: readonly (number | null)[], picks: readonly number[]): number {
-  return picks.reduce((sum, k) => sum + (seatPriceMinor(bp, bandPrices, k) ?? 0), 0);
+type Fees = Parameters<typeof cardOrderAmountsMulti>[0];
+
+/**
+ * Every price the map shows includes the booking fee (#921, the card's headline): per band,
+ * what one seat costs; for the picked seats, the order total checkout charges
+ * (`cardOrderAmountsMulti`, so an order-level fee is counted once). Without fee settings,
+ * the band prices as they are.
+ */
+export function shownBandPrices(bandPrices: readonly (number | null)[], fees: Fees | undefined): (number | null)[] {
+  return bandPrices.map((p) => (p === null || !fees ? p : cardOrderAmounts(fees, p, 1).totalMinor));
 }
 
-/** "2 seats · £44". */
-export function totalLine(bp: BuyerPlan, bandPrices: readonly (number | null)[], picks: readonly number[], currency: string): string {
+export function picksTotal(bp: BuyerPlan, bandPrices: readonly (number | null)[], picks: readonly number[], fees?: Fees): number {
+  const units = picks.map((k) => seatPriceMinor(bp, bandPrices, k) ?? 0);
+  if (!fees || !units.length) return units.reduce((sum, u) => sum + u, 0);
+  return cardOrderAmountsMulti(fees, units).totalMinor;
+}
+
+/** "2 seats · £61.60", booking fee included when `fees` are given. */
+export function totalLine(bp: BuyerPlan, bandPrices: readonly (number | null)[], picks: readonly number[], currency: string, fees?: Fees): string {
   const n = picks.length;
-  return `${n} ${n === 1 ? "seat" : "seats"} · ${formatMinor(picksTotal(bp, bandPrices, picks), currency)}`;
+  return `${n} ${n === 1 ? "seat" : "seats"} · ${formatMinor(picksTotal(bp, bandPrices, picks, fees), currency)}`;
 }
 
 /** "£22-28" / "£22" for a set of minor prices. */

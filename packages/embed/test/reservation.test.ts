@@ -7,10 +7,44 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { secondsUntil, formatCountdown, holdResult, usableHold, type Hold } from "../src/reservation.js";
+import { secondsUntil, formatCountdown, holdResult, seatHoldResult, usableHold, type Hold } from "../src/reservation.js";
 
 const NOW = Date.parse("2026-09-13T18:00:00.000Z");
 const inSecs = (s: number) => new Date(NOW + s * 1000).toISOString();
+
+// Allocated seating: the seated hold reply (docs/SEATING.md S4).
+const seatedReply = () => ({
+  ok: true,
+  data: {
+    reservationId: "r-1", expiresAt: inSecs(600), quantity: 2, planDigest: "0x" + "5e".repeat(32), checkout: false,
+    seats: [7, 8].map((seat) => ({ seat, label: `Stalls, Row D, seat ${seat}`, band: "b1", bandName: "Stalls", priceMinor: 2200, chargeMinor: 2420 })),
+    amounts: { currency: "GBP", mode: "percent", feePercent: 10, subtotalMinor: 4400, orderFeeMinor: 0, bookingFeeMinor: 440, totalMinor: 4840 },
+  },
+});
+
+test("a whole seated reply is a hold for exactly its seats, with the server's amounts", () => {
+  const r = seatHoldResult(seatedReply());
+  assert.equal(r.kind, "held");
+  if (r.kind !== "held") return;
+  assert.deepEqual(r.hold, { reservationId: "r-1", expiresAt: inSecs(600), quantity: 2 });
+  assert.equal(r.seated.amounts.totalMinor, 4840);
+});
+
+test("a seated reply missing a seat, a label or an amount is not a hold", () => {
+  const short = seatedReply();
+  short.data.seats.pop();
+  const noLabel = seatedReply();
+  (noLabel.data.seats[0] as { label: unknown }).label = 7;
+  const noTotal = seatedReply();
+  (noTotal.data.amounts as { totalMinor: unknown }).totalMinor = "48.40";
+  for (const bad of [short, noLabel, noTotal, null, "x", { ok: true }]) assert.equal(seatHoldResult(bad).kind, "unavailable");
+});
+
+test("a refusal carries its message and the seats someone else has", () => {
+  const r = seatHoldResult({ ok: false, error: "Some of these seats have just been taken. Choose others.", conflicts: [8, -1, "9", 12] });
+  assert.deepEqual(r, { kind: "refused", message: "Some of these seats have just been taken. Choose others.", conflicts: [8, 12] });
+  assert.equal(seatHoldResult({ ok: false }).kind, "unavailable");
+});
 
 // ---------------------------------------------------------------------------
 // Countdown

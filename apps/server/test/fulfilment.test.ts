@@ -187,7 +187,14 @@ type Step =
   | "sendTicketEmailLedgered"
   | "sealDoorEntries"
   | "holdTicketCopy"
-  | "recordUndeliveredTicket";
+  | "recordUndeliveredTicket"
+  | "registrationSeatingFor"
+  | "claimSeatedHold"
+  | "batchClaimSeatsOnChain"
+  | "settleSeatedHold";
+
+/** The seated plan the default seated registration is pinned to. */
+const SEAT_PLAN = "0x" + "5d".repeat(32);
 
 interface FakeOpts {
   /** The step that throws. `sendTicketEmailLedgered` rejects with `ledgered: true`. */
@@ -225,6 +232,12 @@ interface FakeOpts {
   held?: boolean;
   /** Whether a non-held orderRef is already on the attendee batch. Default true. */
   orderStored?: boolean;
+  /**
+   * Allocated seating: the series is registered seated (pinned to `planDigest`, default
+   * SEAT_PLAN), the claim fulfilment gets (default seats 10 and 11), and how the seat
+   * mint ends (default: mints each seat).
+   */
+  seated?: { planDigest?: string; claim?: ReturnType<FulfilmentDeps["claimSeatedHold"]>; mintThrows?: Error };
 }
 
 function fakeDeps(o: FakeOpts = {}) {
@@ -256,7 +269,10 @@ function fakeDeps(o: FakeOpts = {}) {
   /** The contract each chain-end read went to. */
   const endReadOn: unknown[] = [];
   /** Sale-record writes (#645 part C). */
-  const saleSlots: Array<{ sessionId: string; onChainEventId: string; contract: string; slots: number[]; orderRef?: string }> = [];
+  const saleSlots: Array<{ sessionId: string; onChainEventId: string; contract: string; slots: number[]; orderRef?: string; seats?: number[] }> = [];
+  /** Seat mints: the seats asked for, burner by burner. */
+  const seatMints: number[][] = [];
+  const settles: Array<{ id: string; sessionId: string; outcome: string }> = [];
   const autoRefunds: Array<{ sessionId: string; amount: number }> = [];
   /** Sales handed to a cancellation's refund job (#644). */
   const cancellationQueue: Array<{ eventId: string; sessionId: string; paymentIntentId: string; account: string }> = [];
@@ -371,10 +387,36 @@ function fakeDeps(o: FakeOpts = {}) {
       return slots;
     },
     onChainBatchMax: o.batchMax ?? 100,
-    recordSaleSlots: (sessionId, onChainEventId, contract, slots, orderRef) => {
+    registrationSeatingFor: () => {
+      boom("registrationSeatingFor");
+      return o.seated ? { planDigest: o.seated.planDigest ?? SEAT_PLAN } : null;
+    },
+    claimSeatedHold: () => {
+      boom("claimSeatedHold");
+      return o.seated?.claim ?? {
+        ok: true,
+        seats: [10, 11],
+        planDigest: SEAT_PLAN,
+        seatInfo: [10, 11].map((k) => ({ band: "b1", bandName: "Stalls", label: `Stalls, Row A, seat ${k}`, priceMinor: 2200 })),
+      };
+    },
+    batchClaimSeatsOnChain: async (ev, burners, seats, _ref, contract) => {
+      boom("batchClaimSeatsOnChain");
+      if (o.seated?.mintThrows) throw o.seated.mintThrows;
+      minted.push(burners);
+      mintedAgainst.push(ev);
+      mintedOn.push(contract);
+      seatMints.push(seats);
+      return burners.map((_, i) => ({ slot: nextSlot++, seat: seats[i] }));
+    },
+    settleSeatedHold: (id, sessionId, outcome) => {
+      boom("settleSeatedHold");
+      settles.push({ id, sessionId, outcome });
+    },
+    recordSaleSlots: (sessionId, onChainEventId, contract, slots, orderRef, seats) => {
       // Attempt recorded before the throw: the invariant is that every minted
       // chunk REACHES the record, whether or not the store accepted it.
-      saleSlots.push({ sessionId, onChainEventId, contract, slots, orderRef });
+      saleSlots.push({ sessionId, onChainEventId, contract, slots, orderRef, ...(seats ? { seats } : {}) });
       boom("recordSaleSlots");
     },
     recordAutoRefund: (sessionId, amount) => {
@@ -456,7 +498,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries, holds, themeAsked };
+  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries, holds, themeAsked, seatMints, settles };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -1421,6 +1463,91 @@ test("the live wiring checks the site's owner against the event's creator", asyn
   const live = readFileSync(new URL("../src/lib/stripe/fulfilment-live.ts", import.meta.url), "utf8");
   assert.match(live, /getSiteTheme: \(siteId, eventId\) => organiserSiteTheme\(siteId, eventId\),/);
   assert.doesNotMatch(live, /import \{[^}]*\bgetSiteTheme\b[^}]*\} from "\.\.\/site\/service\.js"/, "never the unchecked read");
+});
+
+describe("allocated seating (docs/SEATING.md S4)", () => {
+  const unresolved = () => Object.assign(new Error("mint unresolved"), { name: "MintUnresolvedError" });
+
+  test("mints exactly the held seats, claimed before any await; seats reach the sale record and the email", async () => {
+    const { f, outcome } = await run({}, { seated: {} });
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(outcome.refund, { kind: "not-needed" });
+    assert.ok(f.calls.indexOf("claimSeatedHold") < f.calls.indexOf("eventKeys"), "claimed before the first await");
+    assert.deepEqual(f.seatMints, [[10, 11]]);
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false, "never the general-admission mint");
+    assert.deepEqual(f.saleSlots[0].seats, [10, 11]);
+    assert.deepEqual(f.emails[0].tickets.map((t) => t.seatLabel), ["Stalls, Row A, seat 10", "Stalls, Row A, seat 11"]);
+    assert.deepEqual(f.settles, [{ id: "res-1", sessionId: "cs_test_1", outcome: "minted" }]);
+    assert.deepEqual(f.consumed, [], "a seated hold is settled, not consumed by count");
+  });
+
+  test("a hold that is not this payment's refunds in full and is left alone", async () => {
+    const { f, outcome } = await run({}, { seated: { claim: { ok: false, reason: "the hold is not this payment's" } } });
+    assert.equal(outcome.issued, 0);
+    assert.equal(outcome.refund.kind, "created");
+    assert.match(outcome.stoppedReason ?? "", /not this payment's/);
+    assert.equal(f.minted.length, 0);
+    assert.deepEqual(f.settles, [], "another session's hold is not ours to end");
+    assert.deepEqual(f.consumed, []);
+  });
+
+  test("no hold named, a plan other than the pin, or a count that disagrees: refund, no mint", async () => {
+    // A hold this sale claimed is settled whatever stops it, so its seats go back at once.
+    const cases: Array<[string, SessionOpts, FakeOpts, string[]]> = [
+      ["no reservation", { reservationId: null }, { seated: {} }, []],
+      ["plan changed", {}, { seated: { planDigest: "0x" + "99".repeat(32) } }, ["not-minted"]],
+      ["count", { quantity: 3, amountTotal: 6600 }, { seated: {} }, ["not-minted"]],
+    ];
+    for (const [why, so, fo, settled] of cases) {
+      const { f, outcome } = await run(so, fo);
+      assert.equal(outcome.issued, 0, why);
+      assert.equal(outcome.refund.kind, "created", why);
+      assert.equal(f.minted.length, 0, why);
+      assert.deepEqual(f.settles.map((s) => s.outcome), settled, why);
+    }
+  });
+
+  test("the ledger refuses a seat (SeatTaken): full refund, never a substitute, seats back on sale", async () => {
+    const { f, outcome } = await run({}, { seated: { mintThrows: new Error("events contract refused the mint: SeatTaken") } });
+    assert.equal(outcome.issued, 0);
+    assert.deepEqual(outcome.refund, { kind: "created", refundId: "re_1", amount: "full" });
+    assert.match(outcome.stoppedReason ?? "", /SeatTaken/);
+    assert.deepEqual(f.settles.map((s) => s.outcome), ["not-minted"]);
+  });
+
+  test("a mint that may yet land keeps its seats off sale while the buyer is refunded", async () => {
+    const { f, outcome } = await run({}, { seated: { mintThrows: unresolved() } });
+    assert.equal(outcome.refund.kind, "created");
+    assert.deepEqual(f.settles.map((s) => s.outcome), ["unresolved"]);
+  });
+
+  test("an unexpected throw after the seat mint keeps the seats off sale (they may be on chain)", async () => {
+    const { f, outcome } = await run({}, { seated: {}, fail: "signMessage" });
+    assert.equal(f.seatMints.length, 1);
+    assert.equal(outcome.refund.kind, "created");
+    assert.deepEqual(f.settles.map((s) => s.outcome), ["unresolved"]);
+  });
+
+  test("a stop before the mint (sales closed) returns the seats at once", async () => {
+    const { f, outcome } = await run({}, { seated: {}, chainEndMs: Date.parse(PAST) });
+    assert.equal(outcome.issued, 0);
+    assert.deepEqual(f.settles.map((s) => s.outcome), ["not-minted"]);
+  });
+
+  test("a seating lookup that throws reads as general admission (the ledger refuses that mint on a seated event)", async () => {
+    const { f } = await run({}, { seated: {}, fail: "registrationSeatingFor" });
+    assert.equal(f.calls.includes("claimSeatedHold"), false);
+    assert.equal(f.calls.includes("batchClaimForOnChain"), true);
+  });
+
+  test("a claim that throws refunds; a settle that throws changes nothing else", async () => {
+    const claimThrows = await run({}, { seated: {}, fail: "claimSeatedHold" });
+    assert.equal(claimThrows.outcome.issued, 0);
+    assert.equal(claimThrows.outcome.refund.kind, "created");
+    const settleThrows = await run({}, { seated: {}, fail: "settleSeatedHold" });
+    assert.equal(settleThrows.outcome.issued, 2);
+    assert.equal(settleThrows.outcome.email, "sent");
+  });
 });
 
 test("#12: the webhook hands fulfilment the fee its provenance check proved the sale by", async () => {

@@ -295,6 +295,16 @@ export function getStyles(theme: "dark" | "light"): string {
       color: ${vars.textMuted};
     }
 
+    .seat-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      font-size: 0.8125rem;
+      color: ${vars.text};
+    }
+
+    .seat-list li { padding: 0.125rem 0; }
+
     .redirect-note {
       font-size: 0.6875rem;
       color: ${vars.textMuted};

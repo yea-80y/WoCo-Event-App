@@ -9,10 +9,12 @@
    * Everything seating-specific is loaded only here, only for a seated series: a
    * general-admission page never downloads the map.
    */
-  import { onMount } from "svelte";
+  import { onMount, type Snippet } from "svelte";
   import type { SeriesSummary } from "@woco/shared";
   import { headlinePrice } from "@woco/shared/event/fees";
+  import type { SeatedHold } from "@woco/shared/seating/reserve";
   import { seatMapFor } from "../../seating/seat-map-source.js";
+  import { reserveSeats } from "../../api/reservations.js";
 
   interface Props {
     eventId: string;
@@ -23,9 +25,26 @@
     open?: boolean;
     onopen?: () => void;
     onclose?: () => void;
+    /**
+     * The order form and payment for a hold, from the host page (which has the event's
+     * order key, questions and organiser). Absent: seats can be looked at, not held.
+     * Its second argument: call it with checkout's message when the hold can no longer be
+     * paid as it is (`isSeatHoldLost`); the picker offers to hold again.
+     */
+    checkout?: Snippet<[SeatedHold, (message: string) => void]>;
   }
 
-  let { eventId, eventTitle, series, apiUrl, open, onopen, onclose }: Props = $props();
+  let { eventId, eventTitle, series, apiUrl, open, onopen, onclose, checkout }: Props = $props();
+
+  /** The hold the buyer placed: what the checkout snippet sells, at the server's prices. */
+  let held = $state.raw<SeatedHold | null>(null);
+
+  async function hold(req: { seats: number[]; planDigest: string }) {
+    const r = await reserveSeats(eventId, series.seriesId, req);
+    if (!r.ok) return { ok: false as const, message: r.error, ...(r.conflicts ? { conflicts: r.conflicts } : {}) };
+    held = r.data;
+    return { ok: true as const, expiresAt: r.data.expiresAt };
+  }
 
   let ownOpen = $state(false);
   const isOpen = $derived(open ?? ownOpen);
@@ -87,9 +106,21 @@
   </div>
 </div>
 
+{#snippet pay(on: { seats: readonly number[]; expiresAt: string; lost: (message: string) => void })}
+  {#if held && checkout}{@render checkout(held, (message) => { held = null; on.lost(message); })}{/if}
+{/snippet}
+
 {#if isOpen}
   {#await import("@woco/seatmap/svelte/SeatPicker.svelte") then { default: SeatPicker }}
-    <SeatPicker {eventId} {eventTitle} {series} load={() => seatMapFor(eventId, series, apiUrl)} onclose={closePicker} />
+    <SeatPicker
+      {eventId}
+      {eventTitle}
+      {series}
+      load={() => seatMapFor(eventId, series, apiUrl)}
+      onclose={closePicker}
+      onhold={checkout ? hold : undefined}
+      checkout={checkout ? pay : undefined}
+    />
   {/await}
 {/if}
 

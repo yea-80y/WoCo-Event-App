@@ -109,6 +109,7 @@ function harness(over: Partial<RegisterDeps> = {}) {
       registry.set(`${e}|${s}`, id);
       return { feed: FEED, resignable: true };
     }) as RegisterDeps["confirmSeriesOnChain"],
+    isSeatedOnChain: async () => false,
     ...over,
   };
   return { deps, registry, pending, calls };

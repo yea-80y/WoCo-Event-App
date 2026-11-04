@@ -77,7 +77,8 @@ export interface MintAttempt {
 }
 
 export type MintResolution =
-  | { kind: "minted"; slots: number[] }
+  /** `receiptLogs` when the receipt answered: the seat mint checks `SeatAssigned` in them. */
+  | { kind: "minted"; slots: number[]; receiptLogs?: readonly MintLog[] }
   | { kind: "not-minted"; why: string };
 
 export class MintUnresolvedError extends Error {
@@ -120,6 +121,59 @@ export function slotsByOwner(
   return slots.every((s): s is number => s !== undefined) ? slots : null;
 }
 
+const SEAT_ASSIGNED = new Interface(["event SeatAssigned(bytes32 indexed eventId, uint256 indexed slot, uint256 seat)"]);
+const SEAT_ASSIGNED_TOPIC = SEAT_ASSIGNED.getEvent("SeatAssigned")!.topicHash;
+
+export interface SeatSlot {
+  slot: number;
+  seat: number;
+}
+
+let seatMismatchCount = 0;
+/** Seats the chain recorded differently from the ones asked for, since boot: `/api/health` alarms on any. */
+export const seatAssignMismatches = (): number => seatMismatchCount;
+
+/**
+ * Each minted slot's seat. `_claimSeats` seats `seats[i]` on the slot `_claimBatch` gave
+ * `owners[i]` (WoCoTicketLedger.sol), and `slots[i]` is that owner's slot (`slotsByOwner`),
+ * so the seat is `seats[i]`: a contract invariant, never a read that can fail after a mint
+ * landed (the #994 lesson). When the receipt is in hand its `SeatAssigned` checks it; a
+ * difference means our model of the contract is wrong, so it is counted and the chain's
+ * seat is recorded.
+ */
+export function seatsBySlot(
+  slots: readonly number[],
+  seats: readonly number[],
+  receiptLogs: readonly MintLog[] | undefined,
+  contract: string,
+  eventId: string,
+): SeatSlot[] {
+  const out = slots.map((slot, i) => ({ slot, seat: seats[i] }));
+  if (!receiptLogs) return out;
+  const want = contract.toLowerCase();
+  const event = eventId.toLowerCase();
+  const assigned = new Map<number, number>();
+  for (const log of receiptLogs) {
+    if (log.address.toLowerCase() !== want || log.topics[0] !== SEAT_ASSIGNED_TOPIC) continue;
+    let parsed;
+    try {
+      parsed = SEAT_ASSIGNED.parseLog({ topics: [...log.topics], data: log.data });
+    } catch {
+      continue;
+    }
+    if (parsed && String(parsed.args.eventId).toLowerCase() === event) assigned.set(Number(parsed.args.slot), Number(parsed.args.seat));
+  }
+  for (const o of out) {
+    const onChain = assigned.get(o.slot);
+    if (onChain !== undefined && onChain !== o.seat) {
+      seatMismatchCount++;
+      console.error(`[seat-mismatch] event=${eventId} slot=${o.slot}: asked seat ${o.seat}, SeatAssigned says ${onChain} - recording the chain's`);
+      o.seat = onChain;
+    }
+  }
+  return out;
+}
+
 /**
  * Read a broadcast (or possibly broadcast) mint's outcome from the chain.
  * Resolves `minted` with the slots by owner, or `not-minted` only on a reverted
@@ -148,7 +202,7 @@ export async function resolveMint(
       if (receipt?.status === 0) return { kind: "not-minted", why: `transaction ${attempt.hash} reverted` };
       if (receipt?.status === 1) {
         const slots = slotsByOwner(receipt.logs, attempt.contract, attempt.eventId, attempt.owners);
-        if (slots) return { kind: "minted", slots };
+        if (slots) return { kind: "minted", slots, receiptLogs: receipt.logs };
         // Executed but not readable from the receipt: a parse or provider defect,
         // not a chain fact. The log query below is the authority.
       }

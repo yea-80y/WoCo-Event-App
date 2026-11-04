@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   calculateBuyerFees, CURRENCY_SYMBOLS, headlinePrice, headlinePriceRange,
-  coverFeeMinor, cardOrderAmounts, acceptedCoverFeeRates, bookingFeeMode, platformFeeMinor,
+  coverFeeMinor, cardOrderAmounts, cardOrderAmountsMulti, acceptedCoverFeeRates, bookingFeeMode, platformFeeMinor,
   wellFormedCoverFeeRates,
 } from "../../src/event/fees.js";
 import { BUYER_FEE_FLOOR_PCT, FEATURES, COVER_FEE_RATES, ACCEPTED_COVER_FEE_RATES, STRIPE_UK_STANDARD_CARD } from "../../src/features.js";
@@ -206,4 +206,61 @@ test("every rate set checkout accepts is one every page can price", () => {
   // Otherwise checkout would charge a cover fee that listings show as none.
   assert.ok(ACCEPTED_COVER_FEE_RATES.every(wellFormedCoverFeeRates));
   assert.ok(acceptedCoverFeeRates(COVER_FEE_RATES));
+});
+
+// Allocated seating prices each seat by its band. With one price for every seat the
+// multi-price arithmetic must be today's, to the penny, in every fee mode.
+const FEE_MODES: Array<Pick<PaymentConfig, "feePassedToCustomer" | "buyerFeePercent" | "coverFees">> = [
+  {},
+  { feePassedToCustomer: true },
+  { feePassedToCustomer: true, buyerFeePercent: 7 },
+  { feePassedToCustomer: true, buyerFeePercent: 15 },
+  { feePassedToCustomer: true, coverFees: COVER_FEE_RATES },
+];
+
+test("multi-price amounts equal cardOrderAmounts when every ticket costs the same", () => {
+  for (const mode of FEE_MODES) {
+    for (const unit of [100, 333, 999, 1_250, 2_000, 4_567, 12_345]) {
+      for (let qty = 1; qty <= 10; qty++) {
+        const one = cardOrderAmounts(mode, unit, qty);
+        const multi = cardOrderAmountsMulti(mode, Array(qty).fill(unit));
+        const at = JSON.stringify({ mode, unit, qty });
+        assert.deepEqual(multi.chargeMinor, Array(qty).fill(one.unitChargeMinor), at);
+        assert.equal(multi.subtotalMinor, unit * qty, at);
+        assert.equal(multi.orderFeeMinor, one.orderFeeMinor, at);
+        assert.equal(multi.bookingFeeMinor, one.bookingFeeMinor, at);
+        assert.equal(multi.totalMinor, one.totalMinor, at);
+        assert.equal(multi.applicationFeeMinor, one.applicationFeeMinor, at);
+        assert.equal(multi.mode, one.mode, at);
+        assert.equal(multi.feePercent, one.feePercent, at);
+      }
+    }
+  }
+});
+
+test("multi-price: the % fee rounds per ticket, cover and our fee are on the subtotal", () => {
+  // 10% of £3.33 is 33.3p -> 33p; of £5.55 is 55.5p -> 56p (half up). Subtotal £8.88.
+  const pct = cardOrderAmountsMulti({ feePassedToCustomer: true, buyerFeePercent: 10 }, [333, 555]);
+  assert.deepEqual(pct.chargeMinor, [366, 611]);
+  assert.equal(pct.subtotalMinor, 888);
+  assert.equal(pct.bookingFeeMinor, 89);
+  assert.equal(pct.totalMinor, 977);
+  assert.equal(pct.applicationFeeMinor, platformFeeMinor(888));
+
+  const cover = cardOrderAmountsMulti({ feePassedToCustomer: true, coverFees: COVER_FEE_RATES }, [2_200, 2_800, 2_800]);
+  assert.deepEqual(cover.chargeMinor, [2_200, 2_800, 2_800]);
+  assert.equal(cover.orderFeeMinor, coverFeeMinor(7_800, COVER_FEE_RATES));
+  assert.equal(cover.totalMinor, 7_800 + cover.orderFeeMinor);
+  assert.equal(cover.bookingFeeMinor, cover.orderFeeMinor);
+  assert.equal(cover.applicationFeeMinor, platformFeeMinor(7_800));
+
+  const none = cardOrderAmountsMulti({}, [2_200, 2_800]);
+  assert.equal(none.totalMinor, 5_000);
+  assert.equal(none.bookingFeeMinor, 0);
+});
+
+test("multi-price refuses an empty order or a price that is not whole minor units", () => {
+  for (const units of [[], [1.5], [-1], [Number.NaN], [Infinity], [100, 2 ** 60]]) {
+    assert.throws(() => cardOrderAmountsMulti({}, units), RangeError, JSON.stringify(units));
+  }
 });

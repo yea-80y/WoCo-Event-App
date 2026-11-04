@@ -15,7 +15,9 @@ import { Interface, id } from "ethers";
 
 import {
   LEDGER_ABI,
+  LEDGER2_ABI,
   LEDGER_UNLIMITED_MINTS,
+  decodeClaimRevert,
   decodeMintCapExceeded,
   isNotThisAbi,
   mintCapRefusal,
@@ -26,6 +28,19 @@ const iface = new Interface(LEDGER_ABI as unknown as string[]);
 const SPONSOR = "0x" + "ab".repeat(20);
 const LEDGER = "0x" + "cd".repeat(20);
 const RESETS_AT = 1_790_000_000;
+
+test("the seat mint matches the compiled ledger2: selector, SeatAssigned, refusals by name", () => {
+  // Ground truth: contracts/out/WoCoTicketLedger.sol (ledger2 as deployed), read 2026-11-04.
+  const v2 = new Interface(LEDGER2_ABI as unknown as string[]);
+  assert.equal(v2.getFunction("batchClaimSeatsBearer")!.selector, "0xe58d3142");
+  const assigned = v2.getEvent("SeatAssigned")!;
+  assert.equal(assigned.topicHash, id("SeatAssigned(bytes32,uint256,uint256)"));
+  assert.deepEqual(assigned.inputs.map((i) => [i.name, i.indexed === true]), [["eventId", true], ["slot", true], ["seat", false]]);
+  // A refused seat mint is refunded with its reason named, never as an unnamed revert.
+  for (const name of ["SeatTaken", "InvalidSeat", "NotSeated", "SeatedEvent"]) {
+    assert.equal(decodeClaimRevert({ data: v2.encodeErrorResult(name, []) }), name);
+  }
+});
 
 test("sponsorMintAllowance matches the compiled contract: selector and output tuple", () => {
   const fn = iface.getFunction("sponsorMintAllowance")!;

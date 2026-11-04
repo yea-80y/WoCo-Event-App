@@ -47,7 +47,7 @@ import {
   clearPendingRegistration as realClearPending,
 } from "./onchain-registry.js";
 import { resolveRegistrationIntent as realResolveIntent } from "./registration-intent.js";
-import { getDefaultEventContract } from "../chain/event-contract.js";
+import { getDefaultEventContract, type EventContractTarget } from "../chain/event-contract.js";
 
 export type RegisterResult =
   | { status: "registered"; onChainEventId: string; txHash?: string; feed?: EventFeed }
@@ -85,6 +85,37 @@ export interface RegisterDeps {
   resolveIntent: typeof realResolveIntent;
   registerEventOnChain: typeof realRegisterEventOnChain;
   confirmSeriesOnChain: typeof realConfirmSeriesOnChain;
+  /** The ledger's `isSeated` for a recovered registration. Throws when it cannot be read. */
+  isSeatedOnChain(onChainEventId: string, contract: EventContractTarget): Promise<boolean>;
+}
+
+/** Only ledger2 has seats; nothing registered on an older contract is seated. */
+async function realIsSeatedOnChain(onChainEventId: string, contract: EventContractTarget): Promise<boolean> {
+  if (contract.version !== "ledger2") return false;
+  const { isSeatedLedger2 } = await import("../chain/event-contract-ledger.js");
+  return isSeatedLedger2(contract.address, contract.chainId, onChainEventId);
+}
+
+/**
+ * A recovered registration (a pending tx's receipt, or an intent resolved by walking the
+ * chain) is recorded only if the chain agrees it is seated exactly when this series is:
+ * a seated record on a general event would sell seats the ledger refuses, and the
+ * reverse would mint seatless tickets. Throws, leaving the marker for an operator.
+ */
+async function assertSeatingMatches(
+  deps: RegisterDeps,
+  onChainEventId: string,
+  contract: EventContractTarget | undefined,
+  seating: RegisterParams["seating"],
+): Promise<void> {
+  if (!contract && !seating) return;
+  const onChain = contract ? await deps.isSeatedOnChain(onChainEventId, contract) : false;
+  if (onChain !== !!seating) {
+    throw new Error(
+      `recovered registration ${onChainEventId} is ${onChain ? "" : "not "}seated on chain but the series ` +
+        `${seating ? "is" : "is not"} - not recorded, marker kept`,
+    );
+  }
 }
 
 const defaultDeps: RegisterDeps = {
@@ -97,6 +128,7 @@ const defaultDeps: RegisterDeps = {
   resolveIntent: realResolveIntent,
   registerEventOnChain: realRegisterEventOnChain,
   confirmSeriesOnChain: realConfirmSeriesOnChain,
+  isSeatedOnChain: realIsSeatedOnChain,
 };
 
 /**
@@ -162,6 +194,7 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
     if (outcome.status === "registered") {
       // The receipt was read and parsed against the env-selected contract, so
       // that is the contract it was found on (#563).
+      await assertSeatingMatches(deps, outcome.onChainEventId, getDefaultEventContract(), seating);
       const feed = resignableFeed(await deps.confirmSeriesOnChain(
         eventId, seriesId, outcome.onChainEventId, signerHint, getDefaultEventContract(), seating,
       ));
@@ -180,6 +213,7 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
     const outcome = await deps.resolveIntent(pending, manifestRef);
     if (outcome.status === "registered") {
       // Resolved by walking the env-selected contract (#563).
+      await assertSeatingMatches(deps, outcome.onChainEventId, getDefaultEventContract(), seating);
       const feed = resignableFeed(await deps.confirmSeriesOnChain(
         eventId, seriesId, outcome.onChainEventId, signerHint, getDefaultEventContract(), seating,
       ));

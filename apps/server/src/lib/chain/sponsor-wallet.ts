@@ -624,6 +624,29 @@ export async function claimForOnChain(
  *                        today's env contract by omission.
  * @returns Array of 0-based slot indices in the same order as `burners`.
  */
+/**
+ * A card sale of seats (docs/SEATING.md): ledger2's `batchClaimSeatsBearer`, owner i in
+ * seat `seats[i]`, bearer so `reissue` can replace the ticket later. Only ledger2 has
+ * seats; a seated series is never registered anywhere else.
+ */
+export async function batchClaimSeatsOnChain(
+  onChainEventId: string,
+  burners: string[],
+  seats: number[],
+  orderRefBytes32: string,
+  target: EventContractTarget,
+): Promise<Array<{ slot: number; seat: number }>> {
+  if (burners.length === 0) throw new Error("batchClaimSeatsOnChain: empty burners");
+  if (burners.length > ON_CHAIN_BATCH_MAX) {
+    throw new Error(`batchClaimSeatsOnChain: ${burners.length} exceeds cap ${ON_CHAIN_BATCH_MAX}`);
+  }
+  if (target.version !== "ledger2") throw new Error(`batchClaimSeatsOnChain: ${target.version} has no seats`);
+  const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
+  if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
+  const { batchClaimSeatsBearerLedger2 } = await import("./event-contract-ledger.js");
+  return batchClaimSeatsBearerLedger2(onChainEventId, burners, seats, orderRefBytes32, target.address, pk, target.chainId);
+}
+
 export async function batchClaimForOnChain(
   onChainEventId: string,
   burners: string[],

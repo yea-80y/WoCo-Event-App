@@ -1,7 +1,7 @@
 import { JsonRpcProvider, Contract, Interface, Transaction, Wallet, id, isError } from "ethers";
 import { getChainRpcUrl } from "./event-contract.js";
 import { isNonceError, sendSponsorTx } from "./sponsor-nonce.js";
-import { broadcastMint, MintUnresolvedError, resolveMint, type MintResolveIo } from "./mint-resolve.js";
+import { broadcastMint, MintUnresolvedError, resolveMint, seatsBySlot, type MintLog, type MintResolveIo, type SeatSlot } from "./mint-resolve.js";
 import type { OnChainEvent, SlotData } from "./event-contract.js";
 
 /**
@@ -114,6 +114,13 @@ const LEDGER2_CLAIM_ABI = [
   "function batchClaimBearer(bytes32 eventId, address[] owners, bytes32 orderRef) returns (uint256 firstSlot)",
   "function reissue(bytes32 eventId, uint256[] slots, address[] newOwners)",
   "event SlotReissued(bytes32 indexed eventId, uint256 indexed slot, address indexed from, address to)",
+  // Allocated seating (docs/SEATING.md): a card sale of seats, bearer like batchClaimBearer.
+  "function batchClaimSeatsBearer(bytes32 eventId, address[] owners, uint256[] seats, bytes32 orderRef) returns (uint256 firstSlot)",
+  "event SeatAssigned(bytes32 indexed eventId, uint256 indexed slot, uint256 seat)",
+  "error SeatTaken()",
+  "error InvalidSeat()",
+  "error NotSeated()",
+  "error SeatedEvent()",
   "error BearerMintsOff()",
   "error LengthMismatch()",
   "error SlotsNotAscending()",
@@ -179,6 +186,11 @@ function getProvider(chainId: number): JsonRpcProvider {
 
 function readContract(address: string, chainId: number): Contract {
   return new Contract(address, LEDGER_READ_ABI, getProvider(chainId));
+}
+
+/** ledger2 `isSeated(eventId)`. Throws on any read failure. */
+export async function isSeatedLedger2(contractAddress: string, chainId: number, eventId: string): Promise<boolean> {
+  return new Contract(contractAddress, LEDGER2_READ_ABI, getProvider(chainId)).isSeated(eventId) as Promise<boolean>;
 }
 
 export async function getRegistrantNonceLedger(
@@ -582,7 +594,7 @@ export async function batchClaimForLedger(
   sponsorPk: string,
   chainId: number,
 ): Promise<number[]> {
-  return mintBatchLedger("batchClaimFor", onChainEventId, burners, orderRefBytes32, contractAddress, sponsorPk, chainId);
+  return (await mintBatchLedger("batchClaimFor", onChainEventId, burners, orderRefBytes32, contractAddress, sponsorPk, chainId)).slots;
 }
 
 /**
@@ -597,23 +609,44 @@ export async function batchClaimBearerLedger2(
   sponsorPk: string,
   chainId: number,
 ): Promise<number[]> {
-  return mintBatchLedger("batchClaimBearer", onChainEventId, burners, orderRefBytes32, contractAddress, sponsorPk, chainId);
+  return (await mintBatchLedger("batchClaimBearer", onChainEventId, burners, orderRefBytes32, contractAddress, sponsorPk, chainId)).slots;
+}
+
+/**
+ * Version 2's card sale of SEATS (docs/SEATING.md): owner i gets seat `seats[i]`, bearer.
+ * Same sign-broadcast-resolve path as every mint. Each slot's seat is the one asked for
+ * beside its owner (`seatsBySlot`); the receipt's `SeatAssigned` checks it when in hand.
+ */
+export async function batchClaimSeatsBearerLedger2(
+  onChainEventId: string,
+  burners: string[],
+  seats: number[],
+  orderRefBytes32: string,
+  contractAddress: string,
+  sponsorPk: string,
+  chainId: number,
+): Promise<SeatSlot[]> {
+  if (seats.length !== burners.length) throw new Error("batchClaimSeatsBearer: seats and owners differ in length");
+  const r = await mintBatchLedger("batchClaimSeatsBearer", onChainEventId, burners, orderRefBytes32, contractAddress, sponsorPk, chainId, seats);
+  return seatsBySlot(r.slots, seats, r.receiptLogs, contractAddress, onChainEventId);
 }
 
 async function mintBatchLedger(
-  method: "batchClaimFor" | "batchClaimBearer",
+  method: "batchClaimFor" | "batchClaimBearer" | "batchClaimSeatsBearer",
   onChainEventId: string,
   burners: string[],
   orderRefBytes32: string,
   contractAddress: string,
   sponsorPk: string,
   chainId: number,
-): Promise<number[]> {
+  seats?: number[],
+): Promise<{ slots: number[]; receiptLogs?: readonly MintLog[] }> {
   if (burners.length === 0) throw new Error(`${method}: empty burners`);
+  if ((method === "batchClaimSeatsBearer") !== (seats !== undefined)) throw new Error(`${method}: seats only with the seat mint`);
 
   const provider = getProvider(chainId);
   const wallet   = new Wallet(sponsorPk, provider);
-  const abi      = method === "batchClaimBearer" ? LEDGER2_CLAIM_ABI : LEDGER_CLAIM_ABI;
+  const abi      = method === "batchClaimFor" ? LEDGER_CLAIM_ABI : LEDGER2_CLAIM_ABI;
   const contract = new Contract(contractAddress, abi, wallet);
 
   console.log(
@@ -627,7 +660,9 @@ async function mintBatchLedger(
     queue: (send) => sendSponsorTx({ chainId, address: wallet.address, provider, label: method }, send),
     prepare: async (o) => {
       // Estimate first, so a contract refusal is what a failure reports (explainMintFailure).
-      const req = await contract.getFunction(method).populateTransaction(onChainEventId, burners, orderRefBytes32, o);
+      const req = seats
+        ? await contract.getFunction(method).populateTransaction(onChainEventId, burners, seats, orderRefBytes32, o)
+        : await contract.getFunction(method).populateTransaction(onChainEventId, burners, orderRefBytes32, o);
       const populated = await wallet.populateTransaction(req);
       const fromBlock = await provider.getBlockNumber();
       const signed = await wallet.signTransaction(populated);
@@ -661,7 +696,7 @@ async function mintBatchLedger(
   if (outcome.kind === "not-minted") throw new Error(`ledger ${method} did not mint: ${outcome.why}`);
 
   console.log(`[sponsor ledger] ${method} confirmed txHash=${sent.hash} slots=${outcome.slots[0]}..${outcome.slots[outcome.slots.length - 1]}`);
-  return outcome.slots;
+  return { slots: outcome.slots, ...(outcome.receiptLogs ? { receiptLogs: outcome.receiptLogs } : {}) };
 }
 
 function liveMintIo(provider: JsonRpcProvider): MintResolveIo {

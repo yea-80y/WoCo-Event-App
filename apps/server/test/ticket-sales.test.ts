@@ -50,6 +50,32 @@ function stub(over: Partial<Parameters<typeof ts.recordSaleStub>[0]> = {}) {
   });
 }
 
+describe("seats (allocated seating)", () => {
+  test("seats are recorded aligned with slots and indexed as minted on that event only", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [4, 5], undefined, [17, 3]);
+    assert.deepEqual(ts.getSale("cs_1")!.seats, [17, 3]);
+    assert.deepEqual([...ts.mintedSeats(EV, CONTRACT)].sort((a, b) => a - b), [3, 17]);
+    assert.equal(ts.mintedSeats(OTHER_EV, CONTRACT).size, 0);
+    assert.equal(ts.mintedSeats(EV, "42161:0x" + "c2".repeat(20)).size, 0);
+  });
+
+  test("a seat list that does not match its slots is not recorded, the slots are", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [4, 5], undefined, [17]);
+    assert.deepEqual(ts.getSale("cs_1")!.slots, [4, 5]);
+    assert.equal(ts.getSale("cs_1")!.seats, undefined);
+    assert.equal(ts.mintedSeats(EV, CONTRACT).size, 0);
+  });
+
+  test("minted seats survive a restart, refunded sales included", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1], undefined, [8, 9]);
+    ts.__resetForTests();
+    assert.deepEqual([...ts.mintedSeats(EV, CONTRACT)].sort((a, b) => a - b), [8, 9]);
+  });
+});
+
 describe("recording", () => {
   test("a stub is idempotent and never resets slots fulfilment appended", () => {
     stub();

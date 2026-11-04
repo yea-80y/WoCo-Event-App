@@ -29,8 +29,9 @@ export interface TicketEmailOpts {
   eventEndDate?: string;
   eventLocation?: string;
   seriesName?: string;
-  /** All tickets in the order. Single ticket = array of one element. */
-  tickets: Array<{ edition: number | null; qrContent: string }>;
+  /** All tickets in the order. Single ticket = array of one element. `seatLabel`: the
+   *  seat it was sold in ("Stalls, Row D, seat 7"), allocated seating only. */
+  tickets: Array<{ edition: number | null; qrContent: string; seatLabel?: string }>;
   totalSupply?: number;
   /** Buyer name from Stripe. Not drawn on the ticket: tickets get forwarded to friends. */
   buyerName?: string;
@@ -147,7 +148,7 @@ export function buildTicketHtml(opts: TicketEmailOpts, media: { hero?: boolean }
 
   // Buyers never see the edition (its sequence leaks how many have sold); a
   // group order numbers its own tickets so the buyer can hand them out.
-  const ticketRows = tix.map(({ qrContent }, i) => {
+  const ticketRows = tix.map(({ qrContent, seatLabel }, i) => {
     const label = multiTicket ? `Ticket ${i + 1} of ${tix.length}` : "Your ticket";
     const pageUrl = ticketUrl(qrContent, display);
     // Group buys: each ticket carries its own one-shot signup link — forward a
@@ -158,6 +159,7 @@ export function buildTicketHtml(opts: TicketEmailOpts, media: { hero?: boolean }
               <td class="row-l">
                 <div class="row-title">${escHtml(label)}</div>
                 ${seriesName ? `<div class="row-sub">${escHtml(seriesName)}</div>` : ""}
+                ${seatLabel ? `<div class="row-sub">${escHtml(seatLabel)}</div>` : ""}
                 ${perTicketCta ? `<a href="${escHtml(perTicketCta)}" class="row-add">Add this ticket to WoCo</a>` : ""}
               </td>
               <td class="row-r">${pageUrl ? `<a href="${escHtml(pageUrl)}" class="btn">Open ticket</a>` : ""}</td>
@@ -279,10 +281,10 @@ export function buildTicketText(opts: TicketEmailOpts): string {
   if (when.day) lines.push(`When: ${when.day}${when.time ? `, ${when.time}` : ""}`);
   if (eventLocation) lines.push(`Where: ${eventLocation}`);
   lines.push("");
-  tix.forEach(({ qrContent }, i) => {
+  tix.forEach(({ qrContent, seatLabel }, i) => {
     const label = multi ? `Ticket ${i + 1} of ${tix.length}` : "Your ticket";
     const url = ticketUrl(qrContent, display);
-    lines.push(`${label}${seriesName ? ` (${seriesName})` : ""}${url ? `: ${url}` : ""}`);
+    lines.push(`${label}${seriesName ? ` (${seriesName})` : ""}${seatLabel ? `, ${seatLabel}` : ""}${url ? `: ${url}` : ""}`);
   });
   if (multi) lines.push("", "Going with friends? Send each person their own ticket. Every ticket lets one person in and the first scan wins.");
   lines.push("", `Your ticket${multi ? "s are" : " is"} also attached to this email.`);
