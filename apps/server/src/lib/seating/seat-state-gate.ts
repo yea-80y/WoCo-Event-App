@@ -26,7 +26,8 @@
 import type { VersionedFeedRead } from "@woco/shared";
 import { eventSeatStateTopic } from "@woco/shared/seating/topics";
 import { validateSeatState, type SeatState } from "@woco/shared/seating/state";
-import { readContentFeedJsonResult } from "../swarm/soc-upload.js";
+import { invalidateContentFeedVersion, readContentFeedJsonResult } from "../swarm/soc-upload.js";
+import { getRecordedFeedSigner } from "../event/feed-signer-record.js";
 
 export type SeatStateRead =
   | { status: "found"; state: SeatState }
@@ -160,6 +161,26 @@ export function seatStateWritten(eventId: string, seq: number): void {
   const before = expected.get(eventId);
   bounded(expected, eventId, { seq: Math.max(seq, before?.seq ?? 0), at: clock() });
   cache.delete(eventId);
+}
+
+/**
+ * The SOC relay stored a chunk carrying `signal`, for authenticated account `parent`,
+ * owned by `ownerHex`. Acts only for the event's own organiser - the write-once
+ * record's creator, never the feed's description of itself: anyone else's chunk
+ * changes nothing (readers only take the state under the event's carrier signer), and
+ * must not pause someone else's sales. True when it acted.
+ */
+export function seatStateRelayed(
+  signal: { eventId: string; seq: number },
+  parent: string,
+  ownerHex: string,
+  recordedCreator: (eventId: string) => string | null = (id) => getRecordedFeedSigner(id)?.creatorAddress ?? null,
+): boolean {
+  const creator = recordedCreator(signal.eventId);
+  if (!creator || creator.toLowerCase() !== parent.toLowerCase()) return false;
+  seatStateWritten(signal.eventId, signal.seq);
+  invalidateContentFeedVersion(ownerHex.toLowerCase().replace(/^0x/, ""), eventSeatStateTopic(signal.eventId));
+  return true;
 }
 
 export function __setSeatStateGateForTests(opts: { reader?: SeatStateFeedReader; now?: () => number } = {}): void {

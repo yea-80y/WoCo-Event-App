@@ -8,7 +8,7 @@ import type { VersionedFeedRead } from "@woco/shared";
 import { buildSeatState } from "@woco/shared/seating/state";
 import { eventSeatStateTopic } from "@woco/shared/seating/topics";
 import {
-  __setSeatStateGateForTests, seatStateRead, seatStateWritten, SEAT_STATE_FRESH_MS, SEAT_STATE_SIGNAL_MS,
+  __setSeatStateGateForTests, seatStateRead, seatStateRelayed, seatStateWritten, SEAT_STATE_FRESH_MS, SEAT_STATE_SIGNAL_MS,
 } from "../src/lib/seating/seat-state-gate.js";
 
 const EVENT = "evt-seats-1";
@@ -120,6 +120,18 @@ test("a signal is only ever stricter: a lower seq does not lower the bar", async
   seatStateWritten(EVENT, 6);
   seatStateWritten(EVENT, 3);
   assert.equal((await seatStateRead(X)).status, "unavailable");
+});
+
+test("only the event's recorded organiser's chunk is a signal: anyone else's pauses nothing", async () => {
+  const creator = `0x${"c0".repeat(20)}`;
+  const recorded = (id: string) => (id === EVENT ? creator : null);
+  serve(found(stateAt(2)));
+  assert.equal(seatStateRelayed({ eventId: EVENT, seq: 3 }, `0x${"ee".repeat(20)}`, "11".repeat(20), recorded), false, "another account");
+  assert.equal(seatStateRelayed({ eventId: "evt-unknown", seq: 3 }, creator, "11".repeat(20), recorded), false, "no record");
+  assert.equal((await seatStateRead(X)).status, "found", "nothing paused");
+  t += SEAT_STATE_FRESH_MS;
+  assert.equal(seatStateRelayed({ eventId: EVENT, seq: 3 }, creator.toUpperCase().replace("0X", "0x"), "11".repeat(20), recorded), true);
+  assert.equal((await seatStateRead(X)).status, "unavailable", "the organiser's own write is awaited");
 });
 
 test("a signal that lands while a read is in flight: the older answer is never served from memory", async () => {
