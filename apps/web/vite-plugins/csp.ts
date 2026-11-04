@@ -155,7 +155,12 @@ export const APP_POLICY: Policy = {
   ],
   "worker-src": [
     "'self'",
-    "blob:", // qr-scanner's fallback worker when BarcodeDetector is unavailable
+    "blob:", // qr-scanner's fallback worker; the same-origin shim our own workers start from on woco.eth.limo
+    // Our own worker chunks, imported by that shim (@woco/shared/web/module-worker, #1087):
+    // a browser starts a Worker only from the page's origin, so on woco.eth.limo they run
+    // through a blob that imports them, and that import is checked here, not in script-src.
+    // Grants nothing script-src does not already: the same origin runs scripts on the page.
+    ASSET_ORIGIN,
   ],
 };
 
