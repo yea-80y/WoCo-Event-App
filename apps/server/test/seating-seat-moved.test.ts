@@ -56,14 +56,32 @@ test("only that sale's buyer, never an erased order; a resend's address counts",
   const r = await seatMoved(d, seatMovedState(), "e1", ORG, body([0, 1, 2, 3, 9]));
   assert.ok(r.ok);
   assert.deepEqual(r.ok && r.data.slots, [
-    { slot: 0, outcome: "sent" }, { slot: 1, outcome: "sent" }, { slot: 2, outcome: "no_seat" },
-    { slot: 3, outcome: "erased" }, { slot: 9, outcome: "not_sold" },
-  ]);
+    { slot: 0, outcome: "sent" }, { slot: 1, outcome: "sent" }, { slot: 2, outcome: "not_sent" },
+    { slot: 3, outcome: "not_sent" }, { slot: 9, outcome: "not_sent" },
+  ], "never why not: no seat now, erased and no sale all read the same");
   assert.deepEqual(mails, [{ to: "buyer@example.com", seats: [{ edition: 1, seat: D7 }, { edition: 2, seat: D8 }] }], "one email, the seats now");
   const someoneElse = await seatMoved(d, seatMovedState(), "e1", ORG, body([0], "other@example.com"));
-  assert.deepEqual(someoneElse.ok && someoneElse.data.slots, [{ slot: 0, outcome: "not_this_buyer" }]);
+  assert.deepEqual(someoneElse.ok && someoneElse.data.slots, [{ slot: 0, outcome: "not_sent" }]);
   const resent = await seatMoved(d, seatMovedState(), "e1", ORG, body([4], "new@example.com"));
   assert.deepEqual(resent.ok && resent.data.slots, [{ slot: 4, outcome: "sent" }]);
+});
+
+test("no order record, or no order at all, is never mailed - not even to a resend's address", async () => {
+  const noRecord = deps({ order: () => null, saleOf: () => ({ sessionId: "cs_9", orderRef: "gone", resends: [{ toHash: "h:buyer@example.com", accepted: true }] }) });
+  const r = await seatMoved(noRecord.d, seatMovedState(), "e1", ORG, body([0]));
+  assert.deepEqual(r.ok && r.data.slots, [{ slot: 0, outcome: "not_sent" }]);
+  const noRef = deps({ saleOf: () => ({ sessionId: "cs_9", resends: [{ toHash: "h:buyer@example.com", accepted: true }] }) });
+  const r2 = await seatMoved(noRef.d, seatMovedState(), "e1", ORG, body([0]));
+  assert.deepEqual(r2.ok && r2.data.slots, [{ slot: 0, outcome: "not_sent" }]);
+  assert.equal(noRecord.mails.length + noRef.mails.length, 0);
+});
+
+test("every comparison counts against the barrier, sent or not", async () => {
+  const st = seatMovedState();
+  const h = deps();
+  for (let i = 0; i < 60; i++) await seatMoved(h.d, st, "e1", ORG, body([0], `guess${i}@example.com`));
+  assert.equal((await seatMoved(h.d, st, "e1", ORG, body([0]))).status, 429);
+  assert.equal(h.mails.length, 0);
 });
 
 test("once per ticket and seat a day; a seat changed again is mailed again", async () => {
@@ -71,7 +89,7 @@ test("once per ticket and seat a day; a seat changed again is mailed again", asy
   const st = seatMovedState();
   await seatMoved(h.d, st, "e1", ORG, body([0]));
   const again = await seatMoved(h.d, st, "e1", ORG, body([0]));
-  assert.deepEqual(again.ok && again.data.slots, [{ slot: 0, outcome: "already_sent" }]);
+  assert.deepEqual(again.ok && again.data.slots, [{ slot: 0, outcome: "not_sent" }]);
   h.setSeats(new Map([[0, D8]]));
   const moved = await seatMoved(h.d, st, "e1", ORG, body([0]));
   assert.deepEqual(moved.ok && moved.data.slots, [{ slot: 0, outcome: "sent" }]);

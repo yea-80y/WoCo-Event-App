@@ -25,7 +25,12 @@ export const SEAT_MOVED_MAX_SLOTS = 50;
 /** One buyer, one ticket, one seat: mailed once a day at most. */
 const DEDUPE_MS = 24 * 60 * 60_000;
 
-export type SlotOutcome = "sent" | "not_this_buyer" | "erased" | "no_seat" | "already_sent" | "not_sold";
+/**
+ * Per ticket: emailed now, or not. Never why not - "not this buyer", "erased", "no such
+ * sale", "no seat now" and "already sent" all read the same, so the reply cannot be
+ * used to test whether an address bought a ticket (automated security review).
+ */
+export type SlotOutcome = "sent" | "not_sent";
 
 export interface SeatMovedDeps {
   recordedCreator(eventId: string): string | null;
@@ -80,6 +85,9 @@ export async function seatMoved(
   if (typeof to !== "string" || to.length > 254 || !MAILABLE_EMAIL_RE.test(to)) return fail(400, "BAD_EMAIL", "That email address can't be used");
 
   if (!st.perAccount.peek(parent.toLowerCase()) || !st.perEvent.peek(eventId)) return fail(429, "RATE_LIMITED", "Too many emails for now. Try again later.");
+  // Every request that compares an address counts, sent or not.
+  st.perAccount.record(parent.toLowerCase());
+  st.perEvent.record(eventId);
 
   const event = await deps.event(eventId).catch(() => null);
   const series = event?.series.find((s) => s.seriesId === seriesId);
@@ -92,11 +100,12 @@ export async function seatMoved(
   const sessions = new Map<number, string>();
   for (const slot of slots as number[]) {
     const sale = deps.saleOf(eventId, seriesId, onChainEventId, slot);
-    if (!sale) { out.push({ slot, outcome: "not_sold" }); continue; }
-    const order = sale.orderRef ? deps.order(sale.orderRef) : null;
-    if (order?.erased) { out.push({ slot, outcome: "erased" }); continue; }
-    const buyer = order?.emailHash === toHash || !!sale.resends?.some((r) => r.accepted && r.toHash === toHash);
-    if (!buyer) { out.push({ slot, outcome: "not_this_buyer" }); continue; }
+    // No sale, no order record (an erasure, or a sale from before sealed orders), an
+    // erased order, or another address: not sent, and not said why.
+    const order = sale?.orderRef ? deps.order(sale.orderRef) : null;
+    const buyer = !!sale && !!order && !order.erased &&
+      (order.emailHash === toHash || !!sale.resends?.some((r) => r.accepted && r.toHash === toHash));
+    if (!buyer) { out.push({ slot, outcome: "not_sent" }); continue; }
     mine.push(slot);
     sessions.set(slot, sale.sessionId);
   }
@@ -112,15 +121,13 @@ export async function seatMoved(
   const keys: string[] = [];
   for (const slot of mine) {
     const seat = current.seats.get(slot);
-    if (!seat || seat === "none") { out.push({ slot, outcome: "no_seat" }); continue; }
+    if (!seat || seat === "none") { out.push({ slot, outcome: "not_sent" }); continue; }
     const key = `${sessions.get(slot)}|${slot}|${JSON.stringify(seat)}`;
-    if (st.sent.has(key)) { out.push({ slot, outcome: "already_sent" }); continue; }
+    if (st.sent.has(key)) { out.push({ slot, outcome: "not_sent" }); continue; }
     seats.push({ edition: slot + 1, seat });
     keys.push(key);
   }
   if (seats.length > 0) {
-    st.perAccount.record(parent.toLowerCase());
-    st.perEvent.record(eventId);
     try {
       await deps.send({ to, eventTitle: event.title, seats });
     } catch {

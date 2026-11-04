@@ -13,6 +13,7 @@ import { getRecordedFeedSigner } from "../lib/event/feed-signer-record.js";
 import { getEvent } from "../lib/event/service.js";
 import { listSalesForEvent } from "../lib/stripe/ticket-sales.js";
 import { getOrderRecord } from "../lib/attendee-batch/ledger.js";
+import { erasureStarted } from "../lib/attendee-batch/order-gateway.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { currentTicketSeats } from "../lib/seating/ticket-seats.js";
 import { seatMoved, seatMovedState, type SeatMovedDeps } from "../lib/seating/seat-moved.js";
@@ -29,7 +30,8 @@ export const liveSeatMovedDeps: SeatMovedDeps = {
     ) ?? null,
   order: (orderRef) => {
     const r = getOrderRecord(orderRef);
-    return r ? { ...(r.emailHash ? { emailHash: r.emailHash } : {}), erased: !!r.burnedAt || !!r.erasedBy } : null;
+    // The store's own rule (an erasure listed or started), plus a burned record.
+    return r ? { ...(r.emailHash ? { emailHash: r.emailHash } : {}), erased: erasureStarted(orderRef, r) || !!r.burnedAt } : null;
   },
   hashEmail,
   currentSeats: (a) => currentTicketSeats(a),
