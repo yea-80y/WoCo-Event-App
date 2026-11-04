@@ -44,6 +44,9 @@ import {
   type ReturnView,
 } from "../checkout.js";
 import { formatCountdown, holdResult, secondsUntil, usableHold, type Hold } from "../reservation.js";
+import { FEATURES } from "@woco/shared/features";
+import { WOCO_APP_ORIGIN } from "@woco/shared/auth/passkey-rp";
+import { fromFrame, originOf, parseFrameMessage, seatmapFrameUrl, type WidgetMessage } from "../seatmap-bridge.js";
 
 const CLIENT_KEY_STORAGE = "woco:client-id";
 
@@ -53,6 +56,8 @@ interface SeriesSummary {
   description: string;
   totalSupply: number;
   payment?: PaymentConfig;
+  /** Allocated seating (docs/SEATING.md): chosen on the plan, in the seat map frame. */
+  seating?: { bands: { id: string; price: string }[] };
 }
 
 interface EventData {
@@ -194,6 +199,7 @@ export class WocoTickets extends HTMLElement {
     // Holds are not released here, as in the main app: the ten minutes belong
     // to the buyer, and the server drops an abandoned hold at its expiry.
     this.stopHoldTimer();
+    this.closeSeatmap();
   }
 
   attributeChangedCallback() {
@@ -453,6 +459,13 @@ export class WocoTickets extends HTMLElement {
       if (target.closest("[data-return-dismiss]")) {
         this.returnState = null;
         this.refreshReturn();
+        return;
+      }
+
+      // data-seats — a seated ticket type: open the seat map
+      const seatsBtn = target.closest<HTMLElement>("[data-seats]");
+      if (seatsBtn) {
+        this.openSeatmap(seatsBtn.getAttribute("data-seats")!);
         return;
       }
 
@@ -874,6 +887,10 @@ export class WocoTickets extends HTMLElement {
       actionHtml = `<button class="claim-btn" disabled>Not available here</button>`;
     } else if (avail === 0) {
       actionHtml = `<button class="claim-btn" disabled>Sold out</button>`;
+    } else if (FEATURES.seatedEventsAllowed && s.seating) {
+      // Allocated seating: the buyer picks seats on the plan, full screen (openSeatmap).
+      const from = headlinePrice(s.payment)?.label ?? "";
+      actionHtml = `<button class="claim-btn" data-seats="${this.esc(s.seriesId)}">Choose seats${from ? ` - from ${this.esc(from)}` : ""}</button>`;
     } else {
       // Booking fee included: the button is the embed's headline price.
       const unit = headlinePrice(s.payment)?.label ?? "";
@@ -983,16 +1000,92 @@ export class WocoTickets extends HTMLElement {
    * allocating a new one, so a refresh or a second tab cannot stack holds.
    */
   private clientKeyHeader(): Record<string, string> {
+    const key = this.clientKey();
+    return key ? { "X-Client-Key": key } : {};
+  }
+
+  private clientKey(): string | null {
     try {
       let key = localStorage.getItem(CLIENT_KEY_STORAGE);
       if (!key || key.length < 8) {
         key = crypto.randomUUID();
         localStorage.setItem(CLIENT_KEY_STORAGE, key);
       }
-      return { "X-Client-Key": key };
+      return key;
     } catch {
-      return {};
+      return null;
     }
+  }
+
+  // ── Allocated seating: the seat map, full screen ───────────────────────────
+  //
+  // A frame on our API origin (/embed/seatmap/...) runs the shared seat map; this
+  // widget keeps holds and checkout and talks to it through seatmap-bridge.ts,
+  // only with that frame's window on that origin.
+
+  private seatOverlay: {
+    el: HTMLElement;
+    seriesId: string;
+    onMessage: (e: MessageEvent) => void;
+    onKey: (e: KeyboardEvent) => void;
+    overflow: string;
+  } | null = null;
+
+  private openSeatmap(seriesId: string) {
+    if (this.seatOverlay) return;
+    const apiOrigin = originOf(this.apiUrl);
+    const host = originOf(location.href);
+    if (!apiOrigin || !host) return;
+    // Inside our own frame page (the iframe embed) an overlay could only fill that
+    // frame: the seat map opens in the app instead.
+    if (host === apiOrigin && window.parent !== window) {
+      window.open(`${WOCO_APP_ORIGIN}/#/event/${encodeURIComponent(this.eventId)}/seats/${encodeURIComponent(seriesId)}`, "_blank", "noopener");
+      return;
+    }
+    const el = document.createElement("div");
+    el.setAttribute("role", "dialog");
+    el.setAttribute("aria-modal", "true");
+    el.setAttribute("aria-label", "Choose your seats");
+    el.style.cssText = "position:fixed;inset:0;z-index:2147483647;margin:0;padding:0;background:#000;";
+    const frame = document.createElement("iframe");
+    frame.title = "Choose your seats";
+    frame.src = seatmapFrameUrl(this.apiUrl, this.eventId, seriesId, host, this.theme);
+    frame.style.cssText = "display:block;width:100%;height:100%;border:0;";
+    el.appendChild(frame);
+
+    const toFrame = (m: WidgetMessage) => frame.contentWindow?.postMessage(m, apiOrigin);
+    const onMessage = (e: MessageEvent) => {
+      if (!fromFrame(e, frame.contentWindow, apiOrigin)) return;
+      const m = parseFrameMessage(e.data, MAX_QTY);
+      if (!m) return;
+      if (m.type === "ready") {
+        // Seat holds are not open yet: the map lets buyers look and choose, not hold.
+        toFrame({ v: 1, type: "open", max: MAX_QTY, canHold: false });
+      } else if (m.type === "cancel") {
+        this.closeSeatmap();
+      } else if (m.type === "picked") {
+        toFrame({ v: 1, type: "refused", seats: [], message: "Seat booking opens soon." });
+      }
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") this.closeSeatmap(); };
+    window.addEventListener("message", onMessage);
+    document.addEventListener("keydown", onKey);
+    const overflow = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    this.seatOverlay = { el, seriesId, onMessage, onKey, overflow };
+    document.body.appendChild(el);
+    frame.focus();
+  }
+
+  private closeSeatmap() {
+    const o = this.seatOverlay;
+    if (!o) return;
+    this.seatOverlay = null;
+    window.removeEventListener("message", o.onMessage);
+    document.removeEventListener("keydown", o.onKey);
+    document.documentElement.style.overflow = o.overflow;
+    o.el.remove();
+    this.shadow.querySelector<HTMLElement>(`[data-seats="${CSS.escape(o.seriesId)}"]`)?.focus();
   }
 
   private ensureHoldTimer() {

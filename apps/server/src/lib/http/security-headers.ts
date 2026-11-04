@@ -81,5 +81,29 @@ export const FRAME_CSP = [
   "style-src 'unsafe-inline'",
   "img-src 'self' https://gateway.woco-net.com data: blob:",
   "connect-src 'self'",
+  // The seat map the widget opens for a seated ticket type (SEATMAP_FRAME_CSP).
+  "frame-src 'self'",
+  "frame-ancestors *",
+].join("; ");
+
+/**
+ * CSP for /embed/seatmap/:eventId/:seriesId, the seat map frame (docs/SEATING.md).
+ * Every origin names what dies without it:
+ *   connect-src gateway.woco-net.com  the series manifest and the seating plan (Etherna sends no CORS)
+ *   connect-src arb1.arbitrum.io      the ledger: sold seats, sale state, the plan's on-chain commitment
+ *   connect-src 'self'                the event, and seats in someone's hold
+ *   worker-src 'self'                 a plan above 20,000 seats parses in a Worker
+ * Styles are injected by the bundle (Svelte), hence 'unsafe-inline' as on FRAME_CSP.
+ * Framed by any page, as the widget is.
+ */
+export const SEATMAP_FRAME_CSP = [
+  "default-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "script-src 'self'",
+  "style-src 'unsafe-inline'",
+  "img-src 'self' data:",
+  "connect-src 'self' https://gateway.woco-net.com https://arb1.arbitrum.io",
+  "worker-src 'self'",
   "frame-ancestors *",
 ].join("; ");

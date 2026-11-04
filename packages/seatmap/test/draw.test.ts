@@ -56,29 +56,42 @@ test("paint mode addresses seats as item:row:pos and rows by their letter", () =
   assert.ok([...svg.all()].some((e) => e.getAttribute("data-rowlab") === "1:0"));
 });
 
-test("buyer mode: free seats are buttons with a spoken label; taken seats are not; a pick is the accent", () => {
+test("buyer mode: every seat is a button with a spoken label; only pickable ones act; one tab stop; a pick is the accent", () => {
   const l = LAYOUT_TEMPLATES.find((t) => t.id === "comedy")!.make();
   const runs = seatRuns(l.items);
   const seatAt = (item: number, row: number, pos: number) => runs.find((r) => r.item === item && r.row === row)?.seats[pos] ?? -1;
-  const svg = fakeSvg("b");
-  drawDefs(svg, APP_PALETTE);
-  for (const i of drawOrder(l.items)) {
-    drawItem(svg, l.items[i], {
-      mode: "buy", svgId: "b", palette: APP_PALETTE, bands: l.bands, itemIndex: i,
-      buyer: { seatAt, free: (k) => k % 2 === 0, picked: (k) => k === 4, label: (k) => `Seat ${k}`, number: (k) => k + 1, locked: false },
-    });
-  }
-  const seats = [...svg.all()].filter((e) => e.getAttribute("data-seat") !== null);
+  const draw = (locked: boolean) => {
+    const svg = fakeSvg("b");
+    drawDefs(svg, APP_PALETTE);
+    for (const i of drawOrder(l.items)) {
+      drawItem(svg, l.items[i], {
+        mode: "buy", svgId: "b", palette: APP_PALETTE, bands: l.bands, itemIndex: i,
+        buyer: {
+          seatAt, free: (k) => k % 2 === 0, canPick: (k) => k % 2 === 0, picked: (k) => k === 4 || k === 5,
+          label: (k) => `Seat ${k}`, reason: (k) => (k % 2 === 0 ? null : "sold"), tabStop: (k) => k === 2,
+          number: (k) => k + 1, locked,
+        },
+      });
+    }
+    return [...svg.all()].filter((e) => e.getAttribute("data-seat") !== null);
+  };
+  const seats = draw(false);
   assert.equal(seats.length, canonicalSeats(l).length);
   for (const s of seats) {
     const k = Number(s.getAttribute("data-seat"));
-    const button = s.getAttribute("role") === "button";
-    assert.equal(button, k % 2 === 0, `seat ${k}`);
-    if (button) assert.equal(s.getAttribute("aria-label"), `Seat ${k}`);
+    assert.equal(s.getAttribute("role"), "button");
+    assert.equal(s.getAttribute("tabindex"), k === 2 ? "0" : "-1", `seat ${k} tab stop`);
+    const acts = k % 2 === 0 || k === 5;
+    assert.equal(s.getAttribute("aria-disabled"), acts ? null : "true", `seat ${k}`);
+    // A seat picked before it was sold can still be put back, and says nothing about being sold.
+    assert.equal(s.getAttribute("aria-label"), k % 2 === 0 || k === 5 ? `Seat ${k}` : `Seat ${k}, sold`);
+    assert.equal((s.getAttribute("class") ?? "").includes("avail"), k % 2 === 0 && k !== 4);
   }
   const picked = seats.find((s) => s.getAttribute("data-seat") === "4")!;
   assert.equal(picked.getAttribute("aria-pressed"), "true");
   assert.ok([...picked.all()].some((e) => e.getAttribute("fill") === APP_PALETTE.accent));
+  // While a hold runs, nothing acts.
+  assert.ok(draw(true).every((s) => s.getAttribute("aria-disabled") === "true"));
 });
 
 test("drawing order: floors and pitches under seats, labels on top", () => {

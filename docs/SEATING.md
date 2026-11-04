@@ -1,6 +1,6 @@
 # Allocated seating
 
-Status (2026-11-03): S1 and S2 built, the rest planned. Seated events stay off behind
+Status (2026-11-03): S1, S2 and S3 built, the rest planned. Seated events stay off behind
 `seatedEventsAllowed` (`packages/shared/src/features.ts`, UI and server in lockstep) until every
 slice in "Build order" has shipped.
 
@@ -137,7 +137,7 @@ seat on a plan you draw". Both choices are drawn by the seat renderer, not icons
 
 ## Build order
 
-Each slice is one PR. Fable signs off S2, S4, S5 and S6 (server, money path, door, signing).
+Each slice is one PR. Fable signs off S2 to S6 (server, CSP and cross-origin messages, money path, door, signing).
 
 1. **S1 shared** (built): layout + plan schemas and validation, the walk + golden vectors, geometry, best
    seats, `woco.seatstate.v1`, manifest `seatPlan` link, topics, starting layouts, the flag.
@@ -149,8 +149,7 @@ Each slice is one PR. Fable signs off S2, S4, S5 and S6 (server, money path, doo
    The LAYOUT LIBRARY moved out to its own slice: a saved layout is a multi-chunk feed, and a large venue's
    would meet the SOC relay's per-account limits. Until then reuse = templates, plus (next) "start from an
    earlier event's plan", which needs no new storage: those plans are already content-addressed.
-3. **S3 buyer map**: picker in the app, site runtime and embed; direct Swarm + chain reads; the live
-   holds route.
+3. **S3 buyer map** (built; design consult 2026-11-03, Fable 68/68): see "The buyer map (S3)" below.
 4. **S4 money path**: per-seat holds, multi-band checkout (`cardOrderAmountsMulti` beside
    `cardOrderAmounts`, reviewed with the checkout that uses it), hold extension + expiry handler, seated mint,
    receipt parsing, revert decoding, seat in the sale record and email.
@@ -164,4 +163,56 @@ state is ~50 KB).
 
 Before the flag flips: scanner deploy, a site runtime release (organisers republish), the
 `onchain-events.json` rollback note for the new fields, `docs/legal/DATA_INVENTORY.md` + privacy-notice
-line (the seat is order data), CSP `connect-src` for the map's chain RPC.
+line (the seat is order data). The app's CSP already allows the map's RPC (`arb1.arbitrum.io`).
+
+## The buyer map (S3)
+
+One picker for every host: `@woco/seatmap` (`buyer.ts` model, `view.ts` camera, `picker.ts` SVG,
+`load.ts` reads, `svelte/SeatPicker.svelte` the full-screen view). The app and websites mount it from a
+seated ticket type's card (`apps/web/src/lib/components/seating/SeatedSeries.svelte`); routes
+`#/event/:id/seats/:seriesId` (app) and `#/events/:id/seats/:seriesId` (websites). Seat rules are
+`@woco/shared/seating/availability.ts`, shared with the server.
+
+- **What the map checks** before drawing: the manifest body's digest (recomputed, never the blob's own)
+  equals the ledger's `manifestRef`, `isSeated` is true, the plan's bytes hash to the digest the manifest
+  names, and the plan validates in full (in a Worker above 20,000 seats). Otherwise it refuses to draw.
+  Chain unreadable: the plan draws, nothing can be picked. Our server down: holds unknown, the map still
+  draws. Plans come from our gateway only.
+- **Chain reads**: a hand-written Multicall3 `aggregate3` (`shared/chain/multicall.ts`, byte-identical to
+  viem, tested in `apps/web/test`); every batch carries ArbSys `arbBlockNumber` and every value keeps the
+  highest block it was read at, so a lagging replica never un-sells a seat. A picked seat's `seatNonces`
+  is read in the same batch as its word. Refresh: the words on screen + picks every ~20 s while visible,
+  a full read every ~2 min, back-off on 429. Measured on the public RPC (2026-11-03): one 256-word batch
+  in ~380 ms; 40 refreshes back to back from one address, none limited.
+- **Live holds**: `GET .../held` lists `seats` for a series registered seated: active holds plus seats paid
+  in the last 10 minutes (a replica may not show the mint yet). Indices only, the same for every caller,
+  `Cache-Control: public, max-age=5`.
+- **Freed seats**: the map does not read every seat's nonce (no bulk view); the reserve check (S4) is the
+  gate, and a refused seat comes back in the 409 and is marked.
+- **Embed**: the widget opens a full-screen frame on our API origin, `/embed/seatmap/:eventId/:seriesId`
+  (own CSP: our API, our gateway, the Arbitrum RPC; worker-src 'self'), running the same SeatPicker
+  (`woco-seatmap.js`, a separate build). The widget keeps holds and checkout; they talk through
+  `packages/embed/src/seatmap-bridge.ts` (exact origins both ways, versioned, shape-checked). Inside the
+  iframe embed the map opens in the app instead.
+- **Accessibility**: every seat is a button with its reason spoken ("sold"); one roving tab stop, arrows
+  walk a row, a live region for every change, Escape closes. A tap on a seat too small for a finger zooms
+  in instead of picking.
+- **Scale**: above 2,500 seats the map shows sections until seats are both visible (7 px) and few enough
+  on screen (4,000); only on-screen blocks are drawn. On a mid phone (4x CPU throttle, 20,000 seats):
+  sections in ~3 s, a section's seats ~0.6 s, best seats ~1 s.
+
+Departures from the consult, all accepted at the S3 sign-off (Fable 73/73, 2026-11-03, changes applied):
+seat nodes stay ~3 per seat (the 4,000-seat draw budget bounds the DOM; a tap rebuilds only the block it
+changed, ~0.4 s on a 4x-throttled phone at 1,250 seats); the organiser's seat-state feed is read from S6 (its
+storage layout is decided there; until then the plan's held flags); the picker reports taps and the host owns
+picks (`canPick` from the host serves S6's dashboard). Open: #1087 (the parse Worker is cross-origin on
+woco.eth.limo, so plans above 20,000 seats parse on the main thread there).
+
+S4 must (pinned by tests where marked):
+- hold by seat with `{ seats, planDigest }` and refuse a plan other than the pin
+  (`shared/seating/reserve.ts`, tested); fill `Reservation.seats`; dedupe a buyer's holds by seat set, not
+  quantity; lift the seated refusal on `/reserve` and create-checkout (`server/lib/seating/seated-sale.ts`);
+- pass `onhold` + the `checkout` snippet to SeatPicker; in the widget, send `canHold: true` and answer
+  `picked` with `hold` / `refused`;
+- extend the hold to the Stripe session's expiry and release it on `checkout.session.expired`;
+- never hold eagerly for a seated series (the hold is the buyer's "Hold" press).

@@ -25,6 +25,13 @@ export {
   type Box, type SeatPoint, type ItemLabel, type ItemGeometry,
 } from "./geometry.js";
 export { seatRuns, bestSeats, loneSeatLeft, LONE_SEAT_PENALTY, type SeatRun, type BestSeatsOptions } from "./best.js";
+export {
+  SEAT_FREE, SEAT_TAKEN, SEAT_NO_PRICE, SEAT_HELD, SEAT_UNCONFIRMED, SEAT_ON_HOLD, SEAT_UNKNOWN,
+  saleState, seatStates, pickable, seatReason,
+  type ChainSeats, type SaleState, type SeatCode, type SeatStateInput, type SeatStates,
+} from "./availability.js";
+export { SEAT_WORDS_PER_BATCH, seatBatch, seatWordCount, type SeatBatch, type SeatBatchRead, type SeatEventRead } from "./chain.js";
+export { parseSeatedReserve, seatedReserveRefusal, type SeatedReserveRequest, type SeatedReserveRefusal } from "./reserve.js";
 export { seatLayoutLibraryTopic, seatLayoutTopic, eventSeatStateTopic } from "./topics.js";
 export {
   rowLetters, labelsAfter, normRot, labelWidth, idMaker, makeRow, rowsBlock, table, shape, LAYOUT_TEMPLATES,

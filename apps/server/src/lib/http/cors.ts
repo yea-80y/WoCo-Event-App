@@ -14,7 +14,10 @@ import { SCANNER_DEVICE_HEADER } from "@woco/shared";
  * organiser sites and custom domains, the embed on anyone's page, the scanner at
  * `scan.woco.eth.limo` and at its gateway URL.
  */
-export const corsOrigin = (origin: string): string => origin || "*";
+/** Routes a shared cache may keep (`Cache-Control: public`) answer `*`: a cache that ignores `Vary` (Cloudflare) would otherwise hand one origin's reflected header to the next. */
+const PUBLIC_CACHED = /^\/api\/events\/[^/]+\/series\/[^/]+\/held$/;
+export const corsOrigin = (origin: string, c?: { req: { path: string } }): string =>
+  c && PUBLIC_CACHED.test(c.req.path) ? "*" : origin || "*";
 
 export const CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 

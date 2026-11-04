@@ -9,9 +9,10 @@ import { FEATURES, FEED_FAMILY_STORES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
 import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
-import { apiNoStoreByDefault, securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
+import { apiNoStoreByDefault, securityHeaders, FRAME_CSP, SEATMAP_FRAME_CSP } from "./lib/http/security-headers.js";
 import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS, corsOrigin } from "./lib/http/cors.js";
 import { buildFramePage } from "./lib/embed/frame-page.js";
+import { buildSeatmapPage } from "./lib/embed/seatmap-page.js";
 import { revokeSession, revokeAllSessions, revocationHealth, RevocationStoreUnavailableError } from "./lib/auth/revocation.js";
 import { deviceGrantHealth } from "./lib/auth/device-grants.js";
 import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
@@ -749,6 +750,46 @@ app.get("/embed/woco-embed.js", (c) => {
     return c.body(js);
   } catch {
     return c.text("Embed widget not built. Run: npm run build:embed", 404);
+  }
+});
+
+// The widget's seat map for a seated ticket type (docs/SEATING.md): a full-screen
+// frame on this origin, its own CSP, the shared map bundle. The widget opens it.
+app.get("/embed/seatmap/:eventId/:seriesId", (c) => {
+  const html = buildSeatmapPage({
+    eventId: c.req.param("eventId"),
+    seriesId: c.req.param("seriesId"),
+    host: c.req.query("host"),
+    theme: c.req.query("theme"),
+  });
+  c.header("Content-Type", "text/html; charset=utf-8");
+  c.header("Content-Security-Policy", SEATMAP_FRAME_CSP);
+  c.header("Cache-Control", "no-store");
+  return c.body(html);
+});
+
+app.get("/embed/woco-seatmap.js", (c) => {
+  try {
+    const js = readFileSync(resolve(__dirname, "../../../packages/embed/dist/woco-seatmap.js"), "utf-8");
+    c.header("Content-Type", "application/javascript");
+    c.header("Cache-Control", "public, max-age=3600");
+    return c.body(js);
+  } catch {
+    return c.text("Seat map not built. Run: npm run build:embed", 404);
+  }
+});
+
+// The seat map's plan-parsing Worker (content-hashed name, so cached for good). Only that file.
+app.get("/embed/assets/:file", (c) => {
+  const file = c.req.param("file");
+  if (!/^parse-worker-[A-Za-z0-9_-]{4,32}\.js$/.test(file)) return c.text("Not found", 404);
+  try {
+    const js = readFileSync(resolve(__dirname, "../../../packages/embed/dist/assets", file), "utf-8");
+    c.header("Content-Type", "application/javascript");
+    c.header("Cache-Control", "public, max-age=31536000, immutable");
+    return c.body(js);
+  } catch {
+    return c.text("Not found", 404);
   }
 });
 
