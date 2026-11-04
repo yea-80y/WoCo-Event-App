@@ -60,12 +60,17 @@ test("cross origin: a same-origin blob that statically imports exactly that URL"
 });
 
 test("the import is a quoted string literal, whatever the URL holds", async () => {
+  // The URL parser encodes `"` everywhere, but a backslash survives in the query: written
+  // raw into a literal it would escape the next character and name another URL.
+  const raw = `https://gateway.woco-net.com/a/"x";alert(1)//.js?q=\\u0041\\"`;
+  const href = new URL(raw).href;
+  assert.ok(href.includes("\\"), "the case under test keeps its backslash");
   const w = world({ origin: "https://woco.eth.limo", baseURI: GATEWAY });
-  w.start(`https://gateway.woco-net.com/a/"x";alert(1)//\\.js`);
+  w.start(raw);
   const text = await w.blobs[0].text;
   // One statement: `import "<one JSON string>";` - nothing after the closing quote.
   assert.match(text, /^import "(?:[^"\\]|\\.)*";$/);
-  assert.equal(JSON.parse(text.slice("import ".length, -1)), new URL(`https://gateway.woco-net.com/a/"x";alert(1)//\\.js`).href);
+  assert.equal(JSON.parse(text.slice("import ".length, -1)), href, "the literal names exactly the parsed URL");
 });
 
 test("one shim per chunk: a pool of workers reuses it, another chunk gets its own", () => {
