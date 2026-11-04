@@ -172,6 +172,41 @@ test("the shipped fonts exist and are what draws the text (the server image has 
   assert.notDeepEqual(a, b, "with no font, the title draws nothing and both images are identical");
 });
 
+test("drawn with the real fonts, no title, venue, ticket type or seat runs into the card's right margin", async () => {
+  const { renderAsync } = await import("@resvg/resvg-js");
+  const PAD = 56;
+  const worst = [
+    "An Evening of Chamber Music at the Old Corn Exchange",
+    "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+    "mmmm mmmm mmmm mmmm mmmm mmmm mmmm mmmm mmmm mmmm",
+    "New Year's Eve Gala Dinner & Dance - Grand Ballroom",
+    "Ça c'est Paris! Une soirée à l'Opéra de Lyon, 2026",
+  ];
+  for (const [i, title] of worst.entries()) {
+    // Every other card is seated: its seat band (Section / Row / Seat) is drawn in the same sans.
+    const seat = i % 2 ? { area: title.slice(0, 80).trim(), row: "WWWW", seat: 999_999 } : undefined;
+    const ops = ticketCardOps({
+      title, location: `${title}, ${title}`, series: title, startIso: "2026-11-14T22:00:00Z",
+      position: { n: 2, of: 4 }, hasPhoto: false, colours: WOCO_TICKET_COLOURS, seat,
+    });
+    const svg = ticketCardSvg(ops, { width: TICKET_CARD_WIDTH, height: TICKET_CARD_HEIGHT, qrContent: "woco://t/e/s/1/0x" + "ab".repeat(65), photo: null });
+    const img = await renderAsync(svg, {
+      fitTo: { mode: "width", value: TICKET_CARD_WIDTH },
+      font: { fontFiles: TICKET_FONT_FILES, loadSystemFonts: false, defaultFontFamily: "DejaVu Sans", sansSerifFamily: "DejaVu Sans", monospaceFamily: "DejaVu Sans Mono" },
+    });
+    const px = img.pixels;
+    // Every start-anchored sans line: nothing lit past the right padding on its rows.
+    for (const t of ops.flatMap((o) => (o.kind === "text" && o.font === "sans" && o.anchor === "start" ? [o] : []))) {
+      for (let y = Math.max(0, t.y - t.size); y < Math.min(img.height, t.y + Math.ceil(t.size / 4)); y++) {
+        for (let x = TICKET_CARD_WIDTH - PAD + 2; x < img.width; x++) {
+          const i = (y * img.width + x) * 4;
+          assert.ok(px[i] + px[i + 1] + px[i + 2] < 300, `"${t.text}" (${t.size}px) reaches x=${x} on row ${y}`);
+        }
+      }
+    }
+  }
+});
+
 test("colours in SVG attributes are escaped too", () => {
   const svg = ticketCardSvg(
     [{ kind: "rect", x: 0, y: 0, w: 1, h: 1, fill: '"/><script>x</script>' }],

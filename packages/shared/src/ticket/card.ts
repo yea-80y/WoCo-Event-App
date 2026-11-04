@@ -10,9 +10,9 @@
  * "Ticket N of M", the position in THIS order; a single ticket says
  * "Your ticket".
  *
- * Text widths are ESTIMATED from character classes, not measured: the server
- * renderer cannot measure, and one estimate on both sides keeps the wrapping
- * identical. The estimate is deliberately generous so text never overruns.
+ * Text widths come from a table, not a measurement: the server renderer cannot
+ * measure, and one table on both sides keeps the wrapping identical. It holds the
+ * server's own (widest) face's widths, so text never overruns on either side.
  */
 
 import { ticketSeatFields, ticketSeatNote, type TicketSeat } from "../seating/ticket-seat.js";
@@ -175,16 +175,28 @@ export function splitLocation(location?: string): { venue?: string; rest?: strin
   return rest ? { venue, rest } : { venue };
 }
 
-/** Estimated advance of one character, in em. Generous on purpose. */
-function charEm(ch: string, font: TicketCardFont): number {
-  if (font === "mono") return 0.62;
-  if (" .,:;'|!il1jtfr()[]".includes(ch)) return 0.34;
-  if ("mwMW@".includes(ch)) return 0.92;
-  if (/[A-Z]/.test(ch)) return 0.7;
-  if (/[0-9]/.test(ch)) return 0.6;
-  return 0.58;
+/**
+ * Advance widths of printable ASCII (space to "~"), in thousandths of an em, of the
+ * faces the server draws with - DejaVu Sans Book and Bold (apps/server/src/assets/fonts),
+ * read from their hmtx tables. The widest face on either side, so the browser's narrower
+ * fonts fit inside them too. (A rough per-class guess used to stand here; it read bold
+ * DejaVu about 12% narrow, and long titles ran to the card's edge.)
+ */
+// prettier-ignore
+const SANS_BOOK = [318, 401, 460, 838, 636, 950, 780, 275, 390, 390, 500, 838, 318, 361, 318, 337, 636, 636, 636, 636, 636, 636, 636, 636, 636, 636, 337, 337, 838, 838, 838, 531, 1000, 684, 686, 698, 770, 632, 575, 775, 752, 295, 295, 656, 557, 863, 748, 787, 603, 787, 695, 635, 611, 732, 684, 989, 685, 611, 685, 390, 337, 390, 838, 500, 500, 613, 635, 550, 635, 615, 352, 635, 634, 278, 278, 579, 278, 974, 634, 612, 635, 635, 411, 521, 392, 634, 592, 818, 592, 592, 525, 636, 337, 636, 838];
+// prettier-ignore
+const SANS_BOLD = [348, 456, 521, 838, 696, 1002, 872, 306, 457, 457, 523, 838, 380, 415, 380, 365, 696, 696, 696, 696, 696, 696, 696, 696, 696, 696, 400, 400, 838, 838, 838, 580, 1000, 774, 762, 734, 830, 683, 683, 821, 837, 372, 372, 775, 637, 995, 837, 850, 733, 850, 770, 720, 682, 812, 774, 1103, 771, 724, 725, 457, 365, 457, 838, 500, 500, 675, 716, 593, 716, 678, 435, 716, 712, 343, 343, 665, 343, 1042, 712, 687, 716, 716, 493, 595, 478, 712, 652, 924, 645, 652, 582, 712, 365, 712, 838];
+
+/** Advance of one character, in em: exact for ASCII, generous past it (wide scripts a full em). */
+function charEm(ch: string, font: TicketCardFont, bold: boolean): number {
+  if (font === "mono") return 0.62; // DejaVu Sans Mono is 0.602 throughout
+  const cp = ch.codePointAt(0) ?? 0;
+  if (cp >= 32 && cp < 127) return (bold ? SANS_BOLD : SANS_BOOK)[cp - 32] / 1000;
+  if (cp >= 0x2e80) return 1.05;
+  return bold ? 0.9 : 0.82;
 }
 
+/** Width of `text` as drawn. Weights under 600 draw in the Book face (the server ships no medium). */
 export function estimateTextWidth(
   text: string,
   size: number,
@@ -192,9 +204,10 @@ export function estimateTextWidth(
   weight = 400,
   letterSpacing = 0,
 ): number {
+  const bold = weight >= 600;
   let em = 0;
-  for (const ch of text) em += charEm(ch, font);
-  return em * size * (weight >= 700 ? 1.06 : 1) + letterSpacing * Math.max(0, [...text].length - 1);
+  for (const ch of text) em += charEm(ch, font, bold);
+  return em * size + letterSpacing * Math.max(0, [...text].length - 1);
 }
 
 /** Cut `text` to fit `max`, ending in an ellipsis when cut. */

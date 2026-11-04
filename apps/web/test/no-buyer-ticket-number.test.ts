@@ -13,7 +13,6 @@ const BUYER_VIEWS = [
   "../src/ticket/ticket-page.ts",
   "../src/lib/attendee/passport/PassportTicket.svelte",
   "../src/lib/attendee/passport/VerifyTicket.svelte",
-  "../src/lib/attendee/events/TicketSuccess.svelte",
   "../src/lib/attendee/gate/SignupLanding.svelte",
   "../../server/src/routes/tickets.ts",
   "../../server/src/lib/ticket/render-card.ts",
