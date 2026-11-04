@@ -18,9 +18,9 @@ export {
 } from "./ticket-seat.js";
 export { seriesSeatingRefusal, bandPricesMinor, priceMinor } from "./series.js";
 export {
-  SEAT_STATE_FORMAT, heldBytes, encodeHeld, decodeHeld, validateSeatState, buildSeatState, seatStateView,
-  organiserAllowsSale,
-  type SeatState, type SeatStateView,
+  SEAT_STATE_FORMAT, SEAT_HOLD_KINDS, PLAN_HOLD_KIND, heldBytes, encodeHeld, decodeHeld, validateSeatState, buildSeatState,
+  seatStateView, organiserAllowsSale, seatStateWriteSignal,
+  type SeatState, type SeatStateView, type SeatHold, type SeatHoldKind,
 } from "./state.js";
 export {
   SEAT_PITCH, SEAT_SIZE, roundTableRadius, longTableLength, headTableLength, itemGeometry, toWorld, toLocal,

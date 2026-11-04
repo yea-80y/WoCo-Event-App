@@ -14,7 +14,7 @@ const planOf = (id: string) => {
   const p = freezeSeatPlan(LAYOUT_TEMPLATES.find((t) => t.id === id)!.make());
   return buyerPlan(p, seatPlanDigest(encodeSeatPlan(p)));
 };
-const none = { held: new Set<number>(), confirmed: new Map<number, number>() };
+const none = { held: new Set<number>(), holds: new Map(), confirmed: new Map<number, number>() };
 
 test("notices: a problem first, then the sale state, then our server; none when all is well", () => {
   assert.equal(mapNotice({ problem: "mismatch", sale: "on-sale" })?.retry, false);

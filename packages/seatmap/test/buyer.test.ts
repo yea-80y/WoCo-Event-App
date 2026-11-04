@@ -11,7 +11,7 @@ const planOf = (id: string) => {
   const p = freezeSeatPlan(LAYOUT_TEMPLATES.find((t) => t.id === id)!.make());
   return buyerPlan(p, seatPlanDigest(encodeSeatPlan(p)));
 };
-const none = { held: new Set<number>(), confirmed: new Map<number, number>() };
+const none = { held: new Set<number>(), holds: new Map(), confirmed: new Map<number, number>() };
 
 const chain = (n: number, taken: number[] = [], over: Partial<ChainSeats> = {}): ChainSeats => {
   const words = new Array<bigint>(Math.ceil(n / 256)).fill(0n);
