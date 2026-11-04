@@ -8,7 +8,7 @@
  */
 
 import type { EventFeed } from "@woco/shared";
-import type { SeatState } from "@woco/shared/seating/state";
+import type { SeatHoldKind, SeatState } from "@woco/shared/seating/state";
 import type { ContentFeedResult } from "../../swarm/content-feed.js";
 import type { FeedRoute } from "../../swarm/gateways.js";
 
@@ -78,15 +78,157 @@ export async function copySeatStates(
   return copied;
 }
 
+// ── Writing ──────────────────────────────────────────────────────────────────
+
+/** One save's changes, applied to the state read just before it is written. */
+export interface SeatStateDelta {
+  /** Seats into a hold of this kind (a seat already held moves to it). */
+  hold?: ReadonlyMap<number, SeatHoldKind>;
+  release?: readonly number[];
+  /** Seats a move freed, put back on sale: seat -> its on-chain `seatNonces` now. */
+  confirm?: ReadonlyMap<number, number>;
+}
+
+export interface SeatStateWriter extends SeatStateIO {
+  /** The organiser unlock (`auth.ensureOrganiserUnlock()`): throws when declined. */
+  unlock(): Promise<void>;
+  /** The account's current content-feed signer. */
+  signer(): Promise<{ privKey: string; address: string }>;
+  /** Whether this device has seen a version of the feed (its version hint). */
+  hadVersion(signer: string, topic: string): boolean;
+  now(): string;
+}
+
+/** The plan a ticket type sells from, as the dashboard loaded it. */
+export interface SeatPlanFacts {
+  digest: string;
+  seats: number;
+  /** The plan's own held seats: what a never-written state holds. */
+  planHolds: ReadonlyMap<number, SeatHoldKind>;
+}
+
+/**
+ * Save `delta` to the ticket type's seat state. Asks for the organiser unlock ITSELF,
+ * every time (S6 consult): a confirmation is what lets a freed seat sell again, and
+ * the feed signer alone - cached on an open device - must not be enough to write one.
+ * Then a thorough read of the stored state, `delta` applied to it, `seq` + 1, written,
+ * read back. Applying the delta to a fresh read is what keeps two devices from undoing
+ * each other's holds: the race is one write wide.
+ *
+ * Throws `SeatStateUnreadableError` when the stored state cannot be read - and when it
+ * reads as never written on a device that has seen a version of it (an absent read
+ * that is really an unreachable one), or is not this ticket type's or this plan's.
+ * `settled` false: written, but the read-back does not show it yet.
+ */
+export async function writeSeatState(
+  w: SeatStateWriter,
+  feed: Pick<EventFeed, "eventId" | "gatewayUrl">,
+  seriesId: string,
+  plan: SeatPlanFacts,
+  delta: SeatStateDelta,
+): Promise<{ state: SeatState; settled: boolean }> {
+  await w.unlock();
+  const signer = await w.signer();
+  const [{ seatStateTopic }, { buildSeatState, decodeHeld }] = await Promise.all([
+    import("@woco/shared/seating/topics"),
+    import("@woco/shared/seating/state"),
+  ]);
+  const topic = seatStateTopic(feed.eventId, seriesId);
+
+  const stored = await readStoredSeatState(w, signer.address, feed, seriesId);
+  if (!stored && w.hadVersion(signer.address, topic)) throw new SeatStateUnreadableError();
+  const base = stored ? await ownSeatState(stored.value, feed.eventId, seriesId) : null;
+  if (stored && (!base || base.planDigest !== plan.digest.toLowerCase() || base.seats !== plan.seats)) {
+    throw new SeatStateUnreadableError("This ticket type's seat holds are saved for a different seating plan. Nothing was changed.");
+  }
+
+  const holds = new Map<number, SeatHoldKind>();
+  if (base) for (const h of base.holds) for (const k of decodeHeld(h.held, base.seats)) holds.set(k, h.kind);
+  else for (const [k, kind] of plan.planHolds) holds.set(k, kind);
+  const confirmed = new Map<number, number>(base?.confirmed ?? []);
+  for (const k of delta.release ?? []) holds.delete(k);
+  for (const [k, kind] of delta.hold ?? []) holds.set(k, kind);
+  for (const [k, n] of delta.confirm ?? []) confirmed.set(k, n);
+
+  const state = buildSeatState({
+    eventId: feed.eventId,
+    seriesId,
+    planDigest: plan.digest,
+    seats: plan.seats,
+    holds,
+    confirmed,
+    seq: base ? base.seq + 1 : 0,
+    updatedAt: w.now(),
+  });
+  await w.write({ signerPrivKey: signer.privKey, topic, data: state, route: w.route(feed) });
+
+  const back = await readStoredSeatState(w, signer.address, feed, seriesId).catch(() => null);
+  const readBack = back ? await ownSeatState(back.value, feed.eventId, seriesId) : null;
+  return { state, settled: !!readBack && readBack.seq >= state.seq };
+}
+
+/**
+ * The relay's refusal for a caller over its write budget, or the relay as a whole
+ * (`apps/server/src/lib/swarm/soc-relay-limits.ts` REASON_CALLER / REASON_GLOBAL; a test
+ * pins the wording). A large plan's state is up to ~100 chunks, past one minute's budget.
+ */
+const RELAY_BUSY = ["Too many writes", "write relay is busy"];
+const PACE_MS = [5_000, 15_000, 30_000, 60_000];
+
+export function isRelayBusy(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return RELAY_BUSY.some((s) => msg.includes(s));
+}
+
+/** Send one signed chunk, waiting out the relay's budget: a re-sent chunk is byte-identical. */
+export async function pacedSend<T>(send: () => Promise<T>, sleep: (ms: number) => Promise<void>): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await send();
+    } catch (err) {
+      if (!isRelayBusy(err) || i >= PACE_MS.length) throw err;
+      await sleep(PACE_MS[i]!);
+    }
+  }
+}
+
 /** The live wiring: the app's content-feed reader and writer. */
 export async function liveSeatStateIO(): Promise<SeatStateIO> {
-  const [{ readContentFeedResult, writeContentFeed }, { feedRouteFor }] = await Promise.all([
+  const [{ readContentFeedResult, writeContentFeed }, { feedRouteFor }, { postSignedSoc }] = await Promise.all([
     import("../../swarm/content-feed.js"),
     import("../../swarm/gateways.js"),
+    import("../../swarm/client-soc.js"),
   ]);
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   return {
     read: (signer, topic, route) => readContentFeedResult<unknown>(signer, topic, { route, thorough: true, skipLegacy: true }),
-    write: (args) => writeContentFeed(args),
+    write: (args) => writeContentFeed({ ...args, transport: (body) => pacedSend(() => postSignedSoc(body), sleep) }),
     route: (feed) => feedRouteFor(feed.gatewayUrl),
+  };
+}
+
+/** The dashboard's writer: the live IO plus the organiser unlock and the account's signer. */
+export async function liveSeatStateWriter(): Promise<SeatStateWriter> {
+  const [io, { auth }, { hintKey }] = await Promise.all([
+    liveSeatStateIO(),
+    import("../../auth/auth-store.svelte.js"),
+    import("../../swarm/content-feed.js"),
+  ]);
+  return {
+    ...io,
+    unlock: () => auth.ensureOrganiserUnlock(),
+    signer: async () => {
+      const s = await auth.getContentFeedSigner();
+      if (!s) throw new Error("Sign in again to change seats.");
+      return s;
+    },
+    hadVersion: (signer, topic) => {
+      try {
+        return localStorage.getItem(hintKey(signer, topic)) !== null;
+      } catch {
+        return false;
+      }
+    },
+    now: () => new Date().toISOString(),
   };
 }
