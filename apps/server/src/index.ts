@@ -140,6 +140,7 @@ import { suppressionStoreHealth } from "./lib/marketing/suppression-store.js";
 import { sweepExpiredRosters, rosterRetentionHealth } from "./lib/checkin/roster-retention.js";
 import { doorEntriesHealth } from "./lib/checkin/door-entries.js";
 import { doorSeatsHealth } from "./lib/checkin/pack-series.js";
+import { seatStateGateHealth } from "./lib/seating/seat-state-gate.js";
 import { ticketHoldsHealth } from "./lib/ticket-hold/store.js";
 import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
 import { getAttendeeStamper, retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
@@ -552,6 +553,10 @@ function healthReport() {
     // ledger and the registration record disagreeing on whether it is seated. The door
     // refuses that type's tickets until the record is repaired (docs/SEATING.md).
     doorSeats: doorSeatsHealth(),
+    // Allocated seating holds: red while a ticket type's announced seat-state save has
+    // stayed unreadable 2+ minutes - its holds are refused until the organiser saves
+    // again (or a restart). The log names the event (docs/SEATING.md "Dashboard (S6)").
+    seatState: seatStateGateHealth(),
     // Order answers erased N months after the event's onchain end (#547).
     // Red when the ledger or held orders are unreadable, no run in 48 h, the
     // mode is not understood, or - live only - an order someone can act on is a

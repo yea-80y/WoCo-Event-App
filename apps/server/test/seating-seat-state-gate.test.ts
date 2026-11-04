@@ -8,7 +8,8 @@ import type { VersionedFeedRead } from "@woco/shared";
 import { buildSeatState } from "@woco/shared/seating/state";
 import { seatStateTopic } from "@woco/shared/seating/topics";
 import {
-  __setSeatStateGateForTests, seatStateRead, seatStateRelayed, seatStateWritten, SEAT_STATE_FRESH_MS, SEAT_STATE_SIGNAL_WARN_MS,
+  __setSeatStateGateForTests, seatStateGateHealth, seatStateRead, seatStateRelayed, seatStateWritten, MAX_SIGNALS_PER_EVENT,
+  SEAT_STATE_FRESH_MS, SEAT_STATE_SIGNAL_WARN_MS,
 } from "../src/lib/seating/seat-state-gate.js";
 
 const EVENT = "evt-seats-1";
@@ -140,11 +141,13 @@ test("only the event's recorded organiser's chunk is a signal: anyone else's pau
   const creator = `0x${"c0".repeat(20)}`;
   const recorded = (id: string) => (id === EVENT ? creator : null);
   serve(found(stateAt(2)));
-  assert.equal(seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, `0x${"ee".repeat(20)}`, "11".repeat(20), recorded), false, "another account");
-  assert.equal(seatStateRelayed({ eventId: "evt-unknown", seriesId: SERIES, seq: 3 }, creator, "11".repeat(20), recorded), false, "no record");
+  const carrier = async () => `0x${"11".repeat(20)}`;
+  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, `0x${"ee".repeat(20)}`, "11".repeat(20), recorded, carrier), false, "another account");
+  assert.equal(await seatStateRelayed({ eventId: "evt-unknown", seriesId: SERIES, seq: 3 }, creator, "11".repeat(20), recorded, carrier), false, "no record");
+  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, creator, "22".repeat(20), recorded, carrier), false, "a replaced signer (a removed passkey's device) pauses nothing");
   assert.equal((await seatStateRead(X)).status, "found", "nothing paused");
   t += SEAT_STATE_FRESH_MS;
-  assert.equal(seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, creator.toUpperCase().replace("0X", "0x"), "11".repeat(20), recorded), true);
+  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, creator.toUpperCase().replace("0X", "0x"), "0x" + "11".repeat(20), recorded, carrier), true);
   assert.equal((await seatStateRead(X)).status, "unavailable", "the organiser's own write is awaited");
 });
 
@@ -162,4 +165,34 @@ test("a signal that lands while a read is in flight: the older answer is never s
   assert.equal(b.status, "unavailable");
   serve(found(stateAt(1)));
   assert.equal((await seatStateRead(X)).status, "unavailable");
+});
+
+test("an unreadable carrier is taken as matching: a false signal only refuses", async () => {
+  serve(found(stateAt(2)));
+  const recorded = () => `0x${"c0".repeat(20)}`;
+  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 5 }, `0x${"c0".repeat(20)}`, "33".repeat(20), recorded, async () => null), true);
+  assert.equal((await seatStateRead(X)).status, "unavailable");
+});
+
+test("health: red once an announced save has stayed unreadable past the warning time", async () => {
+  assert.deepEqual(seatStateGateHealth(), { ok: true, waiting: 0, stuck: 0, oldestMs: null });
+  serve(found(stateAt(2)));
+  seatStateWritten(EVENT, SERIES, 3);
+  assert.equal(seatStateGateHealth().ok, true, "a fresh save is waiting, not stuck");
+  t += SEAT_STATE_SIGNAL_WARN_MS;
+  await seatStateRead(X); // still below the floor
+  const h = seatStateGateHealth();
+  assert.equal(h.ok, false);
+  assert.equal(h.stuck, 1);
+  serve(found(stateAt(3)));
+  await seatStateRead(X);
+  assert.equal(seatStateGateHealth().ok, true, "read back: cleared");
+});
+
+test("one event cannot announce more than its share of ticket types", async () => {
+  for (let i = 0; i < MAX_SIGNALS_PER_EVENT + 5; i++) seatStateWritten(EVENT, `s${i}`, 1);
+  assert.equal(seatStateGateHealth().waiting, MAX_SIGNALS_PER_EVENT);
+  seatStateWritten(EVENT, "s0", 2);
+  seatStateWritten("evt-other", "s0", 1);
+  assert.equal(seatStateGateHealth().waiting, MAX_SIGNALS_PER_EVENT + 1, "a known type and another event still count");
 });

@@ -124,7 +124,7 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
     }
     // An organiser's seat state for their own event: the money path stops trusting
     // older reads at once (seat-state-gate.ts).
-    if (seatSignal) seatStateRelayed(seatSignal, parentAddress, b.owner);
+    if (seatSignal) await seatStateRelayed(seatSignal, parentAddress, b.owner);
     return c.json({ ok: true, data: ref });
   } catch (err) {
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
