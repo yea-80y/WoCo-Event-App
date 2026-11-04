@@ -67,7 +67,12 @@
   let seriesPage = $state<Record<string, number>>({});
   const ORDERS_PAGE_SIZE = 100;
 
-  let activeTab = $state<"orders" | "broadcast" | "payments" | "door" | "edit">("orders");
+  let activeTab = $state<"orders" | "seats" | "broadcast" | "payments" | "door" | "edit">("orders");
+  // Allocated seating (docs/SEATING.md S6): its own tab, an operational surface like Door.
+  const hasSeats = $derived(
+    FEATURES.seatedEventsAllowed && !!event?.series.some((s) => !!s.seating && !!s.onChainEventId && !!s.swarmManifestRef),
+  );
+  const seatsPanel = () => import("../seating/SeatsPanel.svelte");
 
   // Webhook state
   interface WebhookConfig {
@@ -1091,6 +1096,15 @@
       >
         Orders
       </button>
+      {#if hasSeats}
+        <button
+          class="tab-btn"
+          class:active={activeTab === "seats"}
+          onclick={() => (activeTab = "seats")}
+        >
+          Seats
+        </button>
+      {/if}
       <button
         class="tab-btn"
         class:active={activeTab === "broadcast"}
@@ -1121,7 +1135,15 @@
       </button>
     </div>
 
-    {#if activeTab === "edit"}
+    {#if activeTab === "seats" && hasSeats}
+      {#await seatsPanel()}
+        <p class="seats-loading">Loading seats…</p>
+      {:then { default: SeatsPanel }}
+        <SeatsPanel {event} apiUrl={import.meta.env.VITE_API_URL || ""} />
+      {:catch}
+        <p class="seats-loading">Seats couldn't be loaded. Reload the page to try again.</p>
+      {/await}
+    {:else if activeTab === "edit"}
       <!-- Edit tab — event-level metadata (tiers/pricing are on-chain committed) -->
       <EditEventPanel
         {event}
@@ -2149,6 +2171,10 @@
     gap: 0;
     border-bottom: 1px solid var(--border);
     margin-bottom: 1.5rem;
+  }
+
+  .seats-loading {
+    color: var(--text-muted);
   }
 
   .tab-btn {

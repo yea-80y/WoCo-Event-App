@@ -322,6 +322,9 @@
   {#if ledger2 && !event.cancelledAt && ledger2.series.some((s) => !s.seated)}
     <TicketNumbersPanel {event} view={ledger2} onchanged={(v) => (ledger2 = v)} />
   {/if}
+  {#if ledger2 && !event.cancelledAt && ledger2.series.some((s) => s.seated)}
+    <p class="seats-note">Seated tickets follow your seating plan: hold, release and move seats in the Seats tab.</p>
+  {/if}
 
   <CancelEventPanel {event} {ordersCount} {oncancelled} />
 
@@ -420,6 +423,11 @@
     color: var(--accent-text);
     font-size: 0.8125rem;
     margin: 0;
+  }
+
+  .seats-note {
+    margin: 1rem 0 0;
+    color: var(--text-secondary);
   }
 
   .save-btn {

@@ -23,6 +23,16 @@ export const HOLD_KIND_NAMES: Record<SeatHoldKind, string> = {
   other: "Other",
 };
 
+/** One seat of each kind, in a sentence: "This is a house seat". */
+export const HOLD_KIND_SEAT: Record<SeatHoldKind, string> = {
+  house: "a house seat",
+  guest: "a guest seat",
+  press: "a press seat",
+  access: "an access seat",
+  unavailable: "a seat marked not usable",
+  other: "a held seat",
+};
+
 export type OrgSeat =
   | { status: "free" }
   | { status: "held"; kind: SeatHoldKind }
