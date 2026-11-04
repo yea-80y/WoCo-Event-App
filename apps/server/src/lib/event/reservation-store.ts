@@ -106,11 +106,54 @@ export interface Reservation {
   ip?: string;
   /**
    * Allocated seating: the seat indices this hold names (docs/SEATING.md), ascending,
-   * each once, `quantity` of them. Only a seated hold has it, and nothing writes one
-   * until seated holds ship (S4): the reserve route refuses seated series until then.
+   * each once, `quantity` of them. Only a seated hold has it (`reserveSeats`).
    */
   seats?: number[];
+  /** The plan the seats were checked on: the registration's pin (decision 4). */
+  planDigest?: string;
+  /** Per seat, aligned with `seats`: what the buyer was shown and will be charged. */
+  seatInfo?: SeatedHoldSeat[];
+  /** The Stripe Checkout Session currently paying for this seated hold (one at a time). */
+  checkout?: HoldCheckout;
+  /** Fulfilment has claimed the hold for a paid session and is minting it. */
+  fulfilling?: { sessionId: string; at: string };
+  /** How a seated hold ended before its time, when it did. */
+  releasedBy?: "buyer" | "replaced" | "session-expired" | "not-minted";
+  /** It carried a session and ran out by time, not by Stripe's expiry event (`/api/health`). */
+  ttlLapsed?: true;
 }
+
+/** One seat of a seated hold, pinned when the hold is made. */
+export interface SeatedHoldSeat {
+  /** The plan band's id: its price comes from the event feed. */
+  band: string;
+  bandName: string;
+  /** "Stalls, Row D, seat 7". */
+  label: string;
+  /** The band's price when the hold was made, minor units. Checkout refuses if the feed's differs. */
+  priceMinor: number;
+}
+
+export interface HoldCheckout {
+  sessionId: string;
+  /** The organiser's connected account the session lives on. */
+  account: string;
+  /** The session's own expiry (Stripe's `expires_at`). */
+  expiresAt: string;
+  /** Sessions this hold has had, this one included (MAX_SESSIONS_PER_HOLD). */
+  sessions: number;
+}
+
+/** A seated hold stays this long past its session's expiry: a payment in flight, a late webhook. */
+export const SEATED_HOLD_GRACE_MS = 5 * 60 * 1000;
+/** Checkouts one seated hold may have. Each new one closes the last at Stripe first. */
+export const MAX_SESSIONS_PER_HOLD = 3;
+/**
+ * How long fulfilment keeps a claimed hold in force while it mints: a mint can take up to
+ * MINT_RESOLVE_BOUND_MS (10 min) to resolve. Bounded so a process that died mid-sale
+ * cannot keep the seats off sale for good.
+ */
+export const FULFIL_PIN_MS = 20 * 60 * 1000;
 
 /** A persisted `seats` field is used only when it is exactly a seated hold's. */
 function validSeats(seats: unknown, quantity: number): seats is number[] {
@@ -121,24 +164,73 @@ function validSeats(seats: unknown, quantity: number): seats is number[] {
   return true;
 }
 
+const DIGEST_RE = /^0x[0-9a-f]{64}$/;
+const isText = (v: unknown, max: number): v is string => typeof v === "string" && v.length <= max;
+const isTime = (v: unknown): v is string => typeof v === "string" && !Number.isNaN(Date.parse(v));
+
+function validSeatInfo(v: unknown, n: number): v is SeatedHoldSeat[] {
+  return Array.isArray(v) && v.length === n && v.every((s) =>
+    s && typeof s === "object" && isText(s.band, 64) && isText(s.bandName, 200) && isText(s.label, 200) &&
+    Number.isSafeInteger(s.priceMinor) && s.priceMinor >= 0);
+}
+
+function validCheckout(v: unknown): v is HoldCheckout {
+  const c = v as HoldCheckout;
+  return !!c && typeof c === "object" && isText(c.sessionId, 255) && c.sessionId.startsWith("cs_") &&
+    isText(c.account, 255) && c.account.startsWith("acct_") && isTime(c.expiresAt) &&
+    Number.isInteger(c.sessions) && c.sessions >= 1 && c.sessions <= MAX_SESSIONS_PER_HOLD;
+}
+
+/**
+ * Each seated field loads only if well formed, and a bad one is dropped alone: the hold
+ * keeps counting (and its seats stay held), but checkout and fulfilment, which need the
+ * pin, the prices and the session, refuse it - a refund, never a guess.
+ */
+function sanitiseSeated(r: Reservation): void {
+  if ("seats" in r && !validSeats(r.seats, r.quantity)) delete r.seats;
+  if ("planDigest" in r && !(typeof r.planDigest === "string" && DIGEST_RE.test(r.planDigest))) delete r.planDigest;
+  if ("seatInfo" in r && !validSeatInfo(r.seatInfo, r.seats?.length ?? -1)) delete r.seatInfo;
+  if ("checkout" in r && !validCheckout(r.checkout)) delete r.checkout;
+  if ("fulfilling" in r && !(r.fulfilling && isText(r.fulfilling.sessionId, 255) && isTime(r.fulfilling.at))) delete r.fulfilling;
+}
+
 const reservations = new Map<string, Reservation>();
 let loaded = false;
 let gcTimer: NodeJS.Timeout | null = null;
+/**
+ * Why the file exists but could not be read, or null. Then it is never overwritten
+ * (seated holds are money-path state: a lost one refunds a paid seat), general holds
+ * keep working in memory, and seated holds and checkouts refuse until it is restored.
+ */
+let fileUnreadable: string | null = null;
 
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  let raw: string | null = null;
   try {
-    const raw = readFileSync(STORE_FILE, "utf-8");
-    const arr = JSON.parse(raw) as Reservation[];
-    for (const r of arr) {
-      // A malformed seat list loses the list, never the hold (it still counts by quantity).
-      if ("seats" in r && !validSeats(r.seats, r.quantity)) delete r.seats;
-      reservations.set(r.id, r);
+    raw = readFileSync(STORE_FILE, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      fileUnreadable = err instanceof Error ? err.message : String(err);
+      console.error(`[reservations] ${STORE_FILE} exists but cannot be read — it will NOT be overwritten; seated sales are paused:`, err);
     }
-    console.log(`[reservations] Loaded ${reservations.size} reservations from disk`);
-  } catch {
-    // File doesn't exist yet — fine
+  }
+  if (raw !== null) {
+    try {
+      const arr = JSON.parse(raw) as unknown;
+      if (!Array.isArray(arr)) throw new Error("not a JSON array");
+      for (const r of arr as Reservation[]) {
+        // A malformed seat list loses the list, never the hold (it still counts by quantity).
+        sanitiseSeated(r);
+        reservations.set(r.id, r);
+      }
+      console.log(`[reservations] Loaded ${reservations.size} reservations from disk`);
+    } catch (err) {
+      reservations.clear();
+      fileUnreadable = err instanceof Error ? err.message : String(err);
+      console.error(`[reservations] ${STORE_FILE} is not readable JSON — it will NOT be overwritten; seated sales are paused:`, err);
+    }
   }
   // Kick off GC on first access.
   if (!gcTimer) {
@@ -149,14 +241,28 @@ function ensureLoaded(): void {
 }
 
 function persistToDisk(): void {
+  if (fileUnreadable) return;
   writeJsonAtomic(STORE_FILE, [...reservations.values()], "reservations");
+}
+
+/** False while the file exists but could not be read: seated holds and checkouts refuse. */
+export function reservationsPersisting(): boolean {
+  ensureLoaded();
+  return fileUnreadable === null;
 }
 
 /** Sweep expired + long-consumed reservations from memory + disk. */
 function sweep(): void {
   const now = Date.now();
   let removed = 0;
+  let changed = false;
   for (const [id, r] of reservations) {
+    // Held by fulfilment past its time: never swept from under the mint.
+    if (isActive(r, now)) continue;
+    if (r.checkout && !r.consumedAt && !r.releasedBy && !r.ttlLapsed) {
+      r.ttlLapsed = true;
+      changed = true;
+    }
     const expired = new Date(r.expiresAt).getTime() < now;
     const longConsumed =
       r.consumedAt && new Date(r.consumedAt).getTime() + RESERVATION_KEEP_AFTER_MS < now;
@@ -167,10 +273,8 @@ function sweep(): void {
       removed++;
     }
   }
-  if (removed > 0) {
-    persistToDisk();
-    console.log(`[reservations] Swept ${removed} stale entries`);
-  }
+  if (removed > 0 || changed) persistToDisk();
+  if (removed > 0) console.log(`[reservations] Swept ${removed} stale entries`);
 }
 
 /** Per-series mutex: serialises reserve/consume/release for a single series. */
@@ -197,9 +301,15 @@ function withSeriesLock<T>(
   return next as Promise<T>;
 }
 
-/** Active = not consumed AND not expired. */
+/**
+ * Active = not consumed AND not expired - or claimed by fulfilment within FULFIL_PIN_MS:
+ * a payment that lands near the end of a hold must not let the seats lapse to another
+ * buyer while its mint resolves.
+ */
 function isActive(r: Reservation, now: number): boolean {
-  return !r.consumedAt && new Date(r.expiresAt).getTime() > now;
+  if (r.consumedAt) return false;
+  if (r.fulfilling && Date.parse(r.fulfilling.at) + FULFIL_PIN_MS > now) return true;
+  return new Date(r.expiresAt).getTime() > now;
 }
 
 /**
@@ -478,4 +588,297 @@ export function getReservation(id: string): Reservation | null {
   const r = reservations.get(id);
   if (!r) return null;
   return { ...r };
+}
+
+// ---------------------------------------------------------------------------
+// Allocated seating (docs/SEATING.md "Selling a seat"; Fable S4 consult)
+//
+// A seated hold names seats, and it is bound to at most ONE payable Stripe session at
+// a time. It is never released while that session can still be paid: it is closed at
+// Stripe first, or the hold stays (and a session Stripe says is complete is a sale).
+// ---------------------------------------------------------------------------
+
+/** What closing a hold's session at Stripe said. */
+export type SessionExpiry = "expired" | "complete" | "error";
+
+export type SeatVerify =
+  | { ok: true; remaining: number; seats: SeatedHoldSeat[] }
+  | { ok: false; status: 409 | 503; error: string; conflicts?: number[] };
+
+export type SeatedReserveResult =
+  | { ok: true; reservation: Reservation; reused?: boolean }
+  | { ok: false; status: 400 | 409 | 429 | 503; error: string; conflicts?: number[]; available?: number };
+
+export const SEAT_SALES_PAUSED = "Seat sales are paused for a moment. Please try again shortly.";
+export const SEATS_GONE = "Some of these seats have just been taken. Choose others.";
+
+const sessionOpen = (r: Reservation, now: number): boolean =>
+  !!r.checkout && Date.parse(r.checkout.expiresAt) > now;
+
+const sameSeats = (a: readonly number[], b: readonly number[]): boolean =>
+  a.length === b.length && a.every((k, i) => k === b[i]);
+
+/** End a seated hold. Every caller has closed its session at Stripe, or it had none open. */
+function endHold(r: Reservation, by: NonNullable<Reservation["releasedBy"]>): void {
+  const now = new Date().toISOString();
+  delete r.fulfilling;
+  r.expiresAt = now;
+  r.releasedBy = by;
+  if (r.checkout && Date.parse(r.checkout.expiresAt) > Date.parse(now)) r.checkout = { ...r.checkout, expiresAt: now };
+}
+
+/**
+ * Hold seats. Under the series lock: this browser's hold on exactly these seats comes
+ * back unchanged (its clock and checkout kept); otherwise this browser's other holds on
+ * the series end first (an open checkout closed at Stripe before its seats return);
+ * then `verify` (the plan, the chain and our own sales, `lib/seating/seat-check.ts`),
+ * then - synchronously to the insert - nobody else's live hold names a seat, the count
+ * fits `remaining` less what is held, and the per-IP cap.
+ */
+export async function reserveSeats(a: {
+  eventId: string;
+  seriesId: string;
+  /** Ascending, each once (`parseSeatedReserve`). */
+  seats: number[];
+  planDigest: string;
+  perIpSeatCap: number | (() => number);
+  replaceReservationId?: string;
+  clientKey?: string;
+  ip?: string;
+  verify(): Promise<SeatVerify>;
+  expireSession(c: HoldCheckout): Promise<SessionExpiry>;
+}): Promise<SeatedReserveResult> {
+  ensureLoaded();
+  if (fileUnreadable) return { ok: false, status: 503, error: SEAT_SALES_PAUSED };
+  if (a.seats.length < 1 || !validSeats(a.seats, a.seats.length) || !DIGEST_RE.test(a.planDigest)) {
+    return { ok: false, status: 400, error: "Invalid seats" };
+  }
+  const { eventId, seriesId } = a;
+  const here = (r: Reservation) => r.eventId === eventId && r.seriesId === seriesId;
+
+  return withSeriesLock(eventId, seriesId, async () => {
+    const now = Date.now();
+    if (a.clientKey && !a.replaceReservationId) {
+      for (const r of reservations.values()) {
+        if (here(r) && r.clientKey === a.clientKey && r.seats && r.planDigest === a.planDigest && !r.fulfilling &&
+            sameSeats(r.seats, a.seats) && isActive(r, now)) {
+          return { ok: true, reservation: { ...r }, reused: true };
+        }
+      }
+    }
+
+    const own = [...reservations.values()].filter((r) => here(r) && isActive(r, now) && !r.fulfilling &&
+      (r.id === a.replaceReservationId || (!!a.clientKey && r.clientKey === a.clientKey)));
+    const busy = { ok: false as const, status: 503 as const, error: "We couldn't let go of your other seats just now. Try again in a moment." };
+    for (const r of own) {
+      if (sessionOpen(r, now)) {
+        const closing = r.checkout!;
+        const verdict = await a.expireSession(closing);
+        if (verdict === "error") return busy;
+        // Paid, or being paid while we asked: that order stands, its seats stay with it.
+        if (verdict === "complete" || r.consumedAt || r.fulfilling) continue;
+        // A newer session was bound meanwhile: it is payable, so the hold stays.
+        if (r.checkout?.sessionId !== closing.sessionId) return busy;
+      }
+      endHold(r, "replaced");
+    }
+    if (own.length) persistToDisk();
+
+    const v = await a.verify();
+    if (!v.ok) return v;
+    if (v.seats.length !== a.seats.length) return { ok: false, status: 503, error: SEAT_SALES_PAUSED };
+
+    // INVARIANT: synchronous from here to the insert (see the per-IP note in `reserve`).
+    const t = Date.now();
+    const wanted = new Set(a.seats);
+    const conflicts = new Set<number>();
+    for (const r of reservations.values()) {
+      if (!here(r) || !r.seats || !isActive(r, t)) continue;
+      for (const k of r.seats) if (wanted.has(k)) conflicts.add(k);
+    }
+    if (conflicts.size) return { ok: false, status: 409, error: SEATS_GONE, conflicts: [...conflicts].sort((x, y) => x - y) };
+    const available = Math.max(0, v.remaining - heldFor(eventId, seriesId));
+    if (a.seats.length > available) {
+      return { ok: false, status: 409, error: available === 0 ? "Sold out" : `Only ${available} seats can be sold now`, available };
+    }
+    const ipCap = typeof a.perIpSeatCap === "function" ? a.perIpSeatCap() : a.perIpSeatCap;
+    if (a.ip && heldSeatsByIp(a.ip, eventId) + a.seats.length > ipCap) {
+      return {
+        ok: false,
+        status: 429,
+        error: "Too many seats are already being held from your network. Complete a pending purchase, or try again in a few minutes.",
+      };
+    }
+    const created = new Date(t);
+    const r: Reservation = {
+      id: randomUUID(),
+      eventId,
+      seriesId,
+      quantity: a.seats.length,
+      createdAt: created.toISOString(),
+      expiresAt: new Date(t + RESERVATION_TTL_MS).toISOString(),
+      ...(a.clientKey ? { clientKey: a.clientKey } : {}),
+      ...(a.ip ? { ip: a.ip } : {}),
+      seats: [...a.seats],
+      planDigest: a.planDigest,
+      seatInfo: v.seats.map((s) => ({ ...s })),
+    };
+    reservations.set(r.id, r);
+    persistToDisk();
+    return { ok: true, reservation: { ...r } };
+  });
+}
+
+/**
+ * Bind a new Stripe session to a seated hold, in one synchronous step: only while the
+ * hold is live, unpaid, and still bound to `prevSessionId` (the session the caller closed
+ * at Stripe, or null for the first). Its clock then runs to the session's expiry plus
+ * SEATED_HOLD_GRACE_MS. False: the caller closes the new session at Stripe.
+ */
+export function bindCheckout(
+  id: string,
+  prevSessionId: string | null,
+  s: { sessionId: string; account: string; expiresAtMs: number },
+): boolean {
+  ensureLoaded();
+  const r = reservations.get(id);
+  const now = Date.now();
+  if (!r || !r.seats || r.consumedAt || r.fulfilling || !isActive(r, now)) return false;
+  if ((r.checkout?.sessionId ?? null) !== prevSessionId) return false;
+  const sessions = (r.checkout?.sessions ?? 0) + 1;
+  if (sessions > MAX_SESSIONS_PER_HOLD) return false;
+  r.checkout = { sessionId: s.sessionId, account: s.account, expiresAt: new Date(s.expiresAtMs).toISOString(), sessions };
+  r.expiresAt = new Date(Math.max(Date.parse(r.expiresAt), s.expiresAtMs + SEATED_HOLD_GRACE_MS)).toISOString();
+  persistToDisk();
+  return true;
+}
+
+export type SeatedClaim =
+  | { ok: true; seats: number[]; planDigest: string; seatInfo?: SeatedHoldSeat[] }
+  | { ok: false; reason: string };
+
+/**
+ * Fulfilment's claim on a seated hold for a paid session, synchronous (call it before
+ * the first await). Only the hold this session was made from: same event and series,
+ * seats and pin present, unpaid, and bound to THIS session - a session replaced by a
+ * newer one refunds even if it was paid. A hold whose time ran out is still this
+ * buyer's while nobody else holds or bought any of its seats (first paid wins; the
+ * chain's SeatTaken stays the backstop). Claimed, it stays in force while it mints.
+ */
+export function claimSeatedHold(
+  id: string,
+  sessionId: string,
+  eventId: string,
+  seriesId: string,
+  minted: ReadonlySet<number>,
+): SeatedClaim {
+  ensureLoaded();
+  const r = reservations.get(id);
+  if (!r) return { ok: false, reason: "the seat hold is gone" };
+  if (r.eventId !== eventId || r.seriesId !== seriesId) return { ok: false, reason: "the seat hold is for another ticket type" };
+  if (!r.seats || !r.planDigest) return { ok: false, reason: "the hold names no seats" };
+  if (r.consumedAt) return { ok: false, reason: "the seat hold was already used" };
+  if (r.checkout?.sessionId !== sessionId) return { ok: false, reason: "the hold is not this payment's" };
+  if (r.fulfilling && r.fulfilling.sessionId !== sessionId) return { ok: false, reason: "the hold is another payment's" };
+  const now = Date.now();
+  if (!isActive(r, now)) {
+    const mine = new Set(r.seats);
+    for (const o of reservations.values()) {
+      if (o.id === r.id || o.eventId !== eventId || o.seriesId !== seriesId || !o.seats) continue;
+      if ((isActive(o, now) || o.consumedAt) && o.seats.some((k) => mine.has(k))) {
+        return { ok: false, reason: "the seats went to another buyer after the hold ran out" };
+      }
+    }
+    if (r.seats.some((k) => minted.has(k))) return { ok: false, reason: "the seats were sold after the hold ran out" };
+  }
+  r.fulfilling = { sessionId, at: new Date(now).toISOString() };
+  persistToDisk();
+  return { ok: true, seats: [...r.seats], planDigest: r.planDigest, ...(r.seatInfo ? { seatInfo: r.seatInfo.map((s) => ({ ...s })) } : {}) };
+}
+
+/**
+ * How fulfilment left a claimed hold. Minted, or unresolved (it may yet land: kept off
+ * sale), consumes it; definitively not minted ends it, so the seats return at once.
+ */
+export function settleSeatedHold(id: string, sessionId: string, outcome: "minted" | "unresolved" | "not-minted"): void {
+  ensureLoaded();
+  const r = reservations.get(id);
+  if (!r || r.consumedAt || r.fulfilling?.sessionId !== sessionId) return;
+  if (outcome === "not-minted") endHold(r, "not-minted");
+  else r.consumedAt = new Date().toISOString();
+  persistToDisk();
+}
+
+/** `checkout.session.expired`: end the hold bound to that session, if it is still waiting on it. */
+export function releaseForExpiredSession(sessionId: string): boolean {
+  ensureLoaded();
+  for (const r of reservations.values()) {
+    if (r.checkout?.sessionId !== sessionId) continue;
+    if (r.consumedAt || r.fulfilling || r.releasedBy) return false;
+    endHold(r, "session-expired");
+    persistToDisk();
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The buyer lets go of a seated hold. An open session is closed at Stripe first; one
+ * Stripe says is complete keeps the hold (it is a sale). Idempotent.
+ */
+export async function releaseSeatedHold(
+  id: string,
+  expireSession: (c: HoldCheckout) => Promise<SessionExpiry>,
+): Promise<"released" | "paid" | "error"> {
+  ensureLoaded();
+  const r = reservations.get(id);
+  if (!r || r.consumedAt) return r?.consumedAt ? "paid" : "released";
+  if (r.fulfilling) return "paid";
+  if (sessionOpen(r, Date.now())) {
+    const closing = r.checkout!;
+    const verdict = await expireSession(closing);
+    if (verdict === "error") return "error";
+    if (verdict === "complete") return "paid";
+    if (r.checkout?.sessionId !== closing.sessionId) return "error";
+  }
+  if (r.consumedAt || r.fulfilling) return "paid";
+  if (!r.releasedBy && isActive(r, Date.now())) {
+    endHold(r, "buyer");
+    persistToDisk();
+  }
+  return "released";
+}
+
+export interface ReservationsHealth {
+  ok: boolean;
+  /** Why the file could not be read, when it could not: seated sales are paused. */
+  unreadable?: string;
+  /**
+   * Seated holds in the last hour that carried a Stripe session and ran out by time,
+   * against those Stripe's `checkout.session.expired` ended. Lapses with no expiry event
+   * at all = the webhook endpoint is not sent that event (a dashboard setting).
+   */
+  seated: { lapsedWithSession: number; endedBySessionExpiry: number };
+}
+
+export function reservationsHealth(): ReservationsHealth {
+  ensureLoaded();
+  let lapsedWithSession = 0;
+  let endedBySessionExpiry = 0;
+  for (const r of reservations.values()) {
+    if (r.ttlLapsed) lapsedWithSession++;
+    if (r.releasedBy === "session-expired") endedBySessionExpiry++;
+  }
+  return {
+    ok: fileUnreadable === null && !(lapsedWithSession > 0 && endedBySessionExpiry === 0),
+    ...(fileUnreadable ? { unreadable: fileUnreadable } : {}),
+    seated: { lapsedWithSession, endedBySessionExpiry },
+  };
+}
+
+/** Test seam: the store is process-lifetime state. */
+export function __resetReservationsForTests(): void {
+  reservations.clear();
+  loaded = false;
+  fileUnreadable = null;
 }
