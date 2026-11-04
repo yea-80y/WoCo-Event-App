@@ -106,7 +106,7 @@
           <h2 class="section-label">Next up</h2>
           <button class="btn btn--text next-all" onclick={() => navigate("/tickets")}>All tickets</button>
         </div>
-        <PassportTicket ticket={nextTicket} now={passport.now} size="large" />
+        <PassportTicket ticket={nextTicket} now={passport.now} size="large" seat={passport.seatOf(nextTicket)} />
       </section>
     {/if}
 

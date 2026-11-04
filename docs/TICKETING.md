@@ -273,7 +273,9 @@ Scanner (X-Door-Pass + X-Scanner-Device headers):
 ```
 
 The pack holds only public or derivable data — on-chain slot owners, voided slots, the merged
-check-in set, the door mode — plus the roster ciphertext. The pass URL fragment carries one **pass
+check-in set, the door mode, and for allocated seating each slot's seat and its label (pack version 2,
+`X-Scanner-Pack`; docs/SEATING.md "Door + tickets") — plus the roster ciphertext. An owner or seat
+the server could not read is `null`: "couldn't confirm" at the door, never "no ticket". The pass URL fragment carries one **pass
 secret P** and it never reaches the server: P = HKDF(account secret, `woco/door-pass/v2:{eventId}:{jti}`),
 derived, never stored (#186), so any of the organiser's passkeys can show the pass or re-push the
 roster. P is no key itself: the roster's AES-GCM key (`woco/door-pass/v2/roster-aead`) and an X-Wing

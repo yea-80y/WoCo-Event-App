@@ -26,9 +26,9 @@ export async function openHeldTickets(
   const { ticketHoldSealContext } = await import("@woco/shared/crypto/sealed-box");
   const out: Array<{ edition: number; qrContent: string }> = [];
   for (const t of copy.tickets) {
-    const seat = { eventId: copy.eventId, seriesId: copy.seriesId, edition: t.edition, sessionId };
+    const ticket = { eventId: copy.eventId, seriesId: copy.seriesId, edition: t.edition, sessionId };
     const plain = await open<unknown>(secretKeys, t.box, ticketHoldSealContext(copy.eventId, copy.seriesId, t.edition, sessionId));
-    if (!isTicketHoldPlaintext(plain, seat)) throw new Error("A held ticket did not match its order.");
+    if (!isTicketHoldPlaintext(plain, ticket)) throw new Error("A held ticket did not match its order.");
     out.push({ edition: t.edition, qrContent: plain.qrContent });
   }
   return out;

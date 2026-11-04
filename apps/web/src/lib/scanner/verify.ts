@@ -19,28 +19,59 @@
 import { recoverMessageAddress } from "viem";
 import {
   buildTicketCanonicalMessage,
+  NO_SEAT_INDEX,
   parseTicketQr,
   type CheckinPack,
   type CheckinSeries,
   type TicketQr,
 } from "@woco/shared";
+import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
 
 export type VerifyVerdict =
-  | { status: "valid"; strength: "onchain"; ticket: TicketQr; seriesName: string }
+  /** `seat`: allocated seating only - the seat as printed, null when its details could not be read. */
+  | { status: "valid"; strength: "onchain"; ticket: TicketQr; seriesName: string; seat?: TicketSeat | null }
   /** Genuine, but its sale was refunded in full or charged back (#645): not admitted, and no check-in is recorded. */
   | { status: "refunded"; ticket: TicketQr; seriesName: string }
+  /** Genuine and seated, but the ledger says it has no seat now (moved out of it): not admitted. */
+  | { status: "no-seat"; ticket: TicketQr; seriesName: string }
   /** `code` is set only where a newer pack could change the answer: the ticket may
    *  have been sold, or its ticket type added or enlarged, since this pack was made. */
   | { status: "invalid"; reason: string; ticket?: TicketQr; code?: PackMissCode }
   | { status: "wrong-event"; ticket: TicketQr }
   | { status: "unreadable" };
 
-export type PackMissCode = "no-owner" | "unknown-series" | "out-of-range";
+/** `unread`: the pack could not read this ticket's owner or seat - never a red verdict. */
+export type PackMissCode = "no-owner" | "unknown-series" | "out-of-range" | "unread";
+
+export const UNREAD_REASON = "This ticket couldn't be checked against the ticket list - scan again";
+export const SEATS_MISSING_REASON = "This scanner's seat list is out of date - scan again in a moment";
+
+/**
+ * Where a seated ticket may sit, by the pack (docs/SEATING.md "Door + tickets"). The
+ * seat decides; its label is display and never refuses. Shared by the camera and the
+ * roster's manual check-in.
+ */
+export type DoorSeat =
+  | { kind: "unseated" }
+  | { kind: "seat"; seat: TicketSeat | null }
+  | { kind: "no-seat" }
+  /** The seat read failed, or the list has no seats for a seated type. */
+  | { kind: "unread"; reason: string };
+
+export function doorSeat(series: CheckinSeries, edition: number): DoorSeat {
+  if (!series.seated) return { kind: "unseated" };
+  if (!series.seats) return { kind: "unread", reason: SEATS_MISSING_REASON };
+  const k = series.seats[edition - 1];
+  if (k === null || k === undefined) return { kind: "unread", reason: UNREAD_REASON };
+  if (k === NO_SEAT_INDEX) return { kind: "no-seat" };
+  return { kind: "seat", seat: series.seatLabels?.[edition - 1] ?? null };
+}
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 async function verifyV2(series: CheckinSeries, ticket: TicketQr): Promise<VerifyVerdict> {
   const owner = series.slotOwners?.[ticket.edition - 1];
+  if (owner === null) return { status: "invalid", reason: UNREAD_REASON, ticket, code: "unread" };
   if (!owner || owner === ZERO_ADDRESS) {
     return { status: "invalid", reason: "No ticket issued for this edition", ticket, code: "no-owner" };
   }
@@ -66,7 +97,13 @@ async function verifyV2(series: CheckinSeries, ticket: TicketQr): Promise<Verify
   if (series.voidSlots?.includes(ticket.edition - 1)) {
     return { status: "refunded", ticket, seriesName: series.name };
   }
-  return { status: "valid", strength: "onchain", ticket, seriesName: series.name };
+  const place = doorSeat(series, ticket.edition);
+  if (place.kind === "no-seat") return { status: "no-seat", ticket, seriesName: series.name };
+  if (place.kind === "unread") return { status: "invalid", reason: place.reason, ticket, code: "unread" };
+  return {
+    status: "valid", strength: "onchain", ticket, seriesName: series.name,
+    ...(place.kind === "seat" ? { seat: place.seat } : {}),
+  };
 }
 
 /** Verify a raw QR payload against the pack. Pure + offline; no nullifier check here. */

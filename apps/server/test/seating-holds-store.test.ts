@@ -386,3 +386,14 @@ test("a malformed seated field is dropped alone; the hold keeps its seats held",
   assert.ok(!store.claimSeatedHold("bad", "nope", EV, SE, new Set()).ok, "no session bound: no sale from it");
   assert.deepEqual(store.heldSeatsFor(EV, SE), [3, 4]);
 });
+
+test("S5: a hold's seat parts survive a reload; malformed parts drop its seat info like any bad field", () => {
+  const parts = (k: number) => ({ area: "Stalls", row: "A", seat: k });
+  seed([seatedRecord("good", [3], { seatInfo: [{ ...info([3])[0], ticketSeat: parts(3) }] })]);
+  assert.deepEqual(store.getReservation("good")!.seatInfo![0].ticketSeat, parts(3));
+  seed([seatedRecord("old", [3])]);
+  assert.ok(store.getReservation("old")!.seatInfo, "a hold from before S5 (no parts) still loads");
+  seed([seatedRecord("bad", [3], { seatInfo: [{ ...info([3])[0], ticketSeat: { area: " Stalls", seat: 3 } }] })]);
+  assert.equal(store.getReservation("bad")!.seatInfo, undefined);
+  assert.deepEqual(store.heldSeatsFor(EV, SE), [3]);
+});

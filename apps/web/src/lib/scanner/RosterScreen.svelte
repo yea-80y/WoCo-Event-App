@@ -8,6 +8,7 @@
   import { scanner } from "./store.svelte.js";
   import type { RosterEntry } from "@woco/shared";
   import { attendeeName, searchAttendees } from "./attendee-search.js";
+  import { ticketSeatNote, ticketSeatText } from "@woco/shared/seating/ticket-seat";
 
   let search = $state("");
   let confirming = $state<string | null>(null);
@@ -45,6 +46,7 @@
       const result = await scanner.manualCheckin(r.seriesId, r.edition);
       if (result.kind === "cant-confirm") message = `Not checked in - ${result.message}`;
       else if (result.kind === "refunded") message = "Not checked in - this ticket was refunded";
+      else if (result.kind === "no-seat") message = "Not checked in - this ticket has no seat. Ask the organiser to seat it";
       else if (result.kind === "duplicate") message = `Already in since ${formatTime(result.record.at)}`;
     } catch {
       message = "Not checked in - something went wrong on this phone, try again";
@@ -93,9 +95,13 @@
     <ul>
       {#each filtered as entry (key(entry))}
         {@const record = scanner.isCheckedIn(entry.seriesId, entry.edition)}
+        {@const place = scanner.seatOf(entry.seriesId, entry.edition)}
         <li>
           <div class="who">
             <span class="name">{attendeeName(entry)}</span>
+            {#if place?.kind === "seat" && place.seat}
+              <span class="seat">{ticketSeatText(place.seat)}{#if ticketSeatNote(place.seat)}<span class="seat-note">{ticketSeatNote(place.seat)}</span>{/if}</span>
+            {/if}
             <span class="meta">
               {seriesName(entry.seriesId)} · #{String(entry.edition).padStart(3, "0")}
               {#if entry.name && entry.email}· {entry.email}{/if}
@@ -105,6 +111,8 @@
             <span class="pill in">✓ {formatTime(record.at)}{record.method === "manual" ? " ·M" : ""}</span>
           {:else if scanner.isRefunded(entry.seriesId, entry.edition)}
             <span class="pill refunded">Refunded</span>
+          {:else if place?.kind === "no-seat"}
+            <span class="pill refunded">No seat</span>
           {:else if scanner.claiming}
             <span class="pill action">…</span>
           {:else if confirming === key(entry)}
@@ -165,6 +173,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .seat {
+    color: var(--text);
+    font-size: 0.875rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .seat-note {
+    margin-left: 0.5em;
+    color: var(--accent);
+    font-weight: 500;
   }
   .meta {
     color: var(--text-muted);

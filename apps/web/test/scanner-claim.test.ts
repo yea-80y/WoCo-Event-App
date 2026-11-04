@@ -84,6 +84,8 @@ test("the claim carries the door pass and this device's id", async () => {
   await claimAdmission(call(spy));
   assert.equal(seen!.get("X-Door-Pass"), "tok");
   assert.equal(seen!.get("X-Scanner-Device"), "thisdevice01");
+  // S5: it reads seats, so the server may let it admit seated tickets.
+  assert.equal(seen!.get("X-Scanner-Pack"), "2");
 });
 
 test("a server asking for newer scanner code is 'outdated' - never admitted, and not a dead pass", async () => {

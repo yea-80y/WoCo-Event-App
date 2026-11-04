@@ -37,6 +37,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeJsonAtomic } from "../marketing/persist.js";
 import { RESERVATION_MAX_QTY } from "@woco/shared/event/reservation";
+import { isTicketSeat, type TicketSeat } from "@woco/shared/seating/ticket-seat";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "reservations.json");
@@ -132,6 +133,8 @@ export interface SeatedHoldSeat {
   bandName: string;
   /** "Stalls, Row D, seat 7". */
   label: string;
+  /** The same seat as parts, for the ticket card and link (S5). Absent on holds made before them. */
+  ticketSeat?: TicketSeat;
   /** The band's price when the hold was made, minor units. Checkout refuses if the feed's differs. */
   priceMinor: number;
 }
@@ -175,6 +178,7 @@ const isTime = (v: unknown): v is string => typeof v === "string" && !Number.isN
 function validSeatInfo(v: unknown, n: number): v is SeatedHoldSeat[] {
   return Array.isArray(v) && v.length === n && v.every((s) =>
     s && typeof s === "object" && isText(s.band, 64) && isText(s.bandName, 200) && isText(s.label, 200) &&
+    (s.ticketSeat === undefined || isTicketSeat(s.ticketSeat)) &&
     Number.isSafeInteger(s.priceMinor) && s.priceMinor >= 0);
 }
 

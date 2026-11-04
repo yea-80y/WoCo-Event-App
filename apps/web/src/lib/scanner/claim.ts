@@ -11,8 +11,10 @@
  * (`apps/web/test/scanner-claim.test.ts`).
  */
 import {
+  CHECKIN_PACK_VERSION,
   SCANNER_DEVICE_HEADER,
   SCANNER_OUTDATED_REASON,
+  SCANNER_PACK_HEADER,
   SCANNER_WRONG_EVENT_REASON,
   type CheckinClaimRequest,
   type CheckinClaimResponse,
@@ -55,6 +57,7 @@ export async function claimAdmission(call: ClaimCall): Promise<ClaimAnswer> {
         "Content-Type": "application/json",
         "X-Door-Pass": call.token,
         [SCANNER_DEVICE_HEADER]: call.deviceId,
+        [SCANNER_PACK_HEADER]: String(CHECKIN_PACK_VERSION),
       },
       body: JSON.stringify(call.claim),
       signal: ctl.signal,

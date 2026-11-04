@@ -3,6 +3,7 @@
  * profile creation / sub-ENS / social actions. Design: docs/ATTENDEE_GATE_RESALE_PLAN.md §3.
  *
  *   GET  /api/attendee-gate/status       → { gated, via, bindings }
+ *   GET  /api/attendee-gate/seats        → { seats } where the caller's seated tickets sit now
  *   POST /api/attendee-gate/token-info   → Route A: unauthenticated landing preview
  *   POST /api/attendee-gate/redeem       → Route A: email-CTA token → binding (one-shot)
  *
@@ -28,6 +29,9 @@ import { checkAttendeeGate } from "../lib/gate/check.js";
 import { verifyGateToken } from "../lib/gate/token.js";
 import { bindTicket, getBindingsForParent, isTicketConsumed } from "../lib/gate/store.js";
 import { clientIp } from "../lib/http/client-ip.js";
+import { lookupOnChainEventId, registrationSeatingFor } from "../lib/event/onchain-registry.js";
+import { currentTicketSeats } from "../lib/seating/ticket-seats.js";
+import type { TicketSeat } from "@woco/shared/seating/ticket-seat";
 
 export const attendeeGate = new Hono<AppEnv>();
 
@@ -50,8 +54,49 @@ attendeeGate.get("/status", requireAuth, async (c) => {
     seriesId: b.seriesId,
     edition: b.edition,
     boundAt: b.boundAt,
+    // Zero I/O: this answers on every app load, so the seat itself is `/seats`, asked by the passport.
+    ...(registrationSeatingFor(b.eventId, b.seriesId) ? { seated: true as const } : {}),
   }));
   return c.json({ ok: true, data: { ...status, bindings } });
+});
+
+/** Seated bindings one `/seats` call reads: the passport shows a person's own few tickets. */
+const MAX_SEATED_BINDINGS = 50;
+
+/**
+ * Where the caller's bound seated tickets sit now (S5): `seat` null when it has none
+ * or it could not be read - the passport then shows no seat, never an error.
+ */
+attendeeGate.get("/seats", requireAuth, async (c) => {
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const seated = getBindingsForParent(parentAddress)
+    .filter((b) => registrationSeatingFor(b.eventId, b.seriesId))
+    .slice(0, MAX_SEATED_BINDINGS);
+  const bySeries = new Map<string, typeof seated>();
+  for (const b of seated) {
+    const k = `${b.eventId}\u0000${b.seriesId}`;
+    bySeries.set(k, [...(bySeries.get(k) ?? []), b]);
+  }
+  const seats: Array<{ eventId: string; seriesId: string; edition: number; seat: TicketSeat | null }> = [];
+  for (const group of bySeries.values()) {
+    const { eventId, seriesId } = group[0];
+    const onChainEventId = lookupOnChainEventId(eventId, seriesId);
+    const ev = onChainEventId ? await getEvent(eventId).catch(() => null) : null;
+    const now = onChainEventId
+      ? await currentTicketSeats({
+          eventId,
+          seriesId,
+          onChainEventId,
+          swarmManifestRef: ev?.series.find((s) => s.seriesId === seriesId)?.swarmManifestRef,
+          slots: group.map((b) => b.edition - 1),
+        })
+      : null;
+    for (const b of group) {
+      const s = now?.kind === "seats" ? now.seats.get(b.edition - 1) : undefined;
+      seats.push({ eventId, seriesId, edition: b.edition, seat: s && s !== "none" ? s : null });
+    }
+  }
+  return c.json({ ok: true, data: { seats } });
 });
 
 // ---------------------------------------------------------------------------

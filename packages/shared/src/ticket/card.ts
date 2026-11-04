@@ -15,6 +15,8 @@
  * server's own (widest) face's widths, so text never overruns on either side.
  */
 
+import { ticketSeatFields, ticketSeatNote, type TicketSeat } from "../seating/ticket-seat.js";
+
 export const TICKET_CARD_WIDTH = 900;
 export const TICKET_CARD_HEIGHT = 1760;
 
@@ -94,6 +96,8 @@ export interface TicketCardInput {
   series?: string;
   /** Position in this order. Omit, or `of` 1, for a single ticket. */
   position?: { n: number; of: number };
+  /** Allocated seating: the seat it was issued in, drawn as labelled fields. */
+  seat?: TicketSeat;
   /** Whether the renderer has the event photo to draw. */
   hasPhoto: boolean;
   colours: TicketCardColours;
@@ -244,8 +248,13 @@ export function wrapToWidth(
 
 const PAD = 56;
 const PHOTO_H = 520;
+/** A seated ticket gives the photo's height to its seat band, so the QR keeps its size. */
+const PHOTO_H_SEATED = 400;
 const COL_GAP = 36;
 const QR_BOX = 500;
+const QR_BOX_MIN = 420;
+/** Width of each seat field after the first (row, seat); the first takes the rest. */
+const SEAT_COL = 180;
 
 /** Every drawing step of the card, top to bottom. */
 export function ticketCardOps(input: TicketCardInput): TicketCardOp[] {
@@ -259,9 +268,10 @@ export function ticketCardOps(input: TicketCardInput): TicketCardOp[] {
 
   let y: number;
   if (input.hasPhoto) {
-    ops.push({ kind: "photo", x: 0, y: 0, w: W, h: PHOTO_H });
-    ops.push({ kind: "fade", x: 0, y: PHOTO_H - 240, w: W, h: 240, colour: c.bg });
-    y = PHOTO_H + 56;
+    const photoH = input.seat ? PHOTO_H_SEATED : PHOTO_H;
+    ops.push({ kind: "photo", x: 0, y: 0, w: W, h: photoH });
+    ops.push({ kind: "fade", x: 0, y: photoH - 240, w: W, h: 240, colour: c.bg });
+    y = photoH + 56;
   } else {
     y = 120;
   }
@@ -308,14 +318,17 @@ export function ticketCardOps(input: TicketCardInput): TicketCardOp[] {
     size: 26, weight: 700, colour: c.accent, font: "mono", anchor: input.series ? "end" : "start",
   });
 
+  if (input.seat) y = seatBand(ops, input.seat, y, c);
+
   y += 44;
   ops.push({ kind: "dash", x1: 0, x2: W, y, colour: c.border, width: 4, dash: 14, gap: 10 });
 
   const footerY = H - 44;
   const caption2Y = H - 110;
   const caption1Y = caption2Y - 38;
-  const qrTop = y + Math.max(40, (caption1Y - 56 - y - QR_BOX) / 2);
-  ops.push({ kind: "qr", x: (W - QR_BOX) / 2, y: qrTop, size: QR_BOX, padding: 24, radius: 28 });
+  const qrBox = Math.max(QR_BOX_MIN, Math.min(QR_BOX, caption1Y - 56 - y - 80));
+  const qrTop = y + Math.max(40, (caption1Y - 56 - y - qrBox) / 2);
+  ops.push({ kind: "qr", x: (W - qrBox) / 2, y: qrTop, size: qrBox, padding: 24, radius: 28 });
   ops.push({
     kind: "text", x: W / 2, y: caption1Y, text: "One entry per ticket - the first scan gets in.",
     size: 26, weight: 400, colour: c.secondary, font: "sans", anchor: "middle",
@@ -327,4 +340,28 @@ export function ticketCardOps(input: TicketCardInput): TicketCardOp[] {
   ops.push({ kind: "text", x: PAD, y: footerY, text: "POWERED BY WOCO", size: 20, weight: 500, colour: c.dim, font: "mono", anchor: "start", letterSpacing: 2 });
   ops.push({ kind: "text", x: W - PAD, y: footerY, text: "VERIFIABLE TICKET", size: 20, weight: 500, colour: c.dim, font: "mono", anchor: "end", letterSpacing: 2 });
   return ops;
+}
+
+/**
+ * The seat as labelled fields - SECTION / ROW / SEAT, or TABLE / SEAT - under the
+ * ticket type, with "Wheelchair space" or "Companion seat" beneath. Returns the y of
+ * its last line.
+ */
+function seatBand(ops: TicketCardOp[], seat: TicketSeat, top: number, c: TicketCardColours): number {
+  const inner = TICKET_CARD_WIDTH - PAD * 2;
+  const fields = ticketSeatFields(seat);
+  const firstW = inner - SEAT_COL * (fields.length - 1);
+  const labelY = top + 76;
+  const valueY = labelY + 66;
+  let x = PAD;
+  fields.forEach((f, i) => {
+    const w = (i === 0 ? firstW : SEAT_COL) - 24;
+    ops.push({ kind: "text", x, y: labelY, text: f.label.toUpperCase(), size: 20, weight: 500, colour: c.muted, font: "mono", anchor: "start", letterSpacing: 2.4 });
+    ops.push({ kind: "text", x, y: valueY, text: clipToWidth(f.value, w, 60, "sans", 700), size: 60, weight: 700, colour: c.text, font: "sans", anchor: "start" });
+    x += i === 0 ? firstW : SEAT_COL;
+  });
+  const note = ticketSeatNote(seat);
+  if (!note) return valueY;
+  ops.push({ kind: "text", x: PAD, y: valueY + 48, text: note, size: 28, weight: 500, colour: c.accent, font: "sans", anchor: "start" });
+  return valueY + 48;
 }

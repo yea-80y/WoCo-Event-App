@@ -6,6 +6,7 @@
    * copy is opened here, with the organiser's own keys, never by the server.
    */
   import { MAILABLE_EMAIL_RE } from "@woco/shared";
+  import { ticketSeatText } from "@woco/shared/seating/ticket-seat";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { listUndelivered, resendUndelivered, type UndeliveredRow } from "../../api/undelivered.js";
 
@@ -121,6 +122,9 @@
             {row.editions.length === 1 ? `Ticket #${row.editions[0]}` : `Tickets ${row.editions.map((e) => `#${e}`).join(", ")}`}
             - {new Date(row.failedAt).toLocaleString()}
           </span>
+          {#if row.seats}
+            <span class="meta">{row.seats.map((s) => (s ? ticketSeatText(s) : "Seat unknown")).join("; ")}</span>
+          {/if}
           <span class="reason">{reasonText(row.reason)}</span>
         </div>
 

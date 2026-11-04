@@ -18,6 +18,7 @@ import { sendTicketEmail } from "../../routes/tickets.js";
 import { replaceDoorEntries } from "../checkin/door-entries.js";
 import { recordAttendeeEmail } from "../event/attendee-index.js";
 import { getTicketHold } from "./store.js";
+import { currentTicketSeats } from "../seating/ticket-seats.js";
 import type { ResendDeps } from "./resend.js";
 
 export const liveResendDeps: ResendDeps = {
@@ -38,6 +39,7 @@ export const liveResendDeps: ResendDeps = {
   suppressionUnreadable: () => suppressionStoreHealth().unreadable,
   getSiteTheme: organiserSiteTheme,
   getEvent: (eventId) => getEvent(eventId),
+  currentSeats: (a) => currentTicketSeats(a),
   sendTicketEmail,
   recordResend,
   markResendAccepted,

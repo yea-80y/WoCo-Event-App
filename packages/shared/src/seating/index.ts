@@ -7,12 +7,15 @@ export {
   type LayoutItem, type SeatLayout,
 } from "./layout.js";
 export {
-  SEAT_PLAN_FORMAT, seatRefs, canonicalSeats, seatLabel, formatSeatLabel, seatPlanProblems, freezeSeatPlan,
+  SEAT_PLAN_FORMAT, seatRefs, canonicalSeats, seatLabel, formatSeatLabel, ticketSeatOf, seatPlanProblems, freezeSeatPlan,
   layoutOfPlan, validateSeatPlan, initialHeldSeats, canonicalSeatPlan, encodeSeatPlan, seatPlanDigest, parseSeatPlan,
   isSeatIndex, MAX_SEAT_PLAN_BYTES,
   type PlanSeat, type SeatPlan, type SeatRef, type SeatLabel, type SeatPlanProblem,
 } from "./plan.js";
 export { seatPlanEditionTemplate, seatPlanTemplateOf, type SeatPlanTemplate } from "./template.js";
+export {
+  isTicketSeat, ticketSeatText, ticketSeatPlace, ticketSeatFields, ticketSeatNote, type TicketSeat, type TicketSeatField,
+} from "./ticket-seat.js";
 export { seriesSeatingRefusal, bandPricesMinor, priceMinor } from "./series.js";
 export {
   SEAT_STATE_FORMAT, heldBytes, encodeHeld, decodeHeld, validateSeatState, buildSeatState, seatStateView,

@@ -138,6 +138,7 @@ import { droppedOptInsHealth } from "./lib/marketing/consent-capture.js";
 import { suppressionStoreHealth } from "./lib/marketing/suppression-store.js";
 import { sweepExpiredRosters, rosterRetentionHealth } from "./lib/checkin/roster-retention.js";
 import { doorEntriesHealth } from "./lib/checkin/door-entries.js";
+import { doorSeatsHealth } from "./lib/checkin/pack-series.js";
 import { ticketHoldsHealth } from "./lib/ticket-hold/store.js";
 import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
 import { getAttendeeStamper, retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
@@ -546,6 +547,10 @@ function healthReport() {
     // until the organiser makes a new door pass. `failed` counts seals and removals
     // that did not land since boot.
     doorEntries: doorEntriesHealth(),
+    // Allocated seating at the door: red while a ticket type's last door list found the
+    // ledger and the registration record disagreeing on whether it is seated. The door
+    // refuses that type's tickets until the record is repaired (docs/SEATING.md).
+    doorSeats: doorSeatsHealth(),
     // Order answers erased N months after the event's onchain end (#547).
     // Red when the ledger or held orders are unreadable, no run in 48 h, the
     // mode is not understood, or - live only - an order someone can act on is a

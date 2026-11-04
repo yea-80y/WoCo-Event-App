@@ -100,6 +100,33 @@ test("attachments: photo inline once, one image per ticket, a calendar file", as
   assert.equal(attachments[4].contentType, "text/calendar; charset=utf-8; method=PUBLISH");
 });
 
+test("seated: each card gets its own seat, each link carries it as parts, the text spells it out", async () => {
+  const D7 = { area: "Rear stalls", row: "D", seat: 7 };
+  const W8 = { area: "Rear stalls", row: "D", seat: 8, wheelchair: true as const };
+  const seated = { ...base, seriesName: "Reserved", tickets: [{ edition: 1, qrContent: qr(1), seat: D7 }, { edition: 2, qrContent: qr(2), seat: W8 }] };
+  const seen: unknown[] = [];
+  await buildTicketAttachments(seated, {
+    fetchPhoto: async () => null,
+    renderHero: async () => Buffer.from("hero"),
+    renderCard: async (d) => {
+      seen.push(d.seat);
+      return Buffer.from("png");
+    },
+  });
+  assert.deepEqual(seen, [D7, W8]);
+  const html = buildTicketHtml(seated);
+  assert.match(html, /Rear stalls, Row D, seat 7/);
+  assert.match(html, /Wheelchair space/);
+  const links = [...html.matchAll(/href="([^"]*ticket\.html[^"]*)"/g)].map((m) => m[1].replace(/&amp;/g, "&"));
+  assert.equal(links.length, 2);
+  assert.match(links[0], /[?&]sa=Rear\+stalls&sr=D&sn=7(?!\d)/);
+  assert.match(links[1], /[?&]sn=8&sw=1/);
+  const text = buildTicketText(seated);
+  assert.match(text, /Rear stalls, Row D, seat 8 \(Wheelchair space\)/);
+  // General admission: nothing seat-shaped anywhere.
+  assert.doesNotMatch(buildTicketHtml(base), /[?&]sa=|seat \d/);
+});
+
 test("a single ticket is ticket.png with no position", async () => {
   let position: unknown = "unset";
   const { attachments } = await buildTicketAttachments(base, {

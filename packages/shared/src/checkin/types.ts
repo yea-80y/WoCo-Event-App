@@ -1,5 +1,6 @@
 import { parseTicketFragment, TICKET_PAGE_PATH } from "../ticket/link.js";
 import type { SealedBoxV2 } from "../crypto/sealed-box-shape.js";
+import type { TicketSeat } from "../seating/ticket-seat.js";
 import type { Hex0x } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,17 @@ export interface CheckinConflict {
   records: CheckinRecord[];
 }
 
+/**
+ * The pack version this code builds and reads. A scanner sends the highest it reads in
+ * SCANNER_PACK_HEADER; one that sends none reads version 1, which has no seats, so it is
+ * refused a pack (and a claim) for any event with a seated ticket type.
+ */
+export const CHECKIN_PACK_VERSION = 2;
+export const SCANNER_PACK_HEADER = "X-Scanner-Pack";
+
+/** `seats[i]` for a ticket with no seat: the ledger's NO_SEAT (moved out, or never claimed). */
+export const NO_SEAT_INDEX = -1;
+
 /** Per-series verification material inside the pack. */
 export interface CheckinSeries {
   seriesId: string;
@@ -92,8 +104,20 @@ export interface CheckinSeries {
    *  Absent means the scanner rejects every ticket for this series. */
   onChainEventId?: Hex0x;
   /** Lowercase owner address per slot (index = edition - 1); zero-address
-   *  slots are unclaimed. */
-  slotOwners?: string[];
+   *  slots are unclaimed. Version 2: `null` = the read failed, so no verdict
+   *  either way (never "no ticket"). */
+  slotOwners?: (string | null)[];
+  /**
+   * Allocated seating (pack version 2): the ledger says this ticket type is seated and
+   * the server's registration agrees. A seated series with no `seats` is refused at the
+   * door: its list is out of date or the two disagree.
+   */
+  seated?: true;
+  /** Per slot: the seat index, NO_SEAT_INDEX, or null when the read failed. Decides admission. */
+  seats?: (number | null)[];
+  /** Per slot: the seat as printed, from the registered plan. Display only: a missing
+   *  label never refuses a ticket. */
+  seatLabels?: (TicketSeat | null)[];
   /** Slots (edition - 1) whose sale was refunded in full or charged back
    *  (#645): the ticket is genuine but paid for no longer, so the door must not
    *  admit it. Absent from packs built before this shipped, which read as "none". */
@@ -102,7 +126,8 @@ export interface CheckinSeries {
 
 /** Everything a scanner device needs to operate offline. */
 export interface CheckinPack {
-  v: 1;
+  /** 1 = no seats and no unread owners; 2 = CHECKIN_PACK_VERSION. */
+  v: 1 | 2;
   eventId: string;
   eventTitle: string;
   eventDate?: string;

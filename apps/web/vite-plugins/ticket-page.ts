@@ -15,7 +15,7 @@
  */
 import { createHash } from "node:crypto";
 import type { Plugin } from "vite";
-import { TICKET_IMAGE_GATEWAYS } from "@woco/shared/ticket/link";
+import { TICKET_IMAGE_GATEWAYS } from "@woco/shared/ticket/gateways";
 
 /** A bundle can contain `</script` inside a string, which would end the tag early. */
 export function escapeInlineScript(code: string): string {
@@ -63,6 +63,12 @@ export function ticketPageHtml(code: string): string {
   .pill { display: inline-block; padding: 4px 12px; border-radius: 2px; background: #0B0B09; border: 1px solid #2B2A23; color: #C7F23A; font-family: ui-monospace, 'JetBrains Mono', Menlo, monospace; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.18em; margin-bottom: 0.875rem; }
   h1 { font-size: 1.375rem; font-weight: 700; line-height: 1.25; letter-spacing: -0.015em; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
   .meta { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8125rem; color: #8A8478; }
+  .seat { padding: 1.125rem 1.5rem 1.25rem; border-bottom: 1px solid #2B2A23; }
+  .seat dl { display: flex; justify-content: center; gap: 2rem; }
+  .seat dl div { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+  .seat dt { font-family: ui-monospace, 'JetBrains Mono', Menlo, monospace; font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #8A8478; }
+  .seat dd { font-size: 2rem; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: center; }
+  .seat-note { margin-top: 0.625rem; text-align: center; font-size: 0.8125rem; font-weight: 600; color: #C7F23A; }
   .qr-wrap { padding: 1.5rem; background: #0B0B09; }
   .qr { width: 100%; max-width: 320px; aspect-ratio: 1; margin: 0 auto; padding: 12px; background: #fff; border-radius: 4px; }
   .qr svg { display: block; width: 100%; height: 100%; }
@@ -88,6 +94,10 @@ export function ticketPageHtml(code: string): string {
         <div id="series" hidden></div>
       </div>
     </header>
+    <section class="seat" id="seat" aria-label="Your seat" hidden>
+      <dl id="seat-fields"></dl>
+      <p class="seat-note" id="seat-note" hidden></p>
+    </section>
     <div class="qr-wrap" id="qr-wrap">
       <div class="qr" id="qr"></div>
       <div class="qr-cap">SHOW AT THE DOOR</div>
