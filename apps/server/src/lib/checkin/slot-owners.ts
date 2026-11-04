@@ -89,7 +89,9 @@ async function read<T>(
   const entry: Entry = cache.get(key) ?? { slots: [], fullReadAt: 0, usedAt: started, retry: new Set() };
   entry.usedAt = started;
   cache.set(key, entry);
-  const length = nextSlot ?? supply;
+  // Never shorter than the slots already held: `nextSlot` comes from its own read, maybe a
+  // replica behind the one that read the newest ticket, and on chain it never goes down.
+  const length = Math.max(nextSlot ?? supply, entry.slots.length);
 
   if (nextSlot !== null) {
     const fresh = started - entry.fullReadAt < OWNER_CACHE_MS;

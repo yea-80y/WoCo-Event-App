@@ -116,6 +116,13 @@ test("an event that could not be read answers from the cache, unread up to its s
   assert.deepEqual(await slotOwners("other", null, c.readSlot, () => t, 2), [null, null]);
 });
 
+test("a slot count read from a lagging replica never drops a ticket already read", async () => {
+  const t = 1_000_000;
+  const c = chain({ 0: A, 1: B, 2: C });
+  assert.deepEqual(await slotOwners("evt", 3, c.readSlot, () => t), [A, B, C]);
+  assert.deepEqual(await slotOwners("evt", 2, c.readSlot, () => t + 1_000), [A, B, C], "nextSlot never goes down on chain");
+});
+
 test("a last good read stands in for failures for STALE_MAX_MS only, then reads unread", async () => {
   let t = 1_000_000;
   const owners: Record<number, string | null> = { 0: A };

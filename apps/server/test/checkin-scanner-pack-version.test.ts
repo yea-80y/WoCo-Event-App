@@ -54,3 +54,33 @@ test("a scanner that reads seats claims it; general admission is unaffected for 
   assert.equal((await claim(token, "ser-seated", "2")).status, 200);
   assert.equal((await claim(token, "ser-ga")).status, 200);
 });
+
+test("a type the last pack sent as seated (record lost its seating fields) refuses old scanners' claims too", async () => {
+  const { packSeries } = await import("../src/lib/checkin/pack-series.js");
+  // The ledger says seated, the record says general admission: the pack goes out seated, no seats.
+  const sent = await packSeries("evt-seated", { seriesId: "ser-lost", name: "Lost", totalSupply: 4, onChainEventId: "0x" + "7d".repeat(32), swarmManifestRef: "b".repeat(64) }, {
+    contractFor: () => LEDGER2,
+    seatingFor: () => null,
+    nextSlot: async () => 1,
+    slotStates: async () => ({ owners: ["0x" + "aa".repeat(20)], seats: [], seated: true }),
+    slotOwners: async () => [],
+    voidedSlots: () => [],
+    plan: async () => ({ ok: false, status: 503, error: "x" }),
+  });
+  assert.equal(sent.seated, true);
+  const token = store.issueDoorPass("evt-seated", Math.floor(Date.now() / 1000) + 3600);
+  const res = await claim(token, "ser-lost");
+  assert.equal(res.status, 400);
+  assert.equal(((await res.json()) as { reason?: string }).reason, SCANNER_OUTDATED_REASON);
+});
+
+test("/pack refuses an old scanner on the record BEFORE any chain read, and on the ledger after them", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/routes/checkin.ts", import.meta.url), "utf8");
+  const pack = src.slice(src.indexOf('checkin.get("/:eventId/pack"'), src.indexOf('checkin.post("/:eventId/sync"'));
+  const before = pack.indexOf("if (packVersion < 2 && event.series.some((s) => registrationSeatingFor(eventId, s.seriesId))) return outdatedForSeats();");
+  const reads = pack.indexOf("series.push(await packSeries(eventId, s, packSeriesDeps));");
+  const after = pack.indexOf("if (packVersion < 2 && series.some((s) => s.seated)) return outdatedForSeats();");
+  assert.ok(before > 0 && reads > before && after > reads, "record check, then the reads, then the ledger check");
+  assert.match(pack, /v: packVersion >= 2 \? CHECKIN_PACK_VERSION : 1,/);
+});

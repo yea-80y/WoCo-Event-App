@@ -49,6 +49,19 @@ export interface PackSeriesDeps {
 }
 
 export async function packSeries(eventId: string, s: PackSeriesInput, deps: PackSeriesDeps): Promise<CheckinSeries> {
+  const entry = await buildSeries(eventId, s, deps);
+  const key = `${eventId}\u0000${s.seriesId}`;
+  if (entry.seated) seatedAtDoor.add(key);
+  else seatedAtDoor.delete(key);
+  return entry;
+}
+
+/** The last pack sent this ticket type as seated (a disagreement included): `/claim` gates old scanners on it. */
+export function isSeatedAtDoor(eventId: string, seriesId: string): boolean {
+  return seatedAtDoor.has(`${eventId}\u0000${seriesId}`);
+}
+
+async function buildSeries(eventId: string, s: PackSeriesInput, deps: PackSeriesDeps): Promise<CheckinSeries> {
   const entry: CheckinSeries = { seriesId: s.seriesId, name: s.name, totalSupply: s.totalSupply };
   // Slot owners come from the contract, which is the only ticket ledger. A series that
   // never finished registering has no slots, so it contributes an empty entry.
@@ -109,6 +122,8 @@ function withVoids(entry: CheckinSeries, onChainEventId: string, contract: Event
 
 /** Series whose last pack found the ledger and the registration record disagreeing. */
 const disagreeing = new Set<string>();
+/** Series the last pack sent as seated. */
+const seatedAtDoor = new Set<string>();
 
 function noteSeatDisagreement(eventId: string, seriesId: string, now: boolean): void {
   const key = `${eventId}\u0000${seriesId}`;
@@ -124,4 +139,5 @@ export function doorSeatsHealth(): { ok: boolean; disagreements: number } {
 /** Tests only. */
 export function clearDoorSeatsHealth(): void {
   disagreeing.clear();
+  seatedAtDoor.clear();
 }

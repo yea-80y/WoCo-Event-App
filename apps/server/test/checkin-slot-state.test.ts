@@ -110,6 +110,19 @@ test("an event a replica does not know yet reads seated unknown, never 'not seat
   assert.equal(again.seated, true);
 });
 
+test("an isSeated answer that is not 0 or 1 is no answer, never remembered as 'not seated'", async () => {
+  const m: Model = { block: 10n, owners: {}, seats: {}, seated: true };
+  let odd = true;
+  const c = chain(m);
+  const call: MulticallFn = async (chainId, calls, expect) => {
+    const out = await c.call(chainId, calls, expect);
+    return out.map((r, i) => (odd && calls[i].data.startsWith("0xb2db691d") ? word(2n) : r));
+  };
+  assert.equal((await readSlotStates(LEDGER, EVENT, 0, { seats: false, supply: 0 }, call, () => 1_000)).seated, null);
+  odd = false;
+  assert.equal((await readSlotStates(LEDGER, EVENT, 0, { seats: false, supply: 0 }, call, () => 2_000)).seated, true, "asked again");
+});
+
 test("a batch with no block is dropped whole: unread, never 'no ticket'", async () => {
   const c = chain({ block: 10n, owners: { 0: A }, seats: { 0: 1n }, seated: true, noBlock: true });
   const r = await readSlotStates(LEDGER, EVENT, 1, { seats: true, supply: 1 }, c.call, () => 1_000);

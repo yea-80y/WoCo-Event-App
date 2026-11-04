@@ -50,7 +50,7 @@ import { onchainRegistryHealth, registrationContractFor, registrationSeatingFor 
 import { contractKey } from "../lib/chain/event-contract.js";
 import { voidedSlots } from "../lib/stripe/ticket-sales.js";
 import { pinnedSeatPlan } from "../lib/seating/seat-reads.js";
-import { packSeries, type PackSeriesDeps } from "../lib/checkin/pack-series.js";
+import { isSeatedAtDoor, packSeries, type PackSeriesDeps } from "../lib/checkin/pack-series.js";
 import { readSlotStates } from "../lib/checkin/slot-state.js";
 import {
   issueDoorPass,
@@ -480,11 +480,13 @@ checkin.post("/:eventId/claim", async (c) => {
     return c.json({ ok: false, error: "This ticket is not for this event", reason: SCANNER_WRONG_EVENT_REASON }, 400);
   }
   // The server records a claim it never verified: a scanner that reads no seats must not
-  // admit a seated ticket, nor one whose seatedness is unknown (registrations unreadable).
+  // admit a seated ticket - by the record, or by the last pack (a record that lost its
+  // seating fields) - nor one whose seatedness is unknown (registrations unreadable).
   if (
     scannerPackVersion(c) < 2 &&
     (onchainRegistryHealth().fileUnreadable ||
-      (typeof body?.seriesId === "string" && registrationSeatingFor(c.req.param("eventId"), body.seriesId)))
+      (typeof body?.seriesId === "string" &&
+        (registrationSeatingFor(c.req.param("eventId"), body.seriesId) || isSeatedAtDoor(c.req.param("eventId"), body.seriesId))))
   ) {
     return c.json({ ok: false, error: OUTDATED, reason: SCANNER_OUTDATED_REASON }, 400);
   }

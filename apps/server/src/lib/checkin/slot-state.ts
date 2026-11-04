@@ -11,7 +11,7 @@
  */
 
 import {
-  ARBSYS_ADDRESS, ARB_BLOCK_NUMBER, multicall, staticCall, uintAt, type CallResult, type ViewCall,
+  ARBSYS_ADDRESS, ARB_BLOCK_NUMBER, boolAt, multicall, staticCall, uintAt, type CallResult, type ViewCall,
 } from "@woco/shared/chain/multicall";
 import { NO_SEAT_INDEX } from "@woco/shared";
 import { LEDGER2_NO_SEAT } from "@woco/shared/ticket/ledger2-terms";
@@ -112,7 +112,8 @@ async function readBatch(
   const block = uintAt(b, 0);
   if (askSeated) {
     const r = take();
-    if (r) seatedKnown.set(seatedFor!, uintAt(r, 0) === 1n);
+    const v = r ? boolAt(r, 0) : null;
+    if (v !== null) seatedKnown.set(seatedFor!, v); // anything but 0 or 1 is no answer
   }
   for (const slot of slots) {
     const o = take();

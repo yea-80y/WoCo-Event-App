@@ -294,5 +294,11 @@ take the `null` = not read fix now (it was live for GA); ledger2 GA series alrea
 its caller; D4 `isSeated` is remembered once read (fixed at registration) rather than read per pack; D5 a
 seated record on a contract with no seats is treated as a disagreement (refused). Seam recorded: refunds
 (`voidSlots`) are keyed per slot, so when #983 step 5 reissues a refunded seated slot to a new buyer the
-new ticket would read REFUNDED - a void needs the sale's slot epoch then. `TicketSuccess.svelte` (an
+new ticket would read REFUNDED - a void needs the sale's slot epoch then.
+
+The sign-off (Fable, 2026-11-04, 59/59) signed off and accepted D1-D5. Applied: `/claim` also refuses an old
+scanner for a type the last pack sent as seated (a record that lost its fields); a slot count from a lagging
+replica never shortens the list below slots already read; `isSeated` decoded strictly (anything but 0/1 is no
+answer). For S6: a slot never read before, first read from a replica behind its mint, caches "unclaimed" for up
+to 30 s - read `getEvent` (nextSlot) inside the slot batch so count and owners share one block. `TicketSuccess.svelte` (an
 in-app ticket download) has no importer: left over from the v1 claim rail, not changed.
