@@ -338,5 +338,13 @@ message only); D2 a 200,000-seat state is ~100 chunks, not ~50 - the saver paces
 per ticket type, not per event (the server allows two seated types on one event); D5 the announced `seq` is a floor that
 never lapses; D6 a group order moves one ticket at a time; D7 the move email needs the orders opened on that device;
 D8 holds keyed by kind with no separate id (two holds of one kind could not be told apart without names).
+The sign-off (Fable 61/61, 2026-11-04) signed off with changes and accepted D1-D12, all applied: a trailing `digest`
+(keccak256 over every other field) so a torn paged save never validates, the writer stepping past an invalid head to
+the last whole version, the exact version written read back (another device's bytes = a conflict the saver sends again
+on top, 3 tries), the signal acted on only under the event's current carrier signer, `/api/health` `seatState` red for a
+save unreadable 2+ min, a client revoke after a revert whose abort did not land, and a failed send watched ~30 s. The
+automated security review added: the read-back validated in full, no stepping past a missed read (no rollback), the new
+`seq` above a stepped-past head's, and signals only for a ticket type registered seated.
+
 For the launch list: DATA_INVENTORY lines - the seat state is public organiser content with no personal data; the move
 email shows the server the address once and keeps nothing; relay claims are memory only.
