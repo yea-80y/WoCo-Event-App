@@ -36,9 +36,8 @@ test("no worker starts from a URL directly", () => {
 
 test("each worker is reached from its URL (`?worker&url`), never bundled into its starter", () => {
   const specifiers = ROOTS.flatMap((root) =>
-    // Relative specifiers only: worker-url.d.ts declares the `*?worker&url` wildcard.
     files(root).flatMap((f) =>
-      [...readFileSync(f, "utf8").matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["'](\.[^"'\n]*\?(?:shared)?worker[^"'\n]*)["']/g)].map((m) => m[1]),
+      [...readFileSync(f, "utf8").matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["']([^"'\n]*\?(?:shared)?worker[^"'\n]*)["']/g)].map((m) => m[1]),
     ),
   );
   assert.deepEqual(specifiers.sort(), [
