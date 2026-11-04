@@ -58,6 +58,7 @@ function read(over: Partial<SeriesRead> = {}): SeriesRead {
     eventEndTs: NOW + 86_400,
     cancelled: false,
     termsNonce: 3n,
+    seated: false,
     ...over,
   };
 }

@@ -39,6 +39,8 @@ export interface Ledger2SeriesView {
   cancelled: boolean;
   termsNonce: bigint;
   organiserKey: string;
+  /** Allocated seating: its capacity is the plan's seats, managed by hold / release instead. */
+  seated: boolean;
 }
 
 export interface Ledger2EventView {
@@ -57,6 +59,7 @@ export interface SeriesRead {
   eventEndTs: number;
   cancelled: boolean;
   termsNonce: bigint;
+  seated: boolean;
 }
 
 /** What this module needs from the outside: the live wiring is `organiser-changes-live.ts`. */
@@ -433,7 +436,7 @@ export class Ledger2Change {
 }
 
 const RELAY_CODES = new Set([
-  "supply_below_sold_or_held", "supply_above_registered", "supply_unchanged", "sales_closed", "event_cancelled",
+  "supply_below_sold_or_held", "supply_above_registered", "supply_unchanged", "seated_supply", "sales_closed", "event_cancelled",
   "already_cancelled", "sales_end_not_later", "sales_end_too_far", "signature_stale", "nonce_moved", "key_moved",
   "rate_limited", "in_flight", "cancellation_unknown", "not_available", "digest_mismatch", "relay_failed",
   "relay_unavailable", "chain_unverified", "invalid_request", "invalid_item", "window_invalid",
@@ -467,6 +470,8 @@ export function messageFor(err: unknown): string {
       return `This ticket type can go up to ${body.max ?? "the number it was published with"}. For more, add a new ticket type.`;
     case "supply_unchanged":
       return "That's already the number on sale.";
+    case "seated_supply":
+      return "Seated tickets follow your seating plan - hold or release seats on the Seats tab instead.";
     case "sales_closed":
       return "Ticket sales for this event have ended, so this can't be changed any more.";
     case "event_cancelled":

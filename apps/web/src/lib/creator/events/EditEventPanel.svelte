@@ -319,7 +319,7 @@
     {saving ? "Saving…" : "Save changes"}
   </button>
 
-  {#if ledger2 && !event.cancelledAt}
+  {#if ledger2 && !event.cancelledAt && ledger2.series.some((s) => !s.seated)}
     <TicketNumbersPanel {event} view={ledger2} onchanged={(v) => (ledger2 = v)} />
   {/if}
 

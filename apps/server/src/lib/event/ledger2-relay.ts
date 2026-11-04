@@ -420,6 +420,9 @@ async function checkAndSimulate(
     let action: Ledger2Action;
     switch (it.kind) {
       case "setSupply": {
+        // A seated series' supply is its plan's seats: capacity is hold / release, and
+        // a cut below the seats would strand seats the map shows free (SEATING.md "Relay").
+        if (s.seated) return refuse(409, "seated_supply", at);
         if (s.cancelled) return refuse(409, "event_cancelled", at);
         if (closed) return refuse(409, "sales_closed", at);
         if (it.supply! > s.registeredSupply) return refuse(400, "supply_above_registered", { ...at, max: s.registeredSupply });

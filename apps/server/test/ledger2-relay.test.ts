@@ -386,6 +386,13 @@ test("a two-party reseat needs the holder's signature over the same digest", asy
   assert.equal((await run(f, { items: [none] }) as { error: string }).error, "invalid_item");
 });
 
+test("capacity on a seated series is refused before simulating: its supply is the plan's seats", async () => {
+  const f = fake();
+  f.series.set(ID_A, seriesState({ seated: true, nextSlot: 10 }));
+  assert.equal((await run(f, { items: [supplyItem(120)] }) as { error: string }).error, "seated_supply");
+  assert.equal(f.simulated.length, 0);
+});
+
 test("seat moves on an event that is not seated are refused before simulating", async () => {
   const f = fake();
   const move = { kind: "reseatBearer", seriesId: SERIES, slot: 3, toSeat: 9, ...W, sig: supplyItem(120).sig };

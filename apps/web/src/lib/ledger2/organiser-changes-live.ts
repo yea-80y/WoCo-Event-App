@@ -9,6 +9,7 @@ const READ_ABI = [
   "function getOrganiserKey(bytes32 eventId) view returns (address)",
   "function getRegisteredSupply(bytes32 eventId) view returns (uint64)",
   "function termsNonces(bytes32 eventId) view returns (uint256)",
+  "function isSeated(bytes32 eventId) view returns (bool)",
   "function setSupplyDigest(bytes32 eventId, uint64 supply, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
   "function extendSalesEndDigest(bytes32 eventId, uint64 eventEndTs, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
   "function cancelEventDigest(bytes32 eventId, uint256 issuedAt, uint256 deadline) view returns (bytes32)",
@@ -45,17 +46,18 @@ export const liveLedger2ClientIO: Ledger2ClientIO = {
     if (ids.length === 0) return [];
     const [{ pc, abi }, { BaseError }] = await Promise.all([client(), import("viem")]);
     const address = ledger as Hex;
-    const fns = ["getEvent", "getEventStatus", "getOrganiserKey", "getRegisteredSupply", "termsNonces"] as const;
+    const fns = ["getEvent", "getEventStatus", "getOrganiserKey", "getRegisteredSupply", "termsNonces", "isSeated"] as const;
     const res = await pc.multicall({
       contracts: ids.flatMap((id) => fns.map((functionName) => ({ address, abi, functionName, args: [id as Hex] }))),
       allowFailure: true,
     });
     const notFound = (e: unknown) =>
       e instanceof BaseError && !!e.walk((x) => (x as { data?: { errorName?: string } }).data?.errorName === "EventNotFound");
+    const n = fns.length;
     return ids.map((_, i): SeriesRead | null => {
-      const [ev, status, key, registered, nonce] = res.slice(i * 5, i * 5 + 5);
+      const [ev, status, key, registered, nonce, seated] = res.slice(i * n, i * n + n);
       if (ev!.status === "failure" && notFound(ev!.error)) return null;
-      for (const r of [ev, status, key, registered, nonce]) {
+      for (const r of [ev, status, key, registered, nonce, seated]) {
         if (r!.status !== "success") throw new Error("Couldn't read your event's tickets just now.");
       }
       const [totalSupply, nextSlot, organiser] = ev!.result as readonly [bigint, bigint, string, string];
@@ -69,6 +71,7 @@ export const liveLedger2ClientIO: Ledger2ClientIO = {
         eventEndTs: Number(eventEndTs),
         cancelled,
         termsNonce: nonce!.result as bigint,
+        seated: seated!.result === true,
       };
     });
   },
