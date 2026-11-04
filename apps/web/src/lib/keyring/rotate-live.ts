@@ -238,8 +238,12 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     },
 
     copyEvents: async (keys, progress) => {
-      const { signEventFeedSoc } = await import("../api/events.js");
+      const [{ signEventFeedSoc }, seats] = await Promise.all([
+        import("../api/events.js"),
+        import("../creator/seating/seat-state.js"),
+      ]);
       const events = await ownEventsOnce(h.oldSigner.address, true);
+      const seatIO = events.some((f) => seats.seatedSeriesIds(f).length > 0) ? await seats.liveSeatStateIO() : null;
       let done = 0;
       progress(0, events.length);
       for (const feed of events) {
@@ -249,6 +253,9 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
           ...(feed.encryptionKeyRef !== undefined ? { encryptionKeyRef: keys.orderKeyRef } : {}),
         };
         await signEventFeedSoc(next, keys.feedSigner, undefined, keys.orderKeyRef);
+        // Seated ticket types' holds and confirmations move with the event (S6): left
+        // behind, the new signer's would read as never written once the flip lands.
+        if (seatIO) await seats.copySeatStates(seatIO, feed, h.oldSigner.address, keys.feedSigner.privKey);
         progress(++done, events.length);
       }
     },
