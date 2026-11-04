@@ -9,6 +9,7 @@
  */
 
 import { RESERVATION_MAX_QTY } from "../event/reservation.js";
+import { CURRENCY_SYMBOLS, type BuyerFees } from "../event/fees.js";
 import { isIntIn, isPlainRecord } from "../validate.js";
 
 export interface SeatedReserveRequest {
@@ -34,6 +35,49 @@ export function parseSeatedReserve(body: unknown, seatCount: number): SeatedRese
   const sorted = [...(seats as number[])].sort((a, b) => a - b);
   for (let i = 1; i < sorted.length; i++) if (sorted[i] === sorted[i - 1]) return null;
   return { seats: sorted, planDigest };
+}
+
+/**
+ * The server's answer to a seated hold (POST .../reserve): each seat's pinned price and
+ * charge, and the order's amounts by `cardOrderAmountsMulti` - the only figures a page
+ * shows for a seated order, because they are what checkout charges. `checkout`: a
+ * Stripe page is open for this hold, so the page offers "Pay" again.
+ */
+export interface SeatedHold {
+  reservationId: string;
+  expiresAt: string;
+  quantity: number;
+  planDigest: string;
+  seats: Array<{ seat: number; label: string; band: string; bandName: string; priceMinor: number; chargeMinor: number }>;
+  amounts: {
+    currency: string;
+    mode: string;
+    feePercent: number;
+    subtotalMinor: number;
+    orderFeeMinor: number;
+    bookingFeeMinor: number;
+    totalMinor: number;
+  };
+  checkout: boolean;
+}
+
+/** A seated hold as the card receipt every checkout panel already draws. */
+export function seatedHoldFees(h: Pick<SeatedHold, "quantity" | "amounts">): BuyerFees {
+  const a = h.amounts;
+  const sym = CURRENCY_SYMBOLS[a.currency] ?? `${a.currency} `;
+  const fmt = (minor: number) => `${sym}${(minor / 100).toFixed(2)}`;
+  return {
+    qty: h.quantity,
+    baseLabel: h.quantity > 1 ? `Seats (×${h.quantity})` : "Seat",
+    base: fmt(a.subtotalMinor),
+    unit: fmt(Math.round(a.subtotalMinor / Math.max(1, h.quantity))),
+    feePercent: a.feePercent,
+    feeRowLabel: a.mode === "percent" ? `Booking fee (${a.feePercent}%)` : a.mode === "cover" ? "Booking fee" : null,
+    fee: fmt(a.bookingFeeMinor),
+    platform: "",
+    cardTotal: fmt(a.totalMinor),
+    cryptoTotal: null,
+  };
 }
 
 export type SeatedReserveRefusal = "plan_changed";

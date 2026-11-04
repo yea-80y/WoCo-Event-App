@@ -8,8 +8,8 @@
    * (--bg, --text, --accent ...).
    *
    * It draws, picks and explains. Holding seats and paying are the host's (`onhold`,
-   * then the `checkout` snippet in the panel): until seated holds ship the host
-   * passes no `onhold` and the button says so.
+   * then the `checkout` snippet in the panel); a host that cannot sell passes no
+   * `onhold` and the button says so.
    */
   import { onDestroy, onMount, tick, type Snippet } from "svelte";
   import type { SeriesSummary } from "@woco/shared/event/types";

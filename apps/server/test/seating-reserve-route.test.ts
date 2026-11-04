@@ -64,7 +64,7 @@ test("a hold answers with each seat's pinned price and the total checkout will c
   const seats = [0, other].sort((a, b) => a - b);
   const r = await mod.reserveSeated(args(seats), deps());
   assert.equal(r.status, 200);
-  const view = (r.body as { data: import("../src/lib/seating/seated-reserve.js").SeatedHoldView }).data;
+  const view = (r.body as { data: import("@woco/shared/seating/reserve").SeatedHold }).data;
   const prices = seats.map((k) => Math.round(parseFloat(seating.bands[plan.seats[k].b].price) * 100));
   const want = cardOrderAmountsMulti(payment, prices);
   assert.deepEqual(view.seats.map((s) => s.priceMinor), prices);

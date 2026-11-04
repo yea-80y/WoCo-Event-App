@@ -8,6 +8,7 @@
 
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { cardOrderAmountsMulti, type PaymentConfig, type SeriesSummary } from "@woco/shared";
+import type { SeatedHold } from "@woco/shared/seating/reserve";
 import { contractKey, type EventContractTarget } from "../chain/event-contract.js";
 import { lookupOnChainEventId } from "../event/onchain-registry.js";
 import { noteChainCancelled } from "../event/ledger2-sale-status.js";
@@ -115,13 +116,8 @@ export async function reserveSeated(
   return { status: 200, body: { ok: true, data: seatedHoldView(r.reservation, payment) } };
 }
 
-export type SeatedHoldView = ReturnType<typeof seatedHoldView>;
-
-/**
- * The hold as a page shows it: each seat's pinned price and charge, and the order's total.
- * `checkout`: a Stripe page is open for it, so the page offers "Pay" again, not a new hold.
- */
-export function seatedHoldView(h: Reservation, payment: Pick<PaymentConfig, "currency" | "feePassedToCustomer" | "buyerFeePercent" | "coverFees">) {
+/** The hold as every page shows it (`SeatedHold`, shared with the clients). */
+export function seatedHoldView(h: Reservation, payment: Pick<PaymentConfig, "currency" | "feePassedToCustomer" | "buyerFeePercent" | "coverFees">): SeatedHold {
   const info = h.seatInfo ?? [];
   const seats = h.seats ?? [];
   const a = cardOrderAmountsMulti(payment, info.map((s) => s.priceMinor));
