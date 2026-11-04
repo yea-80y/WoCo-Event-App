@@ -31,7 +31,10 @@ export {
   type ChainSeats, type SaleState, type SeatCode, type SeatStateInput, type SeatStates,
 } from "./availability.js";
 export { SEAT_WORDS_PER_BATCH, seatBatch, seatWordCount, type SeatBatch, type SeatBatchRead, type SeatEventRead } from "./chain.js";
-export { parseSeatedReserve, seatedReserveRefusal, type SeatedReserveRequest, type SeatedReserveRefusal } from "./reserve.js";
+export {
+  parseSeatedReserve, seatedReserveRefusal, seatedHoldFees, SEAT_HOLD_LOST_CODES, isSeatHoldLost,
+  type SeatedHold, type SeatedReserveRequest, type SeatedReserveRefusal,
+} from "./reserve.js";
 export { seatLayoutLibraryTopic, seatLayoutTopic, eventSeatStateTopic } from "./topics.js";
 export {
   rowLetters, labelsAfter, normRot, labelWidth, idMaker, makeRow, rowsBlock, table, shape, LAYOUT_TEMPLATES,

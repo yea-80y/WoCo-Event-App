@@ -49,6 +49,16 @@ export const CHECKOUT_EXPIRES_SKEW_S = 120;
  * stretch the session's life into the every-mint-reverts window. Null/absent
  * = unknown — the feed end stands alone, as before.
  */
+/**
+ * A seated session's `expires_at`: Stripe's shortest life, plus the skew margin. Its hold
+ * runs to this plus SEATED_HOLD_GRACE_MS (reservation-store.ts), so a seated hold is never
+ * longer than it must be; it is also never later than `checkoutExpiresAt`, whose floor
+ * this is.
+ */
+export function seatedCheckoutExpiresAt(nowMs: number = Date.now()): number {
+  return Math.floor(nowMs / 1000) + CHECKOUT_EXPIRES_MIN_S + CHECKOUT_EXPIRES_SKEW_S;
+}
+
 export function checkoutExpiresAt(
   event: { startDate?: string; endDate?: string },
   nowMs: number = Date.now(),

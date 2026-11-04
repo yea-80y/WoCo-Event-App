@@ -529,6 +529,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
 
 `.data/` FILES THAT MUST SURVIVE RESTARTS (loaded on startup — don't delete):
   consumed-tx-hashes.json · revoked-sessions.json · consumed-stripe-sessions.json
+  reservations.json (holds; since S4 a SEATED hold is money-path state: the mint takes its seats from it
+    and nowhere else, so a lost one refunds a paid seat. Present-but-unreadable is never overwritten and
+    pauses seated sales; general holds keep working in memory; `/api/health` `reservations` alarms)
   onchain-events.json (#424 — eventId+seriesId → the on-chain event THIS server
     registered. The checkout refuses to charge for a series with no record, and
     `byEventSeries` CANNOT be rebuilt from chain: the walk fills `byManifestRef`

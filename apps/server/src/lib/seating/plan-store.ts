@@ -60,6 +60,11 @@ function remember(digest: string, plan: SeatPlan): void {
   while (memo.size > MEMO_MAX) memo.delete(memo.keys().next().value as string);
 }
 
+/** A plan already read and checked against `digest` in this process, or null. */
+export function cachedSeatPlan(digest: string): SeatPlan | null {
+  return memo.get(digest.toLowerCase()) ?? null;
+}
+
 /** Thrown when a plan cannot be read. Distinct from a plan that reads but is wrong (null). */
 export class SeatPlanUnavailableError extends Error {
   constructor(ref: string, cause: unknown) {

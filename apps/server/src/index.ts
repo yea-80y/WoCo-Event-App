@@ -78,6 +78,14 @@ import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
 import { siteRuntimeReleases, SITE_RUNTIME_REFRESH_MS } from "./lib/site/runtime-release.js";
 import { missingWebhookSecrets, stripeKeyMode } from "./lib/stripe/key-mode.js";
 import { ticketSalesHealth } from "./lib/stripe/ticket-sales.js";
+import { reservationsHealth } from "./lib/event/reservation-store.js";
+import { seatAssignMismatches } from "./lib/chain/mint-resolve.js";
+
+function seatHoldsHealth() {
+  const r = reservationsHealth();
+  const seatMismatches = seatAssignMismatches();
+  return { ...r, seatMismatches, ok: r.ok && seatMismatches === 0 };
+}
 import { onStripeVerified } from "./lib/stripe/accounts.js";
 import { cancellationsStoreHealth } from "./lib/event/cancellations.js";
 import { cancellationJobHealth, startCancellationRefundJob } from "./lib/stripe/cancellation-refunds.js";
@@ -352,6 +360,11 @@ function healthReport() {
     // record file: a refund on a sale the file no longer knows. Counts only; the
     // ops route has the sales.
     ticketSales: { ...ticketSalesHealth(), refundEvents: saleRefundEventsHealth() },
+    // Seat holds (docs/SEATING.md). Alarms: the file present but unreadable (seated
+    // sales paused), seated holds running out by time with no checkout.session.expired
+    // seen (the webhook endpoint is not sent that event), and a seat the ledger
+    // recorded differently from the one asked (`seatMismatches`, since boot).
+    reservations: seatHoldsHealth(),
     // #644: cancelled events and the refund of their sales. Alarms: a refund
     // abandoned after its retries (a buyer paid and is not refunded), a refund
     // Stripe holds because the organiser's balance is short (`waitingForFunds`),

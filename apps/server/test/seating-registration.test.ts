@@ -153,6 +153,8 @@ function harness(over: Partial<RegisterDeps> = {}) {
       seen.confirms.push(args[5]);
       return { feed: {} as EventFeed, resignable: false };
     }) as RegisterDeps["confirmSeriesOnChain"],
+    // Every recovery below is of a seated series, and the chain agrees unless a test says not.
+    isSeatedOnChain: async () => true,
     ...over,
   };
   return { d, seen };
@@ -180,4 +182,21 @@ test("a seated registration registers seated and records the plan, on every path
   await registerSeriesExactlyOnce({ ...PARAMS, seriesId: "ser-g", seating: undefined }, general.d);
   assert.equal(general.seen.seated, undefined);
   assert.deepEqual(general.seen.confirms, [undefined]);
+});
+
+test("a recovered registration the chain disagrees about is not recorded (S1+S2 sign-off, carried to S4)", async () => {
+  const sent = { txHash: "0xtx", nonce: 1, chainId: 42161, at: "x" };
+  const intent = { nonce: 1, chainId: 42161, at: "x" };
+  for (const [why, marker, seating, chainSeated] of [
+    ["seated series, general event, from a tx", sent, PARAMS.seating, false],
+    ["seated series, general event, from an intent", intent, PARAMS.seating, false],
+    ["general series, seated event, from a tx", sent, undefined, true],
+  ] as const) {
+    const h = harness({ lookupPending: () => marker as never, isSeatedOnChain: async () => chainSeated });
+    await assert.rejects(registerSeriesExactlyOnce({ ...PARAMS, seriesId: `ser-${why.length}`, seating }, h.d), /not recorded, marker kept/, why);
+    assert.deepEqual(h.seen.confirms, [], why);
+  }
+  const unreadable = harness({ lookupPending: () => sent as never, isSeatedOnChain: async () => { throw new Error("rpc down"); } });
+  await assert.rejects(registerSeriesExactlyOnce({ ...PARAMS, seriesId: "ser-x" }, unreadable.d), /rpc down/);
+  assert.deepEqual(unreadable.seen.confirms, [], "an unread chain records nothing");
 });

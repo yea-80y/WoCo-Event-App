@@ -75,6 +75,13 @@ export interface TicketSale {
   /** Slots minted for this sale (edition = slot + 1). */
   slots: number[];
   /**
+   * Allocated seating: the seat each slot was SOLD in, aligned with `slots` - provenance,
+   * never the ticket's current seat. A seat move or a resale leaves this as it was; the
+   * door, the ticket page and the dashboard read the ledger's `seatOf` for where a ticket
+   * sits now (docs/SEATING.md).
+   */
+  seats?: number[];
+  /**
    * The order blob these slots carry on chain (#642). One completed sale per ref
    * (#661, lib/stripe/order-ref.ts): prepare-order and checkout refuse a ref this
    * field already names on ANOTHER sale, and fulfilment swaps one for the buyer's
@@ -121,8 +128,28 @@ let loaded = false;
 /** Why the file exists but could not be read, or null. */
 let fileUnreadable: string | null = null;
 
+/** `${contract}|${onChainEventId}` → every seat a sale of ours minted there. */
+const seatsMinted = new Map<string, Set<number>>();
+const mintedKey = (onChainEventId: string, contract: string) => `${contract.toLowerCase()}|${onChainEventId.toLowerCase()}`;
+
 function index(sale: TicketSale): void {
   byPaymentIntent.set(sale.paymentIntentId, sale.sessionId);
+  if (sale.seats && sale.onChainEventId && sale.contract) {
+    const key = mintedKey(sale.onChainEventId, sale.contract);
+    let set = seatsMinted.get(key);
+    if (!set) seatsMinted.set(key, (set = new Set()));
+    for (const k of sale.seats) if (Number.isSafeInteger(k)) set.add(k);
+  }
+}
+
+/**
+ * Seats our own sales minted on this event (docs/SEATING.md "Selling a seat"): a hold is
+ * refused for them even when a lagging chain read still shows them free. Refunded sales
+ * stay in: their seats stay taken on chain until reissue.
+ */
+export function mintedSeats(onChainEventId: string, contract: string): ReadonlySet<number> {
+  ensureLoaded();
+  return seatsMinted.get(mintedKey(onChainEventId, contract)) ?? new Set();
 }
 
 function ensureLoaded(): void {
@@ -246,12 +273,18 @@ export function recordSaleSlots(
   contract: string,
   slots: number[],
   orderRef?: string,
+  /** Allocated seating: the seat each of `slots` was sold in, aligned with it. */
+  seats?: number[],
 ): boolean {
   ensureLoaded();
   const sale = store[sessionId];
   if (!sale) {
     console.error(`[ticket-sales] slots for ${sessionId} with no sale record — voids cannot reach them`);
     return false;
+  }
+  if (seats && seats.length !== slots.length) {
+    console.error(`[ticket-sales] ${sessionId}: ${seats.length} seats for ${slots.length} slots — seats NOT recorded`);
+    seats = undefined;
   }
   const id = onChainEventId.toLowerCase();
   if (sale.onChainEventId && sale.onChainEventId !== id) {
@@ -264,7 +297,13 @@ export function recordSaleSlots(
   sale.onChainEventId = id;
   sale.contract = contract.toLowerCase();
   if (orderRef && !sale.orderRef) sale.orderRef = orderRef.toLowerCase();
-  for (const slot of slots) if (!sale.slots.includes(slot)) sale.slots.push(slot);
+  for (let i = 0; i < slots.length; i++) {
+    if (sale.slots.includes(slots[i])) continue;
+    // Seats stay aligned with slots: only while every slot so far has one.
+    if (seats && (sale.seats?.length ?? 0) === sale.slots.length) (sale.seats ??= []).push(seats[i]);
+    sale.slots.push(slots[i]);
+  }
+  index(sale);
   persist();
   return true;
 }
@@ -604,6 +643,7 @@ export function ticketSalesHealth(): TicketSalesHealth {
 export function __resetForTests(): void {
   store = {};
   byPaymentIntent.clear();
+  seatsMinted.clear();
   loaded = false;
   fileUnreadable = null;
 }

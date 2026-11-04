@@ -13,7 +13,8 @@ import { getStripe } from "./client.js";
 import { hashEmail } from "../event/claim-service.js";
 import { getEvent } from "../event/service.js";
 import { chainEventEndMsAt } from "../event/end-date-guard.js";
-import { lookupOnChainEventId, saleContractFor } from "../event/onchain-registry.js";
+import { lookupOnChainEventId, registrationSeatingFor, saleContractFor } from "../event/onchain-registry.js";
+import { contractKey } from "../chain/event-contract.js";
 import { recordHeld, flagForRecheck } from "./payout-ledger.js";
 import { getOrganiserByStripeAccount } from "./accounts.js";
 import { storeAttendeePayload, storeHeldOrder } from "../attendee-batch/writer.js";
@@ -21,9 +22,9 @@ import { markHeldPaid, releaseHeldOrder } from "../attendee-batch/held-orders.js
 import { getOrderRecord, isOrderErased } from "../attendee-batch/ledger.js";
 import { fetchOrderKey } from "@woco/shared";
 import { BEE_URL } from "../../config/swarm.js";
-import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX } from "../chain/sponsor-wallet.js";
+import { batchClaimForOnChain, batchClaimSeatsOnChain, generateBurner, ON_CHAIN_BATCH_MAX } from "../chain/sponsor-wallet.js";
 import { bindTicket } from "../gate/store.js";
-import { consume as consumeReservation } from "../event/reservation-store.js";
+import { claimSeatedHold, consume as consumeReservation, settleSeatedHold } from "../event/reservation-store.js";
 import { captureCheckoutConsent } from "../marketing/consent-capture.js";
 import { recordAttendeeEmail } from "../event/attendee-index.js";
 import { resolveSiteEventSigner } from "../site/service.js";
@@ -33,7 +34,7 @@ import { sealDoorEntries } from "../checkin/door-entries.js";
 import { holdTickets } from "../ticket-hold/store.js";
 import { recordFailure } from "../email/failure-ledger.js";
 import { recordPendingRefund } from "./pending-refunds.js";
-import { recordAutoRefund, recordSaleSlots, orderRefInOtherSale } from "./ticket-sales.js";
+import { mintedSeats, recordAutoRefund, recordSaleSlots, orderRefInOtherSale } from "./ticket-sales.js";
 import { addRefundRow, cancellationGate } from "../event/cancellations.js";
 import { kickCancellationRefunds } from "./cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "./cancellation-refunds-live.js";
@@ -80,8 +81,19 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   generateBurner,
   batchClaimForOnChain,
   onChainBatchMax: ON_CHAIN_BATCH_MAX,
-  recordSaleSlots: (sessionId, onChainEventId, contract, slots, orderRef) => {
-    recordSaleSlots(sessionId, onChainEventId, contract, slots, orderRef);
+  registrationSeatingFor,
+  // Our own sales' seats on the contract the record names: a lapsed hold whose seats were
+  // sold meanwhile refunds rather than broadcast a mint the ledger would refuse.
+  claimSeatedHold: (reservationId, sessionId, eventId, seriesId) => {
+    const id = lookupOnChainEventId(eventId, seriesId);
+    const sale = saleContractFor(eventId, seriesId);
+    const minted = id && sale.ok ? mintedSeats(id, contractKey(sale.contract)) : new Set<number>();
+    return claimSeatedHold(reservationId, sessionId, eventId, seriesId, minted);
+  },
+  batchClaimSeatsOnChain,
+  settleSeatedHold,
+  recordSaleSlots: (sessionId, onChainEventId, contract, slots, orderRef, seats) => {
+    recordSaleSlots(sessionId, onChainEventId, contract, slots, orderRef, seats);
   },
   recordAutoRefund,
   bindTicket,

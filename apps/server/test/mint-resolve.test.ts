@@ -10,6 +10,8 @@ import {
   broadcastMint,
   MintUnresolvedError,
   resolveMint,
+  seatAssignMismatches,
+  seatsBySlot,
   slotsByOwner,
   type MintLog,
   type MintLogFilter,
@@ -76,15 +78,16 @@ test("slots map by owner, not by log order or by foreign logs", () => {
 });
 
 test("an executed receipt resolves at once, slots in owner order", async () => {
-  const { io, calls } = fakeIo({ receipts: [{ status: 1, logs: [slotLog(owners[1]!, 8), slotLog(owners[0]!, 7), slotLog(owners[2]!, 9)] }] });
-  assert.deepEqual(await resolveMint(attempt, io), { kind: "minted", slots: [7, 8, 9] });
+  const logs = [slotLog(owners[1]!, 8), slotLog(owners[0]!, 7), slotLog(owners[2]!, 9)];
+  const { io, calls } = fakeIo({ receipts: [{ status: 1, logs }] });
+  assert.deepEqual(await resolveMint(attempt, io), { kind: "minted", slots: [7, 8, 9], receiptLogs: logs });
   assert.equal(calls.logs, 0, "no log query when the receipt answered");
 });
 
 test("a send that failed after broadcast but landed is minted, not refunded", async () => {
   const minted = { status: 1, logs: owners.map((o, i) => slotLog(o, 20 + i)) };
   const { io, calls } = fakeIo({ receipts: [null, null, minted] });
-  assert.deepEqual(await resolveMint(attempt, io), { kind: "minted", slots: [20, 21, 22] });
+  assert.deepEqual(await resolveMint(attempt, io), { kind: "minted", slots: [20, 21, 22], receiptLogs: minted.logs });
   assert.equal(calls.sleeps, 2);
 });
 
@@ -108,11 +111,12 @@ test("an executed receipt missing a log falls through to the log query", async (
 
 test("RPC failures while polling are not answers", async () => {
   const boom = new Error("502 Bad Gateway");
+  const landed = owners.map((o, i) => slotLog(o, 50 + i));
   const { io } = fakeIo({
-    receipts: [boom, boom, { status: 1, logs: owners.map((o, i) => slotLog(o, 50 + i)) }],
+    receipts: [boom, boom, { status: 1, logs: landed }],
     logs: [boom],
   });
-  assert.deepEqual(await resolveMint(attempt, io), { kind: "minted", slots: [50, 51, 52] });
+  assert.deepEqual(await resolveMint(attempt, io), { kind: "minted", slots: [50, 51, 52], receiptLogs: landed });
 });
 
 test("nothing by the bound throws MintUnresolvedError, after querying from the pre-send block by owner", async () => {
@@ -195,4 +199,32 @@ test("a retry after a nonce refusal starts unbroadcast: its failure before sendi
 test("a send the node takes reports the hash and the pre-send block", async () => {
   const out = await broadcastMint({ queue: queueLikeSponsor, prepare: async (o) => prepared(o.nonce), sendRaw: async () => "0xok", isRefusal });
   assert.deepEqual(out, { kind: "sent", hash: prepared(7).hash, fromBlock: 107 });
+});
+
+// Allocated seating: a seat per minted slot, from the call itself (docs/SEATING.md S4).
+const SEAT_IFACE = new Interface(["event SeatAssigned(bytes32 indexed eventId, uint256 indexed slot, uint256 seat)"]);
+function seatLog(slot: number, seat: number, opts: { contract?: string; eventId?: string } = {}): MintLog {
+  const { data, topics } = SEAT_IFACE.encodeEventLog("SeatAssigned", [opts.eventId ?? EVENT, slot, seat]);
+  return { address: opts.contract ?? CONTRACT, topics, data };
+}
+
+test("seat per slot is the seat asked beside each owner, with no receipt needed", () => {
+  assert.deepEqual(seatsBySlot([10, 11, 12], [40, 7, 255], undefined, CONTRACT, EVENT), [
+    { slot: 10, seat: 40 }, { slot: 11, seat: 7 }, { slot: 12, seat: 255 },
+  ]);
+});
+
+test("a receipt that agrees changes nothing and counts nothing", () => {
+  const before = seatAssignMismatches();
+  const logs = [seatLog(11, 7), seatLog(10, 40), seatLog(12, 999, { contract: OTHER_CONTRACT }), seatLog(10, 1, { eventId: OTHER_EVENT })];
+  assert.deepEqual(seatsBySlot([10, 11], [40, 7], logs, CONTRACT, EVENT), [{ slot: 10, seat: 40 }, { slot: 11, seat: 7 }]);
+  assert.equal(seatAssignMismatches(), before);
+});
+
+test("a receipt that disagrees wins and is counted", () => {
+  const before = seatAssignMismatches();
+  assert.deepEqual(seatsBySlot([10, 11], [40, 7], [seatLog(10, 40), seatLog(11, 8)], CONTRACT, EVENT), [
+    { slot: 10, seat: 40 }, { slot: 11, seat: 8 },
+  ]);
+  assert.equal(seatAssignMismatches(), before + 1);
 });

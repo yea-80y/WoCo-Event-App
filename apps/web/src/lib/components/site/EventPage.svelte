@@ -552,7 +552,22 @@
                 open={onseats ? seats === s.seriesId : undefined}
                 onopen={onseats ? () => onseats(s.seriesId) : undefined}
                 onclose={onseats ? () => onseats(null) : undefined}
-              />
+              >
+                {#snippet checkout(h, lost)}
+                  <ClaimButton
+                    {eventId}
+                    seriesId={s.seriesId}
+                    encryptionKeyRef={event?.encryptionKeyRef}
+                    orderFields={event?.orderFields}
+                    {apiUrl}
+                    payment={s.payment}
+                    quantity={h.quantity}
+                    hold={h}
+                    onholdlost={lost}
+                    organiserName={siteName ?? undefined}
+                  />
+                {/snippet}
+              </SeatedSeries>
             {/await}
           {/if}
         {/each}

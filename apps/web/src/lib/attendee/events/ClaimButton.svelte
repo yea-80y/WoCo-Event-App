@@ -2,6 +2,7 @@
   import type { OrderField, PaymentConfig } from "@woco/shared";
   import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
   import { CURRENCY_SYMBOLS, calculateBuyerFees } from "@woco/shared";
+  import { isSeatHoldLost, seatedHoldFees, type SeatedHold } from "@woco/shared/seating/reserve";
   import { loadOrderKey } from "./claim/order-key.js";
   import type { PreparedOrder } from "../../api/stripe.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -55,9 +56,17 @@
     organiserName?: string;
     /** #644: the server says the event is cancelled, whatever the page's feed says. */
     oncancelled?: () => void;
+    /**
+     * Allocated seating: the seats the buyer already holds (the seat map placed the hold).
+     * Then this pays for that hold at the server's prices and makes no hold of its own;
+     * `quantity` must be its seat count. Absent: general admission, as always.
+     */
+    hold?: SeatedHold;
+    /** That hold can no longer be paid as it is (`isSeatHoldLost`): the seat map holds again. */
+    onholdlost?: (message: string) => void;
   }
 
-  let { eventId, seriesId, encryptionKeyRef, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName, oncancelled }: Props = $props();
+  let { eventId, seriesId, encryptionKeyRef, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName, oncancelled, hold, onholdlost }: Props = $props();
 
   /**
    * The organiser's order key, verified against `encryptionKeyRef`. The form only
@@ -118,7 +127,7 @@
   // svelte-ignore state_referenced_locally
   const stripeSuccess = useStripeSuccess({ eventId, seriesId });
 
-  const buyerFees = $derived(calculateBuyerFees(payment, quantity));
+  const buyerFees = $derived(hold ? seatedHoldFees(hold) : calculateBuyerFees(payment, quantity));
 
   const priceLabel = $derived(
     payment
@@ -307,7 +316,8 @@
     getQuantity: () => quantity,
     getShouldHold: () => {
       const alreadyDone = claimed || stripeSuccess.visible;
-      return isPaid && !alreadyDone && quantity >= 1 && (
+      // A seated order's hold is the seat map's, never a count hold here.
+      return !hold && isPaid && !alreadyDone && quantity >= 1 && (
         // Order form open — explicit user action opened it
         showOrderForm ||
         // Fee sheet visible + the buyer has clicked a payment button (or the
@@ -448,7 +458,7 @@
         preparedOrder,
         encryptedOrder: !preparedOrder ? inlineEncryptedOrder : undefined,
         encryptionKeyRef: orderKeyFor,
-        reservationId: reservationHook.reservation?.reservationId,
+        reservationId: hold?.reservationId ?? reservationHook.reservation?.reservationId,
         // The panel on screen showed this control (the form, when it is open -
         // handleStripeCheckout returns early to show it and is re-entered).
         marketing: marketingChoice(marketingMode, marketingTicked, showOrderForm ? "order-form" : "pay-panel", marketingWording),
@@ -494,6 +504,10 @@
         await refreshStatusNow();
         return;
       }
+      if (hold && onholdlost && err instanceof CheckoutError && isSeatHoldLost(err.code)) {
+        onholdlost(err.message);
+        return;
+      }
       error = err instanceof Error ? err.message : "Failed to start checkout";
     } finally {
       stripeLoading = false;
@@ -501,7 +515,7 @@
   }
 </script>
 
-<div class="claim-area">
+<div class="claim-area" class:held={!!hold}>
   <ReservationPill
     reservation={reservationHook.reservation}
     secsLeft={reservationHook.secsLeft}
@@ -603,6 +617,9 @@
     align-items: flex-end;
     gap: 0.375rem;
   }
+  /* Paying a seat hold, inside the seat map's order panel: that panel's full width. */
+  .claim-area.held { align-items: stretch; }
+  .claim-area.held :global(.pay-sheet) { max-width: none; }
 
   .claim-btn {
     padding: 0.5rem 1.25rem;

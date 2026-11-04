@@ -1,7 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSeatedReserve, seatedReserveRefusal } from "../../src/seating/reserve.js";
+import { parseSeatedReserve, seatedHoldFees, seatedReserveRefusal } from "../../src/seating/reserve.js";
 import { RESERVATION_MAX_QTY } from "../../src/event/reservation.js";
+
+test("a seated hold's receipt shows the server's amounts, never re-priced", () => {
+  const amounts = { currency: "GBP", mode: "cover", feePercent: 0, subtotalMinor: 7800, orderFeeMinor: 297, bookingFeeMinor: 297, totalMinor: 8097 };
+  const f = seatedHoldFees({ quantity: 3, amounts });
+  assert.equal(f.baseLabel, "Seats (×3)");
+  assert.equal(f.base, "£78.00");
+  assert.equal(f.feeRowLabel, "Booking fee");
+  assert.equal(f.fee, "£2.97");
+  assert.equal(f.cardTotal, "£80.97");
+  assert.equal(f.cryptoTotal, null);
+  const one = seatedHoldFees({ quantity: 1, amounts: { ...amounts, mode: "percent", feePercent: 10 } });
+  assert.equal(one.baseLabel, "Seat");
+  assert.equal(one.feeRowLabel, "Booking fee (10%)");
+  assert.equal(seatedHoldFees({ quantity: 2, amounts: { ...amounts, mode: "none" } }).feeRowLabel, null);
+});
 
 const digest = `0x${"ab".repeat(32)}`;
 

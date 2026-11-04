@@ -7,6 +7,7 @@
  */
 
 import { isSaleClosedCode } from "@woco/shared";
+import type { SeatedHold } from "@woco/shared/seating/reserve";
 
 export interface Hold {
   reservationId: string;
@@ -88,6 +89,41 @@ export function holdResult(resp: ReserveResponse): HoldResult {
     return { kind: "refused", message: "Not enough tickets left at this quantity" };
   }
   return { kind: "refused", message: resp.error };
+}
+
+export type SeatHoldResult =
+  | { kind: "held"; hold: Hold; seated: SeatedHold }
+  /** `conflicts`: seats someone else has, for the map to mark. */
+  | { kind: "refused"; message: string; conflicts: number[] }
+  | { kind: "unavailable" };
+
+const isMinor = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+
+/**
+ * What a seated /reserve response means (docs/SEATING.md). A hold is used only when its
+ * reply is whole: one entry per seat with a label and prices, and the order's amounts.
+ * Those figures are the only ones the panel shows for a seated order - never a price
+ * worked out here from the event's bands.
+ */
+export function seatHoldResult(resp: unknown): SeatHoldResult {
+  const r = resp as { ok?: unknown; error?: unknown; conflicts?: unknown; data?: Partial<SeatedHold> } | null;
+  if (!r || typeof r !== "object") return { kind: "unavailable" };
+  if (r.ok !== true) {
+    if (typeof r.error !== "string" || !r.error) return { kind: "unavailable" };
+    const conflicts = Array.isArray(r.conflicts) ? r.conflicts.filter((k): k is number => Number.isSafeInteger(k) && k >= 0) : [];
+    return { kind: "refused", message: r.error.slice(0, 300), conflicts };
+  }
+  const d = r.data;
+  const a = d?.amounts;
+  const ok = !!d && typeof d.reservationId === "string" && !!d.reservationId && typeof d.expiresAt === "string" &&
+    Number.isInteger(d.quantity) && (d.quantity as number) >= 1 &&
+    Array.isArray(d.seats) && d.seats.length === d.quantity &&
+    d.seats.every((s) => !!s && typeof s.label === "string" && isMinor(s.priceMinor) && isMinor(s.chargeMinor)) &&
+    !!a && typeof a.currency === "string" && typeof a.mode === "string" &&
+    [a.subtotalMinor, a.orderFeeMinor, a.bookingFeeMinor, a.totalMinor].every(isMinor) && Number.isFinite(a.feePercent);
+  if (!ok) return { kind: "unavailable" };
+  const seated = d as SeatedHold;
+  return { kind: "held", hold: { reservationId: seated.reservationId, expiresAt: seated.expiresAt, quantity: seated.quantity }, seated };
 }
 
 /**

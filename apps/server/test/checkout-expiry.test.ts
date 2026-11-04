@@ -15,9 +15,17 @@ import {
   CHECKOUT_EXPIRES_MIN_S,
   CHECKOUT_EXPIRES_MAX_S,
   CHECKOUT_EXPIRES_SKEW_S,
+  seatedCheckoutExpiresAt,
 } from "../src/lib/event/checkout-expiry.js";
 
 const NOW_MS = new Date("2026-08-17T12:00:00Z").getTime();
+
+test("a seated session gets Stripe's shortest life plus the skew margin, never later than the clamp", () => {
+  const s = seatedCheckoutExpiresAt(NOW_MS);
+  assert.equal(s, NOW_MS / 1000 + CHECKOUT_EXPIRES_MIN_S + CHECKOUT_EXPIRES_SKEW_S);
+  const soon = { startDate: new Date(NOW_MS + 10 * 60_000).toISOString() };
+  assert.ok(s <= (checkoutExpiresAt(soon, NOW_MS) ?? Infinity));
+});
 const NOW_S = Math.floor(NOW_MS / 1000);
 const HOUR_S = 3600;
 const iso = (sFromNow: number) => new Date(NOW_MS + sFromNow * 1000).toISOString();

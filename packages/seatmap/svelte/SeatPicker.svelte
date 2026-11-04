@@ -8,8 +8,8 @@
    * (--bg, --text, --accent ...).
    *
    * It draws, picks and explains. Holding seats and paying are the host's (`onhold`,
-   * then the `checkout` snippet in the panel): until seated holds ship the host
-   * passes no `onhold` and the button says so.
+   * then the `checkout` snippet in the panel); a host that cannot sell passes no
+   * `onhold` and the button says so.
    */
   import { onDestroy, onMount, tick, type Snippet } from "svelte";
   import type { SeriesSummary } from "@woco/shared/event/types";
@@ -25,7 +25,7 @@
   import type { LiveSeatMap, SeatMapProblem, SeatMapSnapshot } from "../src/load.js";
   import type { Level } from "../src/view.js";
   import {
-    companionBeside, mapNotice, picksStorageKey, priceRange, readPicks, seatPriceMinor, seatsText, totalLine, writePicks,
+    companionBeside, mapNotice, picksStorageKey, priceRange, readPicks, seatPriceMinor, seatsText, shownBandPrices, totalLine, writePicks,
   } from "../src/picker-model.js";
 
   export type HoldResult = { ok: true; expiresAt: string } | { ok: false; message: string; conflicts?: number[] };
@@ -40,8 +40,12 @@
     onclose: () => void;
     /** Hold these seats on this plan. Absent: seat booking is not open yet. */
     onhold?: (req: { seats: number[]; planDigest: string }) => Promise<HoldResult>;
-    /** Shown in the panel while a hold runs: the order form and payment. */
-    checkout?: Snippet<[{ seats: readonly number[]; expiresAt: string }]>;
+    /**
+     * Shown in the panel while a hold runs: the order form and payment. `lost`: checkout
+     * says the hold can no longer be paid as it is (the message says why); the panel goes
+     * back to holding, the seats still chosen.
+     */
+    checkout?: Snippet<[{ seats: readonly number[]; expiresAt: string; lost: (message: string) => void }]>;
   }
 
   let { eventId, eventTitle, series, load: loadMap, onclose, onhold, checkout }: Props = $props();
@@ -50,7 +54,8 @@
   // svelte-ignore state_referenced_locally
   const currency = series.payment?.currency ?? "GBP";
   // svelte-ignore state_referenced_locally
-  const feeNote = headlinePrice(series.payment)?.feeLabel ? "plus booking fee" : null;
+  const fees = series.payment;
+  const feeNote = headlinePrice(fees)?.feeLabel ? "incl. booking fee" : null;
 
   let map = $state.raw<LiveSeatMap | null>(null);
   let problem = $state<SeatMapProblem | null>(null);
@@ -85,17 +90,20 @@
   const states = $derived<SeatStates | null>(
     map && snap ? seatStates(map.plan.plan, { chain: snap.chain, organiser: map.organiser, onHold: snap.onHold, mine: hold ? picks : heldSeats, bandPrices: map.bandPrices }) : null,
   );
-  const summaries = $derived(bp && states && map ? sectionSummaries(bp, states, map.bandPrices) : []);
+  /** Per band, what one seat costs with the booking fee: the only per-seat price shown. */
+  const shown = $derived(map ? shownBandPrices(map.bandPrices, fees) : []);
+  const summaries = $derived(bp && states && map ? sectionSummaries(bp, states, shown) : []);
+  const orderLine = (ks: readonly number[]) => totalLine(bp!, map!.bandPrices, ks, currency, fees);
   const notice = $derived(mapNotice({ problem, sale: states?.sale ?? null, serverOk: snap?.serverOk }));
   const lone = $derived(bp && states && !hold && picks.length ? loneSeat(bp, states, picks) : null);
   const allow = (k: number) => filter === null || bp?.plan.seats[k]?.b === filter;
   const priceText = (k: number) => {
-    const m = bp && map ? seatPriceMinor(bp, map.bandPrices, k) : null;
+    const m = bp && map ? seatPriceMinor(bp, shown, k) : null;
     return m === null ? null : formatMinor(m, currency);
   };
   const storageKey = $derived(bp ? picksStorageKey(eventId, series.seriesId, bp.digest) : null);
   const secsLeft = $derived(hold ? Math.max(0, Math.floor((Date.parse(hold.expiresAt) - now) / 1000)) : 0);
-  const bands = $derived(bp && map ? bp.plan.bands.map((b, i) => ({ ...b, index: i, price: map!.bandPrices[i] })).filter((b) => b.price !== null) : []);
+  const bands = $derived(bp && map ? bp.plan.bands.map((b, i) => ({ ...b, index: i, price: shown[i] })).filter((b) => b.price !== null) : []);
 
   async function load(): Promise<void> {
     loading = true;
@@ -201,7 +209,7 @@
     if (added && !snap?.chain?.nonces?.has(k)) { map?.watch({ sections: viewSections, picks: r }); void map?.refresh(); }
     note = null;
     holdError = null;
-    picker?.announce(`${added ? "Added" : "Removed"} ${seatText(bp, k)}. ${picks.length ? totalLine(bp, map!.bandPrices, picks, currency) : "No seats chosen."}`);
+    picker?.announce(`${added ? "Added" : "Removed"} ${seatText(bp, k)}. ${picks.length ? orderLine(picks) : "No seats chosen."}`);
   }
 
   function confirmWheelchair(): void {
@@ -222,7 +230,7 @@
     picks = best;
     note = null;
     picker?.showSeats(best);
-    picker?.announce(`Found ${seatsText(bp, best)}. ${totalLine(bp, map!.bandPrices, best, currency)}.`);
+    picker?.announce(`Found ${seatsText(bp, best)}. ${orderLine(best)}.`);
   }
 
   async function placeHold(): Promise<void> {
@@ -250,6 +258,14 @@
   function changeSeats(): void {
     hold = null;
     expired = false;
+  }
+
+  function holdLost(message: string): void {
+    hold = null;
+    expired = false;
+    holdError = message;
+    picker?.announce(message);
+    void map?.refresh();
   }
 
   // The hold clock.
@@ -331,10 +347,10 @@
     </div>
 
     {#if map && bp}
-      <aside class="sp-panel" class:open={sheetOpen} aria-label="Your order">
+      <aside class="sp-panel" class:open={sheetOpen} class:held={!!hold && !!checkout} aria-label="Your order">
         <button class="sp-bar" onclick={() => (sheetOpen = !sheetOpen)} aria-expanded={sheetOpen}>
           <span class="sp-grip" aria-hidden="true"></span>
-          <span class="sp-bar-text">{picks.length ? totalLine(bp, map.bandPrices, picks, currency) : "No seats chosen"}</span>
+          <span class="sp-bar-text">{picks.length ? orderLine(picks) : "No seats chosen"}</span>
           {#if hold}<span class="sp-clock" class:warn={secsLeft <= 120}>{clock(secsLeft)}</span>{/if}
         </button>
 
@@ -416,13 +432,13 @@
           </section>
 
           {#if hold && checkout}
-            {@render checkout({ seats: picks, expiresAt: hold.expiresAt })}
+            {@render checkout({ seats: picks, expiresAt: hold.expiresAt, lost: holdLost })}
           {/if}
         </div>
 
         <footer class="sp-foot">
           <div class="sp-total">
-            <span>{picks.length ? totalLine(bp, map.bandPrices, picks, currency) : "0 seats"}</span>
+            <span>{picks.length ? orderLine(picks) : "0 seats"}</span>
             {#if feeNote && picks.length}<small>{feeNote}</small>{/if}
           </div>
           {#if hold}
@@ -560,5 +576,7 @@
     .sp-panel:not(.open) .sp-foot { border-top: 0; padding: 0.5rem 0.75rem 0.5rem 0; }
     .sp-panel:not(.open) .sp-held { display: none; }
     .sp-panel:not(.open) .sp-btn.primary { white-space: nowrap; }
+    /* Open while paying: the bar above already shows the total and the clock. */
+    .sp-panel.open.held .sp-total, .sp-panel.open.held .sp-held { display: none; }
   }
 </style>

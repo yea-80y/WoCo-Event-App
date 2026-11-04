@@ -13,6 +13,7 @@
  */
 
 import { apiBase, currentSiteId } from "./client.js";
+import type { SeatedHold } from "@woco/shared/seating/reserve";
 
 export interface ReservationData {
   reservationId: string;
@@ -81,6 +82,32 @@ export async function reserveSlots(
     | { ok: true; data: ReservationData }
     | { ok: false; error: string; code?: string; available?: number; physicalAvailable?: number };
   return json;
+}
+
+/**
+ * Hold seats of a seated series (docs/SEATING.md). The same browser asking for the same
+ * seats gets its hold back unchanged; other seats replace its earlier hold. A refusal
+ * names the seats someone else has (`conflicts`), or `code: "PLAN_CHANGED"`.
+ */
+export async function reserveSeats(
+  eventId: string,
+  seriesId: string,
+  req: { seats: number[]; planDigest: string },
+): Promise<{ ok: true; data: SeatedHold } | { ok: false; error: string; code?: string; conflicts?: number[] }> {
+  const clientKey = getClientKey();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (clientKey) headers["X-Client-Key"] = clientKey;
+  const siteId = currentSiteId();
+  try {
+    const resp = await fetch(`${apiBase}/api/events/${eventId}/series/${seriesId}/reserve`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ seats: req.seats, planDigest: req.planDigest, ...(siteId ? { siteId } : {}) }),
+    });
+    return await resp.json();
+  } catch {
+    return { ok: false, error: "We couldn't hold your seats. Check your connection and try again." };
+  }
 }
 
 /**
