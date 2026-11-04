@@ -43,7 +43,8 @@ import {
   withoutReturnMarker,
   type ReturnView,
 } from "../checkout.js";
-import { formatCountdown, holdResult, secondsUntil, usableHold, type Hold } from "../reservation.js";
+import { formatCountdown, holdResult, seatHoldResult, secondsUntil, usableHold, type Hold } from "../reservation.js";
+import { seatedHoldFees, type SeatedHold } from "@woco/shared/seating/reserve";
 import { FEATURES } from "@woco/shared/features";
 import { WOCO_APP_ORIGIN } from "@woco/shared/auth/passkey-rp";
 import { fromFrame, originOf, parseFrameMessage, seatmapFrameUrl, type WidgetMessage } from "../seatmap-bridge.js";
@@ -117,6 +118,8 @@ interface SeriesState {
   holdExpired: boolean;
   /** The server's reason this series is not on sale at all; the panel stays closed. */
   closed: string | null;
+  /** Allocated seating: the seats held from the seat map, with the server's prices. */
+  seated: SeatedHold | null;
 }
 
 export class WocoTickets extends HTMLElement {
@@ -276,6 +279,7 @@ export class WocoTickets extends HTMLElement {
       holdError: null,
       holdExpired: false,
       closed: null,
+      seated: null,
     };
   }
 
@@ -506,6 +510,7 @@ export class WocoTickets extends HTMLElement {
         const st = this.seriesStates.get(sid);
         if (st) {
           this.dropHold(sid, st);
+          st.seated = null;
           st.buyOpen = false;
           st.orderFormData = {};
           st.email = "";
@@ -800,9 +805,11 @@ export class WocoTickets extends HTMLElement {
     // Write the clamp back: if availability dropped below the picked quantity,
     // the picker shows the clamped value and checkout must charge for exactly
     // what is shown — display and wire may never disagree.
-    st.quantity = Math.min(st.quantity, maxQty);
+    // A seated order is its held seats, priced by the server: never re-priced or clamped here.
+    const seated = st.seated;
+    if (!seated) st.quantity = Math.min(st.quantity, maxQty);
     const qty = st.quantity;
-    const fees = calculateBuyerFees(s.payment, qty);
+    const fees = seated ? seatedHoldFees(seated) : calculateBuyerFees(s.payment, qty);
 
     let qtyOptions = "";
     for (let i = 1; i <= maxQty; i++) {
@@ -827,10 +834,12 @@ export class WocoTickets extends HTMLElement {
           <span class="form-label">Email for your ticket <span class="required">*</span></span>
           <input type="email" data-email-input="${this.esc(s.seriesId)}" value="${this.esc(st.email)}" placeholder="your@email.com" autocomplete="email" />
         </label>${this.renderEmailConfirm(s.seriesId, st)}`}
-        <label class="form-field qty-row">
+        ${seated
+          ? `<ul class="seat-list">${seated.seats.map((x) => `<li>${this.esc(x.label)}</li>`).join("")}</ul>`
+          : `<label class="form-field qty-row">
           <span class="form-label">Quantity</span>
           <select data-qty-select="${this.esc(s.seriesId)}">${qtyOptions}</select>
-        </label>
+        </label>`}
         ${totalHtml}
         ${this.renderConsent(s.seriesId, st)}
         <div class="claim-options">
@@ -907,11 +916,15 @@ export class WocoTickets extends HTMLElement {
 
   /** The hold pill, or the banner explaining why there is no hold. `quantity` is an integer by holdResult. */
   private renderHold(seriesId: string, st: SeriesState): string {
+    const noun = st.seated ? "seat" : "ticket";
     if (st.hold) {
       const q = st.hold.quantity;
       const secs = secondsUntil(st.hold.expiresAt, Date.now());
       // The countdown is aria-hidden so a screen reader announces the hold once, not every second.
-      return `<div class="hold-pill" role="status"><span class="hold-dot"></span>${q} ticket${q === 1 ? "" : "s"} reserved · <span data-hold-countdown="${this.esc(seriesId)}" aria-hidden="true">${formatCountdown(secs)}</span> to checkout</div>`;
+      return `<div class="hold-pill" role="status"><span class="hold-dot"></span>${q} ${noun}${q === 1 ? "" : "s"} ${st.seated ? "held" : "reserved"} · <span data-hold-countdown="${this.esc(seriesId)}" aria-hidden="true">${formatCountdown(secs)}</span> to checkout</div>`;
+    }
+    if (st.holdExpired && st.seated) {
+      return `<div class="hold-banner" role="alert">Your hold has expired - <button class="hold-retry" data-seats="${this.esc(seriesId)}">choose your seats again</button>.</div>`;
     }
     if (st.holdExpired) {
       return `<div class="hold-banner" role="alert">Your hold has expired - change quantity or <button class="hold-retry" data-hold-retry="${this.esc(seriesId)}">try again</button>.</div>`;
@@ -1059,12 +1072,11 @@ export class WocoTickets extends HTMLElement {
       const m = parseFrameMessage(e.data, MAX_QTY);
       if (!m) return;
       if (m.type === "ready") {
-        // Seat holds are not open yet: the map lets buyers look and choose, not hold.
-        toFrame({ v: 1, type: "open", max: MAX_QTY, canHold: false });
+        toFrame({ v: 1, type: "open", max: MAX_QTY, canHold: true });
       } else if (m.type === "cancel") {
         this.closeSeatmap();
       } else if (m.type === "picked") {
-        toFrame({ v: 1, type: "refused", seats: [], message: "Seat booking opens soon." });
+        void this.holdSeats(seriesId, m, toFrame);
       }
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") this.closeSeatmap(); };
@@ -1075,6 +1087,43 @@ export class WocoTickets extends HTMLElement {
     this.seatOverlay = { el, seriesId, onMessage, onKey, overflow };
     document.body.appendChild(el);
     frame.focus();
+  }
+
+  /**
+   * The map's Hold press: hold those seats, tell the frame, then leave the map for this
+   * widget's own card checkout, at the prices the server gave the hold. The frame's
+   * seats are only the buyer's intent: the server checks them on its own pinned plan.
+   */
+  private async holdSeats(seriesId: string, req: { seats: number[]; planDigest: string }, toFrame: (m: WidgetMessage) => void) {
+    const st = this.seriesStates.get(seriesId);
+    if (!st || !this.api) return;
+    const resp = await this.api.post(
+      `/api/events/${this.eventId}/series/${seriesId}/reserve`,
+      { seats: req.seats, planDigest: req.planDigest },
+      { headers: this.clientKeyHeader() },
+    ).catch(() => null);
+    const r = seatHoldResult(resp);
+    if (r.kind !== "held") {
+      toFrame({
+        v: 1,
+        type: "refused",
+        seats: r.kind === "refused" ? r.conflicts.slice(0, MAX_QTY) : [],
+        message: r.kind === "refused" ? r.message : "We couldn't hold your seats. Try again in a moment.",
+      });
+      return;
+    }
+    toFrame({ v: 1, type: "hold", expiresAt: r.hold.expiresAt });
+    st.seated = r.seated;
+    st.hold = r.hold;
+    st.quantity = r.hold.quantity;
+    st.holdError = null;
+    st.holdExpired = false;
+    st.error = null;
+    st.buyOpen = true;
+    this.closeSeatmap();
+    this.updateSeries(seriesId);
+    this.ensureHoldTimer();
+    this.shadow.querySelector<HTMLElement>(`[data-order-form="${CSS.escape(seriesId)}"] input, [data-order-form="${CSS.escape(seriesId)}"] button`)?.focus();
   }
 
   private closeSeatmap() {
@@ -1207,6 +1256,13 @@ export class WocoTickets extends HTMLElement {
       // for why every failure short of "Insufficient seats" proceeds without one.
       this.holdSeq.set(seriesId, (this.holdSeq.get(seriesId) ?? 0) + 1);
       let reservationId = usableHold(st.hold, st.quantity, Date.now())?.reservationId;
+      if (!reservationId && st.seated) {
+        // Seats sell only from their hold: never a fresh count hold at the click.
+        st.error = "Your hold on these seats ran out. Choose your seats again.";
+        st.busy = false;
+        this.updateSeries(seriesId);
+        return;
+      }
       if (!reservationId) {
         const rsv = await this.api.post<{ reservationId: string }>(
           `/api/events/${this.eventId}/series/${seriesId}/reserve`,
