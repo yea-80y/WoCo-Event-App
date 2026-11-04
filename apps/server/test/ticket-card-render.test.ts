@@ -172,7 +172,7 @@ test("the shipped fonts exist and are what draws the text (the server image has 
   assert.notDeepEqual(a, b, "with no font, the title draws nothing and both images are identical");
 });
 
-test("drawn with the real fonts, no title, venue or ticket type runs into the card's right margin", async () => {
+test("drawn with the real fonts, no title, venue, ticket type or seat runs into the card's right margin", async () => {
   const { renderAsync } = await import("@resvg/resvg-js");
   const PAD = 56;
   const worst = [
@@ -182,10 +182,12 @@ test("drawn with the real fonts, no title, venue or ticket type runs into the ca
     "New Year's Eve Gala Dinner & Dance - Grand Ballroom",
     "Ça c'est Paris! Une soirée à l'Opéra de Lyon, 2026",
   ];
-  for (const title of worst) {
+  for (const [i, title] of worst.entries()) {
+    // Every other card is seated: its seat band (Section / Row / Seat) is drawn in the same sans.
+    const seat = i % 2 ? { area: title.slice(0, 80).trim(), row: "WWWW", seat: 999_999 } : undefined;
     const ops = ticketCardOps({
       title, location: `${title}, ${title}`, series: title, startIso: "2026-11-14T22:00:00Z",
-      position: { n: 2, of: 4 }, hasPhoto: false, colours: WOCO_TICKET_COLOURS,
+      position: { n: 2, of: 4 }, hasPhoto: false, colours: WOCO_TICKET_COLOURS, seat,
     });
     const svg = ticketCardSvg(ops, { width: TICKET_CARD_WIDTH, height: TICKET_CARD_HEIGHT, qrContent: "woco://t/e/s/1/0x" + "ab".repeat(65), photo: null });
     const img = await renderAsync(svg, {
