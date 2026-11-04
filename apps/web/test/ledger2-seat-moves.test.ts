@@ -126,3 +126,25 @@ test("send: landed is moved; a seat being bought names it; unconfirmed settles f
   const reverted = fake({ relay: async () => ({ status: "reverted_on_chain", txHash: "0x3", aborted: true }) });
   assert.equal((await sendSeatMoves("evt", LEDGER, signed, reverted.io, messageFor)).phase, "failed");
 });
+
+test("sign-off 5: a revert whose relay abort did not land is revoked from the browser", async () => {
+  const f = fake();
+  const signed = await signSeatMoves(view(), "stalls", { kind: "move", slot: 1, to: 30 }, f.io);
+  const g = fake({ relay: async (r) => (r.items[0]!.kind === "revoke" ? { status: "landed", txHash: "0x5", landed: [true] } : { status: "reverted_on_chain", txHash: "0x4", aborted: false }) });
+  assert.equal((await sendSeatMoves("evt", LEDGER, signed, g.io, messageFor)).phase, "failed");
+  assert.equal(g.sent.length, 2);
+  assert.deepEqual(g.sent[1]!.items.map((i) => i.kind), ["revoke"]);
+  const h = fake({ relay: async () => ({ status: "reverted_on_chain", txHash: "0x4", aborted: true }) });
+  await sendSeatMoves("evt", LEDGER, signed, h.io, messageFor);
+  assert.equal(h.sent.length, 1, "the relay's own abort landed: nothing more");
+});
+
+test("sign-off 7: a failed send that lands moments later is 'moved'", async () => {
+  const f = fake();
+  const signed = await signSeatMoves(view(), "stalls", { kind: "move", slot: 1, to: 30 }, f.io);
+  let reads = 0;
+  const g = fake({ relay: async () => { throw Object.assign(new Error("x"), { code: "relay_failed" }); } });
+  const realSlots = g.io.slots;
+  g.io.slots = async (l, e, ss) => (++reads >= 3 ? new Map([[1, { owner: A, transferNonce: 5n, seat: 30n }]]) : realSlots(l, e, ss));
+  assert.deepEqual(await sendSeatMoves("evt", LEDGER, signed, g.io, messageFor), { phase: "moved" });
+});
