@@ -104,10 +104,15 @@ async function read<T>(
         entry.retry.add(slot);
         continue;
       }
-      entry.retry.delete(slot);
       const held = entry.slots[slot];
-      // A lower block is dropped; the held state is still the latest known, as of now.
-      entry.slots[slot] = !held || held.block <= r.block ? { ...r, at: started } : { ...held, at: started };
+      if (held && held.block > r.block) {
+        // A lagging replica: dropped, and it vouches for nothing newer - the held state
+        // keeps its own clock (STALE_MAX_MS) and the slot is read again.
+        entry.retry.add(slot);
+        continue;
+      }
+      entry.retry.delete(slot);
+      entry.slots[slot] = { ...r, at: started };
     }
     if (!fresh) entry.fullReadAt = started;
   }

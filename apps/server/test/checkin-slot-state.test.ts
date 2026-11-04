@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { NO_SEAT_INDEX } from "@woco/shared";
 import { LEDGER2_NO_SEAT } from "@woco/shared/ticket/ledger2-terms";
 import type { CallResult, ViewCall } from "@woco/shared/chain/multicall";
-import { clearSlotOwnerCache, OWNER_CACHE_MS } from "../src/lib/checkin/slot-owners.js";
+import { clearSlotOwnerCache, OWNER_CACHE_MS, STALE_MAX_MS } from "../src/lib/checkin/slot-owners.js";
 import { clearSeatedMemo, readSlotStates, SLOTS_PER_BATCH, type MulticallFn } from "../src/lib/checkin/slot-state.js";
 
 beforeEach(() => {
@@ -133,6 +133,20 @@ test("a lagging replica cannot roll a moved seat or a transferred owner back", a
   const r = await readSlotStates(LEDGER, EVENT, 1, { seats: true, supply: 1 }, c.call, () => t);
   assert.deepEqual(r.owners, [B]);
   assert.deepEqual(r.seats, [NO_SEAT_INDEX], "a ticket moved out of its seat stays seatless");
+});
+
+test("a replica that keeps lagging cannot keep the held state alive past the staleness bound", async () => {
+  let t = 1_000;
+  const m: Model = { block: 20n, owners: { 0: B }, seats: { 0: 4n }, seated: true };
+  const c = chain(m);
+  await readSlotStates(LEDGER, EVENT, 1, { seats: true, supply: 1 }, c.call, () => t);
+  m.block = 19n; // every answer from here on is from behind what we hold
+  t += STALE_MAX_MS - 1;
+  assert.deepEqual((await readSlotStates(LEDGER, EVENT, 1, { seats: true, supply: 1 }, c.call, () => t)).seats, [4]);
+  t += 2;
+  const late = await readSlotStates(LEDGER, EVENT, 1, { seats: true, supply: 1 }, c.call, () => t);
+  assert.deepEqual(late.owners, [null], "the lagging answers vouched for nothing: couldn't confirm");
+  assert.deepEqual(late.seats, [null]);
 });
 
 test("RPC down after a good read: the last state stands; never read: unread up to supply", async () => {
