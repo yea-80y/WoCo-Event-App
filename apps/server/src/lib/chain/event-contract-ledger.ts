@@ -188,6 +188,11 @@ function readContract(address: string, chainId: number): Contract {
   return new Contract(address, LEDGER_READ_ABI, getProvider(chainId));
 }
 
+/** ledger2 `isSeated(eventId)`. Throws on any read failure. */
+export async function isSeatedLedger2(contractAddress: string, chainId: number, eventId: string): Promise<boolean> {
+  return new Contract(contractAddress, LEDGER2_READ_ABI, getProvider(chainId)).isSeated(eventId) as Promise<boolean>;
+}
+
 export async function getRegistrantNonceLedger(
   address: string,
   contractAddress: string,
