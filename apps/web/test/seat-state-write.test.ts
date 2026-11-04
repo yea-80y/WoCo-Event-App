@@ -8,9 +8,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { buildSeatState, decodeHeld, type SeatHoldKind, type SeatState } from "@woco/shared/seating/state";
 import { seatStateTopic } from "@woco/shared/seating/topics";
-import {
-  isRelayBusy, pacedSend, SeatStateUnreadableError, writeSeatState, type SeatStateWriter,
-} from "../src/lib/creator/seating/seat-state.js";
+import { SeatStateUnreadableError, writeSeatState, type SeatStateWriter } from "../src/lib/creator/seating/seat-state.js";
+import { isRelayBusy, pacedSend } from "../src/lib/swarm/relay-pacing.js";
 import type { ContentFeedResult } from "../src/lib/swarm/content-feed.js";
 import type { FeedRoute } from "../src/lib/swarm/gateways.js";
 
@@ -126,6 +125,13 @@ test("pacing: waits out the relay's budget, and only that", async () => {
   let busy = 0;
   await assert.rejects(pacedSend(async () => { busy++; throw new Error("The write relay is busy — try again shortly."); }, async () => {}));
   assert.equal(busy, 5, "four waits, then it gives up");
+});
+
+test("the seat-state writer, and only an opted-in writer, paces on the relay's budget", () => {
+  const src = readFileSync(new URL("../src/lib/creator/seating/seat-state.ts", import.meta.url), "utf8");
+  assert.match(src, /writeContentFeed\(\{ \.\.\.args, paceWhenBusy: true \}\)/);
+  const feed = readFileSync(new URL("../src/lib/swarm/content-feed.ts", import.meta.url), "utf8");
+  assert.match(feed, /args\.paceWhenBusy \? \(body\) => pace\.pacedSend/);
 });
 
 test("the relay's busy wording is what the client paces on", () => {

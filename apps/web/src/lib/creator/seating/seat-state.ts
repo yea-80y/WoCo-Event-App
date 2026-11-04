@@ -167,42 +167,16 @@ export async function writeSeatState(
   return { state, settled: !!readBack && readBack.seq >= state.seq };
 }
 
-/**
- * The relay's refusal for a caller over its write budget, or the relay as a whole
- * (`apps/server/src/lib/swarm/soc-relay-limits.ts` REASON_CALLER / REASON_GLOBAL; a test
- * pins the wording). A large plan's state is up to ~100 chunks, past one minute's budget.
- */
-const RELAY_BUSY = ["Too many writes", "write relay is busy"];
-const PACE_MS = [5_000, 15_000, 30_000, 60_000];
-
-export function isRelayBusy(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err ?? "");
-  return RELAY_BUSY.some((s) => msg.includes(s));
-}
-
-/** Send one signed chunk, waiting out the relay's budget: a re-sent chunk is byte-identical. */
-export async function pacedSend<T>(send: () => Promise<T>, sleep: (ms: number) => Promise<void>): Promise<T> {
-  for (let i = 0; ; i++) {
-    try {
-      return await send();
-    } catch (err) {
-      if (!isRelayBusy(err) || i >= PACE_MS.length) throw err;
-      await sleep(PACE_MS[i]!);
-    }
-  }
-}
-
 /** The live wiring: the app's content-feed reader and writer. */
 export async function liveSeatStateIO(): Promise<SeatStateIO> {
-  const [{ readContentFeedResult, writeContentFeed }, { feedRouteFor }, { postSignedSoc }] = await Promise.all([
+  const [{ readContentFeedResult, writeContentFeed }, { feedRouteFor }] = await Promise.all([
     import("../../swarm/content-feed.js"),
     import("../../swarm/gateways.js"),
-    import("../../swarm/client-soc.js"),
   ]);
-  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   return {
     read: (signer, topic, route) => readContentFeedResult<unknown>(signer, topic, { route, thorough: true, skipLegacy: true }),
-    write: (args) => writeContentFeed({ ...args, transport: (body) => pacedSend(() => postSignedSoc(body), sleep) }),
+    // A large plan's state is up to ~100 chunks, past one minute of the relay's budget.
+    write: (args) => writeContentFeed({ ...args, paceWhenBusy: true }),
     route: (feed) => feedRouteFor(feed.gatewayUrl),
   };
 }
