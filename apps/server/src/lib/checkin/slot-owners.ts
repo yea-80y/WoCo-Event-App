@@ -15,16 +15,19 @@
  * the cache has not seen is read now - a ticket bought a second ago must verify on the
  * scanner's next refresh.
  *
- * Unread is not "none": a slot whose read failed keeps what it last read (the door
- * then works as an offline scanner would, on the last list it had) and is read again
- * on the next pack; a slot never read comes back `null`, which the scanner shows as
- * "couldn't confirm", never as "no ticket". And the highest block wins: a read from a
- * lower block than the one held is dropped, so a lagging RPC replica cannot hand back a
- * transferred ticket's old owner.
+ * Unread is not "none": a slot whose read failed keeps what it last read for up to
+ * STALE_MAX_MS after that read (an RPC blip does not stop the door) and is read again on
+ * every pack; past that, and for a slot never read, it comes back `null`, which the
+ * scanner shows as "couldn't confirm", never as "no ticket". The bound is what keeps a
+ * long outage from admitting on an owner or seat the ledger has since moved. And the
+ * highest block wins: a read from a lower block than the one held is dropped, so a
+ * lagging RPC replica cannot hand back a transferred ticket's old owner.
  */
 import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../util/concurrency.js";
 
 export const OWNER_CACHE_MS = 30_000;
+/** How long a slot's last good read stands in for reads that fail. */
+export const STALE_MAX_MS = 10 * 60 * 1000;
 /** A series nobody has packed for this long is forgotten. */
 const IDLE_FORGET_MS = 6 * 60 * 60 * 1000;
 
@@ -38,7 +41,8 @@ export interface SlotRead<T> {
 export type SlotBatchRead<T> = (slots: readonly number[]) => Promise<Map<number, SlotRead<T>>>;
 
 interface Entry {
-  slots: Array<SlotRead<unknown> | undefined>;
+  /** `at`: when that slot was last read successfully. */
+  slots: Array<(SlotRead<unknown> & { at: number }) | undefined>;
   /** When every slot was last read: a transfer shows within OWNER_CACHE_MS of it. */
   fullReadAt: number;
   usedAt: number;
@@ -102,11 +106,15 @@ async function read<T>(
       }
       entry.retry.delete(slot);
       const held = entry.slots[slot];
-      if (!held || held.block <= r.block) entry.slots[slot] = r;
+      // A lower block is dropped; the held state is still the latest known, as of now.
+      entry.slots[slot] = !held || held.block <= r.block ? { ...r, at: started } : { ...held, at: started };
     }
     if (!fresh) entry.fullReadAt = started;
   }
-  return Array.from({ length }, (_, slot) => (entry.slots[slot]?.value as T | undefined) ?? null);
+  return Array.from({ length }, (_, slot) => {
+    const s = entry.slots[slot];
+    return s && started - s.at <= STALE_MAX_MS ? (s.value as T) : null;
+  });
 }
 
 function sweep(at: number): void {

@@ -9,7 +9,7 @@
  */
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { clearSlotOwnerCache, OWNER_CACHE_MS, slotOwners } from "../src/lib/checkin/slot-owners.js";
+import { clearSlotOwnerCache, OWNER_CACHE_MS, slotOwners, STALE_MAX_MS } from "../src/lib/checkin/slot-owners.js";
 
 beforeEach(() => clearSlotOwnerCache());
 
@@ -114,6 +114,21 @@ test("an event that could not be read answers from the cache, unread up to its s
   assert.deepEqual(await slotOwners("evt", null, c.readSlot, () => t + OWNER_CACHE_MS * 3, 4), [A, B, null, null]);
   assert.deepEqual(c.reads, [0, 1], "nothing is read without a slot count");
   assert.deepEqual(await slotOwners("other", null, c.readSlot, () => t, 2), [null, null]);
+});
+
+test("a last good read stands in for failures for STALE_MAX_MS only, then reads unread", async () => {
+  let t = 1_000_000;
+  const owners: Record<number, string | null> = { 0: A };
+  const c = chain(owners);
+  await slotOwners("evt", 1, c.readSlot, () => t);
+  delete owners[0]; // a long outage
+  t += STALE_MAX_MS;
+  assert.deepEqual(await slotOwners("evt", 1, c.readSlot, () => t), [A], "at the bound: still the last owner");
+  t += 1;
+  assert.deepEqual(await slotOwners("evt", 1, c.readSlot, () => t), [null], "past it: couldn't confirm, never an old owner");
+  assert.deepEqual(await slotOwners("evt", null, c.readSlot, () => t, 1), [null], "the same with no slot count");
+  owners[0] = B;
+  assert.deepEqual(await slotOwners("evt", 1, c.readSlot, () => t + 1), [B], "a good read restores it");
 });
 
 test("series and contracts are kept apart", async () => {

@@ -253,8 +253,9 @@ slot-state,pack-series}.ts`, `lib/seating/ticket-seats.ts`; scanner `scanner/ver
   `null` where not read too, so an RPC failure is "couldn't confirm", never "no ticket" (it used to be: a
   failed read and an unclaimed slot both came out "", which the scanner turned red).
 - **One slot cache** for every contract (`cachedSlots`): fresh for 30 s after a full read, new slots
-  always read, a failed slot keeps what it last read and is read again on the next pack (the door then
-  works as an offline scanner would), highest block wins. Ledger2 reads owner + seat per slot in one
+  always read, a failed slot keeps what it last read for up to 10 minutes after that read and is read
+  again on every pack (an RPC blip does not stop the door; past the bound it is "couldn't confirm", so a
+  long outage never admits on an owner or seat since moved), highest block wins. Ledger2 reads owner + seat per slot in one
   Multicall3 batch (512 slots) with ArbSys `arbBlockNumber`; older contracts keep one call per slot.
 - **Seated or not at the door** = the registration record AND the ledger's `isSeated` (read once, fixed
   at registration). They disagree (an older build dropped the record's seating fields, or a record is
@@ -285,8 +286,9 @@ slot-state,pack-series}.ts`, `lib/seating/ticket-seats.ts`; scanner `scanner/ver
   buyer the ticket again with the new seat (same QR). Nothing printed hedges the seat.
 
 Departures from the S5 consult, for the S5 sign-off by name: D1 a failed slot read keeps its last value
-(any age) instead of reading `null`, so an RPC outage mid-event does not stop the door - an offline
-scanner works the same way; D2 general-admission series on older contracts keep the per-slot reader but
+for up to 10 minutes (`STALE_MAX_MS`) instead of reading `null` at once, so an RPC blip mid-event does
+not stop the door (an automated security review flagged the first, unbounded version; the bound is its
+fix); D2 general-admission series on older contracts keep the per-slot reader but
 take the `null` = not read fix now (it was live for GA); ledger2 GA series already use the batch reader
 (needed for the `isSeated` agreement); D3 no `reason` variant on `sendTicketEmail` yet - S6 adds it with
 its caller; D4 `isSeated` is remembered once read (fixed at registration) rather than read per pack; D5 a
