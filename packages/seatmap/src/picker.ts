@@ -11,7 +11,7 @@
 
 import { itemGeometry, type Box } from "@woco/shared/seating/geometry";
 import { hasSeats } from "@woco/shared/seating/layout";
-import { drawDefs, drawItem, el, type BuyerView } from "./draw.js";
+import { drawDefs, drawItem, el, type BuyerView, type SeatMark } from "./draw.js";
 import type { SeatmapPalette } from "./palette.js";
 import { neighbour, seatAt, type BuyerPlan, type Direction } from "./buyer.js";
 import {
@@ -36,6 +36,8 @@ export interface PickerState {
   sectionLine(section: number): string;
   /** No free seat in the section (drawn quieter). */
   sectionEmpty(section: number): boolean;
+  /** The organiser's map (S6): why a seat is not free, by shape. The buyer's map leaves it out. */
+  mark?(k: number): SeatMark | null;
 }
 
 export interface PickerOptions {
@@ -121,6 +123,7 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
       tabStop: (k) => k === stop,
       number: (k) => bp.plan.seats[k]?.n ?? 0,
       locked: !s || s.locked,
+      ...(s?.mark ? { mark: (k: number) => s.mark!(k) } : {}),
     };
   };
   const seatEl = (k: number) => svg.querySelector(`.seat[data-seat="${k}"]`) as SVGElement | null;
@@ -151,7 +154,7 @@ export function createPicker(container: HTMLElement, o: PickerOptions): Picker {
     const sec = bp.sections[bp.sectionOf[i]];
     let out = s.locked ? "L" : "U";
     for (let k = sec.first; k < sec.first + sec.count; k++) {
-      out += s.picks.includes(k) ? "p;" : `${s.free(k) ? "f" : "m"}${s.canPick(k) ? "c" : "x"}${s.reason(k) ?? ""};`;
+      out += s.picks.includes(k) ? "p;" : `${s.free(k) ? "f" : "m"}${s.canPick(k) ? "c" : "x"}${s.mark?.(k) ?? ""}${s.reason(k) ?? ""};`;
     }
     return out;
   }
