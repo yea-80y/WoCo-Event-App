@@ -28,8 +28,10 @@
     /**
      * The order form and payment for a hold, from the host page (which has the event's
      * order key, questions and organiser). Absent: seats can be looked at, not held.
+     * Its second argument: call it with checkout's message when the hold can no longer be
+     * paid as it is (`isSeatHoldLost`); the picker offers to hold again.
      */
-    checkout?: Snippet<[SeatedHold]>;
+    checkout?: Snippet<[SeatedHold, (message: string) => void]>;
   }
 
   let { eventId, eventTitle, series, apiUrl, open, onopen, onclose, checkout }: Props = $props();
@@ -104,8 +106,8 @@
   </div>
 </div>
 
-{#snippet pay(_on: { seats: readonly number[]; expiresAt: string })}
-  {#if held && checkout}{@render checkout(held)}{/if}
+{#snippet pay(on: { seats: readonly number[]; expiresAt: string; lost: (message: string) => void })}
+  {#if held && checkout}{@render checkout(held, (message) => { held = null; on.lost(message); })}{/if}
 {/snippet}
 
 {#if isOpen}

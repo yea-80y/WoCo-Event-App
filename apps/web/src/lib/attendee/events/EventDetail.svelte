@@ -408,7 +408,7 @@
                   onopen={onseats ? () => onseats(s.seriesId) : undefined}
                   onclose={onseats ? () => onseats(null) : undefined}
                 >
-                  {#snippet checkout(h)}
+                  {#snippet checkout(h, lost)}
                     <ClaimButton
                       eventId={event!.eventId}
                       seriesId={s.seriesId}
@@ -418,6 +418,7 @@
                       payment={s.payment}
                       quantity={h.quantity}
                       hold={h}
+                      onholdlost={lost}
                       organiserName={creatorProfile?.displayName || undefined}
                       oncancelled={() => (serverSaysCancelled = true)}
                     />

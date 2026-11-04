@@ -553,7 +553,7 @@
                 onopen={onseats ? () => onseats(s.seriesId) : undefined}
                 onclose={onseats ? () => onseats(null) : undefined}
               >
-                {#snippet checkout(h)}
+                {#snippet checkout(h, lost)}
                   <ClaimButton
                     {eventId}
                     seriesId={s.seriesId}
@@ -563,6 +563,7 @@
                     payment={s.payment}
                     quantity={h.quantity}
                     hold={h}
+                    onholdlost={lost}
                     organiserName={siteName ?? undefined}
                   />
                 {/snippet}

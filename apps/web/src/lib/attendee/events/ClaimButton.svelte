@@ -2,7 +2,7 @@
   import type { OrderField, PaymentConfig } from "@woco/shared";
   import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
   import { CURRENCY_SYMBOLS, calculateBuyerFees } from "@woco/shared";
-  import { seatedHoldFees, type SeatedHold } from "@woco/shared/seating/reserve";
+  import { isSeatHoldLost, seatedHoldFees, type SeatedHold } from "@woco/shared/seating/reserve";
   import { loadOrderKey } from "./claim/order-key.js";
   import type { PreparedOrder } from "../../api/stripe.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -62,9 +62,11 @@
      * `quantity` must be its seat count. Absent: general admission, as always.
      */
     hold?: SeatedHold;
+    /** That hold can no longer be paid as it is (`isSeatHoldLost`): the seat map holds again. */
+    onholdlost?: (message: string) => void;
   }
 
-  let { eventId, seriesId, encryptionKeyRef, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName, oncancelled, hold }: Props = $props();
+  let { eventId, seriesId, encryptionKeyRef, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName, oncancelled, hold, onholdlost }: Props = $props();
 
   /**
    * The organiser's order key, verified against `encryptionKeyRef`. The form only
@@ -502,6 +504,10 @@
         await refreshStatusNow();
         return;
       }
+      if (hold && onholdlost && err instanceof CheckoutError && isSeatHoldLost(err.code)) {
+        onholdlost(err.message);
+        return;
+      }
       error = err instanceof Error ? err.message : "Failed to start checkout";
     } finally {
       stripeLoading = false;
@@ -509,7 +515,7 @@
   }
 </script>
 
-<div class="claim-area">
+<div class="claim-area" class:held={!!hold}>
   <ReservationPill
     reservation={reservationHook.reservation}
     secsLeft={reservationHook.secsLeft}
@@ -611,6 +617,9 @@
     align-items: flex-end;
     gap: 0.375rem;
   }
+  /* Paying a seat hold, inside the seat map's order panel: that panel's full width. */
+  .claim-area.held { align-items: stretch; }
+  .claim-area.held :global(.pay-sheet) { max-width: none; }
 
   .claim-btn {
     padding: 0.5rem 1.25rem;

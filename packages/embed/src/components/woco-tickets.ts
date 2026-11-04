@@ -44,7 +44,7 @@ import {
   type ReturnView,
 } from "../checkout.js";
 import { formatCountdown, holdResult, seatHoldResult, secondsUntil, usableHold, type Hold } from "../reservation.js";
-import { seatedHoldFees, type SeatedHold } from "@woco/shared/seating/reserve";
+import { isSeatHoldLost, seatedHoldFees, type SeatedHold } from "@woco/shared/seating/reserve";
 import { FEATURES } from "@woco/shared/features";
 import { WOCO_APP_ORIGIN } from "@woco/shared/auth/passkey-rp";
 import { fromFrame, originOf, parseFrameMessage, seatmapFrameUrl, type WidgetMessage } from "../seatmap-bridge.js";
@@ -924,7 +924,9 @@ export class WocoTickets extends HTMLElement {
       return `<div class="hold-pill" role="status"><span class="hold-dot"></span>${q} ${noun}${q === 1 ? "" : "s"} ${st.seated ? "held" : "reserved"} · <span data-hold-countdown="${this.esc(seriesId)}" aria-hidden="true">${formatCountdown(secs)}</span> to checkout</div>`;
     }
     if (st.holdExpired && st.seated) {
-      return `<div class="hold-banner" role="alert">Your hold has expired - <button class="hold-retry" data-seats="${this.esc(seriesId)}">choose your seats again</button>.</div>`;
+      // Ran out, or checkout said it can't be paid as it is (holdError says why).
+      const why = st.holdError ?? "Your hold has expired.";
+      return `<div class="hold-banner" role="alert">${this.esc(why)} <button class="hold-retry" data-seats="${this.esc(seriesId)}">Choose your seats again</button></div>`;
     }
     if (st.holdExpired) {
       return `<div class="hold-banner" role="alert">Your hold has expired - change quantity or <button class="hold-retry" data-hold-retry="${this.esc(seriesId)}">try again</button>.</div>`;
@@ -1316,6 +1318,15 @@ export class WocoTickets extends HTMLElement {
         // buyer choose again.
         await this.refreshStatus(seriesId);
         st.error = (resp.error as string) || "The organiser's email options have changed. Check them below and continue.";
+        st.busy = false;
+        this.updateSeries(seriesId);
+        return;
+      }
+      if (!resp.ok && st.seated && isSeatHoldLost((resp as Record<string, unknown>).code)) {
+        // The seats are not lost, only this hold: back to the map, the server makes a fresh one.
+        st.hold = null;
+        st.holdExpired = true;
+        st.holdError = typeof resp.error === "string" ? resp.error.slice(0, 300) : null;
         st.busy = false;
         this.updateSeries(seriesId);
         return;

@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { LAYOUT_TEMPLATES } from "@woco/shared/seating/templates";
 import { encodeSeatPlan, freezeSeatPlan, seatPlanDigest } from "@woco/shared/seating/plan";
 import { seatStates } from "@woco/shared/seating/availability";
+import { cardOrderAmountsMulti } from "@woco/shared/event/fees";
+import { COVER_FEE_RATES } from "@woco/shared/features";
 import { buyerPlan } from "../src/buyer.js";
 import {
-  companionBeside, mapNotice, picksStorageKey, picksTotal, priceRange, readPicks, seatsText, totalLine, writePicks,
+  companionBeside, mapNotice, picksStorageKey, picksTotal, priceRange, readPicks, seatsText, shownBandPrices, totalLine, writePicks,
 } from "../src/picker-model.js";
 
 const planOf = (id: string) => {
@@ -41,6 +43,17 @@ test("totals and price ranges", () => {
   assert.equal(picksTotal(bp, prices, picks), 5600);
   assert.equal(totalLine(bp, prices, picks, "GBP"), "2 seats · £56");
   assert.equal(totalLine(bp, prices, [0], "GBP"), "1 seat · £28");
+  // With the event's fee settings, every price shown includes the booking fee (#921).
+  const percent = { feePassedToCustomer: true, buyerFeePercent: 10 };
+  assert.deepEqual(shownBandPrices([2800, null, 1800], percent), [3080, null, 1980]);
+  assert.deepEqual(shownBandPrices([2800, null], undefined), [2800, null]);
+  assert.equal(totalLine(bp, prices, picks, "GBP", percent), "2 seats · £61.60");
+  // An order-level fee is counted once for the order, as checkout charges it.
+  const cover = { feePassedToCustomer: true, coverFees: COVER_FEE_RATES };
+  const units = picks.map((k) => prices[bp.plan.seats[k].b]);
+  assert.equal(picksTotal(bp, prices, picks, cover), cardOrderAmountsMulti(cover, units).totalMinor);
+  assert.ok(picksTotal(bp, prices, picks, cover) < shownBandPrices(units, cover).reduce((a, b) => a! + b!, 0)!);
+  assert.equal(picksTotal(bp, prices, [], percent), 0);
   assert.equal(priceRange(2200, 2800, "GBP"), "£22-28");
   assert.equal(priceRange(2200, 2200, "GBP"), "£22");
   assert.equal(priceRange(null, null, "GBP"), "");
