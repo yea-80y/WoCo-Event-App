@@ -854,8 +854,8 @@ export async function releaseSeatedHold(
 
 export interface ReservationsHealth {
   ok: boolean;
-  /** Why the file could not be read, when it could not: seated sales are paused. */
-  unreadable?: string;
+  /** The file could not be read: seated sales are paused. The reason is in the log only (health is public). */
+  unreadable?: true;
   /**
    * Seated holds in the last hour that carried a Stripe session and ran out by time,
    * against those Stripe's `checkout.session.expired` ended. Lapses with no expiry event
@@ -874,7 +874,7 @@ export function reservationsHealth(): ReservationsHealth {
   }
   return {
     ok: fileUnreadable === null && !(lapsedWithSession > 0 && endedBySessionExpiry === 0),
-    ...(fileUnreadable ? { unreadable: fileUnreadable } : {}),
+    ...(fileUnreadable ? { unreadable: true as const } : {}),
     seated: { lapsedWithSession, endedBySessionExpiry },
   };
 }
