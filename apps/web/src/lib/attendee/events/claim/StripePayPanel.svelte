@@ -69,6 +69,32 @@
     </div>
   {/if}
 
+  <!-- Details first, Pay last: the buyer fills in what Pay needs before reaching it. -->
+  {#if showEmailInput}
+    <input
+      class="stripe-email-input"
+      type="email"
+      placeholder="Email for your ticket"
+      aria-label="Email for your ticket"
+      autocomplete="email"
+      value={stripeEmail}
+      oninput={(e) => onStripeEmailChange((e.target as HTMLInputElement).value)}
+    />
+    <input
+      class="stripe-email-input stripe-email-confirm"
+      type="email"
+      placeholder="Confirm email"
+      aria-label="Confirm email"
+      autocomplete="email"
+      aria-invalid={emailMismatch}
+      aria-describedby={emailMismatch ? mismatchId : undefined}
+      value={emailConfirm}
+      oninput={(e) => onEmailConfirmChange((e.target as HTMLInputElement).value)}
+      onblur={onEmailConfirmBlur}
+    />
+    {#if emailMismatch}<p class="stripe-email-error" id={mismatchId} role="alert">The emails don't match</p>{/if}
+  {/if}
+
   <!-- Above the pay button: the choice is offered before the buyer pays. -->
   <div class="pay-marketing">
     <p class="pay-transactional">{TRANSACTIONAL_EMAIL_NOTICE}</p>
@@ -92,27 +118,6 @@
       Pay with card {buyerFees?.cardTotal ? `— ${buyerFees.cardTotal}` : `— ${priceLabel}`}
     {/if}
   </button>
-  {#if showEmailInput}
-    <input
-      class="stripe-email-input"
-      type="email"
-      placeholder="Email for your ticket"
-      value={stripeEmail}
-      oninput={(e) => onStripeEmailChange((e.target as HTMLInputElement).value)}
-    />
-    <input
-      class="stripe-email-input stripe-email-confirm"
-      type="email"
-      placeholder="Confirm email"
-      aria-label="Confirm email"
-      aria-invalid={emailMismatch}
-      aria-describedby={emailMismatch ? mismatchId : undefined}
-      value={emailConfirm}
-      oninput={(e) => onEmailConfirmChange((e.target as HTMLInputElement).value)}
-      onblur={onEmailConfirmBlur}
-    />
-    {#if emailMismatch}<p class="stripe-email-error" id={mismatchId} role="alert">The emails don't match</p>{/if}
-  {/if}
   <!-- Point of collection: the email (here or on Stripe's page) goes to the organiser. -->
   <p class="pay-privacy">
     {#if organiserName}
