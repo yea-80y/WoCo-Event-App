@@ -49,11 +49,12 @@ test("held bitmap: seat k is byte k>>3, bit k&7, low bit first", () => {
 });
 
 const EVENT = "evt-1";
+const SERIES = "ser-1";
 const holds = (...h: Array<[string, string]>) => h.map(([kind, held]) => ({ kind, held }));
 
 function state(over: Record<string, unknown> = {}) {
   return {
-    format: "woco.seatstate.v1", eventId: EVENT, planDigest: DIGEST, seats: 10,
+    format: "woco.seatstate.v1", eventId: EVENT, seriesId: SERIES, planDigest: DIGEST, seats: 10,
     holds: holds(["house", "0100"], ["press", "0002"]), confirmed: [[3, 1], [7, 2]], seq: 4, updatedAt: "2026-11-03T12:00:00.000Z", ...over,
   };
 }
@@ -62,9 +63,11 @@ test("seat state validation", () => {
   assert.ok(validateSeatState(state()));
   assert.ok(isJsonSafeStatementValue(state()));
   assert.ok(validateSeatState(state({ holds: [] })), "nothing held");
-  assert.ok(validateSeatState(state(), { eventId: EVENT, planDigest: DIGEST, seats: 10 }));
-  assert.equal(validateSeatState(state(), { eventId: EVENT, planDigest: DIGEST, seats: 11 }), false, "other plan");
-  assert.equal(validateSeatState(state(), { eventId: "evt-2", planDigest: DIGEST, seats: 10 }), false, "other event");
+  assert.ok(validateSeatState(state(), { eventId: EVENT, seriesId: SERIES, planDigest: DIGEST, seats: 10 }));
+  assert.equal(validateSeatState(state(), { eventId: EVENT, seriesId: SERIES, planDigest: DIGEST, seats: 11 }), false, "other plan");
+  assert.equal(validateSeatState(state(), { eventId: EVENT, seriesId: "ser-2", planDigest: DIGEST, seats: 10 }), false, "other ticket type");
+  assert.equal(validateSeatState(state(), { eventId: "evt-2", seriesId: SERIES, planDigest: DIGEST, seats: 10 }), false, "other event");
+  assert.equal(validateSeatState(state({ seriesId: "" })), false, "series id shape");
   assert.equal(validateSeatState(state({ eventId: "a/b" })), false, "event id shape");
   assert.equal(validateSeatState(state({ holds: holds(["house", "0106"]) })), false, "bit past the last seat");
   assert.equal(validateSeatState(state({ holds: holds(["house", "01"]) })), false, "short");
@@ -87,7 +90,7 @@ test("seat state validation", () => {
 
 test("buildSeatState groups seats by kind in kind order, sorts confirmations and drops nonce 0", () => {
   const s = buildSeatState({
-    eventId: EVENT, planDigest: DIGEST.toUpperCase().replace("0X", "0x"), seats: 10,
+    eventId: EVENT, seriesId: SERIES, planDigest: DIGEST.toUpperCase().replace("0X", "0x"), seats: 10,
     holds: new Map([[9, "press"], [0, "house"], [1, "house"]]),
     confirmed: new Map([[7, 2], [3, 1], [5, 0]]), seq: 1, updatedAt: "2026-11-03T12:00:00.000Z",
   });
@@ -98,16 +101,16 @@ test("buildSeatState groups seats by kind in kind order, sorts confirmations and
 
 test("a write signal names the event and seq from the first page, inline or paged", () => {
   const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
-  const small = buildSeatState({ eventId: EVENT, planDigest: DIGEST, seats: 10, holds: new Map(), confirmed: new Map(), seq: 7, updatedAt: "2026-11-04T00:00:00Z" });
-  assert.deepEqual(seatStateWriteSignal(enc(small)), { eventId: EVENT, seq: 7 });
+  const small = buildSeatState({ eventId: EVENT, seriesId: SERIES, planDigest: DIGEST, seats: 10, holds: new Map(), confirmed: new Map(), seq: 7, updatedAt: "2026-11-04T00:00:00Z" });
+  assert.deepEqual(seatStateWriteSignal(enc(small)), { eventId: EVENT, seriesId: SERIES, seq: 7 });
   // A 200,000-seat state is paged at 4,096 bytes: page 1 alone carries the signal.
   const seats = 200_000;
   const big = buildSeatState({
-    eventId: "e_big", planDigest: DIGEST, seats, holds: new Map(Array.from({ length: seats }, (_, k) => [k, k % 2 ? "press" : "house"] as [number, "press" | "house"])),
+    eventId: "e_big", seriesId: SERIES, planDigest: DIGEST, seats, holds: new Map(Array.from({ length: seats }, (_, k) => [k, k % 2 ? "press" : "house"] as [number, "press" | "house"])),
     confirmed: new Map(), seq: 123456, updatedAt: "2026-11-04T00:00:00Z",
   });
   const page1 = enc(big).subarray(0, 4096);
-  assert.deepEqual(seatStateWriteSignal(page1), { eventId: "e_big", seq: 123456 });
+  assert.deepEqual(seatStateWriteSignal(page1), { eventId: "e_big", seriesId: SERIES, seq: 123456 });
   // Anything not in buildSeatState's order, or another format, is no signal.
   assert.equal(seatStateWriteSignal(enc({ ...small, format: "woco.seatstate.v2" })), null);
   const { seq: _s, ...rest } = small;
@@ -130,7 +133,7 @@ test("a freed seat sells only once the organiser confirms that exact nonce", () 
 
   assert.equal(initial.holds.get(0), "house", "the plan's own holds read as house seats");
   const s = buildSeatState({
-    eventId: EVENT, planDigest: digest, seats: plan.seats.length, holds: new Map([[20, "press"]]), confirmed: new Map([[12, 2]]),
+    eventId: EVENT, seriesId: SERIES, planDigest: digest, seats: plan.seats.length, holds: new Map([[20, "press"]]), confirmed: new Map([[12, 2]]),
     seq: 1, updatedAt: "2026-11-03T12:00:00Z",
   });
   const view = seatStateView(plan, digest, s);

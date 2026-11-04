@@ -38,7 +38,7 @@ export {
   parseSeatedReserve, seatedReserveRefusal, seatedHoldFees, SEAT_HOLD_LOST_CODES, isSeatHoldLost,
   type SeatedHold, type SeatedReserveRequest, type SeatedReserveRefusal,
 } from "./reserve.js";
-export { seatLayoutLibraryTopic, seatLayoutTopic, eventSeatStateTopic } from "./topics.js";
+export { seatLayoutLibraryTopic, seatLayoutTopic, seatStateTopic } from "./topics.js";
 export {
   rowLetters, labelsAfter, normRot, labelWidth, idMaker, makeRow, rowsBlock, table, shape, LAYOUT_TEMPLATES,
   type LayoutTemplate,

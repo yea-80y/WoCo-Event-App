@@ -6,15 +6,16 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import type { VersionedFeedRead } from "@woco/shared";
 import { buildSeatState } from "@woco/shared/seating/state";
-import { eventSeatStateTopic } from "@woco/shared/seating/topics";
+import { seatStateTopic } from "@woco/shared/seating/topics";
 import {
-  __setSeatStateGateForTests, seatStateRead, seatStateRelayed, seatStateWritten, SEAT_STATE_FRESH_MS, SEAT_STATE_SIGNAL_MS,
+  __setSeatStateGateForTests, seatStateRead, seatStateRelayed, seatStateWritten, SEAT_STATE_FRESH_MS, SEAT_STATE_SIGNAL_WARN_MS,
 } from "../src/lib/seating/seat-state-gate.js";
 
 const EVENT = "evt-seats-1";
+const SERIES = "ser-seats-1";
 const SIGNER = `0x${"5a".repeat(20)}`;
 const DIGEST = `0x${"d1".repeat(32)}`;
-const X = { eventId: EVENT, signer: SIGNER, planDigest: DIGEST, seats: 10 };
+const X = { eventId: EVENT, seriesId: SERIES, signer: SIGNER, planDigest: DIGEST, seats: 10 };
 
 let t = 1_000_000;
 let reads: Array<{ owner: string; topic: string }> = [];
@@ -33,14 +34,14 @@ beforeEach(() => {
 });
 
 const stateAt = (seq: number, over: Record<string, unknown> = {}) =>
-  buildSeatState({ eventId: EVENT, planDigest: DIGEST, seats: 10, holds: new Map([[3, "house"]]), confirmed: new Map(), seq, updatedAt: "2026-11-04T00:00:00Z", ...over });
+  buildSeatState({ eventId: EVENT, seriesId: SERIES, planDigest: DIGEST, seats: 10, holds: new Map([[3, "house"]]), confirmed: new Map(), seq, updatedAt: "2026-11-04T00:00:00Z", ...over });
 const found = (v: unknown): VersionedFeedRead => ({ status: "found", bytes: new TextEncoder().encode(JSON.stringify(v)), version: 1, scanClean: true });
 const serve = (r: VersionedFeedRead) => { next = async () => r; };
 
 test("never written: absent (the plan's flags), read under the carrier's signer and topic, kept 30 s", async () => {
   serve({ status: "absent" });
   assert.deepEqual(await seatStateRead(X), { status: "absent" });
-  assert.deepEqual(reads, [{ owner: "5a".repeat(20), topic: eventSeatStateTopic(EVENT) }]);
+  assert.deepEqual(reads, [{ owner: "5a".repeat(20), topic: seatStateTopic(EVENT, SERIES) }]);
   t += SEAT_STATE_FRESH_MS - 1;
   await seatStateRead(X);
   assert.equal(reads.length, 1, "from memory inside the window");
@@ -89,7 +90,7 @@ test("once found, a later absent or older read is unavailable: a hold never roll
 test("a write signal drops the memory and refuses anything older until it reads back", async () => {
   serve(found(stateAt(2)));
   await seatStateRead(X);
-  seatStateWritten(EVENT, 3);
+  seatStateWritten(EVENT, SERIES, 3);
   assert.equal((await seatStateRead(X)).status, "unavailable", "the old state is not served from memory");
   assert.equal(reads.length, 2);
   serve(found(stateAt(3)));
@@ -99,17 +100,30 @@ test("a write signal drops the memory and refuses anything older until it reads 
   assert.equal(reads.length, 3, "kept again once the announced seq read back");
 });
 
-test("a signal that never reads back lapses: the latest readable state is trusted again", async () => {
+test("a signal that never reads back never lapses into the older state (a slow Etherna write must not sell a held seat)", async () => {
   serve(found(stateAt(2)));
-  seatStateWritten(EVENT, 9);
+  seatStateWritten(EVENT, SERIES, 9);
   assert.equal((await seatStateRead(X)).status, "unavailable");
-  t += SEAT_STATE_SIGNAL_MS;
-  assert.equal((await seatStateRead(X)).status, "found");
+  t += SEAT_STATE_SIGNAL_WARN_MS * 10;
+  assert.equal((await seatStateRead(X)).status, "unavailable", "still refused, however long");
+  serve(found(stateAt(9)));
+  assert.equal((await seatStateRead(X)).status, "found", "the organiser's next save, read back, lifts it");
+});
+
+test("memory answers only for the signer, plan and seat count it was read for; ticket types are apart", async () => {
+  serve(found(stateAt(4)));
+  await seatStateRead(X);
+  assert.equal((await seatStateRead({ ...X, planDigest: `0x${"00".repeat(32)}` })).status, "unavailable", "another plan: re-read, and refused");
+  assert.equal(reads.length, 2);
+  assert.equal((await seatStateRead({ ...X, seats: 11 })).status, "unavailable", "another seat count");
+  serve({ status: "absent" });
+  assert.equal((await seatStateRead({ ...X, seriesId: "ser-other" })).status, "absent", "another ticket type has its own state");
+  assert.equal(reads.at(-1)!.topic, seatStateTopic(EVENT, "ser-other"));
 });
 
 test("a signal before the first write: absent is unavailable until the state is there", async () => {
   serve({ status: "absent" });
-  seatStateWritten(EVENT, 0);
+  seatStateWritten(EVENT, SERIES, 0);
   assert.equal((await seatStateRead(X)).status, "unavailable");
   serve(found(stateAt(0)));
   assert.equal((await seatStateRead(X)).status, "found");
@@ -117,8 +131,8 @@ test("a signal before the first write: absent is unavailable until the state is 
 
 test("a signal is only ever stricter: a lower seq does not lower the bar", async () => {
   serve(found(stateAt(5)));
-  seatStateWritten(EVENT, 6);
-  seatStateWritten(EVENT, 3);
+  seatStateWritten(EVENT, SERIES, 6);
+  seatStateWritten(EVENT, SERIES, 3);
   assert.equal((await seatStateRead(X)).status, "unavailable");
 });
 
@@ -126,11 +140,11 @@ test("only the event's recorded organiser's chunk is a signal: anyone else's pau
   const creator = `0x${"c0".repeat(20)}`;
   const recorded = (id: string) => (id === EVENT ? creator : null);
   serve(found(stateAt(2)));
-  assert.equal(seatStateRelayed({ eventId: EVENT, seq: 3 }, `0x${"ee".repeat(20)}`, "11".repeat(20), recorded), false, "another account");
-  assert.equal(seatStateRelayed({ eventId: "evt-unknown", seq: 3 }, creator, "11".repeat(20), recorded), false, "no record");
+  assert.equal(seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, `0x${"ee".repeat(20)}`, "11".repeat(20), recorded), false, "another account");
+  assert.equal(seatStateRelayed({ eventId: "evt-unknown", seriesId: SERIES, seq: 3 }, creator, "11".repeat(20), recorded), false, "no record");
   assert.equal((await seatStateRead(X)).status, "found", "nothing paused");
   t += SEAT_STATE_FRESH_MS;
-  assert.equal(seatStateRelayed({ eventId: EVENT, seq: 3 }, creator.toUpperCase().replace("0X", "0x"), "11".repeat(20), recorded), true);
+  assert.equal(seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, creator.toUpperCase().replace("0X", "0x"), "11".repeat(20), recorded), true);
   assert.equal((await seatStateRead(X)).status, "unavailable", "the organiser's own write is awaited");
 });
 
@@ -141,7 +155,7 @@ test("a signal that lands while a read is in flight: the older answer is never s
   const second = seatStateRead(X);
   await new Promise((r) => setImmediate(r));
   assert.equal(reads.length, 1, "single flight");
-  seatStateWritten(EVENT, 2);
+  seatStateWritten(EVENT, SERIES, 2);
   release();
   const [a, b] = await Promise.all([first, second]);
   assert.equal(a.status, "unavailable", "the read came back below the announced seq");

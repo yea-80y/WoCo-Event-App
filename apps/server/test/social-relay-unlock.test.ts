@@ -174,12 +174,12 @@ test("a Stripe-verified account gets past the unlock", async () => {
 // ── Seat state (S6): organiser content under woco/event/*, gated like the notice ──
 
 const SEAT_STATE = hexJson({
-  format: "woco.seatstate.v1", eventId: "evt-1", planDigest: `0x${"cd".repeat(32)}`, seats: 10, seq: 3,
+  format: "woco.seatstate.v1", eventId: "evt-1", seriesId: "ser-1", planDigest: `0x${"cd".repeat(32)}`, seats: 10, seq: 3,
   updatedAt: "2026-11-04T00:00:00Z", holds: [], confirmed: [],
 });
 // The first page of a paged state: the opening of the JSON, cut off mid-way.
 const SEAT_STATE_PAGE_1 = Buffer.from(
-  `{"format":"woco.seatstate.v1","eventId":"evt-1","planDigest":"0x${"cd".repeat(32)}","seats":200000,"seq":9,"updatedAt":"2026-11-04T00:00:00Z","holds":[{"kind":"house","held":"0f0f`,
+  `{"format":"woco.seatstate.v1","eventId":"evt-1","seriesId":"ser-1","planDigest":"0x${"cd".repeat(32)}","seats":200000,"seq":9,"updatedAt":"2026-11-04T00:00:00Z","holds":[{"kind":"house","held":"0f0f`,
   "utf-8",
 ).toString("hex");
 

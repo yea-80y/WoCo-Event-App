@@ -1,6 +1,6 @@
 /**
  * A seated event's seat state (`woco.seatstate.v1`), the organiser-signed feed at
- * `eventSeatStateTopic(eventId)`, owned by the same feed signer as the event feed.
+ * `seatStateTopic(eventId, seriesId)`, owned by the same feed signer as the event feed.
  * Latest version wins. It carries what changes after publish; the seats do not:
  *
  * - `holds`: seats kept back from sale, one bitmap per KIND of hold ("house seats",
@@ -15,8 +15,9 @@
  *   names that exact nonce. The organiser's dashboard writes it, signed by the feed
  *   signer - a different key from the organiser key a seat move is signed with - so a
  *   leaked organiser key alone cannot put a seat it emptied back on sale.
- * - `eventId`: which event the state is for. The plan digest alone is not unique (a
- *   plan can be reused), and the server keys its cache on the event.
+ * - `eventId` + `seriesId`: which seated ticket type the state is for (one plan = one
+ *   seated series, and an event may have more than one). The plan digest alone is not
+ *   unique (a plan can be reused), and the server keys its memory on the series.
  *
  * Bitmap encoding: lowercase hex of ceil(seats / 8) bytes; seat k is byte k >> 3,
  * bit (k & 7), least significant first. Bits at or past `seats` are zero. (Not the
@@ -45,6 +46,7 @@ export interface SeatHold {
 export interface SeatState {
   format: typeof SEAT_STATE_FORMAT;
   eventId: string;
+  seriesId: string;
   /** The plan this state is for (its `seatPlanDigest`). */
   planDigest: string;
   seats: number;
@@ -59,8 +61,9 @@ export interface SeatState {
 
 const DIGEST_RE = /^0x[0-9a-f]{64}$/;
 const HEX_RE = /^[0-9a-f]*$/;
-/** As the event routes accept them (door-keys.ts). */
+/** As the event routes accept them (door-keys.ts, the ledger2 relay). */
 const EVENT_ID_RE = /^[0-9A-Za-z_-]{1,128}$/;
+const SERIES_ID_RE = /^[0-9A-Za-z_-]{1,100}$/;
 
 export const heldBytes = (seats: number) => Math.ceil(seats / 8);
 
@@ -117,15 +120,16 @@ function validHolds(holds: unknown, seats: number): boolean {
   return true;
 }
 
-/** Closed-schema check. With `expect`, also that it belongs to that event and plan. */
+/** Closed-schema check. With `expect`, also that it belongs to that series and plan. */
 export function validateSeatState(
   value: unknown,
-  expect?: { eventId: string; planDigest: string; seats: number },
+  expect?: { eventId: string; seriesId: string; planDigest: string; seats: number },
 ): value is SeatState {
   if (!isPlainRecord(value)) return false;
-  if (!hasExactKeys(value, ["format", "eventId", "planDigest", "seats", "holds", "confirmed", "seq", "updatedAt"])) return false;
+  if (!hasExactKeys(value, ["format", "eventId", "seriesId", "planDigest", "seats", "holds", "confirmed", "seq", "updatedAt"])) return false;
   if (value.format !== SEAT_STATE_FORMAT) return false;
   if (typeof value.eventId !== "string" || !EVENT_ID_RE.test(value.eventId)) return false;
+  if (typeof value.seriesId !== "string" || !SERIES_ID_RE.test(value.seriesId)) return false;
   if (typeof value.planDigest !== "string" || !DIGEST_RE.test(value.planDigest)) return false;
   if (!isIntIn(value.seats, 1, MAX_PLAN_SEATS)) return false;
   const seats = value.seats;
@@ -142,7 +146,8 @@ export function validateSeatState(
   if (typeof value.updatedAt !== "string" || value.updatedAt.length > 40 || Number.isNaN(Date.parse(value.updatedAt))) return false;
   if (
     expect &&
-    (value.eventId !== expect.eventId || value.planDigest !== expect.planDigest.toLowerCase() || seats !== expect.seats)
+    (value.eventId !== expect.eventId || value.seriesId !== expect.seriesId ||
+      value.planDigest !== expect.planDigest.toLowerCase() || seats !== expect.seats)
   ) {
     return false;
   }
@@ -151,6 +156,7 @@ export function validateSeatState(
 
 export function buildSeatState(input: {
   eventId: string;
+  seriesId: string;
   planDigest: string;
   seats: number;
   /** Seat -> its hold. */
@@ -166,10 +172,11 @@ export function buildSeatState(input: {
     byKind.set(kind, list);
   }
   // Key order is the wire order: the short fields first, so the first 4 KB page of a
-  // large state still names the event and `seq` (`seatStateWriteSignal`).
+  // large state still names the series and `seq` (`seatStateWriteSignal`).
   const state: SeatState = {
     format: SEAT_STATE_FORMAT,
     eventId: input.eventId,
+    seriesId: input.seriesId,
     planDigest: input.planDigest.toLowerCase(),
     seats: input.seats,
     seq: input.seq,
@@ -182,7 +189,7 @@ export function buildSeatState(input: {
 }
 
 const SIGNAL_RE =
-  /^\{"format":"woco\.seatstate\.v1","eventId":"([0-9A-Za-z_-]{1,128})","planDigest":"0x[0-9a-f]{64}","seats":[1-9]\d{0,5},"seq":(0|[1-9]\d{0,15}),/;
+  /^\{"format":"woco\.seatstate\.v1","eventId":"([0-9A-Za-z_-]{1,128})","seriesId":"([0-9A-Za-z_-]{1,100})","planDigest":"0x[0-9a-f]{64}","seats":[1-9]\d{0,5},"seq":(0|[1-9]\d{0,15}),/;
 
 /**
  * What a relayed chunk says about a seat-state write about to land: the event and the
@@ -192,12 +199,12 @@ const SIGNAL_RE =
  * anything else. A signal is a claim, not a state: the server only uses it to stop
  * trusting OLDER reads for a short while.
  */
-export function seatStateWriteSignal(payload: Uint8Array): { eventId: string; seq: number } | null {
+export function seatStateWriteSignal(payload: Uint8Array): { eventId: string; seriesId: string; seq: number } | null {
   const head = new TextDecoder().decode(payload.subarray(0, 512));
   const m = SIGNAL_RE.exec(head);
   if (!m) return null;
-  const seq = Number(m[2]);
-  return Number.isSafeInteger(seq) ? { eventId: m[1], seq } : null;
+  const seq = Number(m[3]);
+  return Number.isSafeInteger(seq) ? { eventId: m[1], seriesId: m[2], seq } : null;
 }
 
 /** What the seat state says about each seat, with the plan's own flags when there is no state yet. */

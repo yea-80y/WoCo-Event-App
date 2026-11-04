@@ -111,7 +111,7 @@ export function isPrivacyNoticePayload(payloadHex: string): boolean {
  * a `woco/event/*` topic, up to ~100 chunks a save at the largest plans - and the
  * relay tells the money path a newer state is on its way. Null for anything else.
  */
-export function seatStatePayloadSignal(payloadHex: string): { eventId: string; seq: number } | null {
+export function seatStatePayloadSignal(payloadHex: string): { eventId: string; seriesId: string; seq: number } | null {
   const clean = payloadHex.startsWith("0x") ? payloadHex.slice(2) : payloadHex;
   // The signal sits in the first 512 bytes; nothing past them is decoded.
   const head = clean.slice(0, 1024);

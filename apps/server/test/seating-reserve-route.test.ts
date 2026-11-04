@@ -121,7 +121,7 @@ test("the organiser's seat state is the hold check's: a held seat conflicts, a c
   const a = args([1, 2]);
   const seen: unknown[] = [];
   const state = buildSeatState({
-    eventId: a.eventId, planDigest: DIGEST, seats: plan.seats.length, holds: new Map([[2, "press"]]),
+    eventId: a.eventId, seriesId: a.seriesId, planDigest: DIGEST, seats: plan.seats.length, holds: new Map([[2, "press"]]),
     confirmed: new Map([[1, 3]]), seq: 2, updatedAt: "2026-11-04T00:00:00Z",
   });
   const freedChain = async (_c: unknown, _id: string, seats: readonly number[]) => ({ ...chain([...seats]), nonces: new Map(seats.map((k) => [k, k === 1 ? 3n : 0n])) });
@@ -131,7 +131,7 @@ test("the organiser's seat state is the hold check's: a held seat conflicts, a c
   }));
   assert.equal(held.status, 409);
   assert.deepEqual((held.body as { conflicts?: number[] }).conflicts, [2], "seat 2 is a press hold; seat 1 was freed and confirmed at 3");
-  assert.deepEqual(seen, [{ eventId: a.eventId, signer: a.feedSigner, planDigest: DIGEST, seats: plan.seats.length }], "read under the carrier's signer");
+  assert.deepEqual(seen, [{ eventId: a.eventId, seriesId: a.seriesId, signer: a.feedSigner, planDigest: DIGEST, seats: plan.seats.length }], "read under the carrier's signer");
   const ok = await mod.reserveSeated(args([1]), deps({ readSeatChain: freedChain, seatStateRead: async () => ({ status: "found", state: { ...state, eventId: "x" } }) }));
   assert.equal(ok.status, 200, "the gate already bound the state to the event: the reserve uses what it is given");
   const unconfirmed = await mod.reserveSeated(args([1]), deps({ readSeatChain: freedChain }));

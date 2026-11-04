@@ -101,7 +101,7 @@ export async function reserveSeated(
           (v) => ({ ok: true as const, v }),
           (err: unknown) => ({ ok: false as const, err }),
         ),
-        deps.seatStateRead({ eventId: a.eventId, signer: a.feedSigner, planDigest: a.planDigest, seats: plan.seats.length }),
+        deps.seatStateRead({ eventId: a.eventId, seriesId: a.seriesId, signer: a.feedSigner, planDigest: a.planDigest, seats: plan.seats.length }),
       ]);
       if (!chainRead.ok) {
         const err = chainRead.err;
