@@ -162,6 +162,14 @@ test("review: the new seq goes above a stepped-past head's own seq", async () =>
   assert.equal(r.state.seq, 10);
 });
 
+test("delta check: the new seq goes above every torn version stepped past, not only the head", async () => {
+  const deep = { ...existing(9, [[3, "press"]]), holds: [] }; // below the head, claims seq 9
+  const head = { ...existing(7, [[4, "press"]]), holds: [] };
+  const f = writer({ versions: [existing(6, [[2, "guest"]]), deep, head] });
+  const r = await writeSeatState(f.w, FEED, SERIES, PLAN, { hold: new Map([[5, "house"]]) });
+  assert.equal(r.state.seq, 10);
+});
+
 test("review: a read-back torn under our own digest field is a conflict, not 'saved'", async () => {
   const f = writer({ versions: [existing(4, [])] });
   const origWrite = f.w.write;

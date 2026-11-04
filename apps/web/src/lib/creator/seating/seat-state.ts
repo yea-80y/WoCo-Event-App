@@ -65,6 +65,50 @@ export async function ownSeatState(value: unknown, eventId: string, seriesId: st
   return validateSeatState(value) && value.eventId === eventId && value.seriesId === seriesId ? value : null;
 }
 
+/** The seq a stored value claims, if it parses as one: a torn version may have announced it. */
+function claimedSeq(v: unknown): number {
+  const seq = (v as { seq?: unknown } | null)?.seq;
+  return typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0 ? seq : -1;
+}
+
+/**
+ * The newest WHOLE state below version `from` (up to TORN_READ_DOWN versions down), and
+ * the highest seq any version stepped past claimed. Below a head that exists every
+ * version exists: absent is a miss, not a gap, and stepping past it could roll holds
+ * back - unreadable. Only a version that reads but does not validate, or can never be
+ * read, is stepped past. `state` null: every version down to the first is unusable.
+ */
+async function newestWholeBelow(
+  io: SeatStateIO,
+  signer: string,
+  feed: Pick<EventFeed, "eventId" | "gatewayUrl">,
+  seriesId: string,
+  from: number,
+): Promise<{ state: SeatState | null; maxSeq: number }> {
+  const { seatStateTopic } = await import("@woco/shared/seating/topics");
+  const topic = seatStateTopic(feed.eventId, seriesId);
+  const route = io.route(feed);
+  let maxSeq = -1;
+  const lowest = Math.max(0, from - TORN_READ_DOWN);
+  for (let v = from - 1; v >= lowest; v--) {
+    const r = await io.readVersion(signer, topic, route, v);
+    if (r.status === "absent" || (r.status === "unavailable" && r.unusableAt === undefined)) throw new SeatStateUnreadableError();
+    const own = r.status === "found" ? await ownSeatState(r.value, feed.eventId, seriesId) : null;
+    if (own) return { state: own, maxSeq };
+    if (r.status === "found") maxSeq = Math.max(maxSeq, claimedSeq(r.value));
+  }
+  if (lowest === 0) return { state: null, maxSeq };
+  throw new SeatStateUnreadableError();
+}
+
+/** A state's holds as seat -> kind. */
+async function holdsOf(s: SeatState): Promise<Map<number, SeatHoldKind>> {
+  const { decodeHeld } = await import("@woco/shared/seating/state");
+  const out = new Map<number, SeatHoldKind>();
+  for (const h of s.holds) for (const k of decodeHeld(h.held, s.seats)) out.set(k, h.kind);
+  return out;
+}
+
 /**
  * Key rotation (#186), before the flip: every seated ticket type's state, as stored and
  * at the same `seq`, under the new signer. The server reads the new signer once the flip
@@ -79,13 +123,33 @@ export async function copySeatStates(
   feed: Pick<EventFeed, "eventId" | "gatewayUrl" | "series">,
   oldSigner: string,
   newSignerPrivKey: string,
+  now: () => string = () => new Date().toISOString(),
 ): Promise<number> {
-  const { seatStateTopic } = await import("@woco/shared/seating/topics");
+  const [{ seatStateTopic }, { buildSeatState }] = await Promise.all([
+    import("@woco/shared/seating/topics"),
+    import("@woco/shared/seating/state"),
+  ]);
   let copied = 0;
   for (const seriesId of seatedSeriesIds(feed)) {
     const stored = await readStoredSeatState(io, oldSigner, feed, seriesId);
     if (!stored) continue;
-    await io.write({ signerPrivKey: newSignerPrivKey, topic: seatStateTopic(feed.eventId, seriesId), data: stored.value, route: io.route(feed) });
+    let data = stored.value;
+    // A torn head (S6 delta check): copied as is, the next save under the new signer would
+    // find nothing whole below it and start from the plan. Copy the newest WHOLE state
+    // instead, numbered above everything the torn versions announced.
+    if (!(await ownSeatState(stored.value, feed.eventId, seriesId))) {
+      const below = await newestWholeBelow(io, oldSigner, feed, seriesId, stored.version);
+      if (below.state) {
+        const w = below.state;
+        data = buildSeatState({
+          eventId: w.eventId, seriesId: w.seriesId, planDigest: w.planDigest, seats: w.seats,
+          holds: await holdsOf(w), confirmed: new Map(w.confirmed),
+          seq: Math.max(w.seq, claimedSeq(stored.value), below.maxSeq) + 1,
+          updatedAt: now(),
+        });
+      }
+    }
+    await io.write({ signerPrivKey: newSignerPrivKey, topic: seatStateTopic(feed.eventId, seriesId), data, route: io.route(feed) });
     copied++;
   }
   return copied;
@@ -153,26 +217,15 @@ export async function writeSeatState(
   // The base: the newest WHOLE state. A head that does not validate - a torn paged write
   // (S6 sign-off F1) - or that can never be read, is stepped past: the write then lands
   // after it, and readers that refused it read the new version.
+  // Torn versions stepped past may have announced their seq: the new one goes above all.
+  let steppedSeq = -1;
   const readDown = async (from: number): Promise<SeatState | null> => {
-    const lowest = Math.max(0, from - TORN_READ_DOWN);
-    for (let v = from - 1; v >= lowest; v--) {
-      const r = await w.readVersion(signer.address, topic, route, v);
-      // Below a head that exists every version exists: absent is a miss, not a gap, and
-      // stepping past it could roll holds back. Only a version that reads but does not
-      // validate, or can never be read, is stepped past.
-      if (r.status === "absent" || (r.status === "unavailable" && r.unusableAt === undefined)) throw new SeatStateUnreadableError();
-      const own = r.status === "found" ? await ownSeatState(r.value, feed.eventId, seriesId) : null;
-      if (own) return own;
-    }
-    // Every version down to the first is unusable: start from the plan, as if never saved.
-    if (lowest === 0) return null;
-    throw new SeatStateUnreadableError();
+    const below = await newestWholeBelow(w, signer.address, feed, seriesId, from);
+    steppedSeq = below.maxSeq;
+    return below.state; // null: every version down to the first is unusable - start from the plan
   };
   const head = await w.read(signer.address, topic, route);
-  // A stepped-past head may have announced its seq to the server: the new one goes above it.
-  const headSeq = head.status === "found" && Number.isSafeInteger((head.value as { seq?: unknown } | null)?.seq)
-    ? ((head.value as { seq: number }).seq)
-    : -1;
+  const headSeq = head.status === "found" ? claimedSeq(head.value) : -1;
   let base: SeatState | null;
   if (head.status === "absent") {
     if (w.hadVersion(signer.address, topic)) throw new SeatStateUnreadableError();
@@ -203,7 +256,7 @@ export async function writeSeatState(
     seats: plan.seats,
     holds,
     confirmed,
-    seq: Math.max(base ? base.seq : -1, headSeq) + 1,
+    seq: Math.max(base ? base.seq : -1, headSeq, steppedSeq) + 1,
     updatedAt: w.now(),
   });
   const version = await w.write({ signerPrivKey: signer.privKey, topic, data: state, route });
