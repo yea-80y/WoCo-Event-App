@@ -4,18 +4,23 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build && vite build --config vite.count.config.ts",
-    "check": "tsc --noEmit",
+    "build": "vite build && vite build --config vite.count.config.ts && vite build --config vite.seatmap.config.ts",
+    "check": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --threshold warning",
     "dev": "vite build --watch",
     "test": "node --import tsx --test test/*.test.ts",
-    "build:count": "vite build --config vite.count.config.ts"
+    "build:count": "vite build --config vite.count.config.ts",
+    "build:seatmap": "vite build --config vite.seatmap.config.ts"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
+    "@woco/seatmap": "*",
     "@woco/shared": "*"
   },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.2.1",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.7",
     "typescript": "~5.9.3",
     "vite": "^7.3.1",
     "tsx": "^4.23.15"

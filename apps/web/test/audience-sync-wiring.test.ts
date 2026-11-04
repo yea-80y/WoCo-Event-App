@@ -99,7 +99,7 @@ test("a failed background check is logged, and shown only on the Audience screen
   assert.match(run, /if \(res\.added > 0\) markAudienceImported\(parent\);/);
   assert.doesNotMatch(RUNTIME, /alert\(|confirm\(|toast/i);
   // The status component is the one place that reads the record.
-  assert.match(STATUS, /describeSync\(audienceSync\.record, audienceSync\.running, now\)/);
+  assert.match(STATUS, /describeSync\(audienceSync\.record, audienceSync\.running, now, audienceSync\.progress\)/);
 });
 
 test("the runtime re-confirms the seal key before the upload, and names the list it merged onto", () => {
@@ -163,4 +163,72 @@ test("a list that can't be found: shown as such, never checked onto, replaced on
   assert.ok(panel.length > 0);
   assert.match(panel, /onclick=\{\(\) => void startNewList\(\)\}/);
   assert.doesNotMatch(panel, /[–—]/);
+});
+
+// ── The browser read (#201) ────────────────────────────────────────────────
+
+const LIVE = code(read("lib/creator/audience/sync-live.ts"));
+const ORDERS = code(read("lib/creator/audience/sync-orders.ts"));
+const DASH = code(read("lib/creator/dashboard/Dashboard.svelte"));
+
+test("orders are read in the browser; the server's full read only for a ledger the browser cannot read", () => {
+  assert.match(RUNTIME, /getOrders: \(eventId, progress\) => live\.readOrders\(eventId, progress\),/);
+  assert.doesNotMatch(RUNTIME, /getEventOrders\b/, "the runtime never calls the full read itself");
+  assert.equal(LIVE.match(/getEventOrders\(/g)?.length, 1);
+  assert.match(LIVE, /serverRead: async \(\) => \(await getEventOrders\(eventId, \{ establish: false \}\)\)\.orders,/);
+  // Reached only from the "cannot read this ledger" branch - never from a catch.
+  assert.equal(ORDERS.match(/\.serverRead\(/g)?.length, 1);
+  assert.match(ORDERS, /const read = await deps\.reader\.loadRows\(BACKGROUND\);\s*if \(!read\) return await deps\.serverRead\(\);/);
+});
+
+test("every request of the browser read is a background one: it never starts a sign-in", () => {
+  assert.match(ORDERS, /const BACKGROUND: RequestSigningOptions = \{ establish: false \};/);
+  assert.equal(ORDERS.match(/\.loadRows\(/g)?.length, 2);
+  assert.equal(ORDERS.match(/\.loadRows\(BACKGROUND\)/g)?.length, 2);
+});
+
+test("the sync's queue keeps half the allowance and holds behind a foreground read; the dashboard registers as one", () => {
+  assert.match(ORDERS, /export const SYNC_HEADROOM_SHARE = 0\.5;/);
+  assert.match(LIVE, /headroomShare: SYNC_HEADROOM_SHARE,\s*holdWhile: foregroundBusy,/);
+  assert.match(LIVE, /foregroundBusy,\s*now: Date\.now,/, "and waits for it before the chain read");
+  const reading = fn(DASH, "function readingNow");
+  assert.match(reading, /if \(destroyed\) return false;\s*if \(ordersLoad !== null\) return true;/, "a read in progress holds the sync");
+  assert.match(
+    reading,
+    /return !!queue && queue\.progress\(\)\.waiting > 0 && queue\.waitingOn\(\) !== "erasure-check";/,
+    "orders still to fetch do; a queue stuck on the erasure answer does not",
+  );
+  assert.match(DASH, /\$effect\(\(\) => registerForeground\(readingNow\)\);/, "unregistered when the page goes (the effect's cleanup)");
+});
+
+test("the run holds no key: bound to its account and unlock, read directly, a watcher locks at once, disposed on every way out", () => {
+  const live = fn(RUNTIME, "function liveDeps");
+  assert.match(live, /const account = auth\.seedAddress;/);
+  assert.match(
+    live,
+    /const bound = \(\) =>\s*current\(\) && account !== null && auth\.seedAddress === account && !\(auth\.kind === "passkey" && !auth\.hasIdentitySeed\);/,
+  );
+  assert.match(live, /\$effect\.root\(\(\) => \{\s*\$effect\(\(\) => \{\s*if \(!bound\(\)\) opener\.lock\(\);/);
+  assert.match(live, /stillOpen: bound,/);
+  // Sealing needs only the public key: the secret keys derived with it are wiped at once.
+  assert.match(fn(live, "async sealKeys()"), /const keys = await listKeysOf\(secrets, parent\);\s*for \(const k of keys\.secretKeys\) k\.fill\(0\);/);
+  assert.match(live, /dispose\(\) \{\s*unwatch\(\);\s*opener\.lock\(\);/);
+  // openKeys only probes: no derived key is kept in the run's closure.
+  const probe = live.slice(live.indexOf("async openKeys()"), live.indexOf("openOrders:"));
+  assert.doesNotMatch(probe, /listKeysOf|orderKeysOf/);
+  const run = fn(RUNTIME, "async function runFor");
+  assert.match(run, /\} finally \{\s*run\?\.dispose\(\);/);
+  assert.match(run, /live = await import\("\.\/sync-live\.js"\);/, "loaded on first use, not with the organiser pages");
+  assert.doesNotMatch(RUNTIME, /from "\.\/sync-live\.js"/);
+  assert.doesNotMatch(RUNTIME + LIVE, /Dashboard\.svelte/, "never a dashboard's pool or keys");
+});
+
+test("a check cut short never costs the hour: the live gate keeps a refreshed in-progress mark", () => {
+  const sync = fn(RUNTIME, "export function syncAudience");
+  assert.match(sync, /lease: runningMark\(parent\),/);
+  assert.match(sync, /every: \(ms, fn\) => \{\s*const h = setInterval\(fn, ms\);\s*return \(\) => clearInterval\(h\);/);
+  assert.match(RUNTIME, /write: \(t\) => writeBlob\(parent, \{ runningAt: t \?\? undefined \}\),/);
+  // Progress reaches the status line for the bound organiser only, and goes when the run does.
+  assert.match(RUNTIME, /onProgress\(p\) \{\s*if \(audienceSync\.parent === parent\) audienceSync\.progress = p;/);
+  assert.match(fn(RUNTIME, "async function runFor"), /if \(audienceSync\.parent === parent\) audienceSync\.progress = null;/);
 });

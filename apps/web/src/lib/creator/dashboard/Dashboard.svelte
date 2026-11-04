@@ -31,6 +31,7 @@
   import type { BundleVerifier } from "./bundle-verifier.js";
   import { DetailQueue, type DetailState } from "./detail-queue.js";
   import { OrderOpenerPool, poolWidth, type OpenerPort } from "./order-opener.js";
+  import { registerForeground } from "./gateway-share.js";
   import { DETAIL_CSV, listGate, rowDetail, shortfall, type RowDetail } from "./list-completeness.js";
   import { withoutSealedOrders } from "../../api/orders-cache.js";
   import type { RequestSigningOptions } from "../../auth/request-session.js";
@@ -777,6 +778,18 @@
     rebuildTimer = null;
     browserOrders?.verifier.dispose();
   });
+  /**
+   * This page is reading: a read in progress, or orders still to fetch. A queue stuck
+   * waiting for a fresh erasure answer fetches nothing, so it holds nobody up.
+   */
+  function readingNow(): boolean {
+    if (destroyed) return false;
+    if (ordersLoad !== null) return true;
+    const queue = browserOrders?.queue;
+    return !!queue && queue.progress().waiting > 0 && queue.waitingOn() !== "erasure-check";
+  }
+  // The audience sync reads behind this page, never beside it (gateway-share.ts).
+  $effect(() => registerForeground(readingNow));
 
   /**
    * Boxes arrive one by one: show them in batches, not one repaint per order. A rebuild

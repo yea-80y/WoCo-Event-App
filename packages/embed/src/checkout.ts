@@ -19,9 +19,10 @@ import {
   type PaymentConfig,
 } from "@woco/shared";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+import { RESERVATION_MAX_QTY } from "@woco/shared/event/reservation";
 
-/** Server-side clamp is RESERVATION_MAX_QTY / create-checkout's own max(10). */
-export const MAX_QTY = 10;
+/** The server's clamp (reserve and create-checkout), from the one shared constant. */
+export const MAX_QTY = RESERVATION_MAX_QTY;
 
 /**
  * A series is sellable here only when a card checkout can actually complete:

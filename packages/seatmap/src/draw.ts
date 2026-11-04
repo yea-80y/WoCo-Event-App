@@ -118,17 +118,28 @@ function tableShort(it: Extract<LayoutItem, { kind: "table" }>): string {
   return roundTableRadius(it.seats.length) >= 40 ? it.name.slice(0, 7) : it.name.slice(0, 3);
 }
 
-/** What a buyer's map needs to know per seat. Seats are addressed by their plan index. */
+/**
+ * What a buyer's map needs to know per seat. Seats are addressed by their plan index.
+ * Every seat is a button a keyboard can reach (one tab stop, arrows for the rest) and
+ * says why it cannot be chosen; only `canPick` seats act.
+ */
 export interface BuyerView {
   /** Seat index of (item, row, pos), or -1 for a gap. */
   seatAt(item: number, row: number, pos: number): number;
+  /** Drawn in its band's fill (else as a small mark). */
   free(k: number): boolean;
+  /** Choosing it does something (picking in a buyer's map, selecting in the dashboard's). */
+  canPick(k: number): boolean;
   picked(k: number): boolean;
   /** The spoken label: "Stalls, Row D, seat 7, £22, wheelchair space". */
   label(k: number): string;
+  /** Why it cannot be chosen ("sold"), spoken after the label; null when it can. */
+  reason(k: number): string | null;
+  /** The one seat in the page's tab order (a roving tab stop). */
+  tabStop(k: number): boolean;
   /** The printed number on a picked seat. */
   number(k: number): number;
-  /** Picking is paused (a hold is running). */
+  /** Choosing is paused (a hold is running). */
   locked: boolean;
 }
 
@@ -245,13 +256,14 @@ export function drawItem(parent: Element, it: LayoutItem, o: DrawOptions): SVGGE
       const k = o.buyer.seatAt(o.itemIndex, s.row, s.pos);
       if (k < 0 || isGap(seat)) continue;
       const picked = o.buyer.picked(k), free = o.buyer.free(k);
-      const sg = el("g", { class: `seat${free && !o.buyer.locked ? " avail" : ""}`, "data-seat": k, transform: rot }, g);
-      if (free || picked) {
-        sg.setAttribute("tabindex", "0");
-        sg.setAttribute("role", "button");
-        sg.setAttribute("aria-pressed", String(picked));
-        sg.setAttribute("aria-label", o.buyer.label(k));
-      }
+      const acts = !o.buyer.locked && (picked || o.buyer.canPick(k));
+      const why = picked ? null : o.buyer.reason(k);
+      const sg = el("g", {
+        class: `seat${acts && !picked ? " avail" : ""}`, "data-seat": k, transform: rot,
+        role: "button", tabindex: o.buyer.tabStop(k) ? 0 : -1, "aria-pressed": String(picked),
+        "aria-label": why ? `${o.buyer.label(k)}, ${why}` : o.buyer.label(k),
+        "aria-disabled": acts ? null : "true",
+      }, g);
       el("rect", { class: "seat-hit", x: x - 2, y: y - 2, width: SEAT_SIZE + 4, height: SEAT_SIZE + 4, fill: "transparent" }, sg);
       if (picked) {
         seatRect(sg, x, y, { fill: p.accent, stroke: p.accent, width: 1 });
@@ -264,6 +276,7 @@ export function drawItem(parent: Element, it: LayoutItem, o: DrawOptions): SVGGE
       } else if (free) {
         seatRect(sg, x, y, fill);
         if (seat.a) wheelMark(sg, x, y, st.ink);
+        if (seat.c) companionMark(sg, x, y, st.ink);
       } else {
         // Sold, held, or not in the chosen price: a small mark, so free seats read first.
         el("rect", { x: x + 4, y: y + 4, width: SEAT_SIZE - 8, height: SEAT_SIZE - 8, rx: 1, fill: p.line }, sg);
@@ -349,6 +362,29 @@ export function drawThumb(svg: SVGSVGElement, layout: Pick<SeatLayout, "bands" |
   drawDefs(svg, palette);
   for (const i of drawOrder(layout.items)) {
     drawItem(svg, layout.items[i], { mode: "thumb", svgId: svg.id, palette, bands: layout.bands, itemIndex: i });
+  }
+}
+
+/**
+ * A thumbnail that stays cheap at any size: shapes as they are, each block of rows and
+ * each table as its outline (a ticket card shows this before the map opens).
+ */
+export function drawOverviewThumb(svg: SVGSVGElement, layout: Pick<SeatLayout, "bands" | "items">, palette: SeatmapPalette, pad = 24): void {
+  svg.replaceChildren();
+  const cb = unionBox(layout.items);
+  svg.setAttribute("viewBox", `${cb.x0 - pad} ${cb.y0 - pad} ${cb.x1 - cb.x0 + pad * 2} ${cb.y1 - cb.y0 + pad * 2}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  drawDefs(svg, palette);
+  for (const i of drawOrder(layout.items)) {
+    const it = layout.items[i];
+    if (it.kind !== "rows" && it.kind !== "table") {
+      drawItem(svg, it, { mode: "thumb", svgId: svg.id, palette, bands: layout.bands, itemIndex: i });
+      continue;
+    }
+    const b = itemGeometry(it).box;
+    const g = el("g", { transform: `translate(${r2(it.x)} ${r2(it.y)})${it.rot ? ` rotate(${it.rot})` : ""}` }, svg);
+    if (it.kind === "table" && it.shape === "round") el("circle", { r: r2((b.x1 - b.x0) / 2), fill: palette.text2 }, g);
+    else el("rect", { x: r2(b.x0), y: r2(b.y0), width: r2(b.x1 - b.x0), height: r2(b.y1 - b.y0), rx: 6, fill: palette.text2 }, g);
   }
 }
 

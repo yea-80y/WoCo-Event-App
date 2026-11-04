@@ -8,6 +8,8 @@
   import { buildEventJsonLd, eventMetaDescription, headlinePrice, headlinePriceRange, EVENT_DESCRIPTION_MAX } from "@woco/shared";
   import { setJsonLd, setMetaDescription, setTitle } from "../../seo/head.js";
   import ClaimButton from "../../attendee/events/ClaimButton.svelte";
+  import { FEATURES } from "@woco/shared";
+  import { apiBase } from "../../api/http.js";
   import { WOCO_POLICY_URL } from "../../legal/organiser-notice.js";
   import { WOCO_POLICY_LINK_LABEL } from "@woco/shared";
   import { firstImageUrl, useNextImageUrl } from "./image-fallback.js";
@@ -22,9 +24,13 @@
      *  passes its baked canonical, or null when it has none (never a gateway URL).
      *  Absent = the host does not say, and the current URL is used (websites). */
     pageUrl?: string | null;
+    /** Allocated seating: the series whose seat map the address opens (docs/SEATING.md). */
+    seats?: string;
+    /** Open a series' seat map (its id) or close it (null). Absent: the map opens in place. */
+    onseats?: (seriesId: string | null) => void;
   }
 
-  let { eventId, ondashboard, onback, apiUrl, pageUrl }: Props = $props();
+  let { eventId, ondashboard, onback, apiUrl, pageUrl, seats, onseats }: Props = $props();
 
   // contentGatewayUrl is injected by the deploy step for standalone sites that
   // are hosted on a different gateway (e.g. Etherna) — event images were uploaded
@@ -515,7 +521,8 @@
 
             </div>
 
-            <!-- Right: qty selector -->
+            <!-- Right: qty selector (a seated ticket type is chosen on its plan, below) -->
+            {#if !(FEATURES.seatedEventsAllowed && s.seating)}
             <div class="ticket-row-right">
               <div class="qty-box" class:qty-box--dim={isUnavailable}>
                 <select
@@ -532,7 +539,22 @@
                 </select>
               </div>
             </div>
+            {/if}
           </div>
+          {#if FEATURES.seatedEventsAllowed && s.seating && !isUnavailable}
+            <!-- Allocated seating: loaded only for a seated ticket type. -->
+            {#await import("../seating/SeatedSeries.svelte") then { default: SeatedSeries }}
+              <SeatedSeries
+                {eventId}
+                eventTitle={event.title}
+                series={s}
+                apiUrl={apiUrl ?? apiBase}
+                open={onseats ? seats === s.seriesId : undefined}
+                onopen={onseats ? () => onseats(s.seriesId) : undefined}
+                onclose={onseats ? () => onseats(null) : undefined}
+              />
+            {/await}
+          {/if}
         {/each}
       </div>
 

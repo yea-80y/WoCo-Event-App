@@ -49,7 +49,7 @@
 
   type Route =
     | { type: 'page'; slug: string }
-    | { type: 'event'; eventId: string }
+    | { type: 'event'; eventId: string; seats?: string }
     | { type: 'privacy'; eventId?: string }
     | { type: 'shop-order'; shopId: string; code: string };
 
@@ -64,6 +64,9 @@
     const h = raw.split('?')[0];
     const eventM = h.match(/^\/events\/([^/]+)$/);
     if (eventM) return { type: 'event', eventId: eventM[1] };
+    // A seated ticket type's seat map, over its event page (docs/SEATING.md).
+    const seatsM = h.match(/^\/events\/([^/]+)\/seats\/([^/]+)$/);
+    if (seatsM) return { type: 'event', eventId: seatsM[1], seats: seatsM[2] };
     // The organiser's privacy notice: site-wide, or for one event (its footer link).
     if (h === '/privacy-notice') return { type: 'privacy' };
     const noticeM = h.match(/^\/privacy-notice\/([^/]+)$/);
@@ -142,10 +145,28 @@
     showIntro = intro;
     if (intro) setTimeout(() => { showIntro = false; }, 2400);
     window.addEventListener('hashchange', () => {
+      const prev = route;
       route = parseHash();
       menuOpen = false;
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      // Opening or closing a seat map stays where the buyer was on the event page.
+      const sameEvent = prev.type === 'event' && route.type === 'event' && prev.eventId === route.eventId;
+      if (!sameEvent) window.scrollTo({ top: 0, behavior: 'smooth' });
     });
+  }
+
+  /** Seat map open (a series id) or closed (null): Back if this page opened it, else replace. */
+  let seatsOpenedHere = false;
+  function openSeats(eventId: string, seriesId: string | null): void {
+    if (seriesId) {
+      seatsOpenedHere = true;
+      window.location.hash = `/events/${eventId}/seats/${encodeURIComponent(seriesId)}`;
+    } else if (seatsOpenedHere) {
+      seatsOpenedHere = false;
+      history.back();
+    } else {
+      history.replaceState(history.state, '', new URL(`#/events/${eventId}`, window.location.href).href);
+      route = parseHash();
+    }
   }
 
   onMount(() => {
@@ -419,7 +440,13 @@
          event rendered at the new event's URL. -->
     {#key route.eventId}
       <main>
-        <EventPage eventId={route.eventId} {apiUrl} onback={() => history.back()} />
+        <EventPage
+          eventId={route.eventId}
+          {apiUrl}
+          onback={() => history.back()}
+          seats={route.seats}
+          onseats={(seriesId) => openSeats(route.type === 'event' ? route.eventId : '', seriesId)}
+        />
       </main>
     {/key}
   {:else}
