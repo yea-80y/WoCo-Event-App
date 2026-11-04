@@ -397,3 +397,33 @@ test("S5: a hold's seat parts survive a reload; malformed parts drop its seat in
   assert.equal(store.getReservation("bad")!.seatInfo, undefined);
   assert.deepEqual(store.heldSeatsFor(EV, SE), [3]);
 });
+
+// ── Seats a relayed seat move aims at (S6) ──────────────────────────────────
+
+test("a move's target seats: refused when a buyer holds one, else off sale to buyers and on the map's list", async () => {
+  assert.ok((await hold([3])).ok);
+  const blocked = await store.claimRelaySeats(EV, SE, [3, 9]);
+  assert.deepEqual(blocked, { ok: false, conflicts: [3] });
+  const claim = await store.claimRelaySeats(EV, SE, [9, 10]);
+  assert.ok(claim.ok);
+  const buyer = await hold([10, 11], { clientKey: "buyer-b-key", ip: "203.0.113.2" });
+  assert.ok(!buyer.ok);
+  assert.deepEqual(buyer.conflicts, [10]);
+  assert.deepEqual(store.heldSeatsFor(EV, SE), [3, 9, 10]);
+  assert.deepEqual(await store.claimRelaySeats(EV, SE, [9]), { ok: false, conflicts: [9] }, "two moves cannot aim at one seat");
+  claim.release();
+  assert.deepEqual(store.heldSeatsFor(EV, SE), [3]);
+  assert.ok((await hold([10, 11], { clientKey: "buyer-b-key", ip: "203.0.113.2" })).ok, "given back");
+});
+
+test("a seat paid for minutes ago is off sale to a move too; a move's claim lapses after its window", async (t) => {
+  seed([seatedRecord("paid", [7], { consumedAt: at(-1 * min) })]);
+  assert.deepEqual(await store.claimRelaySeats(EV, SE, [7]), { ok: false, conflicts: [7] });
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const claim = await store.claimRelaySeats(EV, SE, [12]);
+  assert.ok(claim.ok);
+  t.mock.timers.tick(store.RELAY_SEAT_HOLD_MS - 1);
+  assert.ok(store.heldSeatsFor(EV, SE).includes(12));
+  t.mock.timers.tick(1);
+  assert.ok(!store.heldSeatsFor(EV, SE).includes(12), "a landed or unconfirmed move holds them for the window only");
+});

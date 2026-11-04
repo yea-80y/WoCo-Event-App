@@ -63,6 +63,10 @@ interface Fake {
   held: { held: number; expiresBy: number | null };
   gate: "open" | "cancelled" | "unknown";
   order: string[];
+  /** Seats claimed for moves, per series, and which claims were given back. */
+  claims: Array<{ seriesId: string; seats: number[]; released: boolean }>;
+  /** Seats a buyer holds: a claim naming one is refused. */
+  buyerHeld: Set<number>;
 }
 
 function seriesState(over: Partial<SeriesChainState> = {}): SeriesChainState {
@@ -112,6 +116,8 @@ function fake(): Fake {
     held: { held: 0, expiresBy: null },
     gate: "open",
     order: [],
+    claims: [],
+    buyerHeld: new Set(),
     deps: undefined as unknown as Ledger2RelayDeps,
   };
   f.deps = {
@@ -132,6 +138,13 @@ function fake(): Fake {
     slotState: async (_c, _l, id, slot) => f.slots.get(`${id}:${slot}`) ?? { owner: "0x0000000000000000000000000000000000000000", transferNonce: 0n, seat: LEDGER2_NO_SEAT },
     seatNonce: async (_c, _l, id, seat) => f.seatNonces.get(`${id}:${seat}`) ?? 0n,
     holds: () => f.held,
+    claimSeats: async (_e, seriesId, seats) => {
+      const conflicts = seats.filter((k) => f.buyerHeld.has(k));
+      if (conflicts.length) return { ok: false, conflicts };
+      const c = { seriesId, seats: [...seats], released: false };
+      f.claims.push(c);
+      return { ok: true, release: () => { c.released = true; } };
+    },
     cancellationGate: () => f.gate,
     simulate: async (_c, _l, calls) => {
       f.simulated.push([...calls]);
@@ -370,6 +383,58 @@ test("a dependent swap verifies against the nonces the earlier moves leave", asy
   g.series = f.series; g.slots = f.slots; g.seatNonces = f.seatNonces;
   const wrong = [items[0], mv(2, 10n, b, 0n, 2n), items[2]];
   assert.equal((await run(g, { items: wrong }) as { error: string }).error, "signature_stale");
+});
+
+// ── Seats a move aims at (S6): off sale while it is in flight ────────────────
+
+function oneMove(f: Fake, toSeat = 9) {
+  f.series.set(ID_A, seriesState({ seated: true, nextSlot: 10 }));
+  f.slots.set(`${ID_A}:3`, { owner: holder.address.toLowerCase(), transferNonce: 0n, seat: 5n });
+  return {
+    kind: "reseatBearer", seriesId: SERIES, slot: 3, toSeat, ...W,
+    sig: sign({ kind: "reseatBearer", eventId: ID_A, slot: 3, toSeat: BigInt(toSeat), holder: holder.address.toLowerCase(), nonce: 0n, termsNonce: 3n, seatNonce: 0n, ...W }),
+  };
+}
+
+test("a move into a seat a buyer is holding is refused before anything is sent, naming the seat", async () => {
+  const f = fake();
+  const move = oneMove(f);
+  f.buyerHeld.add(9);
+  const r = await run(f, { items: [move] });
+  assert.equal((r as { error: string }).error, "seat_on_hold");
+  assert.deepEqual(detail(r).seats, [9]);
+  assert.equal(f.sent.length, 0);
+  assert.ok((await run(f, { items: [move] }) as { error: string }).error !== "in_flight", "the event's relay lock was given back");
+});
+
+test("a landed move keeps its target seats off sale (a replica may not show it yet); a reverted one gives them back", async () => {
+  const f = fake();
+  const r = await run(f, { items: [oneMove(f)] });
+  assert.ok(r.ok);
+  assert.deepEqual(f.claims, [{ seriesId: SERIES, seats: [9], released: false }]);
+  const g = fake();
+  g.receipt = () => ({ status: 0, logs: [] });
+  await run(g, { items: [oneMove(g)] });
+  assert.deepEqual(g.claims, [{ seriesId: SERIES, seats: [9], released: true }]);
+});
+
+test("a swap claims nothing: its targets are its own tickets' seats", async () => {
+  const f = fake();
+  f.series.set(ID_A, seriesState({ seated: true, nextSlot: 10 }));
+  const a = holder.address.toLowerCase();
+  const b = "0x00000000000000000000000000000000000000b2";
+  f.slots.set(`${ID_A}:1`, { owner: a, transferNonce: 4n, seat: 10n });
+  f.slots.set(`${ID_A}:2`, { owner: b, transferNonce: 0n, seat: 20n });
+  f.seatNonces.set(`${ID_A}:10`, 2n);
+  f.seatNonces.set(`${ID_A}:20`, 7n);
+  f.buyerHeld.add(10).add(20); // bought minutes ago: off sale in the store, which must not block the swap
+  const mv = (slot: number, toSeat: bigint, h: string, nonce: bigint, seatNonce: bigint) => ({
+    kind: "reseatBearer", seriesId: SERIES, slot, toSeat: toSeat === LEDGER2_NO_SEAT ? "none" : Number(toSeat), ...W,
+    sig: sign({ kind: "reseatBearer", eventId: ID_A, slot, toSeat, holder: h, nonce, termsNonce: 3n, seatNonce, ...W }),
+  });
+  const r = await run(f, { items: [mv(1, LEDGER2_NO_SEAT, a, 4n, 0n), mv(2, 10n, b, 0n, 3n), mv(1, 20n, a, 5n, 8n)] });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.deepEqual(f.claims, [], "no seat outside the swap was aimed at");
 });
 
 test("a two-party reseat needs the holder's signature over the same digest", async () => {
