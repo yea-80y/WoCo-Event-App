@@ -94,6 +94,7 @@ test("a seat the plan keeps back, or one not on the plan, is refused", () => {
   const outside = check([free[0], n], read({}, [free[0], n]));
   assert.ok(!outside.ok);
   assert.deepEqual(outside.conflicts, [n]);
+  assert.equal(outside.error, "These seats are not on the seating plan");
 });
 
 test("a read missing anything a seat needs refuses with 503, never sells", () => {
@@ -124,4 +125,11 @@ test("feed prices that no longer cover the plan stop the sale", () => {
   const r = check(seats, read({}, seats), { seating: missing });
   assert.ok(!r.ok);
   assert.equal(r.status, 409);
+  assert.equal(r.conflicts, undefined, "the whole series is off sale, not one seat");
+  // Every band priced, but the listed "from" price is not the lowest: re-signed, refused.
+  const notLowest = checkSeats({
+    plan, planDigest: DIGEST, seating, payment: { ...payment, price: "99.00" }, seats, minted: new Set(), chain: read({}, seats),
+  });
+  assert.ok(!notLowest.ok);
+  assert.match(notLowest.error, /not currently on sale/);
 });

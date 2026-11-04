@@ -1521,6 +1521,13 @@ describe("allocated seating (docs/SEATING.md S4)", () => {
     assert.deepEqual(f.settles.map((s) => s.outcome), ["unresolved"]);
   });
 
+  test("an unexpected throw after the seat mint keeps the seats off sale (they may be on chain)", async () => {
+    const { f, outcome } = await run({}, { seated: {}, fail: "signMessage" });
+    assert.equal(f.seatMints.length, 1);
+    assert.equal(outcome.refund.kind, "created");
+    assert.deepEqual(f.settles.map((s) => s.outcome), ["unresolved"]);
+  });
+
   test("a stop before the mint (sales closed) returns the seats at once", async () => {
     const { f, outcome } = await run({}, { seated: {}, chainEndMs: Date.parse(PAST) });
     assert.equal(outcome.issued, 0);
