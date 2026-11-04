@@ -1492,16 +1492,18 @@ describe("allocated seating (docs/SEATING.md S4)", () => {
   });
 
   test("no hold named, a plan other than the pin, or a count that disagrees: refund, no mint", async () => {
-    const cases: Array<[string, SessionOpts, FakeOpts]> = [
-      ["no reservation", { reservationId: null }, { seated: {} }],
-      ["plan changed", {}, { seated: { planDigest: "0x" + "99".repeat(32) } }],
-      ["count", { quantity: 3, amountTotal: 6600 }, { seated: {} }],
+    // A hold this sale claimed is settled whatever stops it, so its seats go back at once.
+    const cases: Array<[string, SessionOpts, FakeOpts, string[]]> = [
+      ["no reservation", { reservationId: null }, { seated: {} }, []],
+      ["plan changed", {}, { seated: { planDigest: "0x" + "99".repeat(32) } }, ["not-minted"]],
+      ["count", { quantity: 3, amountTotal: 6600 }, { seated: {} }, ["not-minted"]],
     ];
-    for (const [why, so, fo] of cases) {
+    for (const [why, so, fo, settled] of cases) {
       const { f, outcome } = await run(so, fo);
       assert.equal(outcome.issued, 0, why);
       assert.equal(outcome.refund.kind, "created", why);
       assert.equal(f.minted.length, 0, why);
+      assert.deepEqual(f.settles.map((s) => s.outcome), settled, why);
     }
   });
 

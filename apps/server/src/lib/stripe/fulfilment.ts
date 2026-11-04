@@ -459,6 +459,8 @@ export async function fulfilPaidSession(
   }
   let seated: { seats: number[]; labels: Map<number, string> } | null = null;
   let seatedStop: string | null = null;
+  /** This sale holds the claim: it settles the hold whatever happens next. */
+  let seatedClaimed = false;
   if (seatingPin) {
     let claim: SeatedClaim;
     try {
@@ -468,9 +470,10 @@ export async function fulfilPaidSession(
     } catch (err) {
       claim = { ok: false, reason: `the seat hold could not be read (${errMessage(err)})` };
     }
+    seatedClaimed = claim.ok;
     if (!claim.ok) seatedStop = `Seats not sold: ${claim.reason} — refunding`;
     else if (claim.planDigest.toLowerCase() !== seatingPin.planDigest.toLowerCase()) seatedStop = "Seats not sold: the seating plan changed — refunding";
-    else if (claim.seats.length !== quantity) seatedStop = "Seats not sold: the hold and the payment disagree — refunding";
+    // The count against the payment is mintV2's check (one call, all or nothing).
     else seated = { seats: claim.seats, labels: new Map(claim.seats.map((k, i) => [k, claim.seatInfo?.[i]?.label ?? ""])) };
     if (seatedStop) console.error(`[fulfilment] ${session.id}: ${seatedStop}`);
   }
@@ -947,7 +950,7 @@ export async function fulfilPaidSession(
   // A seated hold this sale claimed: minted or unknown keeps its seats taken; nothing
   // minted puts them back on sale at once. One this sale could NOT claim is another
   // session's (or gone): left alone.
-  if (metaReservationId && seated) {
+  if (metaReservationId && seatedClaimed) {
     const outcome = claimedResults.length > 0 ? "minted" : mintUnresolved ? "unresolved" : "not-minted";
     if (claimedResults.length > 0 && claimedResults.length !== quantity) {
       console.error(`[fulfilment] ${session.id}: seated mint issued ${claimedResults.length}/${quantity} — INVARIANT BROKEN (one call, all or nothing)`);

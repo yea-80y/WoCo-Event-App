@@ -119,6 +119,26 @@ test("Stripe unreachable: nothing is released and the new hold is refused with 5
   assert.deepEqual(store.heldSeatsFor(EV, SE), [3, 4]);
 });
 
+test("a newer session bound while Stripe closed the old one keeps the hold: it can still be paid", async () => {
+  seed([seatedRecord("paying", [3, 4], { clientKey: "buyer-a-key", checkout: { sessionId: "cs_old", account: "acct_1", expiresAt: at(30 * min), sessions: 1 } })]);
+  const rebind = async () => {
+    // A checkout for the same hold binds its new session while this call is out at Stripe.
+    assert.ok(store.bindCheckout("paying", "cs_old", { sessionId: "cs_new", account: "acct_1", expiresAtMs: Date.now() + 32 * min }));
+    return "expired" as const;
+  };
+  const r = await hold([7], { expireSession: rebind });
+  assert.ok(!r.ok);
+  assert.equal(r.status, 503);
+  assert.deepEqual(store.heldSeatsFor(EV, SE), [3, 4]);
+  seed([seatedRecord("paying2", [5], { checkout: { sessionId: "cs_old2", account: "acct_1", expiresAt: at(30 * min), sessions: 1 } })]);
+  const out = await store.releaseSeatedHold("paying2", async () => {
+    store.bindCheckout("paying2", "cs_old2", { sessionId: "cs_new2", account: "acct_1", expiresAtMs: Date.now() + 32 * min });
+    return "expired";
+  });
+  assert.equal(out, "error");
+  assert.deepEqual(store.heldSeatsFor(EV, SE), [5]);
+});
+
 test("the count must fit what the chain has left less what others hold; the IP cap counts seats", async () => {
   assert.ok((await hold([1, 2], { clientKey: "other-key", ip: "198.51.100.9" })).ok);
   const tooMany = await hold([5, 6, 7], { verify: verifyOk([5, 6, 7], 4) });
