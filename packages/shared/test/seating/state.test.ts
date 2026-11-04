@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { validateManifestV2Body } from "../../src/edition/types.js";
 import { seatPlanEditionTemplate, seatPlanTemplateOf } from "../../src/seating/template.js";
 import {
-  buildSeatState, decodeHeld, encodeHeld, organiserAllowsSale, seatStateView, seatStateWriteSignal, validateSeatState,
+  buildSeatState, decodeHeld, encodeHeld, organiserAllowsSale, seatStateDigest, seatStateView, seatStateWriteSignal, validateSeatState,
 } from "../../src/seating/state.js";
 import { freezeSeatPlan, seatPlanDigest, encodeSeatPlan } from "../../src/seating/plan.js";
 import { LAYOUT_TEMPLATES } from "../../src/seating/templates.js";
@@ -52,11 +52,18 @@ const EVENT = "evt-1";
 const SERIES = "ser-1";
 const holds = (...h: Array<[string, string]>) => h.map(([kind, held]) => ({ kind, held }));
 
+/** A state with `over` applied and a digest that matches it, so each case tests its own rule. */
 function state(over: Record<string, unknown> = {}) {
-  return {
+  const v: Record<string, unknown> = {
     format: "woco.seatstate.v1", eventId: EVENT, seriesId: SERIES, planDigest: DIGEST, seats: 10,
     holds: holds(["house", "0100"], ["press", "0002"]), confirmed: [[3, 1], [7, 2]], seq: 4, updatedAt: "2026-11-03T12:00:00.000Z", ...over,
   };
+  try {
+    v.digest = seatStateDigest(v as never);
+  } catch {
+    v.digest = "0x";
+  }
+  return v;
 }
 
 test("seat state validation", () => {
@@ -78,6 +85,9 @@ test("seat state validation", () => {
   assert.equal(validateSeatState(state({ holds: holds(["house", "0100"], ["house", "0002"]) })), false, "a kind twice");
   assert.equal(validateSeatState(state({ holds: holds(["sponsor", "0100"]) })), false, "no free-text kinds");
   assert.equal(validateSeatState(state({ holds: [{ kind: "house", held: "0100", name: "x" }] })), false, "no names");
+  assert.equal(validateSeatState({ ...state(), confirmed: [[3, 1]] }), false, "a field changed under the old digest");
+  const { digest: _d, ...noDigest } = state();
+  assert.equal(validateSeatState(noDigest), false, "no digest");
   assert.equal(validateSeatState(state({ confirmed: [[7, 2], [3, 1]] })), false, "unsorted");
   assert.equal(validateSeatState(state({ confirmed: [[3, 1], [3, 2]] })), false, "repeat");
   assert.equal(validateSeatState(state({ confirmed: [[3, 0]] })), false, "nonce 0");
@@ -97,6 +107,23 @@ test("buildSeatState groups seats by kind in kind order, sorts confirmations and
   assert.deepEqual(s.confirmed, [[3, 1], [7, 2]]);
   assert.deepEqual(s.holds, holds(["house", "0300"], ["press", "0002"]));
   assert.equal(s.planDigest, DIGEST);
+});
+
+test("a torn paged write - page 1 from one save, the rest from a retry - never validates", () => {
+  const seats = 200_000;
+  const mk = (kind: "house" | "press", updatedAt: string) => buildSeatState({
+    eventId: EVENT, seriesId: SERIES, planDigest: DIGEST, seats,
+    holds: new Map(Array.from({ length: 5000 }, (_, i) => [i * 7, kind] as [number, "house" | "press"])),
+    confirmed: new Map(), seq: 9, updatedAt,
+  });
+  const a = new TextEncoder().encode(JSON.stringify(mk("house", "2026-11-04T10:00:00.000Z")));
+  const b = new TextEncoder().encode(JSON.stringify(mk("press", "2026-11-04T10:00:05.000Z")));
+  assert.equal(a.length, b.length, "equal length: the reader's length check cannot see this tear");
+  const torn = new Uint8Array(a.length);
+  torn.set(a.subarray(0, 4096));
+  torn.set(b.subarray(4096), 4096);
+  const parsed = JSON.parse(new TextDecoder().decode(torn));
+  assert.equal(validateSeatState(parsed), false);
 });
 
 test("a write signal names the event and seq from the first page, inline or paged", () => {

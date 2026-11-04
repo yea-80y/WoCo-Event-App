@@ -7,7 +7,7 @@
  */
 
 import { mergeDeltas } from "./organiser-seats.js";
-import type { SeatStateDelta } from "./seat-state.js";
+import { SeatStateConflictError, type SeatStateDelta } from "./seat-state.js";
 import type { SeatState } from "@woco/shared/seating/state";
 
 export type SaverStatus =
@@ -24,6 +24,8 @@ export interface SaverDeps {
 }
 
 export const SAVE_AFTER_MS = 1_500;
+/** Saves in a row that may meet another device's save before one is shown as failed. */
+export const MAX_CONFLICT_RETRIES = 3;
 
 const empty = (d: SeatStateDelta) => !d.hold?.size && !d.release?.length && !d.confirm?.size;
 
@@ -34,6 +36,7 @@ export class SeatStateSaver {
   inFlight: SeatStateDelta = {};
   status: SaverStatus = { phase: "idle" };
   private timer: unknown = null;
+  private conflicts = 0;
 
   constructor(
     private readonly deps: SaverDeps,
@@ -78,6 +81,7 @@ export class SeatStateSaver {
     try {
       const r = await this.deps.save(this.inFlight);
       this.inFlight = {};
+      this.conflicts = 0;
       this.onSaved(r.state);
       if (!empty(this.pending)) {
         this.schedule();
@@ -88,6 +92,13 @@ export class SeatStateSaver {
       // Kept, merged under anything added since: nothing the organiser did is dropped.
       this.pending = mergeDeltas(this.inFlight, this.pending);
       this.inFlight = {};
+      if (err instanceof SeatStateConflictError && ++this.conflicts <= MAX_CONFLICT_RETRIES) {
+        // Another device saved first: the next save reads its state and applies ours on top.
+        this.status = { phase: "waiting" };
+        this.onChange(this);
+        return this.run();
+      }
+      this.conflicts = 0;
       this.status = { phase: "failed", message: err instanceof Error && err.message ? err.message : "Couldn't save your changes." };
     }
     this.onChange(this);

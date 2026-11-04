@@ -14,6 +14,8 @@ import type { FeedRoute } from "../../swarm/gateways.js";
 
 export interface SeatStateIO {
   read(signer: string, topic: string, route: FeedRoute): Promise<ContentFeedResult<unknown>>;
+  /** Exactly version `version` (thorough). */
+  readVersion(signer: string, topic: string, route: FeedRoute, version: number): Promise<ContentFeedResult<unknown>>;
   write(args: { signerPrivKey: string; topic: string; data: unknown; route: FeedRoute }): Promise<number>;
   route(feed: Pick<EventFeed, "gatewayUrl">): FeedRoute;
 }
@@ -24,6 +26,17 @@ export class SeatStateUnreadableError extends Error {
     this.name = "SeatStateUnreadableError";
   }
 }
+
+/** Another device saved at the same version first: send the changes again on top of it. */
+export class SeatStateConflictError extends Error {
+  constructor() {
+    super("Saved on another device meanwhile - sending your changes again.");
+    this.name = "SeatStateConflictError";
+  }
+}
+
+/** How far below an invalid head the writer looks for the last whole state. */
+export const TORN_READ_DOWN = 8;
 
 /** The event's seated ticket types (a `seating` block names the plan's band prices). */
 export function seatedSeriesIds(feed: Pick<EventFeed, "series">): string[] {
@@ -135,10 +148,36 @@ export async function writeSeatState(
   ]);
   const topic = seatStateTopic(feed.eventId, seriesId);
 
-  const stored = await readStoredSeatState(w, signer.address, feed, seriesId);
-  if (!stored && w.hadVersion(signer.address, topic)) throw new SeatStateUnreadableError();
-  const base = stored ? await ownSeatState(stored.value, feed.eventId, seriesId) : null;
-  if (stored && (!base || base.planDigest !== plan.digest.toLowerCase() || base.seats !== plan.seats)) {
+  const route = w.route(feed);
+
+  // The base: the newest WHOLE state. A head that does not validate - a torn paged write
+  // (S6 sign-off F1) - or that can never be read, is stepped past: the write then lands
+  // after it, and readers that refused it read the new version.
+  const readDown = async (from: number): Promise<SeatState | null> => {
+    const lowest = Math.max(0, from - TORN_READ_DOWN);
+    for (let v = from - 1; v >= lowest; v--) {
+      const r = await w.readVersion(signer.address, topic, route, v);
+      if (r.status === "unavailable" && r.unusableAt === undefined) throw new SeatStateUnreadableError();
+      const own = r.status === "found" ? await ownSeatState(r.value, feed.eventId, seriesId) : null;
+      if (own) return own;
+    }
+    // Every version down to the first is unusable: start from the plan, as if never saved.
+    if (lowest === 0) return null;
+    throw new SeatStateUnreadableError();
+  };
+  const head = await w.read(signer.address, topic, route);
+  let base: SeatState | null;
+  if (head.status === "absent") {
+    if (w.hadVersion(signer.address, topic)) throw new SeatStateUnreadableError();
+    base = null;
+  } else if (head.status === "found" && head.scanClean) {
+    base = (await ownSeatState(head.value, feed.eventId, seriesId)) ?? (await readDown(head.version));
+  } else if (head.status === "unavailable" && head.unusableAt !== undefined) {
+    base = await readDown(head.unusableAt);
+  } else {
+    throw new SeatStateUnreadableError();
+  }
+  if (base && (base.planDigest !== plan.digest.toLowerCase() || base.seats !== plan.seats)) {
     throw new SeatStateUnreadableError("This ticket type's seat holds are saved for a different seating plan. Nothing was changed.");
   }
 
@@ -160,21 +199,27 @@ export async function writeSeatState(
     seq: base ? base.seq + 1 : 0,
     updatedAt: w.now(),
   });
-  await w.write({ signerPrivKey: signer.privKey, topic, data: state, route: w.route(feed) });
+  const version = await w.write({ signerPrivKey: signer.privKey, topic, data: state, route });
 
-  const back = await readStoredSeatState(w, signer.address, feed, seriesId).catch(() => null);
-  const readBack = back ? await ownSeatState(back.value, feed.eventId, seriesId) : null;
-  return { state, settled: !!readBack && readBack.seq >= state.seq };
+  // The EXACT version written (S6 sign-off F2): another device's bytes there mean this
+  // write was dropped - a SOC at an existing address keeps the first - and so does a tear.
+  const back = await w.readVersion(signer.address, topic, route, version).catch(() => null);
+  if (back?.status === "found") {
+    if ((back.value as { digest?: unknown } | null)?.digest !== state.digest) throw new SeatStateConflictError();
+    return { state, settled: true };
+  }
+  return { state, settled: false };
 }
 
 /** The live wiring: the app's content-feed reader and writer. */
 export async function liveSeatStateIO(): Promise<SeatStateIO> {
-  const [{ readContentFeedResult, writeContentFeed }, { feedRouteFor }] = await Promise.all([
+  const [{ readContentFeedResult, readContentFeedAtVersion, writeContentFeed }, { feedRouteFor }] = await Promise.all([
     import("../../swarm/content-feed.js"),
     import("../../swarm/gateways.js"),
   ]);
   return {
     read: (signer, topic, route) => readContentFeedResult<unknown>(signer, topic, { route, thorough: true, skipLegacy: true }),
+    readVersion: (signer, topic, route, version) => readContentFeedAtVersion<unknown>(signer, topic, version, { route, thorough: true }),
     // A large plan's state is up to ~100 chunks, past one minute of the relay's budget.
     write: (args) => writeContentFeed({ ...args, paceWhenBusy: true }),
     route: (feed) => feedRouteFor(feed.gatewayUrl),

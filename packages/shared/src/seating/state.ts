@@ -19,12 +19,20 @@
  *   seated series, and an event may have more than one). The plan digest alone is not
  *   unique (a plan can be reused), and the server keys its memory on the series.
  *
+ * - `digest`: written LAST, keccak256 over every other field (`seatStateDigest`). A paged
+ *   state retried at the same version keeps the pages that landed the first time (a SOC
+ *   at an existing address is a no-op), so a retry with different holds can seal a torn
+ *   mix that still parses (S6 sign-off F1). The digest makes any tear read as invalid:
+ *   the money path refuses it, and the next save starts from the last whole version.
+ *
  * Bitmap encoding: lowercase hex of ceil(seats / 8) bytes; seat k is byte k >> 3,
  * bit (k & 7), least significant first. Bits at or past `seats` are zero. (Not the
  * ledger's `seatWord` layout, which packs 256 seats per uint256.) An empty hold is
  * left out, so a state names only the kinds in use.
  */
 
+import { keccak_256 } from "@noble/hashes/sha3.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { hasExactKeys, isIntIn, isPlainRecord } from "../validate.js";
 import { MAX_PLAN_SEATS } from "./layout.js";
 import { initialHeldSeats, type SeatPlan } from "./plan.js";
@@ -57,6 +65,8 @@ export interface SeatState {
   /** Counts the organiser's writes; never goes down. */
   seq: number;
   updatedAt: string;
+  /** keccak256 of every other field (`seatStateDigest`); the last key written. */
+  digest: string;
 }
 
 const DIGEST_RE = /^0x[0-9a-f]{64}$/;
@@ -126,7 +136,7 @@ export function validateSeatState(
   expect?: { eventId: string; seriesId: string; planDigest: string; seats: number },
 ): value is SeatState {
   if (!isPlainRecord(value)) return false;
-  if (!hasExactKeys(value, ["format", "eventId", "seriesId", "planDigest", "seats", "holds", "confirmed", "seq", "updatedAt"])) return false;
+  if (!hasExactKeys(value, ["format", "eventId", "seriesId", "planDigest", "seats", "holds", "confirmed", "seq", "updatedAt", "digest"])) return false;
   if (value.format !== SEAT_STATE_FORMAT) return false;
   if (typeof value.eventId !== "string" || !EVENT_ID_RE.test(value.eventId)) return false;
   if (typeof value.seriesId !== "string" || !SERIES_ID_RE.test(value.seriesId)) return false;
@@ -144,6 +154,7 @@ export function validateSeatState(
   }
   if (!isIntIn(value.seq, 0, Number.MAX_SAFE_INTEGER)) return false;
   if (typeof value.updatedAt !== "string" || value.updatedAt.length > 40 || Number.isNaN(Date.parse(value.updatedAt))) return false;
+  if (typeof value.digest !== "string" || value.digest !== seatStateDigest(value as unknown as Omit<SeatState, "digest">)) return false;
   if (
     expect &&
     (value.eventId !== expect.eventId || value.seriesId !== expect.seriesId ||
@@ -173,7 +184,7 @@ export function buildSeatState(input: {
   }
   // Key order is the wire order: the short fields first, so the first 4 KB page of a
   // large state still names the series and `seq` (`seatStateWriteSignal`).
-  const state: SeatState = {
+  const body: Omit<SeatState, "digest"> = {
     format: SEAT_STATE_FORMAT,
     eventId: input.eventId,
     seriesId: input.seriesId,
@@ -184,8 +195,22 @@ export function buildSeatState(input: {
     holds: SEAT_HOLD_KINDS.filter((kind) => byKind.has(kind)).map((kind) => ({ kind, held: encodeHeld(byKind.get(kind)!, input.seats) })),
     confirmed: [...input.confirmed].filter(([, n]) => n > 0).sort((a, b) => a[0] - b[0]),
   };
+  const state: SeatState = { ...body, digest: seatStateDigest(body) };
   if (!validateSeatState(state)) throw new Error("invalid seat state");
   return state;
+}
+
+/**
+ * `0x` + keccak256 of every field but `digest`, in a fixed order whatever order the keys
+ * were parsed in: what a torn paged write cannot reproduce.
+ */
+export function seatStateDigest(s: Omit<SeatState, "digest">): string {
+  const canonical = JSON.stringify([
+    s.format, s.eventId, s.seriesId, s.planDigest, s.seats, s.seq, s.updatedAt,
+    s.holds.map((h) => [h.kind, h.held]),
+    s.confirmed,
+  ]);
+  return `0x${bytesToHex(keccak_256(new TextEncoder().encode(canonical)))}`;
 }
 
 const SIGNAL_RE =
