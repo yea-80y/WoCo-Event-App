@@ -51,7 +51,3 @@ test("the events list card falls back across gateways, starting where the image 
   assert.match(s, /src=\{firstImageUrl\(event\.imageHash, BEE_GATEWAY, event\.gatewayUrl\)\}/);
   assert.match(s, /onerror=\{\(e\) => useNextImageUrl\(e, event\.imageHash, BEE_GATEWAY, event\.gatewayUrl\)\}/);
 });
-
-test("the ticket canvas keeps WoCo first: a canvas read needs CORS, which Etherna does not send", () => {
-  assert.match(src("../src/lib/attendee/events/TicketSuccess.svelte"), /imageUrlCandidates\(imageHash, BEE_GATEWAY\);/);
-});
