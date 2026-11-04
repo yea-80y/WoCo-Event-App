@@ -84,16 +84,20 @@ seat-reads,seated-checkout}.ts`, the seated half of `lib/event/reservation-store
   pin. The plan is found through the manifest's `seatPlan.ref` and trusted only for the pinned digest.
   ONE chain read (event views, the seats' words and nonces), then the buyer map's own rules plus our
   minted seats (`ticket-sales.json`, a lagging replica's cover); under the series lock, no other live
-  hold, `count <= remaining - held`, the per-IP cap by seats. A 409 lists the conflicting seats. The
-  hold pins each seat's label, band and price; its reply (`SeatedHold`) is the only price a page shows.
-  The same browser asking for the same seats gets its hold back unchanged.
-- **One payable session per hold.** Checkout prices from the hold (refused if the feed's band prices
-  differ): one Stripe line per band, the cover fee one order line, our fee on the subtotal
+  hold and no seat paid for in the last 10 min (a mint not yet visible, or unresolved), `count <=
+  remaining - held`, the per-IP cap by seats. A 409 lists the conflicting seats. The hold pins each
+  seat's label, band and price, and the fee settings; its reply (`SeatedHold`) is the only price a page
+  shows. The same browser asking for the same seats gets its hold back unchanged while checkout would
+  take it (prices and fees current, under the session cap); otherwise a fresh hold.
+- **One payable session per hold.** Checkout prices from the hold (refused if the feed's band prices or
+  fee settings differ): one Stripe line per band, the cover fee one order line, our fee on the subtotal
   (`cardOrderAmountsMulti`; rates stay in `PRICING_AND_EMAIL.md`). The session gets Stripe's floor
   (30 min + 2 min skew); the hold runs to its `expires_at` + 5 min. A hold with an open session is never
   released without closing that session at Stripe first (a new checkout, a new hold from the same
   browser, the release route): `complete` = a sale, kept; Stripe unreachable = 503, nothing released.
-  At most 3 sessions per hold. `checkout.session.expired` ends the hold bound to that session id.
+  At most 3 sessions per hold. `checkout.session.expired` ends the hold bound to that session id,
+  unless checkout closed that session itself to open the next. A refusal that ends a hold's use
+  (`SEAT_HOLD_LOST_CODES`) takes every page back to "Hold again", the seats still chosen.
 - **Mint** from the hold record only: fulfilment claims it synchronously before its first await (bound
   to this session, pinned plan, count = paid quantity) and keeps it in force while it mints (bounded,
   20 min). A lapsed hold still mints if nobody else held or bought its seats. Anything else refunds in
@@ -174,10 +178,11 @@ per-account limits (a 200,000-seat state is ~50 KB). (Done in S4: a recovered re
 only if `isSeated` agrees; reserve reads words and nonces in one multicall.)
 
 Before the flag flips: scanner deploy, a site runtime release (organisers republish), a server deploy
-(embed `?v=25`), the `onchain-events.json` rollback note for the new fields, `checkout.session.expired`
-enabled on the connected-accounts webhook endpoint (health `reservations` goes red without it),
+(embed `?v=25`), the `onchain-events.json` rollback note for the new fields,
 `docs/legal/DATA_INVENTORY.md` + privacy-notice line (the seat is order data: holds, sale records,
-ticket email). The app's CSP already allows the map's RPC (`arb1.arbitrum.io`).
+ticket email). The app's CSP already allows the map's RPC (`arb1.arbitrum.io`). Done:
+`checkout.session.expired` on the live connected-accounts webhook endpoint (2026-11-04; health
+`reservations` goes red without it).
 
 ## The buyer map (S3)
 
@@ -231,3 +236,6 @@ Departures from the S4 consult, for the S4 sign-off by name: D1 the fulfilment p
 process that dies mid-sale cannot hold seats for good); D2 no resale `rail` marker in checkout metadata yet
 (absent = primary works the same when #13 lands); D3 no per-band minimum-fee check at publish
 (`MIN_TICKET_PRICE` 1.00 already gives 2p of fee per seat); D4 the seat on the #983 resend copy moved to S5.
+The sign-off (Fable, 2026-11-04) accepted all four and E1-E11; its fixes are in: one off-sale rule for the
+map and the hold check, a session checkout closed itself not ending its hold, the fee settings pinned
+like the prices, the hold re-read before a new session, and no hold handed back that checkout refuses.

@@ -80,6 +80,15 @@ export function seatedHoldFees(h: Pick<SeatedHold, "quantity" | "amounts">): Buy
   };
 }
 
+/**
+ * Checkout refusals after which a seated hold cannot be paid as it is (ran out, at its
+ * payment-page cap, prices or fees changed, not a seat hold on the plan): the page drops
+ * it and offers "Hold again" with the buyer's seats still chosen. The server then makes a
+ * fresh hold rather than hand this one back.
+ */
+export const SEAT_HOLD_LOST_CODES: readonly string[] = ["HOLD_EXPIRED", "HOLD_AGAIN", "PRICES_CHANGED", "SEATS_REQUIRED"];
+export const isSeatHoldLost = (code: unknown): boolean => typeof code === "string" && SEAT_HOLD_LOST_CODES.includes(code);
+
 export type SeatedReserveRefusal = "plan_changed";
 
 /**

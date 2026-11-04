@@ -32,7 +32,8 @@ export {
 } from "./availability.js";
 export { SEAT_WORDS_PER_BATCH, seatBatch, seatWordCount, type SeatBatch, type SeatBatchRead, type SeatEventRead } from "./chain.js";
 export {
-  parseSeatedReserve, seatedReserveRefusal, seatedHoldFees, type SeatedHold, type SeatedReserveRequest, type SeatedReserveRefusal,
+  parseSeatedReserve, seatedReserveRefusal, seatedHoldFees, SEAT_HOLD_LOST_CODES, isSeatHoldLost,
+  type SeatedHold, type SeatedReserveRequest, type SeatedReserveRefusal,
 } from "./reserve.js";
 export { seatLayoutLibraryTopic, seatLayoutTopic, eventSeatStateTopic } from "./topics.js";
 export {

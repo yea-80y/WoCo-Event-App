@@ -113,6 +113,8 @@ export interface Reservation {
   planDigest?: string;
   /** Per seat, aligned with `seats`: what the buyer was shown and will be charged. */
   seatInfo?: SeatedHoldSeat[];
+  /** The fee settings the hold's amounts were worked out under (`holdFeeKey`): checkout refuses others. */
+  feeKey?: string;
   /** The Stripe Checkout Session currently paying for this seated hold (one at a time). */
   checkout?: HoldCheckout;
   /** Fulfilment has claimed the hold for a paid session and is minting it. */
@@ -142,6 +144,8 @@ export interface HoldCheckout {
   expiresAt: string;
   /** Sessions this hold has had, this one included (MAX_SESSIONS_PER_HOLD). */
   sessions: number;
+  /** We closed it at Stripe to open the next one: its expiry event is ours, not a lapse. */
+  closed?: true;
 }
 
 /** A seated hold stays this long past its session's expiry: a payment in flight, a late webhook. */
@@ -178,7 +182,8 @@ function validCheckout(v: unknown): v is HoldCheckout {
   const c = v as HoldCheckout;
   return !!c && typeof c === "object" && isText(c.sessionId, 255) && c.sessionId.startsWith("cs_") &&
     isText(c.account, 255) && c.account.startsWith("acct_") && isTime(c.expiresAt) &&
-    Number.isInteger(c.sessions) && c.sessions >= 1 && c.sessions <= MAX_SESSIONS_PER_HOLD;
+    Number.isInteger(c.sessions) && c.sessions >= 1 && c.sessions <= MAX_SESSIONS_PER_HOLD &&
+    (c.closed === undefined || c.closed === true);
 }
 
 /**
@@ -190,6 +195,7 @@ function sanitiseSeated(r: Reservation): void {
   if ("seats" in r && !validSeats(r.seats, r.quantity)) delete r.seats;
   if ("planDigest" in r && !(typeof r.planDigest === "string" && DIGEST_RE.test(r.planDigest))) delete r.planDigest;
   if ("seatInfo" in r && !validSeatInfo(r.seatInfo, r.seats?.length ?? -1)) delete r.seatInfo;
+  if ("feeKey" in r && !isText(r.feeKey, 512)) delete r.feeKey;
   if ("checkout" in r && !validCheckout(r.checkout)) delete r.checkout;
   if ("fulfilling" in r && !(r.fulfilling && isText(r.fulfilling.sessionId, 255) && isTime(r.fulfilling.at))) delete r.fulfilling;
 }
@@ -259,7 +265,7 @@ function sweep(): void {
   for (const [id, r] of reservations) {
     // Held by fulfilment past its time: never swept from under the mint.
     if (isActive(r, now)) continue;
-    if (r.checkout && !r.consumedAt && !r.releasedBy && !r.ttlLapsed) {
+    if (r.checkout && !r.checkout.closed && !r.consumedAt && !r.releasedBy && !r.ttlLapsed) {
       r.ttlLapsed = true;
       changed = true;
     }
@@ -353,10 +359,18 @@ export function heldSeatsFor(eventId: string, seriesId: string): number[] {
   const out = new Set<number>();
   for (const r of reservations.values()) {
     if (r.eventId !== eventId || r.seriesId !== seriesId || !r.seats) continue;
-    const recentlyPaid = !!r.consumedAt && new Date(r.consumedAt).getTime() + RESERVATION_TTL_MS > now;
-    if (isActive(r, now) || recentlyPaid) for (const k of r.seats) out.add(k);
+    if (seatsOffSale(r, now)) for (const k of r.seats) out.add(k);
   }
   return [...out].sort((a, b) => a - b);
+}
+
+/**
+ * A seated hold's seats are off sale: it is live, or it was paid in the last
+ * RESERVATION_TTL_MS - a mint the chain may not show yet, or one still unresolved
+ * (#994), which may land. The map and the hold check share this one rule.
+ */
+function seatsOffSale(r: Reservation, now: number): boolean {
+  return isActive(r, now) || (!!r.consumedAt && Date.parse(r.consumedAt) + RESERVATION_TTL_MS > now);
 }
 
 /**
@@ -652,7 +666,9 @@ async function closeThenEnd(
 
 /**
  * Hold seats. Under the series lock: this browser's hold on exactly these seats comes
- * back unchanged (its clock and checkout kept); otherwise this browser's other holds on
+ * back unchanged (its clock and checkout kept) while checkout would still take it -
+ * prices pinned, under its session cap, `reusable` (the feed's prices and fees still its
+ * own); a buyer told to hold again gets a fresh one. Otherwise this browser's other holds on
  * the series end first (an open checkout closed at Stripe before its seats return);
  * then `verify` (the plan, the chain and our own sales, `lib/seating/seat-check.ts`),
  * then - synchronously to the insert - nobody else's live hold names a seat, the count
@@ -668,6 +684,10 @@ export async function reserveSeats(a: {
   replaceReservationId?: string;
   clientKey?: string;
   ip?: string;
+  /** Recorded on the hold (`Reservation.feeKey`). */
+  feeKey?: string;
+  /** Whether this browser's hold on the same seats may come back as it is. */
+  reusable?(r: Reservation): boolean;
   verify(): Promise<SeatVerify>;
   expireSession(c: HoldCheckout): Promise<SessionExpiry>;
 }): Promise<SeatedReserveResult> {
@@ -684,7 +704,8 @@ export async function reserveSeats(a: {
     if (a.clientKey && !a.replaceReservationId) {
       for (const r of reservations.values()) {
         if (here(r) && r.clientKey === a.clientKey && r.seats && r.planDigest === a.planDigest && !r.fulfilling &&
-            sameSeats(r.seats, a.seats) && isActive(r, now)) {
+            sameSeats(r.seats, a.seats) && isActive(r, now) && r.seatInfo &&
+            (r.checkout?.sessions ?? 0) < MAX_SESSIONS_PER_HOLD && (a.reusable?.(r) ?? true)) {
           return { ok: true, reservation: { ...r }, reused: true };
         }
       }
@@ -710,7 +731,7 @@ export async function reserveSeats(a: {
     const wanted = new Set(a.seats);
     const conflicts = new Set<number>();
     for (const r of reservations.values()) {
-      if (!here(r) || !r.seats || !isActive(r, t)) continue;
+      if (!here(r) || !r.seats || !seatsOffSale(r, t)) continue;
       for (const k of r.seats) if (wanted.has(k)) conflicts.add(k);
     }
     if (conflicts.size) return { ok: false, status: 409, error: SEATS_GONE, conflicts: [...conflicts].sort((x, y) => x - y) };
@@ -739,6 +760,7 @@ export async function reserveSeats(a: {
       seats: [...a.seats],
       planDigest: a.planDigest,
       seatInfo: v.seats.map((s) => ({ ...s })),
+      ...(a.feeKey ? { feeKey: a.feeKey } : {}),
     };
     reservations.set(r.id, r);
     persistToDisk();
@@ -826,12 +848,27 @@ export function settleSeatedHold(id: string, sessionId: string, outcome: "minted
   persistToDisk();
 }
 
+/**
+ * Checkout closed this hold's session at Stripe to open the next one. Stripe's expiry
+ * event for it must not end the hold the buyer is paying with now; and until the next
+ * session is bound the hold has none payable, so it runs a fresh hold's time at most.
+ */
+export function markCheckoutClosed(id: string, sessionId: string): void {
+  ensureLoaded();
+  const r = reservations.get(id);
+  if (!r?.checkout || r.checkout.sessionId !== sessionId || r.consumedAt || r.fulfilling) return;
+  const now = Date.now();
+  r.checkout = { ...r.checkout, expiresAt: new Date(Math.min(Date.parse(r.checkout.expiresAt), now)).toISOString(), closed: true };
+  r.expiresAt = new Date(Math.min(Date.parse(r.expiresAt), now + RESERVATION_TTL_MS)).toISOString();
+  persistToDisk();
+}
+
 /** `checkout.session.expired`: end the hold bound to that session, if it is still waiting on it. */
 export function releaseForExpiredSession(sessionId: string): boolean {
   ensureLoaded();
   for (const r of reservations.values()) {
     if (r.checkout?.sessionId !== sessionId) continue;
-    if (r.consumedAt || r.fulfilling || r.releasedBy) return false;
+    if (r.consumedAt || r.fulfilling || r.releasedBy || r.checkout.closed) return false;
     endHold(r, "session-expired");
     persistToDisk();
     return true;
@@ -877,6 +914,12 @@ export function reservationsHealth(): ReservationsHealth {
     ...(fileUnreadable ? { unreadable: true as const } : {}),
     seated: { lapsedWithSession, endedBySessionExpiry },
   };
+}
+
+/** Test seam: the GC sweep runs on a timer. */
+export function __sweepForTests(): void {
+  ensureLoaded();
+  sweep();
 }
 
 /** Test seam: the store is process-lifetime state. */

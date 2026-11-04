@@ -76,6 +76,24 @@ test("a hold answers with each seat's pinned price and the total checkout will c
   assert.equal(view.planDigest, DIGEST);
 });
 
+test("holding the same seats again: the same hold while its prices stand, a fresh one at the feed's new prices or fees", async () => {
+  const a = args([2]);
+  const id = (r: { body: unknown }) => (r.body as { data: { reservationId: string } }).data.reservationId;
+  const total = (r: { body: unknown }) => (r.body as { data: { amounts: { totalMinor: number } } }).data.amounts.totalMinor;
+  const first = await mod.reserveSeated(a, deps());
+  const same = await mod.reserveSeated(a, deps());
+  assert.equal(id(same), id(first));
+  // A re-signed feed lists its lowest band as the "from" price.
+  const dearer = { bands: seating.bands.map((b) => ({ ...b, price: "40.00" })) };
+  const repriced = await mod.reserveSeated({ ...a, series: { ...a.series, seating: dearer, payment: { ...payment, price: "40.00" } } }, deps());
+  assert.equal(repriced.status, 200, JSON.stringify(repriced.body));
+  assert.notEqual(id(repriced), id(first), "not the hold priced the old way");
+  assert.ok(total(repriced) > total(first));
+  const percent = { ...payment, price: "40.00", coverFees: undefined, buyerFeePercent: 10 } as PaymentConfig;
+  const refeed = await mod.reserveSeated({ ...a, series: { ...a.series, seating: dearer, payment: percent } }, deps());
+  assert.notEqual(id(refeed), id(repriced), "the fee settings changed");
+});
+
 test("anything that could not mint is refused before any read", async () => {
   const noRead = { pinnedSeatPlan: async () => { throw new Error("no read"); } };
   for (const [why, a, d] of [

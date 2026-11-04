@@ -13,6 +13,8 @@ import type { SeriesSeating } from "@woco/shared";
 import { isPlainRecord } from "@woco/shared/validate";
 import {
   bindCheckout,
+  getReservation,
+  markCheckoutClosed,
   MAX_SESSIONS_PER_HOLD,
   SEAT_SALES_PAUSED,
   type HoldCheckout,
@@ -23,6 +25,14 @@ import {
 import { expireCheckoutSession } from "../stripe/checkout-session-expire.js";
 
 export const PRICES_CHANGED = "Seat prices for this event have changed. Hold your seats again to see the new prices.";
+
+type FeeSettings = Pick<PaymentConfig, "currency" | "feePassedToCustomer" | "buyerFeePercent" | "coverFees">;
+
+/** Everything besides the band prices that a seated hold's amounts depend on, as one comparable value. */
+export function holdFeeKey(p: FeeSettings): string {
+  const c = p.coverFees;
+  return JSON.stringify([p.currency, !!p.feePassedToCustomer, p.buyerFeePercent ?? null, c ? [c.stripeBp, c.stripeFixedMinor, c.radarMinor] : null]);
+}
 
 type Refusal = { status: 409 | 410 | 503; body: { ok: false; error: string; code?: string } };
 const refusal = (status: Refusal["status"], error: string, code?: string): Refusal =>
@@ -39,6 +49,7 @@ export function seatedCheckoutRefusal(a: {
   contractVersion: string;
   persisting: boolean;
   feedSeating: unknown;
+  feedPayment: FeeSettings | undefined;
 }): Refusal | null {
   const h = a.held;
   if (!h?.seats || !h.seatInfo || h.planDigest !== a.pin.planDigest || a.contractVersion !== "ledger2") {
@@ -46,7 +57,7 @@ export function seatedCheckoutRefusal(a: {
   }
   if (!a.persisting) return refusal(503, SEAT_SALES_PAUSED);
   if ((h.checkout?.sessions ?? 0) >= MAX_SESSIONS_PER_HOLD) return refusal(409, "Hold your seats again to continue.", "HOLD_AGAIN");
-  const priceProblem = seatedPriceRefusal(h.seatInfo, a.feedSeating);
+  const priceProblem = seatedPriceRefusal(h, a.feedSeating, a.feedPayment);
   return priceProblem ? refusal(409, priceProblem, "PRICES_CHANGED") : null;
 }
 
@@ -54,20 +65,29 @@ export function seatedCheckoutRefusal(a: {
  * One payable session per seated hold: the one it has is closed at Stripe first
  * ("complete" = it was paid, no second sale of the same seats), the new one is created,
  * then bound to the hold in one step - or closed at once if the hold ran out meanwhile,
- * never left payable. `create` throwing is the caller's (nothing was bound).
+ * never left payable. `create` throwing is the caller's (nothing was bound). The hold is
+ * read afresh here: another tab may have bound a session since the route's gates read it.
  */
 export async function openSeatedSession<S extends { id: string; expires_at?: number | null }>(
-  hold: Reservation,
+  holdId: string,
   account: string,
   expiresAtS: number,
   create: () => Promise<S>,
-  deps: { expire(c: HoldCheckout): Promise<SessionExpiry>; bind: typeof bindCheckout } = { expire: expireCheckoutSession, bind: bindCheckout },
+  deps: {
+    get(id: string): Reservation | null;
+    expire(c: HoldCheckout): Promise<SessionExpiry>;
+    markClosed(id: string, sessionId: string): void;
+    bind: typeof bindCheckout;
+  } = { get: getReservation, expire: expireCheckoutSession, markClosed: markCheckoutClosed, bind: bindCheckout },
 ): Promise<{ ok: true; session: S } | ({ ok: false } & Refusal)> {
+  const hold = deps.get(holdId);
+  if (!hold) return { ok: false, ...refusal(410, "Your hold on these seats ran out. Hold them again to continue.", "HOLD_EXPIRED") };
   const prev = hold.checkout ?? null;
   if (prev && Date.parse(prev.expiresAt) > Date.now()) {
     const closed = await deps.expire(prev);
     if (closed === "complete") return { ok: false, ...refusal(409, "These seats have been paid for. Your tickets are on the way by email.", "HOLD_PAID") };
     if (closed === "error") return { ok: false, ...refusal(503, "We couldn't start a new payment just now. Try again in a moment.") };
+    deps.markClosed(hold.id, prev.sessionId);
   }
   const session = await create();
   const expiresAtMs = (session.expires_at ?? expiresAtS) * 1000;
@@ -78,8 +98,18 @@ export async function openSeatedSession<S extends { id: string; expires_at?: num
   return { ok: true, session };
 }
 
-/** Why the hold's pinned prices are no longer the feed's, or null when they are. */
-export function seatedPriceRefusal(info: readonly SeatedHoldSeat[], seating: unknown): string | null {
+/**
+ * Why the hold's pinned prices or fee settings are no longer the feed's, or null when
+ * they are: the hold's figures are the only ones a page showed, so checkout charges
+ * those or none. Also decides whether a hold may come back as it is (`reserveSeats`).
+ */
+export function seatedPriceRefusal(
+  h: Pick<Reservation, "seatInfo" | "feeKey">,
+  seating: unknown,
+  payment: FeeSettings | undefined,
+): string | null {
+  const info = h.seatInfo;
+  if (!info || !payment || h.feeKey !== holdFeeKey(payment)) return PRICES_CHANGED;
   if (!isPlainRecord(seating) || !Array.isArray(seating.bands)) return PRICES_CHANGED;
   let now: Map<string, number>;
   try {

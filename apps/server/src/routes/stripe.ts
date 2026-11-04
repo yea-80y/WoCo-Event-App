@@ -896,7 +896,8 @@ stripe.post("/create-checkout", async (c) => {
     if (flagOff) return c.json(flagOff.body, flagOff.status);
     const held = reservationId ? getReservation(reservationId) : null;
     const refused = seatedCheckoutRefusal({
-      held, pin: seating, contractVersion: mintTarget.version, persisting: reservationsPersisting(), feedSeating: series.seating,
+      held, pin: seating, contractVersion: mintTarget.version, persisting: reservationsPersisting(),
+      feedSeating: series.seating, feedPayment: series.payment,
     });
     if (refused) return c.json(refused.body, refused.status);
     seatedHold = held;
@@ -1304,7 +1305,7 @@ stripe.post("/create-checkout", async (c) => {
     // A seated hold has one payable session at a time (seated-checkout.ts).
     let session: Awaited<ReturnType<typeof createSession>>;
     if (seatedHold) {
-      const opened = await openSeatedSession(seatedHold, organiserRecord.stripeAccountId, expiresAt!, createSession);
+      const opened = await openSeatedSession(seatedHold.id, organiserRecord.stripeAccountId, expiresAt!, createSession);
       if (!opened.ok) return c.json(opened.body, opened.status);
       session = opened.session;
     } else {

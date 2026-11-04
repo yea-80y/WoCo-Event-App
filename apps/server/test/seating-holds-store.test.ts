@@ -215,7 +215,7 @@ test("a claimed hold stays in force while it mints, for a bounded time", async (
   assert.deepEqual(store.heldSeatsFor(EV, SE), []);
 });
 
-test("settling: minted or unresolved consumes; definitely not minted returns the seats at once", () => {
+test("settling: minted or unresolved consumes; definitely not minted returns the seats at once", async () => {
   seed([bound("m", [3]), bound("u", [4]), bound("x", [5])]);
   for (const id of ["m", "u", "x"]) assert.ok(store.claimSeatedHold(id, `cs_${id}`, EV, SE, new Set()).ok);
   store.settleSeatedHold("m", "cs_m", "minted");
@@ -226,6 +226,92 @@ test("settling: minted or unresolved consumes; definitely not minted returns the
   assert.equal(store.getReservation("x")!.releasedBy, "not-minted");
   // Recently paid seats stay listed for a lagging map; the unminted one is free.
   assert.deepEqual(store.heldSeatsFor(EV, SE), [3, 4]);
+  // And a hold refuses them too: an unresolved mint may still land (#994).
+  const rival = await hold([4], { clientKey: "rival", ip: "198.51.100.4" });
+  assert.ok(!rival.ok);
+  assert.equal(rival.status, 409);
+  assert.deepEqual(rival.conflicts, [4]);
+  assert.ok((await hold([5], { clientKey: "rival", ip: "198.51.100.4" })).ok);
+  // Past the window, an unresolved mint that never landed frees its seat (the chain decides).
+  const later = JSON.parse(readFileSync(file, "utf-8"));
+  for (const r of later) if (r.consumedAt) r.consumedAt = at(-store.RESERVATION_TTL_MS - min);
+  seed(later);
+  assert.ok((await hold([4], { clientKey: "rival2", ip: "198.51.100.5" })).ok);
+});
+
+test("a hold that checkout would refuse is not handed back: the buyer told to hold again gets a fresh one", async () => {
+  const exp = Date.now() + 32 * min;
+  const capped = await hold([3]);
+  assert.ok(capped.ok);
+  const id = capped.reservation.id;
+  let prev: string | null = null;
+  for (const s of ["cs_1", "cs_2", "cs_3"]) {
+    assert.ok(store.bindCheckout(id, prev, { sessionId: s, account: "acct_1", expiresAtMs: exp }));
+    prev = s;
+  }
+  const closedAtStripe: string[] = [];
+  const expire = async (c: { sessionId: string }) => { closedAtStripe.push(c.sessionId); return "expired" as const; };
+  const again = await hold([3], { expireSession: expire });
+  assert.ok(again.ok);
+  assert.notEqual(again.reservation.id, id, "at its session cap");
+  assert.equal(again.reused, undefined);
+  assert.deepEqual(closedAtStripe, ["cs_3"], "the old page closed before its seat was re-held");
+  assert.equal(store.getReservation(id)!.releasedBy, "replaced");
+
+  const priced = await hold([7]);
+  assert.ok(priced.ok);
+  const repriced = await hold([7], { reusable: () => false });
+  assert.ok(repriced.ok);
+  assert.notEqual(repriced.reservation.id, priced.reservation.id, "prices or fees changed");
+  const same = await hold([7], { reusable: () => true });
+  assert.ok(same.ok && same.reused);
+
+  // A record whose pinned prices did not load cannot be shown or sold: replaced, never a 500.
+  seed([seatedRecord("bare", [9], { clientKey: "buyer-a-key", seatInfo: "not prices" })]);
+  const fresh = await hold([9]);
+  assert.ok(fresh.ok);
+  assert.notEqual(fresh.reservation.id, "bare");
+  assert.ok(fresh.reservation.seatInfo);
+});
+
+test("the fee settings a hold was priced under are recorded with it", async () => {
+  const a = await hold([3], { feeKey: '["GBP",true,10,null]' });
+  assert.ok(a.ok);
+  assert.equal(store.getReservation(a.reservation.id)!.feeKey, '["GBP",true,10,null]');
+  seed([seatedRecord("odd", [4], { feeKey: 42 })]);
+  assert.equal(store.getReservation("odd")!.feeKey, undefined, "a bad one is dropped alone");
+  assert.ok(store.getReservation("odd")!.seats);
+});
+
+test("a session checkout closed itself: its expiry event does not end the hold being paid", () => {
+  // Bound to a session, a hold runs ~35 min; with that session closed it may not keep that long.
+  seed([bound("h", [3], { expiresAt: at(35 * min) })]);
+  store.markCheckoutClosed("h", "cs_other");
+  assert.equal(store.getReservation("h")!.checkout!.closed, undefined, "only the recorded session");
+  store.markCheckoutClosed("h", "cs_h");
+  const r = store.getReservation("h")!;
+  assert.equal(r.checkout!.closed, true);
+  assert.ok(Date.parse(r.checkout!.expiresAt) <= Date.now(), "nothing payable any more");
+  assert.ok(Date.parse(r.expiresAt) <= Date.now() + store.RESERVATION_TTL_MS + 1000, "a fresh hold's time at most");
+  // Stripe's event for it arrives before the new session is bound.
+  assert.equal(store.releaseForExpiredSession("cs_h"), false);
+  assert.equal(store.getReservation("h")!.releasedBy, undefined);
+  assert.ok(store.bindCheckout("h", "cs_h", { sessionId: "cs_h2", account: "acct_1", expiresAtMs: Date.now() + 32 * min }));
+  assert.equal(store.getReservation("h")!.checkout!.closed, undefined);
+  // The next one's expiry, which we did not cause, ends it as usual.
+  assert.equal(store.releaseForExpiredSession("cs_h2"), true);
+});
+
+test("a hold left with a session we closed is not a missed expiry event (health)", () => {
+  const closedOne = { sessionId: "cs_c", account: "acct_1", expiresAt: at(-2 * min), sessions: 1, closed: true };
+  seed([bound("c", [3], { expiresAt: at(-1 * min), checkout: closedOne }), bound("o", [4], { expiresAt: at(-1 * min) })]);
+  assert.equal(store.getReservation("c")!.checkout!.closed, true, "loads");
+  store.__sweepForTests();
+  assert.equal(store.getReservation("c")!.ttlLapsed, undefined);
+  assert.equal(store.getReservation("o")!.ttlLapsed, true, "one we did not close still counts");
+  assert.equal(store.reservationsHealth().seated.lapsedWithSession, 1);
+  seed([bound("bad", [5], { checkout: { ...closedOne, closed: "yes" } })]);
+  assert.equal(store.getReservation("bad")!.checkout, undefined, "a malformed flag drops the checkout");
 });
 
 test("checkout.session.expired ends only the hold waiting on that session", () => {

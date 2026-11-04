@@ -22,6 +22,7 @@ import {
 import { expireCheckoutSession } from "../stripe/checkout-session-expire.js";
 import { mintedSeats } from "../stripe/ticket-sales.js";
 import { checkSeats, SEATS_NOT_ON_SALE, SEATS_UNREADABLE } from "./seat-check.js";
+import { holdFeeKey, seatedPriceRefusal } from "./seated-checkout.js";
 import { pinnedSeatPlan, readSeatChain } from "./seat-reads.js";
 
 export interface Reply {
@@ -83,6 +84,8 @@ export async function reserveSeated(
     replaceReservationId: a.replaceReservationId,
     clientKey: a.clientKey,
     ip: a.ip,
+    feeKey: holdFeeKey(payment),
+    reusable: (h) => seatedPriceRefusal(h, a.series.seating, payment) === null,
     expireSession: deps.expireSession,
     verify: async () => {
       let chain;
