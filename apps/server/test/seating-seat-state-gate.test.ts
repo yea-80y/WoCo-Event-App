@@ -142,12 +142,13 @@ test("only the event's recorded organiser's chunk is a signal: anyone else's pau
   const recorded = (id: string) => (id === EVENT ? creator : null);
   serve(found(stateAt(2)));
   const carrier = async () => `0x${"11".repeat(20)}`;
-  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, `0x${"ee".repeat(20)}`, "11".repeat(20), recorded, carrier), false, "another account");
-  assert.equal(await seatStateRelayed({ eventId: "evt-unknown", seriesId: SERIES, seq: 3 }, creator, "11".repeat(20), recorded, carrier), false, "no record");
-  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, creator, "22".repeat(20), recorded, carrier), false, "a replaced signer (a removed passkey's device) pauses nothing");
+  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, `0x${"ee".repeat(20)}`, "11".repeat(20), recorded, carrier, () => true), false, "another account");
+  assert.equal(await seatStateRelayed({ eventId: "evt-unknown", seriesId: SERIES, seq: 3 }, creator, "11".repeat(20), recorded, carrier, () => true), false, "no record");
+  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, creator, "22".repeat(20), recorded, carrier, () => true), false, "a replaced signer (a removed passkey's device) pauses nothing");
+  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: "made-up", seq: 3 }, creator, "11".repeat(20), recorded, carrier, (_e, s) => s === SERIES), false, "a ticket type not registered seated");
   assert.equal((await seatStateRead(X)).status, "found", "nothing paused");
   t += SEAT_STATE_FRESH_MS;
-  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, creator.toUpperCase().replace("0X", "0x"), "0x" + "11".repeat(20), recorded, carrier), true);
+  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 3 }, creator.toUpperCase().replace("0X", "0x"), "0x" + "11".repeat(20), recorded, carrier, () => true), true);
   assert.equal((await seatStateRead(X)).status, "unavailable", "the organiser's own write is awaited");
 });
 
@@ -170,7 +171,7 @@ test("a signal that lands while a read is in flight: the older answer is never s
 test("an unreadable carrier is taken as matching: a false signal only refuses", async () => {
   serve(found(stateAt(2)));
   const recorded = () => `0x${"c0".repeat(20)}`;
-  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 5 }, `0x${"c0".repeat(20)}`, "33".repeat(20), recorded, async () => null), true);
+  assert.equal(await seatStateRelayed({ eventId: EVENT, seriesId: SERIES, seq: 5 }, `0x${"c0".repeat(20)}`, "33".repeat(20), recorded, async () => null, () => true), true);
   assert.equal((await seatStateRead(X)).status, "unavailable");
 });
 

@@ -32,6 +32,7 @@ import { validateSeatState, type SeatState } from "@woco/shared/seating/state";
 import { invalidateContentFeedVersion, readContentFeedJsonResult } from "../swarm/soc-upload.js";
 import { getRecordedFeedSigner } from "../event/feed-signer-record.js";
 import { eventKeys } from "../keyring/event-keys.js";
+import { registrationSeatingFor } from "../event/onchain-registry.js";
 
 export type SeatStateRead =
   | { status: "found"; state: SeatState }
@@ -211,9 +212,13 @@ export async function seatStateRelayed(
   ownerHex: string,
   recordedCreator: (eventId: string) => string | null = (id) => getRecordedFeedSigner(id)?.creatorAddress ?? null,
   carrierSigner: (eventId: string) => Promise<string | null> = liveCarrierSigner,
+  seatedRegistration: (eventId: string, seriesId: string) => boolean = (e, s) => registrationSeatingFor(e, s) !== null,
 ): Promise<boolean> {
   const creator = recordedCreator(signal.eventId);
   if (!creator || creator.toLowerCase() !== parent.toLowerCase()) return false;
+  // Only a ticket type this server registered seated has holds to protect: a made-up one
+  // would only take room from others' floors (automated security review).
+  if (!seatedRegistration(signal.eventId, signal.seriesId)) return false;
   const carrier = await carrierSigner(signal.eventId);
   const owner = `0x${ownerHex.toLowerCase().replace(/^0x/, "")}`;
   if (carrier !== null && carrier !== owner) return false;
