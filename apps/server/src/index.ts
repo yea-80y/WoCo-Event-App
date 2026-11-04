@@ -92,6 +92,7 @@ import { cancellationJobHealth, startCancellationRefundJob } from "./lib/stripe/
 import { liveCancellationRefundDeps } from "./lib/stripe/cancellation-refunds-live.js";
 import { eventCancel } from "./routes/event-cancel.js";
 import { ledger2RelayRoutes } from "./routes/ledger2-relay.js";
+import { seatMovedRoutes } from "./routes/seat-moved.js";
 import { ledger2RelayHealth } from "./lib/health/ledger2-relay-health.js";
 import { relayKeyConflict } from "./lib/chain/ledger2-relay-chain.js";
 import { saleRefundEventsHealth } from "./lib/stripe/sale-refunds.js";
@@ -881,6 +882,7 @@ app.route("/api/events", reservations);
 app.route("/api/events", checkinOrganiser);
 app.route("/api/events", eventCancel);
 app.route("/api/events", ledger2RelayRoutes());
+app.route("/api/events", seatMovedRoutes());
 
 // Door scanner endpoints — authed by X-Door-Pass token, not session delegation
 app.route("/api/checkin", checkin);
