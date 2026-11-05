@@ -4,6 +4,7 @@
   import {
     TRANSACTIONAL_EMAIL_NOTICE,
     CHECKOUT_PRIVACY_SUMMARY,
+    CHECKOUT_PRIVACY_DETAIL,
   } from "@woco/shared";
   import type { BuyerFees, MarketingWording } from "@woco/shared";
   import CheckoutNoticeLinks from "./CheckoutNoticeLinks.svelte";
@@ -176,7 +177,7 @@
     <p class="privacy-note">
       {#if organiserName}
         Your details go to <strong>{organiserName}</strong>, who is responsible for them.
-        {CHECKOUT_PRIVACY_SUMMARY.slice(CHECKOUT_PRIVACY_SUMMARY.indexOf("Anything you enter"))}
+        {CHECKOUT_PRIVACY_DETAIL}
       {:else}
         {CHECKOUT_PRIVACY_SUMMARY}
       {/if}
