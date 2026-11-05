@@ -15,6 +15,7 @@ import {
   salesClosedMessage,
   SALES_END_GRACE_MS,
 } from "../src/lib/event/sales-window.js";
+import { salesEnded } from "../../../packages/embed/src/checkout.js";
 
 const NOW = Date.parse("2026-08-09T12:00:00.000Z");
 const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
@@ -84,4 +85,22 @@ test("grace period is pinned to zero while the contract closes sharp", () => {
 test("refusal copy exists for both reasons and never claims an undated event ended", () => {
   assert.match(salesClosedMessage("ended"), /ended/i);
   assert.doesNotMatch(salesClosedMessage("undated"), /ended/i);
+});
+
+// The embed widget says "Event ended" from its own copy of this rule; the two
+// must agree or the widget offers a sale this gate refuses (or hides one it allows).
+test("the embed widget's salesEnded agrees with this gate on every dated event", () => {
+  const cases: Array<{ startDate?: string; endDate?: string }> = [];
+  for (const end of [undefined, "", iso(-1), iso(0), iso(1)]) {
+    for (const start of [iso(-DAY), iso(-1), iso(0), iso(1), iso(DAY)]) cases.push({ startDate: start, endDate: end });
+  }
+  for (const ev of cases) {
+    const v = checkSalesWindow(ev, NOW);
+    assert.equal(salesEnded(ev, NOW), !v.open, JSON.stringify(ev));
+  }
+  // Undated: this gate refuses ("not currently on sale"); the widget does not claim it ended.
+  for (const ev of [{ startDate: "garbage" }, {}, { startDate: iso(-DAY), endDate: "garbage" }]) {
+    assert.deepEqual(checkSalesWindow(ev, NOW), { open: false, reason: "undated" });
+    assert.equal(salesEnded(ev, NOW), false, JSON.stringify(ev));
+  }
 });

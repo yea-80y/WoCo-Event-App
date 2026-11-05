@@ -104,6 +104,17 @@ export function getStyles(theme: "dark" | "light"): string {
       color: ${vars.textSecondary};
     }
 
+    .ended-note {
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      color: ${vars.textSecondary};
+      background: ${vars.bgSurface};
+      border: 1px solid ${vars.border};
+      border-radius: 8px;
+      padding: 0.625rem 0.75rem;
+      margin: 0 0 0.75rem;
+    }
+
     .woco-desc {
       font-size: 0.8125rem;
       color: ${vars.textSecondary};
