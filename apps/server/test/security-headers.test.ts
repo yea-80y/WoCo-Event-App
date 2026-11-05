@@ -90,3 +90,15 @@ test("frame CSP: hashed inline script, frameable by anyone, no unsafe script", (
   assert.ok(!/script-src[^;]*unsafe/.test(FRAME_CSP));
   assert.ok(FRAME_CSP.startsWith("default-src 'none'"));
 });
+
+// The frame page runs the widget, which fetches the organiser's order key from the
+// gateway. 'self' alone blocked it: no order form, so an event with one could not
+// be bought through the iframe embed (#1082, reproduced live 2026-11-05).
+test("frame CSP: connect-src is this origin plus exactly the gateway the widget reads the order key from", () => {
+  const connect = FRAME_CSP.split("; ").find((d) => d.startsWith("connect-src ")) ?? "";
+  assert.equal(connect, "connect-src 'self' https://gateway.woco-net.com");
+  const widget = readFileSync(new URL("../../../packages/embed/src/components/woco-tickets.ts", import.meta.url), "utf8");
+  const origins = [...widget.matchAll(/fetchOrderKey\([^,]+,\s*"([^"]+)"/g)].map((m) => new URL(m[1]!).origin);
+  assert.ok(origins.length > 0, "the widget's fetchOrderKey call was not found");
+  for (const origin of origins) assert.ok(connect.split(" ").includes(origin), `${origin} missing from the frame's connect-src`);
+});
