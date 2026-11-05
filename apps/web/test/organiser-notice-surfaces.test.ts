@@ -132,7 +132,7 @@ test("both checkout panels link the organiser's notice and WoCo's policy", () =>
   // it must never borrow the "encrypted in your browser" line.
   const pay = code(read("lib/attendee/events/claim/StripePayPanel.svelte"));
   assert.match(pay, /PAY_PANEL_PRIVACY_SUMMARY/);
-  assert.doesNotMatch(pay, /CHECKOUT_PRIVACY_SUMMARY/);
+  assert.doesNotMatch(pay, /CHECKOUT_PRIVACY_(SUMMARY|DETAIL)/);
   const claim = code(read("lib/attendee/events/ClaimButton.svelte"));
   assert.equal((claim.match(/\{eventId\}/g) ?? []).length >= 2, true, "ClaimButton passes the event to both panels");
 });

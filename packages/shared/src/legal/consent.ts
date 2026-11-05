@@ -204,12 +204,26 @@ export const TRANSACTIONAL_EMAIL_NOTICE =
   "We'll email you your ticket and any updates about this event.";
 
 /**
- * Point-of-collection privacy summary. Deliberately concrete about the three
- * things a buyer cannot infer from a generic policy link:
- *   1. the organiser — not WoCo — is the one who receives their details;
- *   2. answers are encrypted in-browser to a key only the organiser holds;
- *   3. order details on a public decentralised network are erased on request
- *      (within 90 days, #546), but the ticket's onchain record is permanent.
+ * The pay panel shown when an event has NO order form. The only thing a buyer
+ * gives there is an email, and that email is NOT client-sealed: it reaches WoCo
+ * in plaintext to send the ticket and Stripe as `customer_email`, and the server
+ * seals the minimal record itself (DATA_INVENTORY §4 carve-outs 1-3). So this
+ * panel must not borrow CHECKOUT_PRIVACY_SUMMARY's "encrypted in your browser".
+ */
+export const PAY_PANEL_PRIVACY_SUMMARY =
+  "Your details go to the event organiser, who is responsible for them. WoCo uses your email to send your " +
+  "ticket, and Stripe receives it with your payment. Your ticket's onchain record is public and permanent.";
+
+/**
+ * Point-of-collection privacy summary for an order form. Deliberately concrete
+ * about what a buyer cannot infer from a generic policy link:
+ *   1. the organiser - not WoCo - is the one who receives their details;
+ *   2. answers are encrypted in-browser to a key only the organiser holds, but
+ *      the email reaches WoCo and Stripe in plaintext (DATA_INVENTORY §4
+ *      carve-outs 2-3) - "anything you enter here" overclaimed it until 11-05;
+ *   3. order details sit SEALED on a network outside WoCo's control, erased on
+ *      request (within 90 days, #546), but the ticket's onchain record is
+ *      permanent. Never "public" for the details: it read as exposed (owner).
  * (3) in particular must be disclosed BEFORE submission, not buried in a policy.
  * Not stored with consent records (only the marketing wording is Art. 7(1)
  * evidence), so a wording change here needs no version bump.
@@ -222,20 +236,15 @@ export const TRANSACTIONAL_EMAIL_NOTICE =
  * all. There is also only ONE static X25519 key per organiser, so there is no
  * per-record key even in principle. Stating a capability we do not have, at the
  * point of collection, is the worst place to get this wrong.
+ *
+ * Split so a surface that names the organiser in sentence 1 shows the rest
+ * unchanged, without cutting this text apart by searching it.
  */
-/**
- * The pay panel shown when an event has NO order form. The only thing a buyer
- * gives there is an email, and that email is NOT client-sealed: it reaches WoCo
- * in plaintext to send the ticket and Stripe as `customer_email`, and the server
- * seals the minimal record itself (DATA_INVENTORY §4 carve-outs 1-3). So this
- * panel must not borrow CHECKOUT_PRIVACY_SUMMARY's "encrypted in your browser".
- */
-export const PAY_PANEL_PRIVACY_SUMMARY =
-  "Your details go to the event organiser, who is responsible for them. WoCo uses your email to send your " +
-  "ticket, and Stripe receives it with your payment. Your ticket's onchain record is public and permanent.";
+export const CHECKOUT_PRIVACY_DETAIL =
+  "Your answers are encrypted in your browser to a key only they hold - WoCo cannot read them. WoCo uses " +
+  "your email to send your ticket, and Stripe receives it with your payment. Your order details are stored " +
+  "sealed on a decentralised network: on request we remove them from WoCo straight away and erase them " +
+  "from the network within 90 days. Your ticket's onchain record is public and permanent.";
 
 export const CHECKOUT_PRIVACY_SUMMARY =
-  "Your details go to the event organiser, who is responsible for them. Anything you enter here is " +
-  "encrypted in your browser to a key only they hold - WoCo cannot read it. Your order details are " +
-  "stored on a public decentralised network: on request we remove them from WoCo straight away and " +
-  "erase them from the network within 90 days. Your ticket's onchain record is public and permanent.";
+  `Your details go to the event organiser, who is responsible for them. ${CHECKOUT_PRIVACY_DETAIL}`;

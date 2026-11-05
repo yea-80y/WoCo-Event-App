@@ -46,7 +46,7 @@ test("event id and theme stay sanitised, and the current bundle version is loade
   const html = buildFramePage({ eventId: `${EV}"><x`, theme: "light" });
   assert.ok(html.includes(`event-id="${EV}x"`));
   assert.ok(html.includes(`theme="light"`));
-  assert.ok(html.includes("woco-embed.js?v=27"));
+  assert.ok(html.includes("woco-embed.js?v=28"));
 });
 
 test("every script the server serves names its charset (#1099)", () => {
