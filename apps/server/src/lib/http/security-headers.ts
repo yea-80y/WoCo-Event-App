@@ -68,10 +68,13 @@ const frameScriptHash = createHash("sha256").update(FRAME_INLINE_SCRIPT, "utf8")
  * CSP for /embed/frame/:eventId. The page is MEANT to be framed by anyone
  * (frame-ancestors *) — that is its whole job, and it replaces the invalid
  * `X-Frame-Options: ALLOWALL` the route used to send. Everything else starts
- * from 'none': the widget talks only to this origin ('self' — its api-url is
- * events-api) and pulls images from the Swarm gateway. style-src stays
- * 'unsafe-inline' because the widget writes theme-dependent <style> into its
- * shadow root, which the document's policy still governs.
+ * from 'none'. style-src stays 'unsafe-inline' because the widget writes
+ * theme-dependent <style> into its shadow root, which the document's policy
+ * still governs. Every origin names what dies without it:
+ *   connect-src 'self'                 the event, holds and checkout (the widget's api-url is events-api)
+ *   connect-src gateway.woco-net.com   the organiser's order key (#642): without it no order form
+ *                                      renders and an event with one cannot be bought here (#1082)
+ *   img-src gateway.woco-net.com       the event image
  */
 export const FRAME_CSP = [
   "default-src 'none'",
@@ -80,7 +83,7 @@ export const FRAME_CSP = [
   `script-src 'self' 'sha256-${frameScriptHash}'`,
   "style-src 'unsafe-inline'",
   "img-src 'self' https://gateway.woco-net.com data: blob:",
-  "connect-src 'self'",
+  "connect-src 'self' https://gateway.woco-net.com",
   // The seat map the widget opens for a seated ticket type (SEATMAP_FRAME_CSP).
   "frame-src 'self'",
   "frame-ancestors *",

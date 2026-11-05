@@ -1,7 +1,28 @@
+// Annotated so a colour missing from one theme fails the typecheck: the inferred
+// union of the two literals typed it `string | undefined` and the light theme
+// rendered `border: 1px solid undefined` (#1085).
+interface Palette {
+  bg: string;
+  bgSurface: string;
+  bgSurfaceHover: string;
+  border: string;
+  borderHover: string;
+  text: string;
+  textSecondary: string;
+  textMuted: string;
+  accent: string;
+  accentHover: string;
+  accentText: string;
+  success: string;
+  error: string;
+  warning: string;
+  inputBg: string;
+}
+
 export function getStyles(theme: "dark" | "light"): string {
   const isDark = theme === "dark";
 
-  const vars = isDark
+  const vars: Palette = isDark
     ? {
         bg: "#09090f",
         bgSurface: "#12121e",
@@ -33,6 +54,7 @@ export function getStyles(theme: "dark" | "light"): string {
         accentText: "#5b4ed4",
         success: "#059669",
         error: "#dc2626",
+        warning: "#d97706",
         inputBg: "#ffffff",
       };
 
