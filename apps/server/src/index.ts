@@ -763,12 +763,13 @@ app.get("/embed/frame/:eventId", (c) => {
   return c.body(html);
 });
 
-// Serve embed widget JS
+// Serve embed widget JS. Every script here names its charset: without it a host page
+// that is not UTF-8 decodes the bundle in its own encoding, and "£" renders "Â£" (#1099).
 app.get("/embed/woco-embed.js", (c) => {
   try {
     const embedPath = resolve(__dirname, "../../../packages/embed/dist/woco-embed.js");
     const js = readFileSync(embedPath, "utf-8");
-    c.header("Content-Type", "application/javascript");
+    c.header("Content-Type", "application/javascript; charset=utf-8");
     c.header("Cache-Control", "public, max-age=3600");
     c.header("Access-Control-Allow-Origin", "*");
     return c.body(js);
@@ -795,7 +796,7 @@ app.get("/embed/seatmap/:eventId/:seriesId", (c) => {
 app.get("/embed/woco-seatmap.js", (c) => {
   try {
     const js = readFileSync(resolve(__dirname, "../../../packages/embed/dist/woco-seatmap.js"), "utf-8");
-    c.header("Content-Type", "application/javascript");
+    c.header("Content-Type", "application/javascript; charset=utf-8");
     c.header("Cache-Control", "public, max-age=3600");
     return c.body(js);
   } catch {
@@ -809,7 +810,7 @@ app.get("/embed/assets/:file", (c) => {
   if (!/^parse-worker-[A-Za-z0-9_-]{4,32}\.js$/.test(file)) return c.text("Not found", 404);
   try {
     const js = readFileSync(resolve(__dirname, "../../../packages/embed/dist/assets", file), "utf-8");
-    c.header("Content-Type", "application/javascript");
+    c.header("Content-Type", "application/javascript; charset=utf-8");
     c.header("Cache-Control", "public, max-age=31536000, immutable");
     return c.body(js);
   } catch {
@@ -988,7 +989,7 @@ app.get("/woco-embed.js", (c) => {
   try {
     const embedPath = resolve(__dirname, "../../../packages/embed/dist/woco-embed.js");
     const js = readFileSync(embedPath);
-    c.header("Content-Type", "application/javascript");
+    c.header("Content-Type", "application/javascript; charset=utf-8");
     c.header("Cache-Control", "public, max-age=3600");
     return c.body(js);
   } catch {

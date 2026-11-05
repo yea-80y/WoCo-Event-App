@@ -6,6 +6,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { buildFramePage, framePageUrl } from "../src/lib/embed/frame-page.js";
 import { FRAME_INLINE_SCRIPT } from "../src/lib/http/security-headers.js";
 
@@ -45,5 +46,14 @@ test("event id and theme stay sanitised, and the current bundle version is loade
   const html = buildFramePage({ eventId: `${EV}"><x`, theme: "light" });
   assert.ok(html.includes(`event-id="${EV}x"`));
   assert.ok(html.includes(`theme="light"`));
-  assert.ok(html.includes("woco-embed.js?v=26"));
+  assert.ok(html.includes("woco-embed.js?v=27"));
+});
+
+test("every script the server serves names its charset (#1099)", () => {
+  // Without it a host page that is not UTF-8 decodes the widget in its own
+  // encoding: "Buy - £11.00" renders "Buy - Â£11.00".
+  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  const types = [...index.matchAll(/c\.header\("Content-Type", "([^"]*javascript[^"]*)"\)/g)].map((m) => m[1]);
+  assert.ok(types.length >= 4, "the embed, seat map, worker and venue-preview scripts");
+  for (const t of types) assert.equal(t, "application/javascript; charset=utf-8");
 });

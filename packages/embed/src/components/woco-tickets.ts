@@ -856,7 +856,7 @@ export class WocoTickets extends HTMLElement {
         ${st.error ? `<p class="error-msg">${this.esc(st.error)}</p>` : ""}
         <p class="redirect-note">You'll be redirected to Stripe's secure checkout. Your ticket arrives by email.</p>
         <div class="form-actions">
-          ${this.hasOrderForm ? `<p class="encrypt-note">Your info is encrypted — only the organizer can read it.</p>` : "<span></span>"}
+          ${this.hasOrderForm ? `<p class="encrypt-note">Your info is encrypted - only the organizer can read it.</p>` : "<span></span>"}
           <button class="cancel-btn" data-cancel-order="${this.esc(s.seriesId)}">Cancel</button>
         </div>
       </div>
@@ -912,7 +912,7 @@ export class WocoTickets extends HTMLElement {
     } else {
       // Booking fee included: the button is the embed's headline price.
       const unit = headlinePrice(s.payment)?.label ?? "";
-      actionHtml = `<button class="claim-btn" data-buy="${this.esc(s.seriesId)}">Buy${unit ? ` — ${this.esc(unit)}` : ""}</button>`;
+      actionHtml = `<button class="claim-btn" data-buy="${this.esc(s.seriesId)}">Buy${unit ? ` - ${this.esc(unit)}` : ""}</button>`;
     }
 
     return `
