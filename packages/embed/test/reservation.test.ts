@@ -143,5 +143,5 @@ test("not on sale at all (no confirmed privacy notice, legacy event) closes the 
 test("the buy panel never opens for a closed series", () => {
   const src = readFileSync(new URL("../src/components/woco-tickets.ts", import.meta.url), "utf-8");
   assert.match(src, /result\.kind === "closed"\) \{[\s\S]*?cur\.buyOpen = false;/);
-  assert.match(src, /!cancelled && !st\.closed\)/);
+  assert.match(src, /!cancelled && !ended && !st\.closed\)/);
 });

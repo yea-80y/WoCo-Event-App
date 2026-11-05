@@ -34,6 +34,19 @@ export function seriesPayable(payment: PaymentConfig | undefined): boolean {
   return !!calculateBuyerFees(payment, 1)?.cardTotal;
 }
 
+/**
+ * Whether the event's sales have ended, from the instant reserve and
+ * create-checkout refuse at (the server's `checkSalesWindow`: `endDate` when
+ * non-empty, else `startDate`; a server test pins the two together). Without
+ * it the widget offered a past event's buy panel and its hold, ending at the
+ * server's refusal. Undated reads false: the server refuses that sale itself.
+ */
+export function salesEnded(event: { startDate?: string; endDate?: string }, now: number = Date.now()): boolean {
+  const raw = event.endDate && event.endDate.length > 0 ? event.endDate : event.startDate;
+  const ts = raw ? new Date(raw).getTime() : NaN;
+  return Number.isFinite(ts) && now >= ts;
+}
+
 export type BuyPanelVerdict = { ok: true; email: string } | { ok: false; error: string };
 
 /**

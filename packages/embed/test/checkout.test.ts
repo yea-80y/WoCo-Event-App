@@ -17,6 +17,7 @@ import {
   buildCheckoutBody,
   staleOrderKeyRef,
   reserveOutcome,
+  salesEnded,
   MAX_QTY,
 } from "../src/checkout.js";
 
@@ -313,4 +314,36 @@ test("#982: leaving the widget's confirm box shows any mismatch from then on", (
   assert.match(body, /getAttribute\("data-email-confirm"\)/);
   assert.match(body, /st\.emailConfirmSettled = true;\n\s*this\.refreshEmailMismatch\(sid, st\);/);
   assert.equal(widget.match(/buyerEmailMismatch\(this\.typedEmail\(st\), st\.emailConfirm, st\.emailConfirmSettled\)/g)?.length, 2, "render and refresh");
+});
+
+test("salesEnded: endDate when set, else startDate, from the end instant on", () => {
+  const now = Date.parse("2026-11-05T12:00:00.000Z");
+  const at = (ms: number) => new Date(now + ms).toISOString();
+  assert.equal(salesEnded({ startDate: at(-86_400_000), endDate: at(-1) }, now), true);
+  assert.equal(salesEnded({ startDate: at(-86_400_000), endDate: at(0) }, now), true, "the end instant itself");
+  assert.equal(salesEnded({ startDate: at(-86_400_000), endDate: at(1) }, now), false, "running: started, not ended");
+  assert.equal(salesEnded({ startDate: at(-1) }, now), true, "no endDate: the start");
+  assert.equal(salesEnded({ startDate: at(-1), endDate: "" }, now), true, "empty endDate: the start");
+  assert.equal(salesEnded({ startDate: at(1) }, now), false);
+  assert.equal(salesEnded({ startDate: "not a date" }, now), false, "undated: the server refuses it");
+  assert.equal(salesEnded({}, now), false);
+});
+
+test("an ended event offers no buy panel, no count and no hold: 'Event ended' instead", () => {
+  const series = widget.slice(widget.indexOf("private renderSeries("));
+  const body = series.slice(0, series.indexOf("\n  }\n"));
+  assert.match(body, /const ended = !!this\.event && salesEnded\(this\.event\);/);
+  // The panel (which places the hold) opens only for an event not ended.
+  assert.match(body, /if \(st\?\.buyOpen && [^{]*!ended[^{]*\) \{/);
+  // Checked before every branch that offers a button with an action on it.
+  const endedAt = body.indexOf("} else if (ended) {");
+  assert.ok(endedAt > 0, "ended branch");
+  for (const next of ["data-seats=", "data-buy="]) {
+    const at = body.indexOf(next);
+    if (at >= 0) assert.ok(at > endedAt, `${next} offered before the ended check`);
+  }
+  assert.match(body.slice(endedAt, endedAt + 120), /<button class="claim-btn" disabled>Event ended<\/button>/);
+  assert.match(body, /\$\{ended \? "" : `<p class="avail">/);
+  const render = widget.slice(widget.indexOf("  private render() {"));
+  assert.match(render.slice(0, render.indexOf("\n  }\n")), /!ev\.cancelledAt && salesEnded\(ev\)/);
 });

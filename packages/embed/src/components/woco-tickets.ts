@@ -30,6 +30,7 @@ import { cacheGet, cacheSet, TTL_7D, embedCacheKey } from "../cache.js";
 import {
   MAX_QTY,
   seriesPayable,
+  salesEnded,
   validateBuyPanel,
   maxSelectableQty,
   buildOrderPayload,
@@ -68,6 +69,7 @@ interface EventData {
   imageHash: string;
   location: string;
   startDate: string;
+  endDate?: string;
   series: SeriesSummary[];
   /** Content address of the organiser's X-Wing order key (#642). */
   encryptionKeyRef?: string;
@@ -419,6 +421,9 @@ export class WocoTickets extends HTMLElement {
     const descHtml = this.showDescription && ev.description
       ? `<p class="woco-desc">${this.esc(ev.description)}</p>`
       : "";
+    const endedHtml = !ev.cancelledAt && salesEnded(ev)
+      ? `<p class="ended-note" role="status">This event has ended - tickets are no longer on sale.</p>`
+      : "";
 
     this.shadow.innerHTML = `
       <style>${getStyles(this.theme)}</style>
@@ -431,6 +436,7 @@ export class WocoTickets extends HTMLElement {
           </div>
         </div>
         ${descHtml}
+        ${endedHtml}
         <div data-return-slot>${this.renderReturn()}</div>
         ${seriesHtml}
         <div class="powered-by">Powered by WoCo</div>
@@ -864,18 +870,19 @@ export class WocoTickets extends HTMLElement {
     // "NaN" and compares false — visibly wrong, never executable.
     const avail = Number(st?.status?.available ?? s.totalSupply);
     const total = Number(st?.status?.totalSupply ?? s.totalSupply);
-    const header = `
-      <div class="series-info">
-        <h3>${this.esc(s.name)}</h3>
-        <p class="avail">${avail} / ${total} available</p>
-      </div>
-    `;
-
     // #644: a cancelled event shows as cancelled, not "sold out". The server
     // refuses the sale either way; this is what the buyer reads.
     const cancelled = !!this.event?.cancelledAt || st?.status?.cancelled === true;
+    const ended = !!this.event && salesEnded(this.event);
+    // A past event's count would read as tickets still to buy.
+    const header = `
+      <div class="series-info">
+        <h3>${this.esc(s.name)}</h3>
+        ${ended ? "" : `<p class="avail">${avail} / ${total} available</p>`}
+      </div>
+    `;
 
-    if (st?.buyOpen && this.isPayable(s) && avail !== 0 && !cancelled && !st.closed) {
+    if (st?.buyOpen && this.isPayable(s) && avail !== 0 && !cancelled && !ended && !st.closed) {
       return `
         <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
           ${header}
@@ -887,6 +894,8 @@ export class WocoTickets extends HTMLElement {
     let actionHtml: string;
     if (cancelled) {
       actionHtml = `<button class="claim-btn" disabled>Event cancelled</button>`;
+    } else if (ended) {
+      actionHtml = `<button class="claim-btn" disabled>Event ended</button>`;
     } else if (st?.closed) {
       actionHtml = `<button class="claim-btn" disabled>Not on sale yet</button><p class="error-msg">${this.esc(st.closed)}</p>`;
     } else if (!this.isPayable(s)) {
