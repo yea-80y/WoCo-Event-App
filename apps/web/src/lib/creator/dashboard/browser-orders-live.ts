@@ -10,14 +10,19 @@
 import type { Chain } from "viem";
 import { arbitrum, arbitrumSepolia } from "viem/chains";
 import type { OrdersSeriesLedger, OrdersStatus } from "@woco/shared";
+import { startModuleWorker } from "@woco/shared/web/module-worker";
 import { authPost } from "../../api/client.js";
 import { buildEnv } from "../../build-env.js";
 import { WOCO_GATEWAY_URL } from "../../swarm/gateways.js";
 import type { BrowserOrdersDeps, SlotRead } from "./browser-orders.js";
 import { BundleVerifier, type VerifierPort } from "./bundle-verifier.js";
+import bundleVerifyWorkerUrl from "./bundle-verify.worker.ts?worker&url";
 import type { DetailQueueDeps, FetchResult } from "./detail-queue.js";
 import { gatewayOrderFetcher, readBudget, retryAfterMs } from "./gateway-fetcher.js";
 import { MAX_BOX_BYTES, boxFromBytes } from "./order-box.js";
+import type { OpenerPort } from "./order-opener.js";
+// The URL only: the worker's code (and the X-Wing code it loads) stays in its own bundle.
+import orderOpenerWorkerUrl from "./order-opener.worker.ts?worker&url";
 
 const LEDGER_CHAINS: Record<number, { chain: Chain; rpc: string }> = {
   42161: { chain: arbitrum, rpc: "https://arb1.arbitrum.io/rpc" },
@@ -177,12 +182,18 @@ function gatewayBase(): string {
 /**
  * Bundles are checked in a key-free worker (bundle-verifier.ts), or on the page where
  * there are no workers. One per dashboard; `dispose()` it when the page goes.
+ * Workers start through `startModuleWorker`, so they run on woco.eth.limo too (#1087).
  */
 export function liveBundleVerifier(): BundleVerifier {
   return new BundleVerifier(() => {
     if (typeof Worker === "undefined") throw new Error("no workers");
-    return new Worker(new URL("./bundle-verify.worker.ts", import.meta.url), { type: "module" }) as unknown as VerifierPort;
+    return startModuleWorker(bundleVerifyWorkerUrl) as unknown as VerifierPort;
   });
+}
+
+/** One order-opening worker (order-opener.ts): the dashboard's pool and the audience sync's. */
+export function liveOrderOpenerWorker(): OpenerPort {
+  return startModuleWorker(orderOpenerWorkerUrl) as unknown as OpenerPort;
 }
 
 /**

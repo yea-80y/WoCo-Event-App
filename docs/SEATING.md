@@ -192,7 +192,9 @@ seated ticket type's card (`apps/web/src/lib/components/seating/SeatedSeries.sve
 
 - **What the map checks** before drawing: the manifest body's digest (recomputed, never the blob's own)
   equals the ledger's `manifestRef`, `isSeated` is true, the plan's bytes hash to the digest the manifest
-  names, and the plan validates in full (in a Worker above 20,000 seats). Otherwise it refuses to draw.
+  names, and the plan validates in full (in a Worker above 20,000 seats, started through
+  `@woco/shared/web/module-worker` so it runs on woco.eth.limo too, #1087; 200,000 seats ~1.1 s off the
+  page on a laptop, where the page alone froze ~1.2 s). Otherwise it refuses to draw.
   Chain unreadable: the plan draws, nothing can be picked. Our server down: holds unknown, the map still
   draws. Plans come from our gateway only.
 - **Chain reads**: a hand-written Multicall3 `aggregate3` (`shared/chain/multicall.ts`, byte-identical to
@@ -222,8 +224,9 @@ Departures from the consult, all accepted at the S3 sign-off (Fable 73/73, 2026-
 seat nodes stay ~3 per seat (the 4,000-seat draw budget bounds the DOM; a tap rebuilds only the block it
 changed, ~0.4 s on a 4x-throttled phone at 1,250 seats); the organiser's seat-state feed is read from S6 (its
 storage layout is decided there; until then the plan's held flags); the picker reports taps and the host owns
-picks (`canPick` from the host serves S6's dashboard). Open: #1087 (the parse Worker is cross-origin on
-woco.eth.limo, so plans above 20,000 seats parse on the main thread there).
+picks (`canPick` from the host serves S6's dashboard). #1087 (the parse Worker was cross-origin on
+woco.eth.limo, so big plans parsed on the main thread there) is fixed: a same-origin blob imports the
+chunk, and the app CSP's worker-src lists the asset origin for that import.
 
 S4 met each of these (see "Selling a seat"): holds by seat on the pin, deduped by seat set; the seated
 refusal lifted behind the flag (`seated-sale.ts` is now the flag-off refusal, and the agent rail's);

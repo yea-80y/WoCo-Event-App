@@ -2,10 +2,13 @@
  * Parse a seating plan, fully (`parseSeatPlan`: digest, closed schema, the walk,
  * label identity), always. A big plan parses in a Worker so the page stays live:
  * ~2 s at the 200,000-seat ceiling on a laptop, longer on a phone. Without Worker
- * support it parses here, the same way.
+ * support it parses here, the same way. The Worker starts through
+ * `startModuleWorker`, so it runs on woco.eth.limo too, where the app's chunks are
+ * on another origin (#1087).
  */
 
 import { parseSeatPlan, type SeatPlan } from "@woco/shared/seating/plan";
+import { startModuleWorker } from "@woco/shared/web/module-worker";
 
 /** Up to this many seats the plan parses on the page's own thread. */
 export const PARSE_IN_PAGE_MAX_SEATS = 20_000;
@@ -14,7 +17,9 @@ export async function parsePlan(bytes: Uint8Array, digest: string, seats: number
   if (seats <= PARSE_IN_PAGE_MAX_SEATS || typeof Worker === "undefined") return parseSeatPlan(bytes, digest);
   let worker: Worker;
   try {
-    worker = new Worker(new URL("./parse-worker.ts", import.meta.url), { type: "module" });
+    // Loaded here, not at the top: only a bundler can resolve `?worker&url`.
+    const { default: workerUrl } = await import("./parse-worker.ts?worker&url");
+    worker = startModuleWorker(workerUrl);
   } catch {
     return parseSeatPlan(bytes, digest);
   }

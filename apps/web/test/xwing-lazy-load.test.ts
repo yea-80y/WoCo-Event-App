@@ -21,8 +21,8 @@ const ALLOWED_STATIC_IMPORTERS = new Set([
   // Linking another device (#746 step 4). Every importer uses `await import()`,
   // pinned by the last test below.
   "lib/auth/pairing-channel.ts",
-  // The dashboard's order-opening worker (#965): its own bundle, started only by
-  // `new Worker(new URL(...))` when orders are opened - never imported, pinned below.
+  // The dashboard's order-opening worker (#965): its own bundle, started from its
+  // URL (`?worker&url`, #1087) when orders are opened - never imported, pinned below.
   "lib/creator/dashboard/order-opener.worker.ts",
 ]);
 
@@ -54,12 +54,13 @@ test("the allowlisted importer is itself only loaded lazily by the app shell", (
 });
 
 test("the order-opening worker is never imported, only started as a worker", () => {
-  const imported = /^\s*import\s[^;]*from\s+["'][^"']*order-opener\.worker(\.js|\.ts)?["']|import\(\s*["'][^"']*order-opener\.worker/m;
-  const offenders = files(SRC)
-    .map((f) => ({ rel: f.slice(SRC.length + 1), text: readFileSync(f, "utf8") }))
-    .filter((f) => imported.test(f.text))
-    .map((f) => f.rel);
-  assert.deepEqual(offenders, []);
+  // Every specifier naming it, static or dynamic. Only `?worker&url` is a URL string;
+  // anything else (a plain import, `?worker&inline`) puts its code in the importer's bundle.
+  const named = /(?:\bfrom|\bimport)\s*\(?\s*["']([^"'\n]*order-opener\.worker[^"'\n]*)["']/g;
+  const found = files(SRC).flatMap((f) =>
+    [...readFileSync(f, "utf8").matchAll(named)].map((m) => `${f.slice(SRC.length + 1)}: ${m[1]}`),
+  );
+  assert.deepEqual(found, ["lib/creator/dashboard/browser-orders-live.ts: ./order-opener.worker.ts?worker&url"]);
 });
 
 test("the pairing channel is only ever loaded with a dynamic import", () => {

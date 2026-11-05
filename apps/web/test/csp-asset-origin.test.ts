@@ -37,7 +37,9 @@ test("the CSP's asset origin is the one the upload script actually injects", () 
 test("every directive that fetches our own bundle allows the asset origin", () => {
   // frame-src: the builder's live preview frames ./multi-site.html, which the
   // <base> sends to the asset origin too - blocked there, it showed a blank pane.
-  for (const directive of ["base-uri", "script-src", "style-src", "frame-src"] as const) {
+  // worker-src: our workers start from a same-origin blob that imports the chunk
+  // (#1087); without it the import is refused and big jobs run on the page.
+  for (const directive of ["base-uri", "script-src", "style-src", "frame-src", "worker-src"] as const) {
     assert.ok(
       APP_POLICY[directive]?.includes(ASSET_ORIGIN),
       `${directive} omits ${ASSET_ORIGIN} — on woco.eth.limo this blocks the app's own assets`,
@@ -47,6 +49,15 @@ test("every directive that fetches our own bundle allows the asset origin", () =
   // tidy-up cannot remove them without failing here.
   assert.ok(APP_POLICY["img-src"]?.includes(ASSET_ORIGIN));
   assert.ok(APP_POLICY["connect-src"]?.includes(ASSET_ORIGIN));
+});
+
+test("worker-src keeps blob: (the shim) and adds no origin script-src lacks", () => {
+  const worker = APP_POLICY["worker-src"] ?? [];
+  assert.ok(worker.includes("blob:"), "the shim every cross-origin worker starts from is a blob");
+  for (const source of worker) {
+    if (source === "blob:") continue;
+    assert.ok(APP_POLICY["script-src"]?.includes(source), `${source} may start workers but not run scripts`);
+  }
 });
 
 test("base-uri allows the asset origin, or the <base> tag itself is ignored", () => {
