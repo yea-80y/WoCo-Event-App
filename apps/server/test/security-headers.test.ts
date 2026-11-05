@@ -98,7 +98,10 @@ test("frame CSP: connect-src is this origin plus exactly the gateway the widget 
   const connect = FRAME_CSP.split("; ").find((d) => d.startsWith("connect-src ")) ?? "";
   assert.equal(connect, "connect-src 'self' https://gateway.woco-net.com");
   const widget = readFileSync(new URL("../../../packages/embed/src/components/woco-tickets.ts", import.meta.url), "utf8");
-  const origins = [...widget.matchAll(/fetchOrderKey\([^,]+,\s*"([^"]+)"/g)].map((m) => new URL(m[1]!).origin);
-  assert.ok(origins.length > 0, "the widget's fetchOrderKey call was not found");
+  const literal = [...widget.matchAll(/fetchOrderKey\([^,]+,\s*"([^"]+)"/g)];
+  const calls = [...widget.matchAll(/\bfetchOrderKey\(/g)].length;
+  assert.ok(literal.length > 0, "the widget's fetchOrderKey call was not found");
+  assert.equal(literal.length, calls, "every fetchOrderKey call must name its gateway as a string literal so this test can see it");
+  const origins = literal.map((m) => new URL(m[1]!).origin);
   for (const origin of origins) assert.ok(connect.split(" ").includes(origin), `${origin} missing from the frame's connect-src`);
 });
