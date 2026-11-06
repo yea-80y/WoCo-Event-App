@@ -748,6 +748,14 @@ describe("prepareEthernaFeedUpdate", () => {
     await assert.rejects(prep(t, OTHER_OWNER), /cannot tell whether index/);
   });
 
+  test("both Etherna requests that start a pointer update time out (a hung Etherna held the deploy open)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../src/lib/etherna/upload.ts", import.meta.url), "utf8");
+    const fn = src.slice(src.indexOf("export async function prepareEthernaFeedIndex"), src.indexOf("export async function fetchEthernaRootChunk"));
+    assert.equal(fn.match(/fetch\(/g)?.length, 2);
+    assert.equal(fn.match(/signal: AbortSignal\.timeout\(BEE_CALL_TIMEOUT_MS\)/g)?.length, 2);
+  });
+
   test("any other Etherna lookup answer still refuses", async () => {
     const t = freshTopic();
     seed(t, 0n, page("old pointer"), OTHER_KEY, "etherna");
