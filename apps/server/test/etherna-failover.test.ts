@@ -468,6 +468,57 @@ test("push alarm: failover entries never count; an unreadable list is unknown, n
   assert.equal(pushAlarm().ok, null);
 });
 
+const awayAlarm = () => failover.ethernaFailoverHealth().away as { ok: boolean | null; alarmAfterMinutes: number };
+
+test("away alarm: a save on WoCo not moved back an hour after it was listed is red, and pages", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const f = signedSoc(3);
+  ledger.noteFailover(f.address, f.owner, f.identifier, PARENT);
+  const listedAt = now;
+  now = listedAt + ledger.FAILOVER_ALARM_MS - 1;
+  assert.equal(awayAlarm().ok, true);
+  assert.equal(ledger.relayLedgerState().staleFailover, 0);
+  now = listedAt + ledger.FAILOVER_ALARM_MS;
+  assert.equal(awayAlarm().ok, false);
+  assert.equal(ledger.relayLedgerState().staleFailover, 1);
+  assert.equal(awayAlarm().alarmAfterMinutes, 60);
+  assert.equal(failover.ethernaFailoverHealth().ok, true, "the list itself is fine");
+
+  const { alarmGate } = await import("../src/lib/health/alarm-gate.js");
+  const gate = alarmGate({ ethernaFailover: failover.ethernaFailoverHealth() }, "ethernaFailover");
+  assert.equal(gate.status, 503);
+  assert.deepEqual((gate.body as { red: string[] }).red, ["ethernaFailover.away"]);
+
+  ledger.resolveEntries([{ address: f.address, updatedAt: ledger.getRelayEntry(f.address)!.updatedAt }]);
+  assert.equal(awayAlarm().ok, true, "moved back: clear");
+});
+
+test("away alarm: timed from the first listing - listed again, or a restart, does not reset it", () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const f = signedSoc(3);
+  ledger.noteFailover(f.address, f.owner, f.identifier, PARENT);
+  const listedAt = now;
+  now = listedAt + ledger.FAILOVER_ALARM_MS - 60_000;
+  ledger.noteFailover(f.address, f.owner, f.identifier, PARENT);
+  now = listedAt + ledger.FAILOVER_ALARM_MS;
+  assert.equal(awayAlarm().ok, false, "listed again");
+  restart();
+  assert.equal(awayAlarm().ok, false, "a restart");
+});
+
+test("away alarm: pending entries never count; an unreadable list is unknown, not green", () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const p = signedSoc(4);
+  ledger.noteEthernaSend(p.address, p.owner, p.identifier);
+  now += 10 * ledger.FAILOVER_ALARM_MS;
+  assert.equal(awayAlarm().ok, true);
+  assert.equal(ledger.relayLedgerState().staleFailover, 0);
+
+  writeFileSync(join(LEDGER(), `${"ee".repeat(32)}.json`), '{"owner":"nope"}');
+  restart();
+  assert.equal(awayAlarm().ok, null);
+});
+
 // ---------------------------------------------------------------------------
 // The read rule
 // ---------------------------------------------------------------------------
@@ -962,7 +1013,7 @@ test("sweep: a failover entry listed again mid-pass is not turned back to pendin
   assert.equal(ledger.getRelayEntry(s.address)?.status, "failover");
 });
 
-test("sweep: once Etherna takes one back, the rest that waited out the outage are due at once", async () => {
+test("sweep: an Etherna outage backs nothing off - one try a pass, and everything moves the pass after it ends", async () => {
   process.env.ETHERNA_FAILOVER = "auto";
   const [a, b] = [signedSoc(49), signedSoc(50)];
   ledger.noteFailover(a.address, a.owner, a.identifier, PARENT);
@@ -970,13 +1021,62 @@ test("sweep: once Etherna takes one back, the rest that waited out the outage ar
   now += ledger.SETTLE_MIN_AGE_MS;
   const io = fakeIo({ [a.address]: found(a.raw), [b.address]: found(b.raw) });
   io.postFails = true;
-  await failover.sweepRelayLedger(io);
+  // Passes a minute apart (2026-11-05: one entry waited 40 min after Etherna was back).
+  for (let m = 0; m < 20; m++) {
+    await failover.sweepRelayLedger(io);
+    now += failover.SWEEP_INTERVAL_MS;
+  }
+  assert.equal(io.posted.length, 20, "one attempt a pass, never one per chunk");
   io.postFails = false;
-  await failover.sweepRelayLedger(io);
-  assert.ok(ledger.getRelayEntry(a.address), "still waiting out its back-off");
+  const r = await failover.sweepRelayLedger(io);
+  assert.equal(r.migrated, 2, "the first pass after the outage moves both");
+  assert.equal(ledger.getRelayEntry(a.address), undefined);
   assert.equal(ledger.getRelayEntry(b.address), undefined);
+});
+
+test("sweep: no batch to move to backs nothing off either", async () => {
+  const s = signedSoc(51);
+  ledger.noteFailover(s.address, s.owner, s.identifier, PARENT);
+  now += ledger.SETTLE_MIN_AGE_MS;
+  const io = fakeIo({ [s.address]: found(s.raw) });
+  io.routeFails = true;
   await failover.sweepRelayLedger(io);
-  assert.equal(ledger.getRelayEntry(a.address), undefined, "due again as soon as Etherna took one");
+  io.routeFails = false;
+  now += failover.SWEEP_INTERVAL_MS;
+  assert.equal((await failover.sweepRelayLedger(io)).migrated, 1, "moved the next pass, not after a back-off");
+});
+
+test("sweep: a chunk Etherna refused on its own backs off, and is due at once when Etherna takes another back", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const refused = signedSoc(52);
+  const other = signedSoc(53);
+  const base = now;
+  const at = (m: number) => (now = base + m * 60_000);
+  ledger.noteFailover(refused.address, refused.owner, refused.identifier, PARENT);
+  at(1);
+  ledger.noteFailover(other.address, other.owner, other.identifier, PARENT);
+  const io = fakeIo({ [refused.address]: found(refused.raw), [other.address]: found(other.raw) });
+  let refuse = true;
+  const triesOf = (s: { identifier: string }) => io.posted.filter((p) => p.identifierHex === s.identifier).length;
+  io.post = async (p) => {
+    io.posted.push(p);
+    if (refuse && p.identifierHex === refused.identifier) throw Object.assign(new Error("Etherna SOC write 402"), { status: 402 });
+  };
+  at(5); // only `refused` is old enough: refused, it waits until minute 10
+  await failover.sweepRelayLedger(io);
+  assert.equal(triesOf(refused), 1);
+  assert.equal(triesOf(other), 0);
+
+  at(6); // `other` is due and moves; `refused` is inside its wait
+  await failover.sweepRelayLedger(io);
+  assert.equal(triesOf(refused), 1, "backing off: not tried again the next minute");
+  assert.equal(ledger.getRelayEntry(other.address), undefined);
+
+  refuse = false;
+  at(7); // Etherna took one back at minute 6: `refused` is due now, not at minute 10
+  await failover.sweepRelayLedger(io);
+  assert.equal(triesOf(refused), 2);
+  assert.equal(ledger.getRelayEntry(refused.address), undefined);
 });
 
 test("sweep: nothing moves while Etherna is paused", async () => {

@@ -19,6 +19,7 @@ import { batchForDeploy, platformEthernaBatch, type BatchSelection } from "./bat
 import { postSocToEtherna, registerEthernaOffer } from "./upload.js";
 import {
   dueEntries,
+  FAILOVER_ALARM_MS,
   failoverMode,
   loadRelayLedger,
   markPending,
@@ -194,8 +195,12 @@ export async function sweepRelayLedger(
       });
     } catch (err) {
       lastMigrationError = { at: new Date().toISOString(), error: ((err as Error)?.message ?? String(err)).slice(0, 200) };
-      kept.push(e.address);
+      // Etherna as a whole cannot write: this chunk is not the cause, so it does
+      // not back off - it is due on the next pass and moves the minute Etherna is
+      // back (it waited 40 min on 2026-11-05). The pass stops here, so an outage
+      // costs one attempt a minute. A refusal of this chunk alone backs off.
       if (ethernaCannotWrite(err)) break;
+      kept.push(e.address);
       continue;
     }
     io.offer(e.address).catch(() => undefined);
@@ -253,6 +258,10 @@ export function startRelayLedgerSweep(): void {
  * One that never will - its batch died before Etherna pushed it - is cleared by
  * moving its file out with the server stopped. Unknown (`null`) while the list
  * cannot be read.
+ *
+ * `away` is RED while a save stamped on WoCo has waited past FAILOVER_ALARM_MS to
+ * move back: Etherna down that long, or the move back stuck (no batch to move to,
+ * or Etherna refusing that chunk). Clears when the sweep moves it.
  */
 export function ethernaFailoverHealth(): Record<string, unknown> {
   const { mode, configError } = failoverMode();
@@ -262,6 +271,7 @@ export function ethernaFailoverHealth(): Record<string, unknown> {
     mode,
     ...(configError ? { configError } : {}),
     push: { ok: ledger.readable ? ledger.stalePending === 0 : null, alarmAfterMinutes: PENDING_ALARM_MS / 60_000 },
+    away: { ok: ledger.readable ? ledger.staleFailover === 0 : null, alarmAfterMinutes: FAILOVER_ALARM_MS / 60_000 },
     ledger,
     sinceBoot: { ...stats },
     lastSweepAt,

@@ -70,6 +70,14 @@ export const SETTLE_MIN_AGE_MS = 5 * 60 * 1000;
 export const PENDING_ALARM_MS = 15 * 60 * 1000;
 /** On this ledger's clock. `at`, never `updatedAt`: a repeat send and a restart both refresh that. */
 const pastPushAlarm = (at: string): boolean => now() - Date.parse(at) >= PENDING_ALARM_MS;
+/**
+ * A save stamped on WoCo still not moved back this long after it was first listed
+ * is the away alarm. The sweep retries every pass while Etherna cannot write, so
+ * once Etherna is back a chunk moves within minutes: past this, either Etherna has
+ * been down that long or the move back is stuck, and both are worth a page.
+ */
+export const FAILOVER_ALARM_MS = 60 * 60 * 1000;
+const pastAwayAlarm = (at: string): boolean => now() - Date.parse(at) >= FAILOVER_ALARM_MS;
 /** Past this the rail is off: ~10 days of the relay's per-account hourly limit, a few MB of files. */
 export const MAX_ENTRIES = 10_000;
 /**
@@ -453,6 +461,8 @@ export function relayLedgerState(): {
   /** Pending past PENDING_ALARM_MS since first listed (a failover entry turned pending keeps its `at`). */
   stalePending: number;
   failover: number;
+  /** Failover past FAILOVER_ALARM_MS since first listed. */
+  staleFailover: number;
   oldestPendingAt: string | null;
   oldestFailoverAt: string | null;
 } {
@@ -460,11 +470,13 @@ export function relayLedgerState(): {
   let pending = 0;
   let stalePending = 0;
   let failover = 0;
+  let staleFailover = 0;
   let oldestPendingAt: string | null = null;
   let oldestFailoverAt: string | null = null;
   for (const e of entries.values()) {
     if (e.status === "failover") {
       failover++;
+      if (pastAwayAlarm(e.at)) staleFailover++;
       if (!oldestFailoverAt || e.at < oldestFailoverAt) oldestFailoverAt = e.at;
     } else {
       pending++;
@@ -486,6 +498,7 @@ export function relayLedgerState(): {
     pending,
     stalePending,
     failover,
+    staleFailover,
     oldestPendingAt,
     oldestFailoverAt,
   };
