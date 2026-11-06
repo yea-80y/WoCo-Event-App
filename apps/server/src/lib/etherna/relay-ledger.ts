@@ -397,6 +397,20 @@ export function deferEntries(addresses: string[]): void {
   }
 }
 
+/**
+ * Etherna as a whole could not take it: wait one settle period, without counting
+ * it against the chunk. Held, a chunk steps aside so the next pass tries another
+ * (one that only looks like an outage never pins the front); never counted, it is
+ * due within SETTLE_MIN_AGE_MS of Etherna coming back, however long it was down.
+ */
+export function holdEntries(addresses: string[]): void {
+  for (const raw of addresses) {
+    const a = norm(raw);
+    if (!entries.has(a)) continue;
+    backoff.set(a, { n: backoff.get(a)?.n ?? 0, nextAt: now() + SETTLE_MIN_AGE_MS });
+  }
+}
+
 /** Etherna is taking chunks back again: whatever waited out the outage is due now, not hours from now. */
 export function undeferAll(status: RelayStatus): void {
   for (const [a, e] of entries) if (e.status === status) backoff.delete(a);

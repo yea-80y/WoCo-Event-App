@@ -21,6 +21,7 @@ import {
   dueEntries,
   FAILOVER_ALARM_MS,
   failoverMode,
+  holdEntries,
   loadRelayLedger,
   markPending,
   PENDING_ALARM_MS,
@@ -136,6 +137,7 @@ export async function sweepRelayLedger(
 ): Promise<{ settled: number; migrated: number }> {
   const done: Array<{ address: string; updatedAt: string }> = [];
   const kept: string[] = [];
+  const held: string[] = [];
 
   // Any chunk reaching our bee while the push alarm is red: Etherna is pushing
   // again, so the stale ones are due now, not at their next backed-off look.
@@ -195,11 +197,14 @@ export async function sweepRelayLedger(
       });
     } catch (err) {
       lastMigrationError = { at: new Date().toISOString(), error: ((err as Error)?.message ?? String(err)).slice(0, 200) };
-      // Etherna as a whole cannot write: this chunk is not the cause, so it does
-      // not back off - it is due on the next pass and moves the minute Etherna is
-      // back (it waited 40 min on 2026-11-05). The pass stops here, so an outage
-      // costs one attempt a minute. A refusal of this chunk alone backs off.
-      if (ethernaCannotWrite(err)) break;
+      // Etherna as a whole cannot write: held, not backed off (`holdEntries`), so
+      // it moves within minutes of Etherna coming back - it waited 40 min on
+      // 2026-11-05. The pass stops here: an outage costs one attempt a pass. A
+      // refusal of this chunk alone backs off.
+      if (ethernaCannotWrite(err)) {
+        held.push(e.address);
+        break;
+      }
       kept.push(e.address);
       continue;
     }
@@ -214,6 +219,7 @@ export async function sweepRelayLedger(
   // Before the deferral, so what this pass just looked at keeps its normal wait.
   if (arrived && alarmRed) recheckPending();
   deferEntries(kept);
+  holdEntries(held);
   stats.settled += settled;
   stats.migrated += migrated;
   lastSweepAt = new Date().toISOString();

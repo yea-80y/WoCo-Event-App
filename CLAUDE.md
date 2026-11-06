@@ -667,8 +667,8 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     server stopped: a restart, so `ledger.dirty` false and no broadcasts running. A live batch's chunk
     moved out loses its read-rule protection. `ethernaFailover.away` red = a save stamped on WoCo not moved
     back an hour after it was listed: Etherna down that long, or the move back stuck (no batch, or Etherna
-    refusing that chunk). An Etherna-wide refusal never backs an entry off, so it moves within a minute of
-    Etherna taking writes again)
+    refusing that chunk). An Etherna-wide refusal HOLDS an entry 5 min and never backs it off, so it moves
+    within ~5 min of Etherna taking writes again, however long the outage)
   ticket-holds/ (#983 — per sale, each emailed ticket's QR sealed to the organiser's order key: the ONLY copy
     a bounced ticket can be resent from (the signing key is discarded at mint). Losing it leaves those
     tickets reissue-only. Unreadable = never overwritten, `/api/health` `email.ticketHolds` alarm)

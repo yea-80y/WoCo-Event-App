@@ -1013,7 +1013,19 @@ test("sweep: a failover entry listed again mid-pass is not turned back to pendin
   assert.equal(ledger.getRelayEntry(s.address)?.status, "failover");
 });
 
-test("sweep: an Etherna outage backs nothing off - one try a pass, and everything moves the pass after it ends", async () => {
+/** Sweep every minute for `minutes`, as the timer does; returns the most posts any one pass made. */
+async function sweepFor(io: ReturnType<typeof fakeIo>, minutes: number): Promise<{ maxPostsInAPass: number }> {
+  let maxPostsInAPass = 0;
+  for (let m = 0; m < minutes; m++) {
+    const before = io.posted.length;
+    await failover.sweepRelayLedger(io);
+    maxPostsInAPass = Math.max(maxPostsInAPass, io.posted.length - before);
+    now += failover.SWEEP_INTERVAL_MS;
+  }
+  return { maxPostsInAPass };
+}
+
+test("sweep: however long Etherna is down, a failover chunk moves within minutes of it coming back", async () => {
   process.env.ETHERNA_FAILOVER = "auto";
   const [a, b] = [signedSoc(49), signedSoc(50)];
   ledger.noteFailover(a.address, a.owner, a.identifier, PARENT);
@@ -1021,29 +1033,42 @@ test("sweep: an Etherna outage backs nothing off - one try a pass, and everythin
   now += ledger.SETTLE_MIN_AGE_MS;
   const io = fakeIo({ [a.address]: found(a.raw), [b.address]: found(b.raw) });
   io.postFails = true;
-  // Passes a minute apart (2026-11-05: one entry waited 40 min after Etherna was back).
-  for (let m = 0; m < 20; m++) {
-    await failover.sweepRelayLedger(io);
-    now += failover.SWEEP_INTERVAL_MS;
-  }
-  assert.equal(io.posted.length, 20, "one attempt a pass, never one per chunk");
+  // Two hours down (2026-11-05: one entry waited 40 min after a 45-min outage).
+  const { maxPostsInAPass } = await sweepFor(io, 120);
+  assert.equal(maxPostsInAPass, 1, "an outage costs at most one attempt a pass");
+  assert.ok(io.posted.length <= 2 * (120 / 5) + 2, `each chunk tried at most every 5 min, got ${io.posted.length}`);
   io.postFails = false;
-  const r = await failover.sweepRelayLedger(io);
-  assert.equal(r.migrated, 2, "the first pass after the outage moves both");
-  assert.equal(ledger.getRelayEntry(a.address), undefined);
+  await sweepFor(io, ledger.SETTLE_MIN_AGE_MS / failover.SWEEP_INTERVAL_MS + 1);
+  assert.equal(ledger.getRelayEntry(a.address), undefined, "moved within one hold of Etherna coming back");
   assert.equal(ledger.getRelayEntry(b.address), undefined);
 });
 
-test("sweep: no batch to move to backs nothing off either", async () => {
+test("sweep: a chunk failing as if Etherna were down never holds up the others", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const [stuck, other] = [signedSoc(54), signedSoc(55)];
+  ledger.noteFailover(stuck.address, stuck.owner, stuck.identifier, PARENT);
+  ledger.noteFailover(other.address, other.owner, other.identifier, PARENT);
+  now += ledger.SETTLE_MIN_AGE_MS;
+  const io = fakeIo({ [stuck.address]: found(stuck.raw), [other.address]: found(other.raw) });
+  io.post = async (p) => {
+    io.posted.push(p);
+    if (p.identifierHex === stuck.identifier) throw Object.assign(new Error("Etherna SOC write 500"), { status: 500 });
+  };
+  await sweepFor(io, 2);
+  assert.equal(ledger.getRelayEntry(other.address), undefined, "moved on the next pass");
+  assert.ok(ledger.getRelayEntry(stuck.address));
+});
+
+test("sweep: no batch to move to holds the chunk, never backs it off", async () => {
   const s = signedSoc(51);
   ledger.noteFailover(s.address, s.owner, s.identifier, PARENT);
   now += ledger.SETTLE_MIN_AGE_MS;
   const io = fakeIo({ [s.address]: found(s.raw) });
   io.routeFails = true;
-  await failover.sweepRelayLedger(io);
+  await sweepFor(io, 120);
   io.routeFails = false;
-  now += failover.SWEEP_INTERVAL_MS;
-  assert.equal((await failover.sweepRelayLedger(io)).migrated, 1, "moved the next pass, not after a back-off");
+  await sweepFor(io, ledger.SETTLE_MIN_AGE_MS / failover.SWEEP_INTERVAL_MS + 1);
+  assert.equal(ledger.getRelayEntry(s.address), undefined, "moved within one hold of a batch being there again");
 });
 
 test("sweep: a chunk Etherna refused on its own backs off, and is due at once when Etherna takes another back", async () => {
