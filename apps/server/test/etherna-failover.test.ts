@@ -1060,7 +1060,7 @@ test("sweep: however long Etherna is down - 5xx, 429 or no answer - a failover c
 test("sweep: as many chunks failing as if Etherna were down as a hold lasts in passes never starve the one behind them", async () => {
   process.env.ETHERNA_FAILOVER = "auto";
   // A held chunk is due again after this many passes: that many at the front, without
-  // going to the back, would break every pass (Fable, 2026-11-06: four never showed it).
+  // going to the back, would break every pass (#912, 2026-11-06: four never showed it).
   const k = ledger.SETTLE_MIN_AGE_MS / failover.SWEEP_INTERVAL_MS;
   const stuck = Array.from({ length: k }, (_, i) => signedSoc(70 + i));
   const good = signedSoc(70 + k);

@@ -403,7 +403,7 @@ export function deferEntries(addresses: string[]): void {
  * within SETTLE_MIN_AGE_MS of Etherna coming back, however long it was down. At
  * the back, chunks that only look like an outage cannot pin the front: a held one
  * is due again after five passes, so five of them at the front would break every
- * pass with nothing behind them ever tried (Fable, 2026-11-06). Order is memory
+ * pass with nothing behind them ever tried (#912, 2026-11-06). Order is memory
  * only - nothing on disk records it.
  */
 export function holdEntries(addresses: string[]): void {
