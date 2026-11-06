@@ -399,14 +399,20 @@ export function deferEntries(addresses: string[]): void {
 
 /**
  * Etherna as a whole could not take it: wait one settle period, without counting
- * it against the chunk. Held, a chunk steps aside so the next pass tries another
- * (one that only looks like an outage never pins the front); never counted, it is
- * due within SETTLE_MIN_AGE_MS of Etherna coming back, however long it was down.
+ * it against the chunk, and go to the back of the list. Never counted, it is due
+ * within SETTLE_MIN_AGE_MS of Etherna coming back, however long it was down. At
+ * the back, chunks that only look like an outage cannot pin the front: a held one
+ * is due again after five passes, so five of them at the front would break every
+ * pass with nothing behind them ever tried (Fable, 2026-11-06). Order is memory
+ * only - nothing on disk records it.
  */
 export function holdEntries(addresses: string[]): void {
   for (const raw of addresses) {
     const a = norm(raw);
-    if (!entries.has(a)) continue;
+    const e = entries.get(a);
+    if (!e) continue;
+    entries.delete(a);
+    entries.set(a, e);
     backoff.set(a, { n: backoff.get(a)?.n ?? 0, nextAt: now() + SETTLE_MIN_AGE_MS });
   }
 }

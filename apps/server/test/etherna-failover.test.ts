@@ -706,7 +706,14 @@ type Read = import("../src/lib/swarm/soc-read.js").RawSocRead;
 function fakeIo(bee: Record<string, Read>, etherna: Record<string, Read> = {}) {
   const posted: Array<Parameters<Io["post"]>[0]> = [];
   const offered: string[] = [];
-  const io: Io & { posted: typeof posted; offered: string[]; postFails?: boolean; routeFails?: boolean } = {
+  const io: Io & {
+    posted: typeof posted;
+    offered: string[];
+    postFails?: boolean;
+    /** What a failing post carries, as production's errors do: an HTTP status, or none (a timeout). */
+    postFailStatus?: number | null;
+    routeFails?: boolean;
+  } = {
     posted,
     offered,
     readBee: async (a) => bee[a] ?? ABSENT,
@@ -719,7 +726,10 @@ function fakeIo(bee: Record<string, Read>, etherna: Record<string, Read> = {}) {
     post: async (p) => {
       ledger.noteEthernaSend(hex(calculateSocAddress(unhex(p.identifierHex), unhex(p.ownerHex))), p.ownerHex, p.identifierHex);
       posted.push(p);
-      if (io.postFails) throw new Error("Etherna SOC write 503");
+      if (io.postFails) {
+        const status = io.postFailStatus === undefined ? 503 : io.postFailStatus;
+        throw Object.assign(new Error(status === null ? "Etherna SOC write timed out" : `Etherna SOC write ${status}`), status === null ? {} : { status });
+      }
     },
     offer: async (a) => {
       offered.push(a);
@@ -1025,22 +1035,46 @@ async function sweepFor(io: ReturnType<typeof fakeIo>, minutes: number): Promise
   return { maxPostsInAPass };
 }
 
-test("sweep: however long Etherna is down, a failover chunk moves within minutes of it coming back", async () => {
+test("sweep: however long Etherna is down - 5xx, 429 or no answer - a failover chunk moves within minutes of it coming back", async () => {
   process.env.ETHERNA_FAILOVER = "auto";
-  const [a, b] = [signedSoc(49), signedSoc(50)];
-  ledger.noteFailover(a.address, a.owner, a.identifier, PARENT);
-  ledger.noteFailover(b.address, b.owner, b.identifier, PARENT);
+  for (const [i, status] of ([503, 429, null] as const).entries()) {
+    freshLedger();
+    const [a, b] = [signedSoc(60 + 2 * i), signedSoc(61 + 2 * i)];
+    ledger.noteFailover(a.address, a.owner, a.identifier, PARENT);
+    ledger.noteFailover(b.address, b.owner, b.identifier, PARENT);
+    now += ledger.SETTLE_MIN_AGE_MS;
+    const io = fakeIo({ [a.address]: found(a.raw), [b.address]: found(b.raw) });
+    io.postFails = true;
+    io.postFailStatus = status;
+    // An hour down (2026-11-05: one entry waited 40 min after a 45-min outage).
+    const { maxPostsInAPass } = await sweepFor(io, 60);
+    assert.equal(maxPostsInAPass, 1, `${status}: an outage costs at most one attempt a pass`);
+    assert.ok(io.posted.length <= 2 * (60 / 5) + 2, `${status}: each chunk tried at most every 5 min, got ${io.posted.length}`);
+    io.postFails = false;
+    await sweepFor(io, ledger.SETTLE_MIN_AGE_MS / failover.SWEEP_INTERVAL_MS + 1);
+    assert.equal(ledger.getRelayEntry(a.address), undefined, `${status}: moved within one hold of Etherna coming back`);
+    assert.equal(ledger.getRelayEntry(b.address), undefined, String(status));
+  }
+});
+
+test("sweep: as many chunks failing as if Etherna were down as a hold lasts in passes never starve the one behind them", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  // A held chunk is due again after this many passes: that many at the front, without
+  // going to the back, would break every pass (Fable, 2026-11-06: four never showed it).
+  const k = ledger.SETTLE_MIN_AGE_MS / failover.SWEEP_INTERVAL_MS;
+  const stuck = Array.from({ length: k }, (_, i) => signedSoc(70 + i));
+  const good = signedSoc(70 + k);
+  for (const s of [...stuck, good]) ledger.noteFailover(s.address, s.owner, s.identifier, PARENT);
   now += ledger.SETTLE_MIN_AGE_MS;
-  const io = fakeIo({ [a.address]: found(a.raw), [b.address]: found(b.raw) });
-  io.postFails = true;
-  // Two hours down (2026-11-05: one entry waited 40 min after a 45-min outage).
-  const { maxPostsInAPass } = await sweepFor(io, 120);
-  assert.equal(maxPostsInAPass, 1, "an outage costs at most one attempt a pass");
-  assert.ok(io.posted.length <= 2 * (120 / 5) + 2, `each chunk tried at most every 5 min, got ${io.posted.length}`);
-  io.postFails = false;
-  await sweepFor(io, ledger.SETTLE_MIN_AGE_MS / failover.SWEEP_INTERVAL_MS + 1);
-  assert.equal(ledger.getRelayEntry(a.address), undefined, "moved within one hold of Etherna coming back");
-  assert.equal(ledger.getRelayEntry(b.address), undefined);
+  const io = fakeIo(Object.fromEntries([...stuck, good].map((s) => [s.address, found(s.raw)])));
+  const stuckIds = new Set(stuck.map((s) => s.identifier));
+  io.post = async (p) => {
+    io.posted.push(p);
+    if (stuckIds.has(p.identifierHex)) throw Object.assign(new Error("Etherna SOC write 500"), { status: 500 });
+  };
+  await sweepFor(io, k + 1);
+  assert.equal(ledger.getRelayEntry(good.address), undefined, "moved once every stuck one had its turn");
+  assert.ok(stuck.every((s) => ledger.getRelayEntry(s.address)));
 });
 
 test("sweep: a chunk failing as if Etherna were down never holds up the others", async () => {
