@@ -21,6 +21,7 @@
     supportedProviderNames,
   } from "../../components/site/sections/embed-src.js";
   import { uploadSiteImage } from "../../api/sites.js";
+  import { retrySameImageUrl } from "../../components/site/image-fallback.js";
   import { getMyShops, getShop } from "../../api/shops.js";
   import { compressImage, imgPreset } from "../../utils.js";
 
@@ -230,7 +231,7 @@
     <div class="gallery-editor">
       {#each s.images as img, i}
         <div class="gallery-item">
-          <img class="gallery-thumb" src="{GATEWAY_URL}/bytes/{img.ref}" alt={img.alt || ''} loading="lazy" />
+          <img class="gallery-thumb" src="{GATEWAY_URL}/bytes/{img.ref}" alt={img.alt || ''} loading="lazy" onerror={retrySameImageUrl} />
           <input
             class="input gallery-alt-input"
             type="text"
@@ -269,7 +270,7 @@
     <div class="image-editor">
       {#if s.ref}
         <div class="image-preview-wrap">
-          <img class="image-preview" src="{GATEWAY_URL}/bytes/{s.ref}" alt={s.alt || ''} loading="lazy" />
+          <img class="image-preview" src="{GATEWAY_URL}/bytes/{s.ref}" alt={s.alt || ''} loading="lazy" onerror={retrySameImageUrl} />
           <button class="image-replace-btn btn-ghost" onclick={() => { onpatch({ ref: '' }); imageUploadState = 'idle'; }}>
             Replace image
           </button>

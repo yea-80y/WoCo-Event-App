@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { GallerySection as GallerySectionType } from '@woco/shared';
+  import { retrySameImageUrl } from '../image-fallback.js';
 
   interface Props {
     section: GallerySectionType;
@@ -21,6 +22,7 @@
             src="{gatewayUrl}/bytes/{img.ref}"
             alt={img.alt}
             loading="lazy"
+            onerror={retrySameImageUrl}
           />
         {/each}
       </div>
