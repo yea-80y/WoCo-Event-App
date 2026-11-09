@@ -13,8 +13,8 @@ position genuinely different from a conventional ticketing site, in two ways tha
 - **We usually cannot read your data.** When you fill in an order form, your answers are encrypted
   in your browser to a key only the event organiser holds. Our servers store the encrypted result
   and have no technical ability to open it.
-- **Some records cannot be deleted.** Each ticket is recorded onchain, and onchain records are
-  public and permanent. Your encrypted order details are stored on a public decentralised storage
+- **Some records cannot be deleted.** Each ticket is recorded onchain under a single-use address,
+  with no name or email address, and onchain records are public and permanent. Your encrypted order details are stored on a public decentralised storage
   network; on request we erase them there. We explain this fully in section 8.
 
 The event organiser — not WoCo — is responsible for your attendee data. We handle it on their
