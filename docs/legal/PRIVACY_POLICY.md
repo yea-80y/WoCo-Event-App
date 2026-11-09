@@ -1,7 +1,7 @@
 # Privacy Policy
 
-**Last updated:** 3 November 2026
-**Version:** 1.1
+**Last updated:** 9 November 2026
+**Version:** 1.2
 
 ---
 
@@ -192,7 +192,8 @@ read before you buy a ticket.
 held by a single-use address created for that sale - not your wallet address or your email
 address. The slot also records a reference to your order details, which are encrypted to the
 organiser and stored on Swarm, a public decentralised storage network, once your payment is
-confirmed.
+confirmed. If the event has allocated seating, the slot also records your seat, and any change the
+organiser makes to it.
 
 **What this means in practice:**
 
@@ -224,7 +225,7 @@ confirmed.
   platform — but on a public network we would rather state it than let you assume otherwise.
 
 **Onchain records are permanent and cannot be erased at all.** Each ticket's slot on the ledger,
-with the reference to your order details it records, and any event registered onchain, are public
+with the reference to your order details and any seat it records, and any event registered onchain, are public
 and permanent by design. Please treat anything you put onchain as public forever. Likes and follows
 are public signed statements written to your own feed on Swarm: unliking or unfollowing publishes a
 retraction, and the earlier statement stays retrievable from the network.

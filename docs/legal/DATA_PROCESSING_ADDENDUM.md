@@ -1,7 +1,7 @@
 # Data Processing Addendum
 
-**Last updated:** 22 October 2026
-**Version:** 1.0
+**Last updated:** 9 November 2026
+**Version:** 1.1
 
 This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
 WoCo Network Ltd (company number 17370809) ("**Processor**", "we") and the organiser ("**Controller**", "you").
@@ -121,7 +121,8 @@ You acknowledge and instruct us that:
    from the network — supersession does not hide prior versions — until its storage lapses.
 7. **Ticket records carry no wallet address or email address.** Each ticket is a slot on an onchain
    ledger held by a single-use address created at the sale, with a reference to the encrypted order
-   record; the slot and the reference are public and permanent. Order-form content is encrypted.
+   record and, for allocated seating, the ticket's seat and any change you make to it; the slot, the
+   reference and the seat are public and permanent. Order-form content is encrypted.
 8. **This constitutes a restricted international transfer** for which no adequacy decision exists and
    standard contractual clauses are not achievable, there being no identifiable counterparty. The
    safeguard relied upon is **technical**: client-side encryption before data leaves the browser, so
