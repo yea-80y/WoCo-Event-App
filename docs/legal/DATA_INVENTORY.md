@@ -1,7 +1,7 @@
 # Data Inventory — UK GDPR Article 30 Record of Processing Activities
 
 **Status:** verified against source, 2026-07-26; citations re-verified and fee model corrected
-2026-08-01; storage, sealing, social and processor entries re-verified 2026-10-05. **Not** a draft from memory — every claim below cites the file that makes it true.
+2026-08-01; storage, sealing, social and processor entries re-verified 2026-10-05; allocated-seating entries added 2026-11-09. **Not** a draft from memory — every claim below cites the file that makes it true.
 Re-verify before each material release.
 
 This is the evidence base. The Privacy Policy, DPA and Organiser Terms all derive from it and must
@@ -86,10 +86,10 @@ Enumerated from source, not assumed:
 | `attendee-gate-bindings.json` | **Yes** (pseudonymous) | Ticket ↔ attendee binding |
 | `social-participants.json` | **Yes** | Per public statement subject (likes, follows, credits), the feed-owner addresses known to have written about it, so an indexer knows whose feeds to read. Encrypted payloads refused. A rebuildable cache - `lib/social/participants.ts` |
 | `profile-names.json` | **Yes** | Account address ↔ which sub-ENS name is its profile name, and its rename clock - `lib/profile/name-ledger.ts` |
-| `reservations.json` | **Yes** (pseudonymous) | `X-Client-Key` browser identifier and source IP (per-IP seat cap). A hold lasts ~10 min; the record is swept about an hour after it ends |
+| `reservations.json` | **Yes** (pseudonymous) | `X-Client-Key` browser identifier and source IP (per-IP seat cap). A hold lasts ~10 min; the record is swept about an hour after it ends. A hold on allocated seating (`docs/SEATING.md`) also names its seats, the plan they were checked on, each seat's label, price band and price as shown to the buyer, and the Stripe Checkout Session paying for it. It lasts while that checkout is open (at most three checkouts of about 32 minutes each, plus 5 minutes) and up to 20 minutes more while the ticket is minted. Seat numbers identify no one on their own - `lib/event/reservation-store.ts` |
 | `storage-ledger.json` | Indirect | Bytes uploaded per owner address |
 | `revoked-sessions.json`, `consumed-*.json` | Indirect | Session nonces, tx hashes, Stripe session ids, Resend and SES event ids — replay prevention |
-| `ticket-sales.json` | **Yes** (pseudonymous) | Stripe session ↔ payment intent, minted ticket slots, order reference, refund and dispute state - what voids a refunded ticket at the door - and each time the organiser resent an undelivered ticket (when, who, and the HMAC of the address, #983). No email - `lib/stripe/ticket-sales.ts` |
+| `ticket-sales.json` | **Yes** (pseudonymous) | Stripe session ↔ payment intent, minted ticket slots, order reference, refund and dispute state - what voids a refunded ticket at the door - and each time the organiser resent an undelivered ticket (when, who, and the HMAC of the address, #983). For allocated seating, the seat each ticket was sold in; where it sits now is read from the ledger. No email - `lib/stripe/ticket-sales.ts` |
 | `event-cancellations.json` | **Yes** (pseudonymous) | Cancelled events and one refund row per sale, keyed by Stripe session - `lib/event/cancellations.ts` |
 | `pending-refunds.json` | **Yes** (pseudonymous) | Automatic refunds Stripe refused to create, by Stripe session and payment intent, kept until retried. No email - `lib/stripe/pending-refunds.ts` |
 | `held-orders/{root}.json` | **Yes** (encrypted) | One file per order sealed in the buyer's browser, held as ciphertext from checkout until paid and stored on Swarm (unpaid: deleted after 24 h; paid but never stored: erased by the retention sweep like a stored order, #547) - `lib/attendee-batch/held-orders.ts` |
@@ -141,6 +141,14 @@ claimed "no plaintext store but one" would be false on merge.
   key from a code the devices share by QR or typing, which WoCo never sees, so the server cannot
   read them; the account keys inside are sealed again to a key that exists only on the device being
   linked. A restart discards them. `lib/auth/pairing-mailbox.ts`
+- **Seat-change email (allocated seating).** After an organiser moves a ticket to another seat, their
+  browser sends the buyer's address to `/api/events/:id/seat-moved`. The server sends only if the
+  address's HMAC matches that sale's own buyer and the order is not erased, then discards the address:
+  it is never stored or logged. It keeps in memory, for 24 hours, which sale, ticket and seat it
+  mailed (no address), plus per-account and per-event send counters. `lib/seating/seat-moved.ts`
+- **Seats being moved.** While an organiser's seat move is relayed, the target seats are claimed for
+  3 minutes in memory so no buyer can take them meanwhile. Event, ticket type and seat numbers only.
+  `claimRelaySeats` in `lib/event/reservation-store.ts`
 
 ### 3.2a Kept on the user's device only (never sent to WoCo)
 
@@ -230,7 +238,7 @@ and the encryption key are different keys from one seed.
 | **Photon (Komoot)** | Address geocoding at event creation | Organiser IP + typed venue address | DE |
 | **Web3Auth** | Social/email login → wallet | Email, OAuth identifiers | US |
 | **ZeroDev** | Account-abstraction bundler/paymaster for passkey wallets | Wallet address, operation data | US |
-| **Arbitrum** | Onchain event registration and ticket ledger (`WoCoTicketLedger`) | Each ticket's single-use address and order reference - **public, permanent** | Global |
+| **Arbitrum** | Onchain event registration and ticket ledger (`WoCoTicketLedger`) | Each ticket's single-use address and order reference, and for allocated seating its seat and every organiser-signed change of seat - **public, permanent** | Global |
 | **exchangerate-api.com**, **CoinGecko** | FX and ETH pricing | None (no user data) | US |
 
 Crypto payment rails are **off** at launch (`FEATURES.cryptoPaymentsAllowed`), so on-chain payment
@@ -328,6 +336,8 @@ independent nodes worldwide:
 |---|---|---|
 | v1 claim feeds (claimers, claims, editions, pending-claims) | No longer written - the v1 claim rail is deleted (#207). A ticket is now a slot on the onchain `WoCoTicketLedger`, held by a single-use address generated at the sale | No |
 | Order blob | X-Wing sealed box of the order answers, on the attendee batch, paid orders only (§6 below). Its Swarm reference is also recorded onchain as the slot's `orderRef`, which is public and permanent | **Yes**, encrypted |
+| Seating plan (`woco.seatplan.v1`) | The organiser's seating plan for an allocated-seating ticket type: sections, rows, seat labels and price bands. Fixed at publish and committed onchain through the ticket type's manifest | No |
+| Seat state (`woco/event/{eventId}/seats/{seriesId}`, `woco.seatstate.v1`) | Seats the organiser holds back, by a fixed kind (house, guest, press, access, unavailable, other - never free text), and seats confirmed back on sale. Signed by the organiser's content-feed signer. Names no buyer | No |
 | Like / follow statements | Public signed statements on the user's own feed (`packages/shared/src/social/`); a retraction is a new version, not a deletion | **Yes**, and intentionally public |
 | Profile feeds | display name, avatar, bio — organiser-published | **Yes**, and intentionally public |
 | Organiser privacy notice (`woco/legal/privacy-notice/{account}`, `woco.privacy-notice.v2`) | The organiser's name, privacy contact email, optional postal address and ICO number, and their choices (who else sees attendee details, months order-form answers are kept, whether they email only about their own events, plus optional "anything else" lines), signed by their content-feed signer and published when they press "Publish". The public notice pages read it through `GET /api/privacy-notice/*`, which picks the account and signer from server records only (`routes/privacy-notice.ts`); the server stores none of it. Earlier versions stay retrievable after an edit - Organiser Terms §4 says so, and the editor asks for business, not personal, details | **Yes** (the organiser's own details), and intentionally public |
