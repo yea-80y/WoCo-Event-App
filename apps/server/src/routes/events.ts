@@ -20,6 +20,7 @@ import { RegistrationRebindError, RegistryUnreadableError } from "../lib/event/o
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
+import { routeSave } from "../lib/etherna/failover.js";
 import type { SeriesManifestBlob, SignedManifestV2 } from "@woco/shared";
 import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x, editionBodiesFromCommon, MAX_EDITIONS_PER_EVENT } from "@woco/shared";
 import { checkSeatedSeries } from "../lib/seating/seated-series.js";
@@ -541,13 +542,16 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
       return c.json({ ok: false, error: "Image must be under 8 MB" }, 400);
     }
     try {
-      // Same batch routing as create — the event's batch, never a purchase trigger.
-      const selection = batchForDeploy({
-        ownerAddress: parentAddress,
-        gatewayUrl: typeof body.gatewayUrl === "string" ? body.gatewayUrl : "",
-        deployType: "event",
-      });
-      const imageHash = await uploadToBytes(imageData, selection);
+      // Same batch routing as create — the event's batch, never a purchase trigger —
+      // with the Etherna failover (#912).
+      const selection = routeSave(() =>
+        batchForDeploy({
+          ownerAddress: parentAddress,
+          gatewayUrl: typeof body.gatewayUrl === "string" ? body.gatewayUrl : "",
+          deployType: "event",
+        }),
+      );
+      const imageHash = await uploadToBytes(imageData, selection, { failover: { parent: parentAddress } });
       await whitelistHashes([imageHash]).catch((err) =>
         console.warn("[event] edit-image whitelist failed (non-critical):", err));
       updates.imageHash = imageHash;

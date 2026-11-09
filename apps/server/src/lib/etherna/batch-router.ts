@@ -44,6 +44,11 @@ export interface BatchSelection {
   /** Set when a WEBSITE deploy landed on the shared platform batch via the
    *  free-hosting promo — the caller must apply the per-owner byte quota. */
   freeHosted?: boolean;
+  /** Set only by `routeSave` (failover.ts): the chain says this Etherna batch cannot
+   *  take writes (#610), and the save may still go ahead because the Etherna failover
+   *  will stamp it on WoCo and move it here later. Only an upload with failover may
+   *  be handed one. */
+  ethernaRefused?: string;
 }
 
 /** The canonical Etherna gateway - what feeds record and clients send. Never the
@@ -71,7 +76,13 @@ export class StripeVerificationRequired extends Error {
 export class PlatformBatchUnavailable extends Error {
   readonly status = 503;
   readonly code = "STORAGE_UNAVAILABLE";
-  constructor(readonly reason: string) {
+  /**
+   * `refused`: the selection the router would have made had the chain allowed it.
+   * With the Etherna failover on, a save goes ahead on it anyway (`routeSave`,
+   * failover.ts) - stamped on WoCo and moved here later - so its quota and records
+   * still name the batch it is meant for.
+   */
+  constructor(readonly reason: string, readonly refused?: BatchSelection) {
     super("Storage is temporarily unavailable - nothing was saved. Please try again in a few minutes.");
     this.name = "PlatformBatchUnavailable";
   }
@@ -233,9 +244,10 @@ export function batchForDeploy(input: RouterInput): BatchSelection {
     }
     const refusal = platformBatchRefusal(platform, ethernaPlatformBatchSnapshot(), Date.now());
     noteRefusal(platform, refusal);
-    if (refusal) throw new PlatformBatchUnavailable(refusal);
+    const selection: BatchSelection = { batchId: platform, target: "etherna", ...(deployType === "website" ? { freeHosted: true } : {}) };
+    if (refusal) throw new PlatformBatchUnavailable(refusal, selection);
     console.log(`[batch-router] ${deployType} deploy → etherna PLATFORM batch ${platform.slice(0, 12)}…${deployType === "website" ? " (FREE_HOSTING)" : ""} (no live user batch for ${ownerAddress.slice(0, 10)}…)`);
-    return { batchId: platform, target: "etherna", ...(deployType === "website" ? { freeHosted: true } : {}) };
+    return selection;
   }
 
   throw new BatchPurchaseRequired();
@@ -252,7 +264,7 @@ export function platformEthernaBatch(): BatchSelection {
   if (!platform) throw new Error("ETHERNA_PLATFORM_BATCH not configured — cannot stamp a server feed on Etherna");
   const refusal = platformBatchRefusal(platform, ethernaPlatformBatchSnapshot(), Date.now());
   noteRefusal(platform, refusal);
-  if (refusal) throw new PlatformBatchUnavailable(refusal);
+  if (refusal) throw new PlatformBatchUnavailable(refusal, { batchId: platform, target: "etherna" });
   return { batchId: platform, target: "etherna" };
 }
 

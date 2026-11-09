@@ -22,13 +22,16 @@
  *   pending  - sent to Etherna (written BEFORE the request leaves); not yet seen
  *              on our bee. Whether Etherna confirmed it changes nothing here.
  *   failover - stamped on the WoCo batch in place of Etherna; to be posted there.
+ *              Since slice 2a also a `/bytes` ROOT (`kind: "bytes"`), one entry
+ *              however many chunks sit under it, and only ever failover.
  *
  * `failover.ts` sweeps both: pending goes once our bee serves the chunk (or
  * neither store has it), failover once Etherna has taken the same bytes.
  *
  * ADDRESSES ONLY (owner decision, 2026-10-16): the SOC owner and identifier that
- * make the address, and the relaying account (for the batch a chunk moves back
- * to). Never the bytes: a failover chunk is re-read from our bee to be moved.
+ * make the address (a root is its own address), and the relaying account (for
+ * the batch a save moves back to). Never the bytes: a failover save is re-read
+ * from our bee to be moved.
  *
  * ONE FILE PER ENTRY, AND A CEILING. Any account can sign SOCs for keys it
  * controls, so the list must not grow without bound or cost a rewrite of
@@ -91,7 +94,9 @@ export const STATE_REWRITE_MIN_MS = 60 * 1000;
 export type FailoverMode = "off" | "auto" | "force";
 export type RelayStatus = "pending" | "failover";
 
-export interface RelayEntry {
+/** A signed chunk. No `kind` on disk: every file written before bytes entries existed is one. */
+export interface SocEntry {
+  kind?: undefined;
   /** SOC owner, 40 hex. */
   owner: string;
   /** SOC identifier, 64 hex. */
@@ -102,6 +107,22 @@ export interface RelayEntry {
   at: string;
   updatedAt: string;
 }
+
+/**
+ * A `/bytes` upload stamped on WoCo in place of Etherna, filed under its root
+ * (slice 2a). Only ever `failover`: content-addressed chunks cannot fork, so the
+ * read rule has nothing to guard and an Etherna send is never listed `pending`.
+ * One entry per root, however many chunks sit under it.
+ */
+export interface BytesEntry {
+  kind: "bytes";
+  parent?: string;
+  status: "failover";
+  at: string;
+  updatedAt: string;
+}
+
+export type RelayEntry = SocEntry | BytesEntry;
 
 const ADDR = /^[0-9a-f]{64}$/;
 const ENTRY_FILE = /^([0-9a-f]{64})\.json$/;
@@ -150,22 +171,21 @@ function norm(hex: string): string {
 }
 
 function parseEntry(v: unknown): RelayEntry | null {
-  const e = v as Partial<RelayEntry> | null;
+  const e = v as { kind?: unknown; owner?: unknown; identifier?: unknown; parent?: unknown; status?: unknown; at?: unknown; updatedAt?: unknown } | null;
   if (!e || typeof e !== "object") return null;
-  if (typeof e.owner !== "string" || !OWNER.test(e.owner)) return null;
-  if (typeof e.identifier !== "string" || !ADDR.test(e.identifier)) return null;
   if (e.parent !== undefined && (typeof e.parent !== "string" || !PARENT.test(e.parent))) return null;
-  if (e.status !== "pending" && e.status !== "failover") return null;
   if (typeof e.at !== "string" || Number.isNaN(Date.parse(e.at))) return null;
   if (typeof e.updatedAt !== "string" || Number.isNaN(Date.parse(e.updatedAt))) return null;
-  return {
-    owner: e.owner,
-    identifier: e.identifier,
-    ...(e.parent ? { parent: e.parent } : {}),
-    status: e.status,
-    at: e.at,
-    updatedAt: e.updatedAt,
-  };
+  const common = { ...(e.parent ? { parent: e.parent as string } : {}), at: e.at, updatedAt: e.updatedAt };
+  if (e.kind === "bytes") {
+    if (e.status !== "failover" || e.owner !== undefined || e.identifier !== undefined) return null;
+    return { kind: "bytes", status: "failover", ...common };
+  }
+  if (e.kind !== undefined) return null;
+  if (typeof e.owner !== "string" || !OWNER.test(e.owner)) return null;
+  if (typeof e.identifier !== "string" || !ADDR.test(e.identifier)) return null;
+  if (e.status !== "pending" && e.status !== "failover") return null;
+  return { owner: e.owner, identifier: e.identifier, status: e.status, ...common };
 }
 
 function refuse(why: string): void {
@@ -210,8 +230,12 @@ function ensureLoaded(): void {
     // is in Etherna alone - so the whole ledger is refused. So is one filed under
     // an address its own owner and identifier do not make: it would guard the
     // wrong address, silently, for ever.
+    // A bytes entry's root has nothing to recompute it from: its move back
+    // succeeds only when Etherna returns that same root, which is its check.
     if (!e) return refuse(`holds an unreadable entry (${name.slice(0, 16)})`);
-    if (socAddressHex(e.owner, e.identifier) !== m[1]) return refuse(`holds an entry filed under the wrong address (${name.slice(0, 16)})`);
+    if (e.kind !== "bytes" && socAddressHex(e.owner, e.identifier) !== m[1]) {
+      return refuse(`holds an entry filed under the wrong address (${name.slice(0, 16)})`);
+    }
     // A send cut off by the restart may still be landing in Etherna's store:
     // nothing is judged for SETTLE_MIN_AGE_MS from now. Memory only.
     loadedEntries.set(m[1], { ...e, updatedAt: new Date(now()).toISOString() });
@@ -353,6 +377,37 @@ export function noteFailover(address: string, owner: string, identifier: string,
   return true;
 }
 
+/**
+ * A `/bytes` upload just stamped on WoCo in place of Etherna, under the root our
+ * bee returned. Listed AFTER the stamp, unlike a SOC: nothing refers to a root
+ * until the caller is handed it and writes it somewhere, so a crash before this
+ * leaves only an unreferenced copy on WoCo, and the same bytes saved again list
+ * it. A root saved again keeps its first `at`. False when it could not be listed:
+ * the caller must then fail the save, as with the rail off.
+ */
+export function noteBytesFailover(root: string, parent?: string): boolean {
+  ensureLoaded();
+  if (unreadable) return false;
+  const a = norm(root);
+  // Never write a file the next boot would refuse the whole ledger over.
+  if (!ADDR.test(a) || (parent !== undefined && !PARENT.test(parent.toLowerCase()))) return false;
+  const prev = entries.get(a);
+  if (prev && prev.kind !== "bytes") return false;
+  if (!prev && entries.size >= maxEntries) {
+    unlisted++;
+    return false;
+  }
+  const t = new Date(now()).toISOString();
+  writeEntry(a, {
+    kind: "bytes",
+    ...(parent ? { parent: parent.toLowerCase() } : {}),
+    status: "failover",
+    at: prev?.at ?? t,
+    updatedAt: t,
+  });
+  return true;
+}
+
 type Seen = { address: string; updatedAt: string };
 /** The entry still as the sweep read it? A send since then means it is not the sweep's to change. */
 const unchanged = (v: Seen) => entries.get(norm(v.address))?.updatedAt === v.updatedAt;
@@ -362,6 +417,8 @@ export function markPending(v: Seen): void {
   if (!unchanged(v)) return;
   const a = norm(v.address);
   const e = entries.get(a)!;
+  // A root is never pending: there is no read rule for content-addressed chunks.
+  if (e.kind === "bytes") return;
   writeEntry(a, { ...e, status: "pending", updatedAt: new Date(now()).toISOString() });
 }
 
@@ -481,6 +538,8 @@ export function relayLedgerState(): {
   /** Pending past PENDING_ALARM_MS since first listed (a failover entry turned pending keeps its `at`). */
   stalePending: number;
   failover: number;
+  /** Of `failover`, how many are `/bytes` roots rather than signed chunks. */
+  failoverBytes: number;
   /** Failover past FAILOVER_ALARM_MS since first listed. */
   staleFailover: number;
   oldestPendingAt: string | null;
@@ -490,12 +549,14 @@ export function relayLedgerState(): {
   let pending = 0;
   let stalePending = 0;
   let failover = 0;
+  let failoverBytes = 0;
   let staleFailover = 0;
   let oldestPendingAt: string | null = null;
   let oldestFailoverAt: string | null = null;
   for (const e of entries.values()) {
     if (e.status === "failover") {
       failover++;
+      if (e.kind === "bytes") failoverBytes++;
       if (pastAwayAlarm(e.at)) staleFailover++;
       if (!oldestFailoverAt || e.at < oldestFailoverAt) oldestFailoverAt = e.at;
     } else {
@@ -518,6 +579,7 @@ export function relayLedgerState(): {
     pending,
     stalePending,
     failover,
+    failoverBytes,
     staleFailover,
     oldestPendingAt,
     oldestFailoverAt,

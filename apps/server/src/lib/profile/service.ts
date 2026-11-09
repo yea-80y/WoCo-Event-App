@@ -2,6 +2,7 @@ import type { Hex0x, UserProfile, UpdateProfileRequest } from "@woco/shared";
 import { mergeProfileText } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForUserContent } from "../etherna/batch-router.js";
+import { routeSave } from "../etherna/failover.js";
 import {
   readFeedPage,
   writeFeedPage,
@@ -123,7 +124,8 @@ export async function uploadAvatar(
   // bytes are user content: they stamp the owner's Etherna batch when live,
   // else the shared Etherna platform batch (#48) — never the WoCo batch unless
   // Etherna is unavailable. Reads are batch-agnostic (gateway + Etherna race).
-  const avatarRef = await uploadToBytes(imageData, batchForUserContent(addr));
+  // With the Etherna failover (#912): stamped on WoCo and moved back when Etherna cannot take it.
+  const avatarRef = await uploadToBytes(imageData, routeSave(() => batchForUserContent(addr)), { failover: { parent: addr } });
 
   // The proxy 403s unwhitelisted content, and UserAvatar reads the image
   // gateway-direct (/bytes/{avatarRef}) — so the gateway can't serve it unless

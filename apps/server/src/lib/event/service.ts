@@ -6,6 +6,7 @@ import type {
 import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic, FEATURES, orderKeyRef, eventHasPlace, EVENT_PLACE_REQUIRED } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForDeploy, ETHERNA_URL, isEthernaGateway, isWocoGateway, PlatformBatchUnavailable, type BatchSelection } from "../etherna/batch-router.js";
+import { routeSave } from "../etherna/failover.js";
 import { readContentFeedJsonResult, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId, type EventContractTarget } from "../chain/event-contract.js";
@@ -178,11 +179,14 @@ export async function createEventV2(opts: {
     throw new Error("gatewayUrl must be the Etherna or WoCo gateway");
   }
   const onEtherna = !gatewayUrl || isEthernaGateway(gatewayUrl);
-  const batchSelection = batchForDeploy({
-    ownerAddress: creatorAddress,
-    gatewayUrl: onEtherna ? ETHERNA_URL : gatewayUrl,
-    deployType: "event",
-  });
+  const chooseBatch = () =>
+    batchForDeploy({ ownerAddress: creatorAddress, gatewayUrl: onEtherna ? ETHERNA_URL : gatewayUrl, deployType: "event" });
+  // With a feed signer every write here is a /bytes save, which the Etherna
+  // failover can take even when the chain refuses the batch (#912). Without one
+  // the server signs the event feed onto this batch itself (below), and a
+  // server-signed Etherna write has no failover yet: the refusal stands.
+  const batchSelection = creatorFeedSigner ? routeSave(chooseBatch) : chooseBatch();
+  const saveOpts = { failover: { parent: creatorAddress } };
 
   const emit = (phase: string, current: number, total: number, message: string) =>
     onProgress?.({ type: "progress", phase, current, total, message });
@@ -211,11 +215,11 @@ export async function createEventV2(opts: {
 
   // ── Phase 1: Upload image (start immediately) ─────────────────────────
   emit("image", 0, 1, "Uploading event image...");
-  const imagePromise = uploadToBytes(imageData, batchSelection);
+  const imagePromise = uploadToBytes(imageData, batchSelection, saveOpts);
   // The order key in parallel (#642). Awaited below, and FATAL: an event whose key
   // chunk is missing or unwhitelisted shows no order form and cannot seal an order.
   const orderKeyPromise = encryptionPublicKey
-    ? publishOrderKey(encryptionPublicKey, batchSelection)
+    ? publishOrderKey(encryptionPublicKey, batchSelection, creatorAddress)
     : Promise.resolve(undefined);
   orderKeyPromise.catch(() => {});
   // Real rejection is re-thrown at the awaited consumer below; the noop
@@ -255,7 +259,7 @@ export async function createEventV2(opts: {
         objectRefs: [],
         manifestDigestHex,
       };
-      const swarmManifestRef = await uploadToBytes(JSON.stringify(blob), batchSelection);
+      const swarmManifestRef = await uploadToBytes(JSON.stringify(blob), batchSelection, saveOpts);
       emit("manifests", i + 1, series.length, `Manifests: ${i + 1}/${series.length}`);
 
       return {
@@ -364,11 +368,13 @@ function hexBytes(keyHex: string): Uint8Array {
   return bytes;
 }
 
-async function publishOrderKey(keyHex: string, selection: BatchSelection): Promise<string> {
+async function publishOrderKey(keyHex: string, selection: BatchSelection, parent: string): Promise<string> {
   const bytes = hexBytes(keyHex);
   const expected = orderKeyRef(bytes);
+  // The event's batch, with the failover (#912): during an Etherna outage this
+  // leg lands on WoCo too and moves back, rather than failing the create.
   const refs = await Promise.all([
-    uploadToBytes(bytes, selection),
+    uploadToBytes(bytes, selection, { failover: { parent } }),
     ...(selection.target === "etherna" ? [uploadToBytes(bytes)] : []),
   ]);
   for (const ref of refs) {

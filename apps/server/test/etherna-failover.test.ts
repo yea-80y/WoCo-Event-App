@@ -690,9 +690,10 @@ test("a slow Etherna write failure pauses Etherna, so the next relay does not wa
   if (read.status === "unavailable") assert.match(read.reason, /paused/, "reads are paused by a write's slow failure too");
 });
 
-test("the relay route asks for the failover, and detours a refused batch only when the plan says so", () => {
+test("the relay route asks for the failover, and detours a refused batch only through routeSave", () => {
+  // routeSave's own behaviour: etherna-failover-bytes.test.ts.
   const route = readFileSync(fileURLToPath(new URL("../src/routes/swarm.ts", import.meta.url)), "utf-8");
-  assert.match(route, /instanceof PlatformBatchUnavailable\) \|\| relayPlan\(err\.reason\) !== "woco"\) throw err;/);
+  assert.match(route, /const \{ ethernaRefused, \.\.\.selection \} = routeSave\(\(\) =>/);
   assert.match(route, /\{ failover: \{ parent: parentAddress, \.\.\.\(ethernaRefused \? \{ ethernaRefused \} : \{\}\) \} \}/);
 });
 

@@ -668,7 +668,12 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     moved out loses its read-rule protection. `ethernaFailover.away` red = a save stamped on WoCo not moved
     back an hour after it was listed: Etherna down that long, or the move back stuck (no batch, or Etherna
     refusing that chunk). An Etherna-wide refusal HOLDS an entry 5 min and never backs it off, so it moves
-    within ~5 min of Etherna taking writes again, however long the outage)
+    within ~5 min of Etherna taking writes again, however long the outage. Slice 2a: also one file per `/bytes`
+    root stamped on WoCo (`kind: "bytes"` - event image/manifest/order key, avatar, site image, seat plan),
+    moved back by re-uploading the same bytes at level 0 and cleared ONLY when Etherna returns the same root.
+    ROLLBACK to a pre-2a build refuses the WHOLE ledger on the first such file (fail closed): move the
+    `"kind":"bytes"` files out before rolling back, back in after. `ethernaFailover.plainTree` red = Etherna
+    stored a small save at a root that is not the level-0 tree: `/bytes` saves can no longer move back)
   ticket-holds/ (#983 — per sale, each emailed ticket's QR sealed to the organiser's order key: the ONLY copy
     a bounced ticket can be resent from (the signing key is discarded at mint). Losing it leaves those
     tickets reissue-only. Unreadable = never overwritten, `/api/health` `email.ticketHolds` alarm)

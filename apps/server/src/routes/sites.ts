@@ -37,6 +37,7 @@ import {
   BEE_URL,
 } from "../config/swarm.js";
 import { batchForDeploy, BatchPurchaseRequired, PlatformBatchUnavailable, StripeVerificationRequired, hasLiveUserBatch, type BatchSelection } from "../lib/etherna/batch-router.js";
+import { routeSave } from "../lib/etherna/failover.js";
 import { isVerifiedOrganiser, refuseUnlessVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js";
 
@@ -299,14 +300,15 @@ sitesRouter.post("/upload-image", requireAuth, async (c) => {
     // free-hosting platform-batch fallback (Stripe-verified, quota-metered)
     // otherwise. Site images are site bytes — letting them bypass the quota
     // would leave the deploy gate meterable around.
+    // With the Etherna failover (#912): a batch the chain refuses still takes the
+    // image (stamped on WoCo, moved back), and the quota below meters the batch it
+    // is meant for.
     let selection;
     try {
-      selection = batchForDeploy({
-        ownerAddress: parentAddress,
-        gatewayUrl: body.gatewayUrl ?? "",
-        deployType: "website",
-        freeHostingEligible: await isVerifiedOrganiser(parentAddress),
-      });
+      const freeHostingEligible = await isVerifiedOrganiser(parentAddress);
+      selection = routeSave(() =>
+        batchForDeploy({ ownerAddress: parentAddress, gatewayUrl: body.gatewayUrl ?? "", deployType: "website", freeHostingEligible }),
+      );
     } catch (err) {
       if (err instanceof BatchPurchaseRequired) {
         return c.json({ ok: false, error: err.message, code: "BATCH_PURCHASE_REQUIRED" }, 402);
@@ -329,7 +331,7 @@ sitesRouter.post("/upload-image", requireAuth, async (c) => {
       }
     }
 
-    const imageRef = await uploadToBytes(bytes, selection);
+    const imageRef = await uploadToBytes(bytes, selection, { failover: { parent: parentAddress } });
     recordUpload(parentAddress, {
       ref: imageRef,
       bytes: bytes.length,
@@ -340,6 +342,7 @@ sitesRouter.post("/upload-image", requireAuth, async (c) => {
     });
     return c.json({ ok: true, data: { imageRef } });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     console.error("[sites/upload-image]", err);
     return c.json({ ok: false, error: "Upload failed" }, 500);
   }
