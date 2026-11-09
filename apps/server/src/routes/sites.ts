@@ -292,6 +292,7 @@ sitesRouter.post("/upload-image", requireAuth, async (c) => {
     const raw = body.image.includes(",") ? body.image.split(",")[1] : body.image;
     const bytes = Uint8Array.from(atob(raw), (ch) => ch.charCodeAt(0));
 
+    if (bytes.length === 0) return c.json({ ok: false, error: "Image is empty" }, 400);
     if (bytes.length > 4 * 1024 * 1024) {
       return c.json({ ok: false, error: "Image too large (max 4MB)" }, 400);
     }

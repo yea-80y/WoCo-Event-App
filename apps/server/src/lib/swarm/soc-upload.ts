@@ -254,6 +254,11 @@ export async function uploadSignedSoc(
 
   if (dest?.target === "etherna") {
     const plan = opts.failover ? relayPlan(opts.failover.ethernaRefused) : "etherna";
+    // A batch the chain refuses, and the failover can no longer take the save
+    // (its list filled since the route asked): never post it there (#610).
+    if (opts.failover?.ethernaRefused !== undefined && plan !== "woco") {
+      throw new PlatformBatchUnavailable(opts.failover.ethernaRefused);
+    }
     if (plan !== "woco") {
       try {
         await withRetries(

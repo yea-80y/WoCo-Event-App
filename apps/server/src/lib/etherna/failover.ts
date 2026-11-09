@@ -259,7 +259,8 @@ export async function sweepRelayLedger(
   for (const e of dueEntries("failover", perPass.migrate)) {
     if (ethernaPaused() !== null) break;
     if (e.kind === "bytes") {
-      if (bytesMoved >= bytesBudget) break;
+      // Past the budget, roots wait a pass; signed chunks behind them still move.
+      if (bytesMoved >= bytesBudget) continue;
       const moved = await moveBytesBack(io, e);
       bytesMoved += moved.posted;
       if (moved.outcome === "held") {

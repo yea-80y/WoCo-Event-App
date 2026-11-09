@@ -34,6 +34,8 @@ const calls: Call[] = [];
 /** Etherna's answer to a /bytes POST: a status, or a root to claim (default: the plain tree). */
 let ethernaBytes: () => { status: number } | { root: string } | null = () => null;
 let beeBytes: () => { status: number } | { root: string } | null = () => null;
+/** Our bee's answer to GET /bytes/<root>; absent = 404. */
+const beeReads: Record<string, () => Response> = {};
 let plainRoot: (d: Uint8Array) => string;
 
 const realFetch = globalThis.fetch;
@@ -46,6 +48,10 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   if (url === `${ETH}/token`) return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
   if (url === `${PROXY}/admin/whitelist`) return new Response("{}", { status: 200 });
   if (url.startsWith(`${ETH}/api/v0.3/resources/`)) return new Response(null, { status: 200 });
+  if (method === "GET" && url.startsWith(`${BEE}/bytes/`)) {
+    const r = beeReads[url.slice(`${BEE}/bytes/`.length)];
+    return r ? r() : new Response("not found", { status: 404 });
+  }
   const store = url === `${ETH}/bytes` ? ethernaBytes() : url === `${BEE}/bytes` ? beeBytes() : undefined;
   if (store !== undefined && method === "POST") {
     if (store && "status" in store) return new Response("no", { status: store.status });
@@ -171,6 +177,46 @@ test("auto: Etherna cannot write - two short tries, then stamped on WoCo at leve
   assert.ok(calls.some((c) => c.url === `${PROXY}/admin/whitelist`), "readers falling back to our gateway find it");
   assert.equal(health().sinceBoot.failedOver, 1);
   assert.equal(ledger.relayLedgerState().failoverBytes, 1);
+});
+
+test("auto: a slow Etherna failure pauses Etherna, and the save goes to WoCo without a second wait", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  breaker.__resetEthernaBreaker({ slowMs: 0 });
+  ethernaBytes = () => ({ status: 503 });
+  await bytesMod.uploadToBytes(data(5000), ETHERNA, { failover: { parent: PARENT } });
+  assert.equal(posts(ETH).length, 1, "an 8 MB image would otherwise wait twice - past the edge's 100 s");
+  assert.equal(posts(BEE).length, 1);
+});
+
+test("an empty save is a 400, not a 500", async () => {
+  await assert.rejects(bytesMod.uploadToBytes(new Uint8Array(0), ETHERNA), (e: Error & { status?: number }) => e.status === 400);
+  assert.equal(calls.length, 0);
+});
+
+test("the same bytes saved by a different account move back to the platform batch, not either account's", () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const root = "37".repeat(32);
+  const other = "0x" + "bb".repeat(20);
+  ledger.noteBytesFailover(root, PARENT);
+  ledger.noteBytesFailover(root, PARENT.toUpperCase().replace(/^0X/, "0x"));
+  assert.equal(ledger.getRelayEntry(root)?.parent, PARENT, "the same account again: its own");
+  ledger.noteBytesFailover(root, other);
+  assert.equal(ledger.getRelayEntry(root)?.parent, undefined);
+  ledger.noteBytesFailover(root, PARENT);
+  assert.equal(ledger.getRelayEntry(root)?.parent, undefined, "once neutral, stays neutral");
+  restart();
+  assert.equal(ledger.getRelayEntry(root)?.parent, undefined);
+});
+
+test("reading a root back from our bee: its bytes, 404 absent, anything else unavailable", async () => {
+  const d = data(300);
+  beeReads["aa".repeat(32)] = () => new Response(d, { status: 200 });
+  beeReads["bb".repeat(32)] = () => new Response("read chunk failed", { status: 500 });
+  const ok = await plain.readPlainBytesFromBee("aa".repeat(32));
+  assert.equal(ok.status, "found");
+  assert.deepEqual(ok.status === "found" ? [...ok.data] : [], [...d]);
+  assert.deepEqual(await plain.readPlainBytesFromBee("cc".repeat(32)), { status: "absent" });
+  assert.equal((await plain.readPlainBytesFromBee("bb".repeat(32))).status, "unavailable");
 });
 
 test("force, an open breaker, or a batch the router refused: no Etherna try at all", async () => {

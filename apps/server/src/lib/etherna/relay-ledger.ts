@@ -366,10 +366,12 @@ export function noteFailover(address: string, owner: string, identifier: string,
     return false;
   }
   const t = new Date(now()).toISOString();
+  // A pending entry has no saver yet; an earlier failover's does (`movesTo`).
+  const to = prev?.status === "failover" ? movesTo(prev.parent, parent) : parent?.toLowerCase();
   writeEntry(a, {
     owner: norm(owner),
     identifier: norm(identifier),
-    ...(parent ? { parent: parent.toLowerCase() } : {}),
+    ...(to ? { parent: to } : {}),
     status: "failover",
     at: prev?.at ?? t,
     updatedAt: t,
@@ -378,11 +380,24 @@ export function noteFailover(address: string, owner: string, identifier: string,
 }
 
 /**
+ * Whose batch a save stamped on WoCo again moves back to. The same account: its
+ * own. A different account saving the same address (anyone may relay a signed
+ * chunk, and identical bytes are one root): neither's - the shared platform batch
+ * (no `parent`), so no account decides where another's content lives or for how
+ * long. Once neutral, it stays neutral.
+ */
+function movesTo(first: string | undefined, next: string | undefined): string | undefined {
+  const n = next?.toLowerCase();
+  return first !== undefined && first === n ? first : undefined;
+}
+
+/**
  * A `/bytes` upload just stamped on WoCo in place of Etherna, under the root our
  * bee returned. Listed AFTER the stamp, unlike a SOC: nothing refers to a root
  * until the caller is handed it and writes it somewhere, so a crash before this
  * leaves only an unreferenced copy on WoCo, and the same bytes saved again list
- * it. A root saved again keeps its first `at`. False when it could not be listed:
+ * it. A root saved again keeps its first `at`, and its account only if the same
+ * one saved it (`movesTo`). False when it could not be listed:
  * the caller must then fail the save, as with the rail off.
  */
 export function noteBytesFailover(root: string, parent?: string): boolean {
@@ -398,9 +413,10 @@ export function noteBytesFailover(root: string, parent?: string): boolean {
     return false;
   }
   const t = new Date(now()).toISOString();
+  const to = prev ? movesTo(prev.parent, parent) : parent?.toLowerCase();
   writeEntry(a, {
     kind: "bytes",
-    ...(parent ? { parent: parent.toLowerCase() } : {}),
+    ...(to ? { parent: to } : {}),
     status: "failover",
     at: prev?.at ?? t,
     updatedAt: t,

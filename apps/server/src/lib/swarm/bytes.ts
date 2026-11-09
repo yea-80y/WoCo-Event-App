@@ -4,6 +4,7 @@ import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
 import { PlatformBatchUnavailable, type BatchSelection } from "../etherna/batch-router.js";
 import { FAILOVER_ETHERNA_ATTEMPTS, noteFailedOver, notePlainTreeMismatch, relayPlan } from "../etherna/failover.js";
+import { ethernaPaused } from "../etherna/breaker.js";
 import { noteBytesFailover } from "../etherna/relay-ledger.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, isTransientSwarmError, withRetries, withTimeout } from "./upload-queue.js";
 import { plainBytesTimeoutMs, plainTreeRoot, postPlainBytes } from "./plain-bytes.js";
@@ -28,6 +29,7 @@ const FULL_BUDGET = { attempts: 5, timeoutMs: BEE_CALL_TIMEOUT_MS };
  * WoCo and its root listed for the sweep to move back.
  */
 async function saveForEtherna(bytes: Uint8Array, selection: BatchSelection, failover?: { parent?: string }): Promise<Hex64> {
+  if (bytes.byteLength === 0) throw Object.assign(new Error("bytes upload: nothing to store"), { status: 400 });
   const plan = failover ? relayPlan(selection.ethernaRefused) : "etherna";
   // A refused batch handed over without the failover able to take the save.
   if (selection.ethernaRefused !== undefined && plan !== "woco") throw new PlatformBatchUnavailable(selection.ethernaRefused);
@@ -37,7 +39,9 @@ async function saveForEtherna(bytes: Uint8Array, selection: BatchSelection, fail
       const ref = await withRetries(
         (timeoutMs) => postPlainBytes("etherna", selection.batchId, bytes, { timeoutMs, deferred: true }),
         plan === "etherna" ? FULL_BUDGET : { attempts: FAILOVER_ETHERNA_ATTEMPTS, timeoutMs: plainBytesTimeoutMs(bytes.length) },
-        isTransientSwarmError,
+        // A slow failure has paused Etherna (breaker.ts): no second wait before
+        // WoCo. Two waits on an 8 MB image would outlast the edge's 100 s.
+        plan === "etherna" ? isTransientSwarmError : (e) => isTransientSwarmError(e) && ethernaPaused() === null,
       );
       if (plain !== null && plain !== ref) notePlainTreeMismatch(bytes.length);
       // Fire-and-forget the offer: it only enables ANONYMOUS gateway reads (e.g.
