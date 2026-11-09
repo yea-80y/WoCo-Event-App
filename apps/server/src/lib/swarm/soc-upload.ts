@@ -50,7 +50,13 @@ import {
   SOC_MAX_PAYLOAD_SIZE,
 } from "@woco/shared";
 import { BEE_URL, requirePostageBatch } from "../../config/swarm.js";
-import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
+import {
+  BEE_CALL_TIMEOUT_MS,
+  isTransientSwarmError,
+  withRetries as withUploadRetries,
+  withTimeout,
+  type UploadBudget,
+} from "./upload-queue.js";
 import { whitelistHashes } from "./whitelist.js";
 import { markHealed, readVerifiedSoc } from "./soc-read.js";
 import { postSocToEtherna, registerEthernaOffer } from "../etherna/upload.js";
@@ -65,7 +71,6 @@ import {
 import { observeStatementBytes } from "../social/participants.js";
 import { errorSnippet } from "../http/read-capped.js";
 
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const HEX_RE = /^[0-9a-fA-F]+$/;
 
@@ -315,41 +320,15 @@ async function postSocToWocoBee(soc: SocWire, batchId: string, timeoutMs: number
   }
 }
 
-function isTransientUpload(err: unknown): boolean {
-  const e = err as { code?: string; message?: string; status?: number };
-  if (e?.status !== undefined) return e.status === 429 || e.status >= 500;
-  return (
-    e?.code === "ETIMEDOUT" ||
-    /429|socket hang up|network|timeout/i.test(String(e?.message ?? "")) ||
-    ["ECONNRESET", "ECONNABORTED", "EAI_AGAIN"].includes(String(e?.code ?? ""))
-  );
-}
-
-async function withRetries(send: (timeoutMs: number) => Promise<void>, budget: { attempts: number; timeoutMs: number }): Promise<void> {
-  let delay = 500;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      // Hold the semaphore only for the HTTP call, never across the back-off
-      // sleep below (mirrors bytes.ts so a throttled slot frees immediately).
-      const release = await beeUploadSem.acquire();
-      try {
-        await send(budget.timeoutMs);
-      } finally {
-        release();
-      }
-      return;
-    } catch (err) {
-      if (isTransientUpload(err) && attempt < budget.attempts - 1) {
-        await wait(delay);
-        delay = Math.min(delay * 2, 5000);
-        continue;
-      }
-      // The store refusing is never the client's fault: the route answers 400
-      // only for its own validation above.
-      const e = err as { status?: number };
-      if (e?.status !== undefined && e.status !== 429 && e.status < 500) e.status = 502;
-      throw err;
-    }
+async function withRetries(send: (timeoutMs: number) => Promise<void>, budget: UploadBudget): Promise<void> {
+  try {
+    await withUploadRetries(send, budget, isTransientSwarmError);
+  } catch (err) {
+    // The store refusing is never the client's fault: the route answers 400
+    // only for its own validation above.
+    const e = err as { status?: number };
+    if (e?.status !== undefined && e.status !== 429 && e.status < 500) e.status = 502;
+    throw err;
   }
 }
 

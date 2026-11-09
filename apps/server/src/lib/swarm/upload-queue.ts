@@ -90,3 +90,56 @@ class Semaphore {
 }
 
 export const beeUploadSem = new Semaphore(MAX_CONCURRENT);
+
+export interface UploadBudget {
+  attempts: number;
+  /** Per attempt, handed to `send`. */
+  timeoutMs: number;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A store fault worth another attempt: 429, 423 (bee's per-bucket stamp lock,
+ * held by a concurrent write to the same batch - an event create stamps several
+ * at once), 5xx, or no status at all with a network or timeout signature (bee's
+ * chain-RPC backpressure surfaces as TCP resets). Any other 4xx is an answer.
+ * The one classifier for SOC and `/bytes` writes.
+ */
+export function isTransientSwarmError(err: unknown): boolean {
+  const e = err as { status?: number; response?: { status?: number }; message?: unknown; code?: unknown } | null;
+  const status = e?.status ?? e?.response?.status;
+  if (status !== undefined) return status === 429 || status === 423 || status >= 500;
+  const msg = String(e?.message ?? "").toLowerCase();
+  if (/socket hang up|network|timeout|429/.test(msg)) return true;
+  return ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNABORTED", "ECONNREFUSED", "EPIPE"].includes(
+    String(e?.code ?? "").toUpperCase(),
+  );
+}
+
+/**
+ * One upload, retried while `transient` says the store may answer differently next
+ * time. The semaphore is held only for the HTTP call, never across the back-off
+ * sleep, so a throttled slot frees at once. Shared by the SOC and `/bytes` writers.
+ */
+export async function withRetries<T>(
+  send: (timeoutMs: number) => Promise<T>,
+  budget: UploadBudget,
+  transient: (err: unknown) => boolean,
+): Promise<T> {
+  let delay = 500;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const release = await beeUploadSem.acquire();
+      try {
+        return await send(budget.timeoutMs);
+      } finally {
+        release();
+      }
+    } catch (err) {
+      if (!transient(err) || attempt >= budget.attempts - 1) throw err;
+      await sleep(delay);
+      delay = Math.min(delay * 2, 5000);
+    }
+  }
+}
