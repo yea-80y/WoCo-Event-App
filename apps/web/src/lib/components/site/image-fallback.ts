@@ -56,6 +56,34 @@ export function firstImageUrl(
   return imageUrlCandidates(imageHash, preferredGateway, storedOn)[0];
 }
 
+/** Wait before each retry: about a minute in all. */
+export const IMAGE_RETRY_DELAYS_MS: readonly number[] = [2_000, 4_000, 8_000, 15_000, 30_000];
+
+/**
+ * Loads the SAME url again after a failed load. The builder shows an image the
+ * moment it is uploaded, but the upload is deferred, so Etherna can answer for it
+ * only some seconds later - and a browser never retries a failed image itself.
+ * Etherna sends its refusals `no-store`, so each retry is a real request.
+ * Stops when the element has moved on to another src (a list re-used it for a
+ * different image) or after the last delay.
+ */
+export function retrySameImageUrl(event: Event, delays: readonly number[] = IMAGE_RETRY_DELAYS_MS): void {
+  const img = event.currentTarget as HTMLImageElement | null;
+  const url = img?.getAttribute("src");
+  if (!img || !url) return;
+
+  const attempt = img.dataset.retryFor === url ? Number(img.dataset.retryCount ?? "0") : 0;
+  if (!(attempt < delays.length)) return;
+  img.dataset.retryFor = url;
+  img.dataset.retryCount = String(attempt + 1);
+
+  setTimeout(() => {
+    if (img.getAttribute("src") !== url) return;
+    img.removeAttribute("src");
+    img.setAttribute("src", url);
+  }, delays[attempt]);
+}
+
 export function useNextImageUrl(
   event: Event,
   imageHash: string | undefined,
