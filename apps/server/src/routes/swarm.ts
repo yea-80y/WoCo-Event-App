@@ -5,9 +5,8 @@ import {
   invalidateContentFeedVersion,
   uploadSignedSoc,
   type SignedSocInput,
-  type SocUploadDestination,
 } from "../lib/swarm/soc-upload.js";
-import { relayPlan } from "../lib/etherna/failover.js";
+import { routeSave } from "../lib/etherna/failover.js";
 import { organiserNoticeContentTopic } from "@woco/shared";
 import { noticeWritten } from "../lib/legal/notice-gate.js";
 import { readVerifiedSoc } from "../lib/swarm/soc-read.js";
@@ -92,21 +91,15 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
     const parentAddress = (c.get("parentAddress") as string).toLowerCase();
     // Same routing as /bytes: Etherna user batch when the builder picked the
     // Etherna gateway (platform Etherna batch fallback), WoCo platform otherwise.
-    let selection: SocUploadDestination;
-    let ethernaRefused: string | undefined;
-    try {
-      selection = batchForDeploy({
+    // Etherna's batch cannot take it (#610): with the failover on (#912) the
+    // save goes to WoCo and moves back later, instead of a 503.
+    const { ethernaRefused, ...selection } = routeSave(() =>
+      batchForDeploy({
         ownerAddress: parentAddress,
         gatewayUrl: typeof b.gatewayUrl === "string" ? b.gatewayUrl : "",
         deployType: "event",
-      });
-    } catch (err) {
-      // Etherna's batch cannot take it (#610): with the failover on (#912) the
-      // save goes to WoCo and moves back later, instead of a 503.
-      if (!(err instanceof PlatformBatchUnavailable) || relayPlan(err.reason) !== "woco") throw err;
-      selection = { target: "etherna", batchId: "" };
-      ethernaRefused = err.reason;
-    }
+      }),
+    );
     const ref = await uploadSignedSoc({
       owner: b.owner,
       identifier: b.identifier,
@@ -190,13 +183,16 @@ swarmRoutes.post("/bytes", jsonBodyLimit(BYTES_RELAY_MAX_BODY_BYTES), requireAut
   if (!unlock.gated) return c.json({ ok: false, error: "ticket_required" }, 403);
   try {
     // Route to the event's batch — Etherna when the builder picked it (events
-    // never trigger a batch purchase; falls back to the platform Etherna batch).
-    const selection = batchForDeploy({
-      ownerAddress: parentAddress,
-      gatewayUrl: typeof b.gatewayUrl === "string" ? b.gatewayUrl : "",
-      deployType: "event",
-    });
-    const ref = await uploadToBytes(new Uint8Array(bytes), selection);
+    // never trigger a batch purchase; falls back to the platform Etherna batch) —
+    // with the Etherna failover (#912).
+    const selection = routeSave(() =>
+      batchForDeploy({
+        ownerAddress: parentAddress,
+        gatewayUrl: typeof b.gatewayUrl === "string" ? b.gatewayUrl : "",
+        deployType: "event",
+      }),
+    );
+    const ref = await uploadToBytes(new Uint8Array(bytes), selection, { failover: { parent: parentAddress } });
     return c.json({ ok: true, data: { ref } });
   } catch (err) {
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);

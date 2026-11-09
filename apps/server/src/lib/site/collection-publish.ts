@@ -28,7 +28,8 @@ import { BEE_URL } from "../../config/swarm.js";
 import { siteRuntimeReleases } from "./runtime-release.js";
 import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
-import { CONTROL_JSON_MAX_BYTES, errorSnippet, readCapped, readCappedJson } from "../http/read-capped.js";
+import { readCapped } from "../http/read-capped.js";
+import { postPlainBytes } from "../swarm/plain-bytes.js";
 
 /** Everything a build needs from one store's copy of a release. */
 export interface SiteRuntimeKit {
@@ -235,39 +236,24 @@ export function admitClientEventPage(input: {
 }
 
 /**
- * Store each object with `/bytes` at redundancy 0 (bee 2.8.1 would erasure-code
- * by default and change every address) and insist the store returns the address
- * we computed. Root last, so the root never exists before what it points at.
+ * Store each object with `/bytes` at redundancy 0 (`postPlainBytes`: bee would
+ * erasure-code by default and change every address) and insist the store returns
+ * the address we computed. Root last, so the root never exists before what it
+ * points at. Not deferred: bee's default returns once the node holds the chunks
+ * and pushes them in the background, so every other reader waits - measured
+ * 2026-09-21 on 5 MB collections, 326 s deferred vs 171 s without until the page
+ * opened from our bee (#613).
  */
 export async function uploadSiteObjects(
   target: "etherna" | "wocoBee",
   batchId: string,
   collection: SiteCollection,
 ): Promise<number> {
-  const base = target === "etherna" ? ETHERNA_FETCH_BASE : BEE_URL;
-  const auth = target === "etherna" ? await ethernaAuth() : {};
   let bytes = 0;
   for (const o of collection.objects) {
-    const r = await fetch(`${base}/bytes`, {
-      method: "POST",
-      headers: {
-        ...auth,
-        "Content-Type": "application/octet-stream",
-        "Swarm-Postage-Batch-Id": batchId,
-        "Swarm-Redundancy-Level": "0",
-        // Bee defaults an upload to DEFERRED: it returns once the node holds the
-        // chunks and pushes them in the background, so every other reader waits.
-        // Measured 2026-09-21 on 5 MB collections: 326 s deferred vs 171 s
-        // without until the page opened from our bee (#613).
-        "Swarm-Deferred-Upload": "false",
-      },
-      body: o.data as unknown as BodyInit,
-      signal: AbortSignal.timeout(READ_TIMEOUT_MS * 3),
-    });
-    if (!r.ok) throw new Error(`site object upload failed ${r.status}: ${await errorSnippet(r, 200)}`);
-    const { reference } = await readCappedJson<{ reference?: string }>(r, CONTROL_JSON_MAX_BYTES, "site object upload");
-    if (String(reference).toLowerCase() !== o.address) {
-      throw new Error(`site object stored at ${String(reference).slice(0, 12)}, expected ${o.address.slice(0, 12)}`);
+    const reference = await postPlainBytes(target, batchId, o.data, { timeoutMs: READ_TIMEOUT_MS * 3, deferred: false });
+    if (reference !== o.address) {
+      throw new Error(`site object stored at ${reference.slice(0, 12)}, expected ${o.address.slice(0, 12)}`);
     }
     bytes += o.data.length;
   }

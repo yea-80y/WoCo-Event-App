@@ -20,6 +20,7 @@ import { MAX_SEAT_PLAN_BYTES, validateSeatPlan } from "@woco/shared/seating/inde
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { jsonBodyLimit } from "../lib/http/body-limit.js";
 import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
+import { routeSave } from "../lib/etherna/failover.js";
 import { refuseUnlessVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { SeatPlanTooLargeError, storeSeatPlan } from "../lib/seating/plan-store.js";
 
@@ -58,8 +59,9 @@ seatingRoutes.post("/plans", jsonBodyLimit(PLAN_BODY_MAX_BYTES), requireAuth, as
   }
 
   try {
-    const selection = batchForDeploy({ ownerAddress: parent, gatewayUrl: body.gatewayUrl ?? "", deployType: "event" });
-    const stored = await storeSeatPlan(body.plan, selection);
+    const gatewayUrl = typeof body.gatewayUrl === "string" ? body.gatewayUrl : "";
+    const selection = routeSave(() => batchForDeploy({ ownerAddress: parent, gatewayUrl, deployType: "event" }));
+    const stored = await storeSeatPlan(body.plan, selection, parent);
     return c.json({ ok: true, data: stored });
   } catch (err) {
     if (err instanceof SeatPlanTooLargeError) return c.json({ ok: false, error: "This seating plan is too large to store" }, 413);

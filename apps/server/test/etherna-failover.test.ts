@@ -591,6 +591,31 @@ test("relay, rail off: Etherna's refusal fails the save and nothing goes to WoCo
   assert.equal(ledger.getRelayEntry(s.address), undefined, "the rail off records nothing");
 });
 
+test("relay: a batch the chain refused is never posted to once the failover cannot take the save", async () => {
+  // The route asked while the failover could take it; by the upload the list is
+  // full (or the rail off): refused, not sent to the refused batch (#610).
+  const s = signedSoc(40);
+  const refused = { failover: { parent: PARENT, ethernaRefused: "the chain says gone" } };
+  await assert.rejects(socUpload.uploadSignedSoc(s.input, ETHERNA_DEST, refused), (e: Error) => e.name === "PlatformBatchUnavailable");
+  assert.equal(posts(ETH).length, 0);
+  assert.equal(posts(BEE).length, 0);
+});
+
+test("a chunk saved over by a different account moves back to the platform batch, not either account's", () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const s = signedSoc(41);
+  const other = "0x" + "bb".repeat(20);
+  ledger.noteEthernaSend(s.address, s.owner, s.identifier);
+  assert.equal(ledger.noteFailover(s.address, s.owner, s.identifier, PARENT), true);
+  assert.equal(ledger.getRelayEntry(s.address)?.parent, PARENT, "a pending entry had no saver: the first failover names it");
+  ledger.noteFailover(s.address, s.owner, s.identifier, PARENT);
+  assert.equal(ledger.getRelayEntry(s.address)?.parent, PARENT, "the same account again: its own");
+  ledger.noteFailover(s.address, s.owner, s.identifier, other);
+  assert.equal(ledger.getRelayEntry(s.address)?.parent, undefined);
+  ledger.noteFailover(s.address, s.owner, s.identifier, PARENT);
+  assert.equal(ledger.getRelayEntry(s.address)?.parent, undefined, "once neutral, stays neutral");
+});
+
 test("relay, auto: Etherna failing twice stamps the same SOC on WoCo and lists it for the move back", async () => {
   process.env.ETHERNA_FAILOVER = "auto";
   const s = signedSoc(6);
@@ -690,9 +715,10 @@ test("a slow Etherna write failure pauses Etherna, so the next relay does not wa
   if (read.status === "unavailable") assert.match(read.reason, /paused/, "reads are paused by a write's slow failure too");
 });
 
-test("the relay route asks for the failover, and detours a refused batch only when the plan says so", () => {
+test("the relay route asks for the failover, and detours a refused batch only through routeSave", () => {
+  // routeSave's own behaviour: etherna-failover-bytes.test.ts.
   const route = readFileSync(fileURLToPath(new URL("../src/routes/swarm.ts", import.meta.url)), "utf-8");
-  assert.match(route, /instanceof PlatformBatchUnavailable\) \|\| relayPlan\(err\.reason\) !== "woco"\) throw err;/);
+  assert.match(route, /const \{ ethernaRefused, \.\.\.selection \} = routeSave\(\(\) =>/);
   assert.match(route, /\{ failover: \{ parent: parentAddress, \.\.\.\(ethernaRefused \? \{ ethernaRefused \} : \{\}\) \} \}/);
 });
 
@@ -739,6 +765,30 @@ function fakeIo(bee: Record<string, Read>, etherna: Record<string, Read> = {}) {
 }
 
 const found = (raw: Uint8Array): Read => ({ status: "found", raw });
+
+test("sweep: roots past the pass's byte budget wait; a signed chunk behind them still moves", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const { bytesTreeRoot } = await import("@woco/shared/swarm/bytes-tree");
+  const big = new Uint8Array(5000).fill(1);
+  const big2 = new Uint8Array(5000).fill(2);
+  const roots = [bytesTreeRoot(big), bytesTreeRoot(big2)];
+  for (const r of roots) ledger.noteBytesFailover(r, PARENT);
+  const s = signedSoc(42);
+  ledger.noteFailover(s.address, s.owner, s.identifier, PARENT);
+  now += ledger.SETTLE_MIN_AGE_MS;
+  const io = fakeIo({ [s.address]: found(s.raw) });
+  const sent: number[] = [];
+  const store: Record<string, Uint8Array> = { [roots[0]]: big, [roots[1]]: big2 };
+  io.readBytes = async (r) => (store[r] ? { status: "found", data: store[r] } : { status: "absent" });
+  io.postBytes = async (d) => {
+    sent.push(d.length);
+    return bytesTreeRoot(d);
+  };
+  await failover.sweepRelayLedger(io, { settle: 50, migrate: 100, bytes: 4000 });
+  assert.deepEqual(sent, [5000], "one root, then the budget is spent");
+  assert.equal(ledger.getRelayEntry(s.address), undefined, "the chunk behind it moved");
+  assert.ok(ledger.getRelayEntry(roots[1]), "the other root waits a pass");
+});
 
 test("sweep: a pending entry goes once our bee serves the chunk, or neither store has it", async () => {
   process.env.ETHERNA_FAILOVER = "auto";

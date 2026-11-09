@@ -2,112 +2,104 @@ import type { RedundancyLevel } from "@ethersphere/bee-js";
 import { getBee, requirePostageBatch } from "../../config/swarm.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
-import type { BatchSelection } from "../etherna/batch-router.js";
-import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
+import { PlatformBatchUnavailable, type BatchSelection } from "../etherna/batch-router.js";
+import { FAILOVER_ETHERNA_ATTEMPTS, noteFailedOver, notePlainTreeMismatch, relayPlan } from "../etherna/failover.js";
+import { ethernaPaused } from "../etherna/breaker.js";
+import { noteBytesFailover } from "../etherna/relay-ledger.js";
+import { BEE_CALL_TIMEOUT_MS, beeUploadSem, isTransientSwarmError, withRetries, withTimeout } from "./upload-queue.js";
+import { plainBytesTimeoutMs, plainTreeRoot, postPlainBytes } from "./plain-bytes.js";
+import { whitelistHashes } from "./whitelist.js";
 import type { Hex64 } from "@woco/shared";
 import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
-import {
-  CONTROL_JSON_MAX_BYTES,
-  ResponseTooLargeError,
-  SWARM_READ_MAX_BYTES,
-  errorSnippet,
-  readCappedJson,
-  readCappedText,
-} from "../http/read-capped.js";
+import { ResponseTooLargeError, SWARM_READ_MAX_BYTES, readCappedText } from "../http/read-capped.js";
 import { isBeeResponseTooLarge } from "./bee-read-cap.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
-/** Error that carries an HTTP status so isTransientSwarmError can classify a raw
- *  (non-bee-js) fetch failure — bee-js surfaces status on the error, raw fetch
- *  does not, so we attach it explicitly. */
-class HttpStatusError extends Error {
-  constructor(public readonly status: number, message: string) {
-    super(message);
-    this.name = "HttpStatusError";
-  }
-}
+const FULL_BUDGET = { attempts: 5, timeoutMs: BEE_CALL_TIMEOUT_MS };
 
 /**
- * Upload raw bytes to Etherna /bytes with bearer auth + register an offer so the
- * ref is anonymously readable. Raw fetch (not bee-js): bee-js@11 onRequest copies
- * headers, so the Authorization header never reaches Etherna — same reason the
- * site image upload uses raw fetch (routes/sites.ts). Deferred upload mirrors the
- * WoCo path's `deferred:true` (Bee buffers + background-pushes, so /bytes doesn't
- * block on network sync). On non-2xx throws HttpStatusError so the shared retry
- * loop in uploadToBytes can back off + retry transient stamp locks (423) / 429 / 5xx.
+ * A save meant for Etherna (#912 slice 2a). Level 0 on every leg
+ * (`plain-bytes.ts`), so a save the failover stamps on WoCo has the address it
+ * would have had on Etherna and can move back under it.
+ *
+ * Without `failover`, or with the rail off, exactly as before: Etherna or an
+ * error. With it, Etherna gets a short try (none when the router already refused
+ * its batch, the breaker is open, or under `force`), then the save is stamped on
+ * WoCo and its root listed for the sweep to move back.
  */
-async function uploadBytesToEtherna(bytes: Uint8Array, batchId: string): Promise<Hex64> {
-  const token = getCachedEthernaToken();
-  if (!token) throw new Error("Etherna token unavailable (ETHERNA_API_KEY missing or ETHERNA_ENABLED off)");
-  const resp = await fetch(`${ETHERNA_GW}/bytes`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/octet-stream",
-      "Swarm-Postage-Batch-Id": batchId,
-      "Swarm-Deferred-Upload": "true",
-      Authorization: `Bearer ${token}`,
-    },
-    // @ts-ignore — Node fetch doesn't expose duplex in type defs
-    duplex: "half",
-    body: bytes as unknown as BodyInit,
-  });
-  if (!resp.ok) {
-    throw new HttpStatusError(resp.status, `Etherna /bytes upload ${resp.status}: ${await errorSnippet(resp, 200)}`);
+async function saveForEtherna(bytes: Uint8Array, selection: BatchSelection, failover?: { parent?: string }): Promise<Hex64> {
+  if (bytes.byteLength === 0) throw Object.assign(new Error("bytes upload: nothing to store"), { status: 400 });
+  const plan = failover ? relayPlan(selection.ethernaRefused) : "etherna";
+  // A refused batch handed over without the failover able to take the save.
+  if (selection.ethernaRefused !== undefined && plan !== "woco") throw new PlatformBatchUnavailable(selection.ethernaRefused);
+  const plain = plainTreeRoot(bytes);
+  if (plan !== "woco") {
+    try {
+      const ref = await withRetries(
+        (timeoutMs) => postPlainBytes("etherna", selection.batchId, bytes, { timeoutMs, deferred: true }),
+        plan === "etherna" ? FULL_BUDGET : { attempts: FAILOVER_ETHERNA_ATTEMPTS, timeoutMs: plainBytesTimeoutMs(bytes.length) },
+        // A slow failure has paused Etherna (breaker.ts): no second wait before
+        // WoCo. Two waits on an 8 MB image would outlast the edge's 100 s.
+        plan === "etherna" ? isTransientSwarmError : (e) => isTransientSwarmError(e) && ethernaPaused() === null,
+      );
+      if (plain !== null && plain !== ref) notePlainTreeMismatch(bytes.length);
+      // Fire-and-forget the offer: it only enables ANONYMOUS gateway reads (e.g.
+      // the event image); the server's own reads are bearer-authed. A missed offer
+      // only delays anonymous reads until something re-registers, never a claim.
+      void registerEthernaOffer(ref).catch((err) =>
+        console.warn(`[etherna] offer-register failed (non-fatal) for ${ref}: ${(err as Error)?.message}`),
+      );
+      return ref as Hex64;
+    } catch (err) {
+      if (plan === "etherna") throw err;
+      console.warn(`[swarm] Etherna could not take ${bytes.length} bytes, stamping them on WoCo: ${(err as Error)?.message ?? err}`);
+    }
   }
-  const { reference } = await readCappedJson<{ reference: string }>(resp, CONTROL_JSON_MAX_BYTES, "etherna /bytes upload");
-  // Fire-and-forget the offer: it only enables ANONYMOUS gateway reads (e.g. the
-  // event image). The server's own claim/reserve reads are bearer-authed
-  // (downloadFromEthernaBytes), so they resolve before the offer propagates.
-  // Awaiting it added a remote round-trip to EVERY upload — the dominant publish
-  // cost once B1 added N per-edition ticket bodies on top of the objects. A missed
-  // offer only delays anonymous reads until something re-registers, never a claim.
-  void registerEthernaOffer(reference).catch((err) =>
-    console.warn(`[etherna] offer-register failed (non-fatal) for ${reference}: ${(err as Error)?.message}`),
+  const ref = await withRetries(
+    (timeoutMs) => postPlainBytes("wocoBee", requirePostageBatch(), bytes, { timeoutMs, deferred: true }),
+    FULL_BUDGET,
+    isTransientSwarmError,
   );
-  return reference.toLowerCase().replace(/^0x/, "") as Hex64;
+  // Our bee built something other than the plain tree: it could never move back.
+  if (plain !== null && plain !== ref) {
+    throw new Error(`our bee stored ${bytes.length} bytes at ${ref.slice(0, 12)}…, not the level-0 root ${plain.slice(0, 12)}…`);
+  }
+  // Listed after the stamp: nothing refers to the root until the caller has it
+  // (relay-ledger.ts `noteBytesFailover`). Never hand back a root nothing will move.
+  if (!noteBytesFailover(ref, failover!.parent)) {
+    throw new PlatformBatchUnavailable("the Etherna failover list is full or unreadable");
+  }
+  noteFailedOver();
+  // Readers that fall back to our gateway (event images, avatars) find it there.
+  await whitelistHashes([ref]).catch((err) => console.warn(`[swarm] failover whitelist failed (non-fatal) for ${ref.slice(0, 12)}…:`, err));
+  return ref as Hex64;
 }
 
 /** Delay helper */
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Classify a thrown error as a transient network/Bee fault that's worth
- * retrying. Bee's chain-RPC backpressure (free-tier dRPC throttling, brief
- * peer churn) shows up as TCP-level resets — `socket hang up`, `ECONNRESET`,
- * `ETIMEDOUT` — surfaced by axios with no HTTP `status`. Treat 5xx the same
- * way; only 4xx other than 429/423 are real client errors.
- *
- * 423 Locked = Bee's per-bucket postage-stamp lock held by a concurrent write to
- * the same batch (event create stamps image + N edition pages + manifest at once).
- * It clears once the contending write releases — retry after backoff, same as 429.
- */
-export function isTransientSwarmError(err: unknown): boolean {
-  const e = err as any;
-  const status: number | undefined = e?.status ?? e?.response?.status;
-  if (status === 429 || status === 423) return true;
-  if (status && status >= 500) return true;
-  if (status === undefined) {
-    const msg = String(e?.message ?? "").toLowerCase();
-    const code = String(e?.code ?? "").toUpperCase();
-    if (msg.includes("socket hang up") || msg.includes("network") || msg.includes("timeout")) return true;
-    if (["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNABORTED", "ECONNREFUSED", "EPIPE"].includes(code)) return true;
-  }
-  return false;
-}
+/** The one classifier for store faults (upload-queue.ts); re-exported for this module's older importers. */
+export { isTransientSwarmError };
 
 /**
- * Upload data to Swarm /bytes with retry on transient errors (429, 5xx, socket
- * hang up). `selection` routes the write: `target:"etherna"` stamps with the
- * caller's Etherna batch on the Etherna gateway; otherwise (or when omitted) the
- * WoCo bee + platform batch. The builder is the event creator, so an event created
- * with the Etherna gateway selected MUST land on the Etherna batch — only the
- * global directory stays on the WoCo bee.
+ * Upload data to Swarm /bytes with retry on transient errors (429, 423, 5xx,
+ * socket hang up). `selection` routes the write: `target:"etherna"` stamps with
+ * the caller's Etherna batch on the Etherna gateway, ALWAYS at redundancy level 0
+ * (`saveForEtherna`); otherwise (or when omitted) the WoCo bee + platform batch,
+ * at whatever level the caller asks. The builder is the event creator, so an
+ * event created with the Etherna gateway selected MUST land on the Etherna batch —
+ * only the global directory stays on the WoCo bee.
+ *
+ * `failover` (#912 slice 2a): an Etherna save that Etherna cannot take is stamped
+ * on WoCo and moved back later instead of failing. `parent` names whose batch it
+ * moves back to. Pair with `routeSave` (failover.ts) so a batch the chain already
+ * refuses detours too.
  */
 export async function uploadToBytes(
   data: string | Uint8Array,
   selection?: BatchSelection,
-  options?: { redundancyLevel?: RedundancyLevel },
+  options?: { redundancyLevel?: RedundancyLevel; failover?: { parent?: string } },
 ): Promise<Hex64> {
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
   // Never store what `downloadFromBytes` would refuse to read back: the two
@@ -118,41 +110,29 @@ export async function uploadToBytes(
       { status: 413 },
     );
   }
-  const toEtherna = selection?.target === "etherna";
-  // Only the Etherna branch sends the token: an upload to our bee must not fail
-  // because Etherna's SSO is down (#950 put the creator directories behind it).
-  if (toEtherna) await ensureEthernaToken();
-  // Etherna selections always carry a batchId (platform or user batch, see
-  // batch-router); the WoCo path falls back to the configured platform batch.
-  const batchId = toEtherna ? selection!.batchId : (selection?.batchId ?? requirePostageBatch());
+  if (selection?.target === "etherna") {
+    if (options?.redundancyLevel) throw new Error("an Etherna save is always stored at redundancy level 0 (#912)");
+    return saveForEtherna(bytes, selection, options?.failover);
+  }
+  const batchId = selection?.batchId ?? requirePostageBatch();
 
   let delay = 500;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      // Serialise BOTH targets through the same semaphore: concurrent writes to
-      // one postage batch contend on Bee's per-bucket stamp lock (429 on the WoCo
-      // bee, 423 on Etherna). Event create fires the image + N edition pages +
-      // manifest at once, so without this they collide. `deferred: true` (and the
-      // Etherna Swarm-Deferred-Upload header) keeps /bytes from blocking on
-      // network sync. The semaphore is released before the retry backoff sleep so
-      // a throttled slot doesn't block other callers during the wait.
+      // Concurrent writes to one postage batch contend on Bee's per-bucket stamp
+      // lock (429). Event create fires the image + N edition pages + manifest at
+      // once, so without this they collide. `deferred: true` keeps /bytes from
+      // blocking on network sync. The semaphore is released before the retry
+      // backoff sleep so a throttled slot doesn't block other callers.
       const release = await beeUploadSem.acquire();
       try {
-        if (toEtherna) {
-          return await withTimeout(
-            uploadBytesToEtherna(bytes, batchId),
-            BEE_CALL_TIMEOUT_MS,
-            "etherna bytes upload",
-          );
-        }
         const result = await withTimeout(
           getBee().uploadData(
             batchId,
             bytes,
             {
               deferred: true,
-              // Erasure coding (marketing lists use STRONG). Etherna path ignores
-              // the option — those callers never pass it.
+              // Erasure coding (marketing lists use STRONG).
               ...(options?.redundancyLevel !== undefined
                 ? { redundancyLevel: options.redundancyLevel }
                 : {}),

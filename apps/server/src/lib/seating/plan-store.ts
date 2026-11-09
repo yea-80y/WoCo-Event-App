@@ -39,12 +39,13 @@ export class SeatPlanTooLargeError extends Error {
  * as absent to a buyer's map. Refused over the read cap, so nothing is stored that a
  * reader would later refuse.
  */
-export async function storeSeatPlan(plan: SeatPlan, selection: BatchSelection): Promise<StoredSeatPlan> {
+export async function storeSeatPlan(plan: SeatPlan, selection: BatchSelection, parent: string): Promise<StoredSeatPlan> {
   const canonical = canonicalSeatPlan(plan);
   const bytes = encodeSeatPlan(canonical);
   if (bytes.length > MAX_SEAT_PLAN_BYTES) throw new SeatPlanTooLargeError(bytes.length);
   const digest = seatPlanDigest(bytes);
-  const ref = (await uploadToBytes(bytes, selection)).toLowerCase().replace(/^0x/, "");
+  // With the Etherna failover (#912): `parent` is whose batch it moves back to.
+  const ref = (await uploadToBytes(bytes, selection, { failover: { parent } })).toLowerCase().replace(/^0x/, "");
   await whitelistHashes([ref]);
   remember(digest, canonical);
   return { ref, digest, seats: canonical.seats.length };

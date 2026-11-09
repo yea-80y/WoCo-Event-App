@@ -645,10 +645,11 @@ test("every module that routes a write also handles PlatformBatchUnavailable", (
  * single one turns this red; adding one means updating the number on purpose.
  */
 const REFUSAL_HANDLERS: Record<string, number> = {
-  "routes/swarm.ts": 3, // /soc, its Etherna failover (#912), /bytes
+  "routes/swarm.ts": 2, // /soc, /bytes
+  "lib/etherna/failover.ts": 1, // routeSave: the Etherna failover's detour of a refused batch (#912)
   "routes/events.ts": 4, // update-meta image, create stream error code, legacy update-meta + delete
   "routes/site.ts": 1, // legacy single-site deploy
-  "routes/sites.ts": 7, // siteFeedDest, siteFeedDestFromDirectory, upload-image, publish, add-event, remove-event, deploy
+  "routes/sites.ts": 8, // siteFeedDest, siteFeedDestFromDirectory, upload-image routing + its save, publish, add-event, remove-event, deploy
   "routes/profiles.ts": 1, // avatar
   "routes/sub-ens.ts": 1, // legacy event sub-ENS stamp
   "lib/event/service.ts": 1, // legacyEventFeedDest
