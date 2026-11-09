@@ -70,6 +70,14 @@ export const SETTLE_MIN_AGE_MS = 5 * 60 * 1000;
 export const PENDING_ALARM_MS = 15 * 60 * 1000;
 /** On this ledger's clock. `at`, never `updatedAt`: a repeat send and a restart both refresh that. */
 const pastPushAlarm = (at: string): boolean => now() - Date.parse(at) >= PENDING_ALARM_MS;
+/**
+ * A save stamped on WoCo still not moved back this long after it was first listed
+ * is the away alarm. The sweep retries every pass while Etherna cannot write, so
+ * once Etherna is back a chunk moves within minutes: past this, either Etherna has
+ * been down that long or the move back is stuck, and both are worth a page.
+ */
+export const FAILOVER_ALARM_MS = 60 * 60 * 1000;
+const pastAwayAlarm = (at: string): boolean => now() - Date.parse(at) >= FAILOVER_ALARM_MS;
 /** Past this the rail is off: ~10 days of the relay's per-account hourly limit, a few MB of files. */
 export const MAX_ENTRIES = 10_000;
 /**
@@ -389,6 +397,26 @@ export function deferEntries(addresses: string[]): void {
   }
 }
 
+/**
+ * Etherna as a whole could not take it: wait one settle period, without counting
+ * it against the chunk, and go to the back of the list. Never counted, it is due
+ * within SETTLE_MIN_AGE_MS of Etherna coming back, however long it was down. At
+ * the back, chunks that only look like an outage cannot pin the front: a held one
+ * is due again after five passes, so five of them at the front would break every
+ * pass with nothing behind them ever tried (#912, 2026-11-06). Order is memory
+ * only - nothing on disk records it.
+ */
+export function holdEntries(addresses: string[]): void {
+  for (const raw of addresses) {
+    const a = norm(raw);
+    const e = entries.get(a);
+    if (!e) continue;
+    entries.delete(a);
+    entries.set(a, e);
+    backoff.set(a, { n: backoff.get(a)?.n ?? 0, nextAt: now() + SETTLE_MIN_AGE_MS });
+  }
+}
+
 /** Etherna is taking chunks back again: whatever waited out the outage is due now, not hours from now. */
 export function undeferAll(status: RelayStatus): void {
   for (const [a, e] of entries) if (e.status === status) backoff.delete(a);
@@ -453,6 +481,8 @@ export function relayLedgerState(): {
   /** Pending past PENDING_ALARM_MS since first listed (a failover entry turned pending keeps its `at`). */
   stalePending: number;
   failover: number;
+  /** Failover past FAILOVER_ALARM_MS since first listed. */
+  staleFailover: number;
   oldestPendingAt: string | null;
   oldestFailoverAt: string | null;
 } {
@@ -460,11 +490,13 @@ export function relayLedgerState(): {
   let pending = 0;
   let stalePending = 0;
   let failover = 0;
+  let staleFailover = 0;
   let oldestPendingAt: string | null = null;
   let oldestFailoverAt: string | null = null;
   for (const e of entries.values()) {
     if (e.status === "failover") {
       failover++;
+      if (pastAwayAlarm(e.at)) staleFailover++;
       if (!oldestFailoverAt || e.at < oldestFailoverAt) oldestFailoverAt = e.at;
     } else {
       pending++;
@@ -486,6 +518,7 @@ export function relayLedgerState(): {
     pending,
     stalePending,
     failover,
+    staleFailover,
     oldestPendingAt,
     oldestFailoverAt,
   };

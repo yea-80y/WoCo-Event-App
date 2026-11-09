@@ -19,7 +19,9 @@ import { batchForDeploy, platformEthernaBatch, type BatchSelection } from "./bat
 import { postSocToEtherna, registerEthernaOffer } from "./upload.js";
 import {
   dueEntries,
+  FAILOVER_ALARM_MS,
   failoverMode,
+  holdEntries,
   loadRelayLedger,
   markPending,
   PENDING_ALARM_MS,
@@ -135,6 +137,7 @@ export async function sweepRelayLedger(
 ): Promise<{ settled: number; migrated: number }> {
   const done: Array<{ address: string; updatedAt: string }> = [];
   const kept: string[] = [];
+  const held: string[] = [];
 
   // Any chunk reaching our bee while the push alarm is red: Etherna is pushing
   // again, so the stale ones are due now, not at their next backed-off look.
@@ -194,8 +197,15 @@ export async function sweepRelayLedger(
       });
     } catch (err) {
       lastMigrationError = { at: new Date().toISOString(), error: ((err as Error)?.message ?? String(err)).slice(0, 200) };
+      // Etherna as a whole cannot write: held, not backed off (`holdEntries`), so
+      // it moves within minutes of Etherna coming back - it waited 40 min on
+      // 2026-11-05. The pass stops here: an outage costs one attempt a pass. A
+      // refusal of this chunk alone backs off.
+      if (ethernaCannotWrite(err)) {
+        held.push(e.address);
+        break;
+      }
       kept.push(e.address);
-      if (ethernaCannotWrite(err)) break;
       continue;
     }
     io.offer(e.address).catch(() => undefined);
@@ -209,6 +219,7 @@ export async function sweepRelayLedger(
   // Before the deferral, so what this pass just looked at keeps its normal wait.
   if (arrived && alarmRed) recheckPending();
   deferEntries(kept);
+  holdEntries(held);
   stats.settled += settled;
   stats.migrated += migrated;
   lastSweepAt = new Date().toISOString();
@@ -253,6 +264,10 @@ export function startRelayLedgerSweep(): void {
  * One that never will - its batch died before Etherna pushed it - is cleared by
  * moving its file out with the server stopped. Unknown (`null`) while the list
  * cannot be read.
+ *
+ * `away` is RED while a save stamped on WoCo has waited past FAILOVER_ALARM_MS to
+ * move back: Etherna down that long, or the move back stuck (no batch to move to,
+ * or Etherna refusing that chunk). Clears when the sweep moves it.
  */
 export function ethernaFailoverHealth(): Record<string, unknown> {
   const { mode, configError } = failoverMode();
@@ -262,6 +277,7 @@ export function ethernaFailoverHealth(): Record<string, unknown> {
     mode,
     ...(configError ? { configError } : {}),
     push: { ok: ledger.readable ? ledger.stalePending === 0 : null, alarmAfterMinutes: PENDING_ALARM_MS / 60_000 },
+    away: { ok: ledger.readable ? ledger.staleFailover === 0 : null, alarmAfterMinutes: FAILOVER_ALARM_MS / 60_000 },
     ledger,
     sinceBoot: { ...stats },
     lastSweepAt,
