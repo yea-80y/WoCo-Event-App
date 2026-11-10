@@ -31,6 +31,7 @@ import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { readCapped } from "../http/read-capped.js";
 import { postPlainBytes } from "../swarm/plain-bytes.js";
 import { saveForEtherna } from "../swarm/bytes.js";
+import { ethernaPaused } from "../etherna/breaker.js";
 import type { BatchSelection } from "../etherna/batch-router.js";
 import { expectedFeedManifestHash, feedManifestChildChunk, feedManifestRootChunk } from "@woco/shared/swarm/feed-manifest";
 import { calculateCacAddress, encodeSpan } from "@woco/shared/swarm/soc";
@@ -81,6 +82,8 @@ async function readNode(url: string, headers: Record<string, string>, store: str
 export const liveKitReads = {
   async node(store: SiteRuntimeStore, address: string): Promise<Uint8Array> {
     if (store !== "etherna") return readNode(`${BEE_URL}/bytes/${address}`, {}, store);
+    // Etherna paused after a slow failure (breaker.ts): straight to our bee, not 20 s a node.
+    if (ethernaPaused() !== null) return readNode(`${BEE_URL}/bytes/${address}`, {}, "etherna (our bee)");
     try {
       return await readNode(`${ETHERNA_FETCH_BASE}/bytes/${address}`, await ethernaAuth(), store);
     } catch (err) {
@@ -289,7 +292,8 @@ export function deployStore(selection: BatchSelection, failover?: { parent?: str
         deferred: false,
         // The deploy offers its root once (a root's offer serves what it links).
         offer: false,
-        // What a deploy always gave Etherna: one try, the page waits on it.
+        // With the rail off, what a deploy always gave Etherna: one try, the page waits on it
+        // (with it on, the save layer's short failover try applies).
         ethernaBudget: { attempts: 1, timeoutMs: READ_TIMEOUT_MS * 3 },
         skipEtherna: detoured,
       });

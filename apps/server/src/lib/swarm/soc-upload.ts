@@ -56,6 +56,7 @@ import { markHealed, readVerifiedSoc } from "./soc-read.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
 import { FULL_BUDGET, postSocToWocoBee, sendSocForEtherna, type LegRunner, type SocFailover, type SocWire } from "../etherna/soc-send.js";
 import { observeStatementBytes } from "../social/participants.js";
+import { PlatformBatchUnavailable } from "../etherna/batch-router.js";
 
 
 const HEX_RE = /^[0-9a-fA-F]+$/;
@@ -240,6 +241,8 @@ export async function uploadSignedSoc(
   const soc: SocWire = { ownerHex, identifierHex: bytesToHex(identifier), sigHex: bytesToHex(signature), body };
 
   if (dest?.target === "etherna") {
+    // A batch the router refused, handed over without the failover to take the SOC.
+    if (dest.ethernaRefused !== undefined && !opts.failover) throw new PlatformBatchUnavailable(dest.ethernaRefused);
     const landed = await sendSocForEtherna(soc, dest.batchId, { failover: opts.failover, run: withRetries });
     return await accepted(soc, socAddress, payload, landed === "etherna");
   }

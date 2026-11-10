@@ -6,7 +6,7 @@ import { PlatformBatchUnavailable, type BatchSelection } from "../etherna/batch-
 import { FAILOVER_ETHERNA_ATTEMPTS, noteFailedOver, notePlainTreeMismatch, relayPlan } from "../etherna/failover.js";
 import { ethernaPaused } from "../etherna/breaker.js";
 import { noteBytesFailover } from "../etherna/relay-ledger.js";
-import { BEE_CALL_TIMEOUT_MS, beeUploadSem, isTransientSwarmError, withRetries, withTimeout, type UploadBudget } from "./upload-queue.js";
+import { BEE_CALL_TIMEOUT_MS, beeUploadSem, FULL_UPLOAD_BUDGET as FULL_BUDGET, isTransientSwarmError, withRetries, withTimeout, type UploadBudget } from "./upload-queue.js";
 import { plainBytesTimeoutMs, plainTreeRoot, postPlainBytes } from "./plain-bytes.js";
 import { whitelistHashes } from "./whitelist.js";
 import type { Hex64 } from "@woco/shared";
@@ -15,8 +15,6 @@ import { ResponseTooLargeError, SWARM_READ_MAX_BYTES, readCappedText } from "../
 import { isBeeResponseTooLarge } from "./bee-read-cap.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
-
-const FULL_BUDGET = { attempts: 5, timeoutMs: BEE_CALL_TIMEOUT_MS };
 
 export interface EthernaSaveOptions {
   /** With the rail on, a save Etherna cannot take is stamped on WoCo and moved back to `parent`'s batch. */

@@ -648,8 +648,8 @@ const REFUSAL_HANDLERS: Record<string, number> = {
   "routes/swarm.ts": 2, // /soc, /bytes
   "lib/etherna/failover.ts": 1, // routeSave: the Etherna failover's detour of a refused batch (#912)
   "routes/events.ts": 4, // update-meta image, create stream error code, legacy update-meta + delete
-  "routes/site.ts": 1, // legacy single-site deploy
-  "routes/sites.ts": 8, // siteFeedDest, siteFeedDestFromDirectory, upload-image routing + its save, publish, add-event, remove-event, deploy
+  "routes/site.ts": 2, // event-page deploy routing + a refusal mid-deploy (the failover list filled, #912 slice 2b)
+  "routes/sites.ts": 9, // siteFeedDest, siteFeedDestFromDirectory, upload-image routing + its save, publish, add-event, remove-event, deploy routing + mid-deploy
   "routes/profiles.ts": 1, // avatar
   "routes/sub-ens.ts": 1, // legacy event sub-ENS stamp
   "lib/event/service.ts": 1, // legacyEventFeedDest

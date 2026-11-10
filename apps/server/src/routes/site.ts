@@ -355,6 +355,8 @@ site.post("/deploy", requireAuth, async (c) => {
       c.header("Retry-After", STORAGE_BUSY_RETRY_AFTER_HEADER);
       return c.json(storageBusyBody(), 503);
     }
+    // The failover list filled (or a batch went) after the route chose: nothing usable to store on.
+    if (e instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: e.message, code: e.code }, 503);
     console.error("[site/deploy]", e);
     return c.json({
       ok: false,

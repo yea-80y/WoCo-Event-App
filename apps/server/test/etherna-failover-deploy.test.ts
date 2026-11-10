@@ -312,6 +312,31 @@ test("a release node Etherna cannot serve is read from our bee", async () => {
   assert.deepEqual(await publish.liveKitReads.node("etherna", "aa".repeat(32)), new Uint8Array([7, 7]));
   ethernaReads = () => 200;
   assert.deepEqual(await publish.liveKitReads.node("etherna", "aa".repeat(32)), new Uint8Array([9]), "Etherna first when it answers");
+  // Etherna paused after a slow failure: not asked at all.
+  breaker.noteEthernaFailure("slow", performance.now() - 60_000);
+  assert.ok(breaker.ethernaPaused() !== null);
+  calls.length = 0;
+  assert.deepEqual(await publish.liveKitReads.node("etherna", "aa".repeat(32)), new Uint8Array([7, 7]));
+  assert.equal(calls.filter((c) => c.url.startsWith(ETH)).length, 0);
+});
+
+test("the relay: a refused batch handed over without the failover never reaches it", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const { PrivateKey } = await import("@ethersphere/bee-js");
+  const { uploadSignedSoc } = await import("../src/lib/swarm/soc-upload.js");
+  const key = new PrivateKey("02".repeat(32));
+  const identifier = new Uint8Array(32).fill(5);
+  const payload = new Uint8Array([1, 2, 3]);
+  const span = soc.encodeSpan(payload.length);
+  const sig = key.sign(new Uint8Array([...identifier, ...soc.calculateCacAddress(span, payload)])) as unknown as { toUint8Array(): Uint8Array };
+  const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
+  const input = { owner: key.publicKey().address().toHex(), identifier: hex(identifier), signature: hex(sig.toUint8Array()), span: hex(span), payload: hex(payload) };
+  await assert.rejects(uploadSignedSoc(input, { ...ETHERNA, ethernaRefused: "batch gone" }), (e: unknown) => e instanceof router.PlatformBatchUnavailable);
+  assert.equal(calls.filter((c) => c.method === "POST" && c.url.includes("/soc/")).length, 0);
+  // With it: straight to WoCo, listed first.
+  await uploadSignedSoc(input, { ...ETHERNA, ethernaRefused: "batch gone" }, { failover: { ethernaRefused: "batch gone" } });
+  assert.equal(posts(ETH, "/soc/").length, 0);
+  assert.deepEqual(listedAtBeePost, [true]);
 });
 
 // ---------------------------------------------------------------------------

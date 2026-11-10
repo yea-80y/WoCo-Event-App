@@ -484,8 +484,8 @@ async function writeAtIndex(
                 ? { failover: { parent: options.failover.parent, ethernaRefused: options.dest!.ethernaRefused } }
                 : {}),
             }),
-            // Etherna's short try, then the WoCo stamp.
-            BEE_CALL_TIMEOUT_MS + FAILOVER_ETHERNA_TIMEOUT_MS,
+            // Etherna's sign-in (10 s, auth.ts) and short try, then the WoCo stamp.
+            BEE_CALL_TIMEOUT_MS + FAILOVER_ETHERNA_TIMEOUT_MS + 10_000,
             `etherna feed write ${key.slice(0, 16)}`,
           );
         } else {
@@ -503,6 +503,8 @@ async function writeAtIndex(
         release();
       }
     } catch (err: unknown) {
+      // No batch, or a failover list that filled since the route asked: an answer, not a fault to retry.
+      if (err instanceof PlatformBatchUnavailable) throw err;
       const status = errorStatus(err);
       const decision = decideFeedWriteRetry({
         status,

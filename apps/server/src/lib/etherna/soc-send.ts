@@ -17,7 +17,7 @@ import { Binary } from "cafe-utility";
 import { calculateCacAddress, calculateSocAddress, encodeSpan } from "@woco/shared";
 import { BEE_URL, requirePostageBatch } from "../../config/swarm.js";
 import { errorSnippet } from "../http/read-capped.js";
-import { BEE_CALL_TIMEOUT_MS, withTimeout, type UploadBudget } from "../swarm/upload-queue.js";
+import { FULL_UPLOAD_BUDGET, withTimeout, type UploadBudget } from "../swarm/upload-queue.js";
 import { PlatformBatchUnavailable } from "./batch-router.js";
 import { FAILOVER_ETHERNA_ATTEMPTS, FAILOVER_ETHERNA_TIMEOUT_MS, noteFailedOver, relayPlan } from "./failover.js";
 import { noteFailover } from "./relay-ledger.js";
@@ -40,7 +40,7 @@ export interface SocFailover {
 /** Runs one leg's send within a budget: the relay retries it, the feed writer runs it once (it retries itself). */
 export type LegRunner = (send: (timeoutMs: number) => Promise<void>, budget: UploadBudget) => Promise<void>;
 
-export const FULL_BUDGET: UploadBudget = { attempts: 5, timeoutMs: BEE_CALL_TIMEOUT_MS };
+export const FULL_BUDGET = FULL_UPLOAD_BUDGET;
 
 /** One attempt within the budget's time, for a caller with its own retry loop. */
 export const runOnce: LegRunner = (send, budget) => send(budget.timeoutMs);
@@ -63,6 +63,8 @@ export async function postSocToWocoBee(soc: SocWire, batchId: string, timeoutMs:
         "Swarm-Deferred-Upload": "true",
       },
       body: Buffer.from(soc.body),
+      // Abort the request itself: an abandoned send must not land after a later write took its index.
+      signal: AbortSignal.timeout(timeoutMs),
     }),
     timeoutMs,
     "soc upload",

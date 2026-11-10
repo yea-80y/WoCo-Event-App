@@ -1277,6 +1277,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       console.warn(`[sites/deploy] storage busy: ${e.message}`);
       return storageBusy(c);
     }
+    // The failover list filled (or a batch went) after the route chose: nothing usable to store on.
+    if (e instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: e.message, code: e.code }, 503);
     console.error("[sites/deploy]", e);
     return c.json({ ok: false, error: e instanceof Error ? e.message : "Deploy failed" }, 500);
   } finally {
