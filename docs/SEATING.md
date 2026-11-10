@@ -176,9 +176,10 @@ per-account limits (a 200,000-seat state is ~50 KB). (Done in S4: a recovered re
 only if `isSeated` agrees; reserve reads words and nonces in one multicall.)
 
 Before the flag flips: scanner deploy, a site runtime release (organisers republish), a server deploy
-(embed `?v=25`), the `onchain-events.json` rollback note for the new fields,
-`docs/legal/DATA_INVENTORY.md` + privacy-notice line (the seat is order data: holds, sale records,
-ticket email). The app's CSP already allows the map's RPC (`arb1.arbitrum.io`). Done:
+(embed `?v=25`), the `onchain-events.json` rollback note for the new fields. The app's CSP already
+allows the map's RPC (`arb1.arbitrum.io`). Done: the privacy wording (2026-11-09) - DATA_INVENTORY
+(holds, sale records, seat-change email, relay claims, plan, seat state, Arbitrum row), the organiser
+notice, Privacy Policy 1.2 and DPA 1.1 (the seat sits beside the slot onchain, public and permanent);
 `checkout.session.expired` on the live connected-accounts webhook endpoint (2026-11-04; health
 `reservations` goes red without it).
 
@@ -349,5 +350,5 @@ save unreadable 2+ min, a client revoke after a revert whose abort did not land,
 automated security review added: the read-back validated in full, no stepping past a missed read (no rollback), the new
 `seq` above a stepped-past head's, and signals only for a ticket type registered seated.
 
-For the launch list: DATA_INVENTORY lines - the seat state is public organiser content with no personal data; the move
-email shows the server the address once and keeps nothing; relay claims are memory only.
+Launch-list DATA_INVENTORY lines (seat state names no buyer; the move email sees the address once and keeps nothing;
+relay claims are memory only): done 2026-11-09.

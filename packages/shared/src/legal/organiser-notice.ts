@@ -377,7 +377,7 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   } else {
     collect.push(["Your answers to the questions on our order forms - each event's form shows what it asks."]);
   }
-  collect.push(["Your ticket, and whether it was checked in at the door."]);
+  collect.push(["Your ticket, your seat if the event has allocated seating, and whether it was checked in at the door."]);
   if (input.contactForm) collect.push(["Your name, email address and message, if you use the contact form on this site."]);
   collect.push([
     ownEvents
@@ -507,7 +507,8 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
       content: [
         "Your ticket is a numbered slot on a public blockchain ledger (Arbitrum), held by a single-use address " +
           "created for your purchase - not your email address or your wallet. The slot also records a reference " +
-          "to your encrypted order details. This onchain record is public and permanent, and cannot be erased.",
+          "to your encrypted order details and, if the event has allocated seating, your seat and any change " +
+          "we make to it. This onchain record is public and permanent, and cannot be erased.",
       ],
     },
     {

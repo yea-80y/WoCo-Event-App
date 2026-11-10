@@ -1,25 +1,32 @@
 /**
- * The Etherna failover (#912): when Etherna cannot take a relayed save, stamp it
- * on the WoCo batch so the user sees no downtime, then move it back.
+ * The Etherna failover (#912): when Etherna cannot take a save, stamp it on the
+ * WoCo batch so the user sees no downtime, then move it back.
  *
- * Three pieces, each small:
- *   - `relayPlan`: where a relayed SOC goes (`POST /api/swarm/soc` only, slice 1).
+ * Four pieces, each small:
+ *   - `relayPlan`: where a save meant for Etherna goes - a relayed SOC
+ *     (`soc-upload.ts`, slice 1) or a `/bytes` upload (`bytes.ts`, slice 2a).
+ *   - `routeSave`: a save whose Etherna batch the chain already refuses (#610)
+ *     still goes ahead when the failover can take it.
  *   - the read rule: `relayLedgerClearsAbsent` (relay-ledger.ts), used by soc-read.
  *   - `sweepRelayLedger`: every SWEEP_INTERVAL_MS, drop pending entries our bee
- *     now serves, and post each failover chunk to Etherna - the same signed bytes,
- *     re-read from our bee, so the same address with nothing for the user to do.
+ *     now serves, and post each failover entry to Etherna - the same bytes, re-read
+ *     from our bee, so the same address with nothing for the user to do.
  *
  * The move back needs no signer: a SOC's signature covers its identifier and
- * content, not the batch, so any batch can stamp it again.
+ * content, not the batch, and a `/bytes` root is the hash of its bytes, so any
+ * batch can stamp either again.
  */
 
 import { ETHERNA_GATEWAY_URL, splitStoredSoc } from "@woco/shared";
 import { ethernaPaused } from "./breaker.js";
-import { batchForDeploy, platformEthernaBatch, type BatchSelection } from "./batch-router.js";
+import { batchForDeploy, PlatformBatchUnavailable, platformEthernaBatch, type BatchSelection } from "./batch-router.js";
 import { postSocToEtherna, registerEthernaOffer } from "./upload.js";
+import { plainBytesTimeoutMs, postPlainBytes, readPlainBytesFromBee, type PlainBytesRead } from "../swarm/plain-bytes.js";
 import {
   dueEntries,
+  FAILOVER_ALARM_MS,
   failoverMode,
+  holdEntries,
   loadRelayLedger,
   markPending,
   PENDING_ALARM_MS,
@@ -38,6 +45,8 @@ export const SWEEP_INTERVAL_MS = 60 * 1000;
 /** Per pass. A pending check our bee cannot answer at once is a network search, so fewer. */
 export const SETTLE_PER_PASS = 50;
 export const MIGRATE_PER_PASS = 100;
+/** `/bytes` moved back per pass, so a few large roots cannot make one pass run for many minutes. */
+export const MIGRATE_BYTES_PER_PASS = 32 * 1024 * 1024;
 /** What a failover-mode relay gives Etherna before stamping on WoCo instead. */
 export const FAILOVER_ETHERNA_ATTEMPTS = 2;
 export const FAILOVER_ETHERNA_TIMEOUT_MS = 10_000;
@@ -47,11 +56,11 @@ export const MIGRATE_ETHERNA_TIMEOUT_MS = 30_000;
 export type RelayPlan = "etherna" | "etherna-then-woco" | "woco";
 
 /**
- * Where a relayed Etherna-routed SOC goes. `ethernaRefused`: the router already
+ * Where a save meant for Etherna goes. `ethernaRefused`: the router already
  * knows Etherna's batch cannot take it (#610 - gone, unusable, full).
  *
  * Off, or a ledger that cannot be written or is full, is exactly the old
- * behaviour: a chunk stamped on WoCo unlisted would never move back.
+ * behaviour: a save stamped on WoCo unlisted would never move back.
  */
 export function relayPlan(ethernaRefused?: string): RelayPlan {
   const { mode } = failoverMode();
@@ -60,21 +69,58 @@ export function relayPlan(ethernaRefused?: string): RelayPlan {
   return "etherna-then-woco";
 }
 
+/**
+ * A save's batch, chosen by `choose` (`batchForDeploy`, `batchForUserContent`).
+ * When the chain says that Etherna batch cannot take writes (#610) and the
+ * failover can take the save instead, the save goes ahead on the selection the
+ * router refused, marked `ethernaRefused`: the upload stamps it on WoCo and the
+ * sweep moves it to that account's batch later. Otherwise the refusal stands, as
+ * with the rail off. Only an upload made with failover may be handed the result.
+ */
+export function routeSave(choose: () => BatchSelection): BatchSelection {
+  try {
+    return choose();
+  } catch (err) {
+    if (!(err instanceof PlatformBatchUnavailable) || !err.refused || relayPlan(err.reason) !== "woco") throw err;
+    return { ...err.refused, ethernaRefused: err.reason };
+  }
+}
+
 const stats = { failedOver: 0, settled: 0, migrated: 0 };
 let lastSweepAt: string | null = null;
 let lastMigrationError: { at: string; error: string } | null = null;
+/** Small Etherna saves whose root was not the level-0 one (`notePlainTreeMismatch`). */
+let plainTreeMismatches = 0;
+let lastPlainTreeMismatch: { at: string; size: number } | null = null;
 
-/** The relay stamped one on WoCo. */
+/** A save was stamped on WoCo in place of Etherna. */
 export function noteFailedOver(): void {
   stats.failedOver++;
+}
+
+/**
+ * Etherna stored a small save (one-level tree) under a root other than the
+ * level-0 one we computed: it has stopped honouring `Swarm-Redundancy-Level: 0`,
+ * and from now on no `/bytes` save stamped on WoCo can move back under its own
+ * root. Nothing fails today - so it is an alarm now, not a surprise at the next
+ * outage.
+ */
+export function notePlainTreeMismatch(size: number): void {
+  plainTreeMismatches++;
+  lastPlainTreeMismatch = { at: new Date().toISOString(), size };
+  console.error(`[etherna-failover] ALARM: Etherna stored ${size} bytes at a root that is not the level-0 tree`);
 }
 
 export interface SweepIo {
   readBee: (address: string) => Promise<RawSocRead>;
   readEtherna: (address: string) => Promise<RawSocRead>;
-  /** The Etherna batch a chunk moves to. Throws when there is none that can take it. */
+  /** The Etherna batch an entry moves to. Throws when there is none that can take it. */
   route: (parent?: string) => BatchSelection;
   post: typeof postSocToEtherna;
+  /** A `/bytes` root's content, from our bee. */
+  readBytes: (root: string) => Promise<PlainBytesRead>;
+  /** Re-upload to Etherna at level 0; resolves to the root Etherna gave. */
+  postBytes: (data: Uint8Array, batchId: string, timeoutMs: number) => Promise<string>;
   offer: (address: string) => Promise<void>;
 }
 
@@ -83,11 +129,15 @@ const liveIo: SweepIo = {
   readEtherna: (a) => ethernaSource.read(a),
   // The relaying account's own live batch, else the platform batch - the same
   // choice the relay makes, taken now: the batch it was meant for may be gone.
+  // A website's image takes the same: its gate was passed when it was saved, and
+  // the router picks the same batch for both (only the gate differs).
   route: (parent) =>
     parent
       ? batchForDeploy({ ownerAddress: parent, gatewayUrl: ETHERNA_GATEWAY_URL, deployType: "event" })
       : platformEthernaBatch(),
   post: postSocToEtherna,
+  readBytes: readPlainBytesFromBee,
+  postBytes: (data, batchId, timeoutMs) => postPlainBytes("etherna", batchId, data, { timeoutMs, deferred: true }),
   offer: registerEthernaOffer,
 };
 
@@ -124,6 +174,50 @@ function notAbsent(e: { address: string; updatedAt: string }): void {
 }
 
 /**
+ * Move one `/bytes` root back: read it from our bee, upload the same bytes to
+ * Etherna at level 0, and count it moved ONLY when Etherna answers the same
+ * root - an Etherna that built a different tree has stored something nobody
+ * refers to, and the copy everybody refers to is still ours. `posted`: bytes
+ * sent to Etherna, for the pass's budget.
+ *
+ * Our copy gone: nobody holding it ends the entry (twice, as for a chunk);
+ * Etherna holding it keeps the entry, never pending - there is nothing left to
+ * move, and `away` tells the operator (this is the WoCo batch dying under it).
+ */
+async function moveBytesBack(
+  io: SweepIo,
+  e: { address: string; parent?: string; updatedAt: string },
+): Promise<{ outcome: "moved" | "resolved" | "kept" | "held"; posted: number }> {
+  const read = await io.readBytes(e.address);
+  if (read.status === "absent") {
+    const eth = await io.readEtherna(e.address);
+    if (eth.status === "absent" && bothAbsent(e)) return { outcome: "resolved", posted: 0 };
+    if (eth.status !== "absent") notAbsent(e);
+    return { outcome: "kept", posted: 0 };
+  }
+  if (read.status !== "found") return { outcome: "kept", posted: 0 };
+  const posted = read.data.length;
+  let root: string;
+  try {
+    const dest = io.route(e.parent);
+    root = (await io.postBytes(read.data, dest.batchId, plainBytesTimeoutMs(posted))).toLowerCase().replace(/^0x/, "");
+  } catch (err) {
+    lastMigrationError = { at: new Date().toISOString(), error: ((err as Error)?.message ?? String(err)).slice(0, 200) };
+    // As for a chunk: Etherna as a whole cannot write - held; this root refused - backed off.
+    return { outcome: ethernaCannotWrite(err) ? "held" : "kept", posted };
+  }
+  if (root !== e.address) {
+    lastMigrationError = {
+      at: new Date().toISOString(),
+      error: `Etherna stored ${e.address.slice(0, 12)}… at ${root.slice(0, 12)}…: not the same tree, kept on WoCo`,
+    };
+    return { outcome: "kept", posted };
+  }
+  io.offer(e.address).catch(() => undefined);
+  return { outcome: "moved", posted };
+}
+
+/**
  * One pass. Exported for tests; the timer calls it.
  *
  * Entries it checks and keeps wait longer each time (`deferEntries`), so a chunk
@@ -131,16 +225,19 @@ function notAbsent(e: { address: string; updatedAt: string }): void {
  */
 export async function sweepRelayLedger(
   io: SweepIo = liveIo,
-  perPass: { settle: number; migrate: number } = { settle: SETTLE_PER_PASS, migrate: MIGRATE_PER_PASS },
+  perPass: { settle: number; migrate: number; bytes?: number } = { settle: SETTLE_PER_PASS, migrate: MIGRATE_PER_PASS },
 ): Promise<{ settled: number; migrated: number }> {
   const done: Array<{ address: string; updatedAt: string }> = [];
   const kept: string[] = [];
+  const held: string[] = [];
+  const bytesBudget = perPass.bytes ?? MIGRATE_BYTES_PER_PASS;
 
   // Any chunk reaching our bee while the push alarm is red: Etherna is pushing
   // again, so the stale ones are due now, not at their next backed-off look.
   const alarmRed = relayLedgerState().stalePending > 0;
   let arrived = false;
   for (const e of dueEntries("pending", perPass.settle)) {
+    if (e.kind === "bytes") continue; // never pending (relay-ledger.ts)
     const bee = await io.readBee(e.address);
     if (bee.status === "found" && verifyStoredSoc(bee.raw, e.owner, e.identifier).ok) {
       done.push(e);
@@ -158,8 +255,23 @@ export async function sweepRelayLedger(
   const settled = done.length;
 
   let migrated = 0;
+  let bytesMoved = 0;
   for (const e of dueEntries("failover", perPass.migrate)) {
     if (ethernaPaused() !== null) break;
+    if (e.kind === "bytes") {
+      // Past the budget, roots wait a pass; signed chunks behind them still move.
+      if (bytesMoved >= bytesBudget) continue;
+      const moved = await moveBytesBack(io, e);
+      bytesMoved += moved.posted;
+      if (moved.outcome === "held") {
+        held.push(e.address);
+        break;
+      }
+      if (moved.outcome === "kept") kept.push(e.address);
+      else done.push(e);
+      if (moved.outcome === "moved" && migrated++ === 0) undeferAll("failover");
+      continue;
+    }
     const bee = await io.readBee(e.address);
     if (bee.status === "absent") {
       // Our copy is gone. Etherna holding it is "sent, not on the network" - the
@@ -194,8 +306,15 @@ export async function sweepRelayLedger(
       });
     } catch (err) {
       lastMigrationError = { at: new Date().toISOString(), error: ((err as Error)?.message ?? String(err)).slice(0, 200) };
+      // Etherna as a whole cannot write: held, not backed off (`holdEntries`), so
+      // it moves within minutes of Etherna coming back - it waited 40 min on
+      // 2026-11-05. The pass stops here: an outage costs one attempt a pass. A
+      // refusal of this chunk alone backs off.
+      if (ethernaCannotWrite(err)) {
+        held.push(e.address);
+        break;
+      }
       kept.push(e.address);
-      if (ethernaCannotWrite(err)) break;
       continue;
     }
     io.offer(e.address).catch(() => undefined);
@@ -209,10 +328,11 @@ export async function sweepRelayLedger(
   // Before the deferral, so what this pass just looked at keeps its normal wait.
   if (arrived && alarmRed) recheckPending();
   deferEntries(kept);
+  holdEntries(held);
   stats.settled += settled;
   stats.migrated += migrated;
   lastSweepAt = new Date().toISOString();
-  if (migrated > 0) console.log(`[etherna-failover] moved ${migrated} chunk(s) back to Etherna`);
+  if (migrated > 0) console.log(`[etherna-failover] moved ${migrated} save(s) back to Etherna`);
   return { settled, migrated };
 }
 
@@ -253,6 +373,14 @@ export function startRelayLedgerSweep(): void {
  * One that never will - its batch died before Etherna pushed it - is cleared by
  * moving its file out with the server stopped. Unknown (`null`) while the list
  * cannot be read.
+ *
+ * `away` is RED while a save stamped on WoCo has waited past FAILOVER_ALARM_MS to
+ * move back: Etherna down that long, or the move back stuck (no batch to move to,
+ * or Etherna refusing that chunk). Clears when the sweep moves it.
+ *
+ * `plainTree` is RED once, since boot, Etherna stored a small save at a root that
+ * is not the level-0 tree (`notePlainTreeMismatch`): `/bytes` saves can then no
+ * longer move back. Clears on restart; the next save tells again.
  */
 export function ethernaFailoverHealth(): Record<string, unknown> {
   const { mode, configError } = failoverMode();
@@ -262,6 +390,12 @@ export function ethernaFailoverHealth(): Record<string, unknown> {
     mode,
     ...(configError ? { configError } : {}),
     push: { ok: ledger.readable ? ledger.stalePending === 0 : null, alarmAfterMinutes: PENDING_ALARM_MS / 60_000 },
+    away: { ok: ledger.readable ? ledger.staleFailover === 0 : null, alarmAfterMinutes: FAILOVER_ALARM_MS / 60_000 },
+    plainTree: {
+      ok: plainTreeMismatches === 0,
+      mismatches: plainTreeMismatches,
+      ...(lastPlainTreeMismatch ? { last: lastPlainTreeMismatch } : {}),
+    },
     ledger,
     sinceBoot: { ...stats },
     lastSweepAt,
@@ -277,4 +411,6 @@ export function __resetFailoverStatsForTest(): void {
   stats.migrated = 0;
   lastSweepAt = null;
   lastMigrationError = null;
+  plainTreeMismatches = 0;
+  lastPlainTreeMismatch = null;
 }

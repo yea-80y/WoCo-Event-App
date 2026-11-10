@@ -130,6 +130,9 @@ test("never blank: with nothing stored it still names the organiser, the process
   assert.match(text, /processor/);
   assert.match(text, /erased from the network within 90 days/);
   assert.match(text, /onchain record is public and permanent/);
+  // Allocated seating: the seat sits beside the slot onchain, so it is collected and permanent too.
+  assert.match(text, /your seat if the event has allocated seating/);
+  assert.match(text, /your seat and any change we make to it\. This onchain record is public and permanent/);
   assert.match(text, /Information Commissioner's Office/);
   assert.match(text, /0303 123 1113/);
   assert.match(text, /Stripe/);

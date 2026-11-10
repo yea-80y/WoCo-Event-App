@@ -22,13 +22,16 @@
  *   pending  - sent to Etherna (written BEFORE the request leaves); not yet seen
  *              on our bee. Whether Etherna confirmed it changes nothing here.
  *   failover - stamped on the WoCo batch in place of Etherna; to be posted there.
+ *              Since slice 2a also a `/bytes` ROOT (`kind: "bytes"`), one entry
+ *              however many chunks sit under it, and only ever failover.
  *
  * `failover.ts` sweeps both: pending goes once our bee serves the chunk (or
  * neither store has it), failover once Etherna has taken the same bytes.
  *
  * ADDRESSES ONLY (owner decision, 2026-10-16): the SOC owner and identifier that
- * make the address, and the relaying account (for the batch a chunk moves back
- * to). Never the bytes: a failover chunk is re-read from our bee to be moved.
+ * make the address (a root is its own address), and the relaying account (for
+ * the batch a save moves back to). Never the bytes: a failover save is re-read
+ * from our bee to be moved.
  *
  * ONE FILE PER ENTRY, AND A CEILING. Any account can sign SOCs for keys it
  * controls, so the list must not grow without bound or cost a rewrite of
@@ -70,6 +73,14 @@ export const SETTLE_MIN_AGE_MS = 5 * 60 * 1000;
 export const PENDING_ALARM_MS = 15 * 60 * 1000;
 /** On this ledger's clock. `at`, never `updatedAt`: a repeat send and a restart both refresh that. */
 const pastPushAlarm = (at: string): boolean => now() - Date.parse(at) >= PENDING_ALARM_MS;
+/**
+ * A save stamped on WoCo still not moved back this long after it was first listed
+ * is the away alarm. The sweep retries every pass while Etherna cannot write, so
+ * once Etherna is back a chunk moves within minutes: past this, either Etherna has
+ * been down that long or the move back is stuck, and both are worth a page.
+ */
+export const FAILOVER_ALARM_MS = 60 * 60 * 1000;
+const pastAwayAlarm = (at: string): boolean => now() - Date.parse(at) >= FAILOVER_ALARM_MS;
 /** Past this the rail is off: ~10 days of the relay's per-account hourly limit, a few MB of files. */
 export const MAX_ENTRIES = 10_000;
 /**
@@ -83,7 +94,9 @@ export const STATE_REWRITE_MIN_MS = 60 * 1000;
 export type FailoverMode = "off" | "auto" | "force";
 export type RelayStatus = "pending" | "failover";
 
-export interface RelayEntry {
+/** A signed chunk. No `kind` on disk: every file written before bytes entries existed is one. */
+export interface SocEntry {
+  kind?: undefined;
   /** SOC owner, 40 hex. */
   owner: string;
   /** SOC identifier, 64 hex. */
@@ -94,6 +107,22 @@ export interface RelayEntry {
   at: string;
   updatedAt: string;
 }
+
+/**
+ * A `/bytes` upload stamped on WoCo in place of Etherna, filed under its root
+ * (slice 2a). Only ever `failover`: content-addressed chunks cannot fork, so the
+ * read rule has nothing to guard and an Etherna send is never listed `pending`.
+ * One entry per root, however many chunks sit under it.
+ */
+export interface BytesEntry {
+  kind: "bytes";
+  parent?: string;
+  status: "failover";
+  at: string;
+  updatedAt: string;
+}
+
+export type RelayEntry = SocEntry | BytesEntry;
 
 const ADDR = /^[0-9a-f]{64}$/;
 const ENTRY_FILE = /^([0-9a-f]{64})\.json$/;
@@ -142,22 +171,21 @@ function norm(hex: string): string {
 }
 
 function parseEntry(v: unknown): RelayEntry | null {
-  const e = v as Partial<RelayEntry> | null;
+  const e = v as { kind?: unknown; owner?: unknown; identifier?: unknown; parent?: unknown; status?: unknown; at?: unknown; updatedAt?: unknown } | null;
   if (!e || typeof e !== "object") return null;
-  if (typeof e.owner !== "string" || !OWNER.test(e.owner)) return null;
-  if (typeof e.identifier !== "string" || !ADDR.test(e.identifier)) return null;
   if (e.parent !== undefined && (typeof e.parent !== "string" || !PARENT.test(e.parent))) return null;
-  if (e.status !== "pending" && e.status !== "failover") return null;
   if (typeof e.at !== "string" || Number.isNaN(Date.parse(e.at))) return null;
   if (typeof e.updatedAt !== "string" || Number.isNaN(Date.parse(e.updatedAt))) return null;
-  return {
-    owner: e.owner,
-    identifier: e.identifier,
-    ...(e.parent ? { parent: e.parent } : {}),
-    status: e.status,
-    at: e.at,
-    updatedAt: e.updatedAt,
-  };
+  const common = { ...(e.parent ? { parent: e.parent as string } : {}), at: e.at, updatedAt: e.updatedAt };
+  if (e.kind === "bytes") {
+    if (e.status !== "failover" || e.owner !== undefined || e.identifier !== undefined) return null;
+    return { kind: "bytes", status: "failover", ...common };
+  }
+  if (e.kind !== undefined) return null;
+  if (typeof e.owner !== "string" || !OWNER.test(e.owner)) return null;
+  if (typeof e.identifier !== "string" || !ADDR.test(e.identifier)) return null;
+  if (e.status !== "pending" && e.status !== "failover") return null;
+  return { owner: e.owner, identifier: e.identifier, status: e.status, ...common };
 }
 
 function refuse(why: string): void {
@@ -202,8 +230,12 @@ function ensureLoaded(): void {
     // is in Etherna alone - so the whole ledger is refused. So is one filed under
     // an address its own owner and identifier do not make: it would guard the
     // wrong address, silently, for ever.
+    // A bytes entry's root has nothing to recompute it from: its move back
+    // succeeds only when Etherna returns that same root, which is its check.
     if (!e) return refuse(`holds an unreadable entry (${name.slice(0, 16)})`);
-    if (socAddressHex(e.owner, e.identifier) !== m[1]) return refuse(`holds an entry filed under the wrong address (${name.slice(0, 16)})`);
+    if (e.kind !== "bytes" && socAddressHex(e.owner, e.identifier) !== m[1]) {
+      return refuse(`holds an entry filed under the wrong address (${name.slice(0, 16)})`);
+    }
     // A send cut off by the restart may still be landing in Etherna's store:
     // nothing is judged for SETTLE_MIN_AGE_MS from now. Memory only.
     loadedEntries.set(m[1], { ...e, updatedAt: new Date(now()).toISOString() });
@@ -334,10 +366,57 @@ export function noteFailover(address: string, owner: string, identifier: string,
     return false;
   }
   const t = new Date(now()).toISOString();
+  // A pending entry has no saver yet; an earlier failover's does (`movesTo`).
+  const to = prev?.status === "failover" ? movesTo(prev.parent, parent) : parent?.toLowerCase();
   writeEntry(a, {
     owner: norm(owner),
     identifier: norm(identifier),
-    ...(parent ? { parent: parent.toLowerCase() } : {}),
+    ...(to ? { parent: to } : {}),
+    status: "failover",
+    at: prev?.at ?? t,
+    updatedAt: t,
+  });
+  return true;
+}
+
+/**
+ * Whose batch a save stamped on WoCo again moves back to. The same account: its
+ * own. A different account saving the same address (anyone may relay a signed
+ * chunk, and identical bytes are one root): neither's - the shared platform batch
+ * (no `parent`), so no account decides where another's content lives or for how
+ * long. Once neutral, it stays neutral.
+ */
+function movesTo(first: string | undefined, next: string | undefined): string | undefined {
+  const n = next?.toLowerCase();
+  return first !== undefined && first === n ? first : undefined;
+}
+
+/**
+ * A `/bytes` upload just stamped on WoCo in place of Etherna, under the root our
+ * bee returned. Listed AFTER the stamp, unlike a SOC: nothing refers to a root
+ * until the caller is handed it and writes it somewhere, so a crash before this
+ * leaves only an unreferenced copy on WoCo, and the same bytes saved again list
+ * it. A root saved again keeps its first `at`, and its account only if the same
+ * one saved it (`movesTo`). False when it could not be listed:
+ * the caller must then fail the save, as with the rail off.
+ */
+export function noteBytesFailover(root: string, parent?: string): boolean {
+  ensureLoaded();
+  if (unreadable) return false;
+  const a = norm(root);
+  // Never write a file the next boot would refuse the whole ledger over.
+  if (!ADDR.test(a) || (parent !== undefined && !PARENT.test(parent.toLowerCase()))) return false;
+  const prev = entries.get(a);
+  if (prev && prev.kind !== "bytes") return false;
+  if (!prev && entries.size >= maxEntries) {
+    unlisted++;
+    return false;
+  }
+  const t = new Date(now()).toISOString();
+  const to = prev ? movesTo(prev.parent, parent) : parent?.toLowerCase();
+  writeEntry(a, {
+    kind: "bytes",
+    ...(to ? { parent: to } : {}),
     status: "failover",
     at: prev?.at ?? t,
     updatedAt: t,
@@ -354,6 +433,8 @@ export function markPending(v: Seen): void {
   if (!unchanged(v)) return;
   const a = norm(v.address);
   const e = entries.get(a)!;
+  // A root is never pending: there is no read rule for content-addressed chunks.
+  if (e.kind === "bytes") return;
   writeEntry(a, { ...e, status: "pending", updatedAt: new Date(now()).toISOString() });
 }
 
@@ -386,6 +467,26 @@ export function deferEntries(addresses: string[]): void {
     if (!entries.has(a)) continue;
     const n = (backoff.get(a)?.n ?? 0) + 1;
     backoff.set(a, { n, nextAt: now() + Math.min(SETTLE_MIN_AGE_MS * 2 ** (n - 1), BACKOFF_MAX_MS) });
+  }
+}
+
+/**
+ * Etherna as a whole could not take it: wait one settle period, without counting
+ * it against the chunk, and go to the back of the list. Never counted, it is due
+ * within SETTLE_MIN_AGE_MS of Etherna coming back, however long it was down. At
+ * the back, chunks that only look like an outage cannot pin the front: a held one
+ * is due again after five passes, so five of them at the front would break every
+ * pass with nothing behind them ever tried (#912, 2026-11-06). Order is memory
+ * only - nothing on disk records it.
+ */
+export function holdEntries(addresses: string[]): void {
+  for (const raw of addresses) {
+    const a = norm(raw);
+    const e = entries.get(a);
+    if (!e) continue;
+    entries.delete(a);
+    entries.set(a, e);
+    backoff.set(a, { n: backoff.get(a)?.n ?? 0, nextAt: now() + SETTLE_MIN_AGE_MS });
   }
 }
 
@@ -453,6 +554,10 @@ export function relayLedgerState(): {
   /** Pending past PENDING_ALARM_MS since first listed (a failover entry turned pending keeps its `at`). */
   stalePending: number;
   failover: number;
+  /** Of `failover`, how many are `/bytes` roots rather than signed chunks. */
+  failoverBytes: number;
+  /** Failover past FAILOVER_ALARM_MS since first listed. */
+  staleFailover: number;
   oldestPendingAt: string | null;
   oldestFailoverAt: string | null;
 } {
@@ -460,11 +565,15 @@ export function relayLedgerState(): {
   let pending = 0;
   let stalePending = 0;
   let failover = 0;
+  let failoverBytes = 0;
+  let staleFailover = 0;
   let oldestPendingAt: string | null = null;
   let oldestFailoverAt: string | null = null;
   for (const e of entries.values()) {
     if (e.status === "failover") {
       failover++;
+      if (e.kind === "bytes") failoverBytes++;
+      if (pastAwayAlarm(e.at)) staleFailover++;
       if (!oldestFailoverAt || e.at < oldestFailoverAt) oldestFailoverAt = e.at;
     } else {
       pending++;
@@ -486,6 +595,8 @@ export function relayLedgerState(): {
     pending,
     stalePending,
     failover,
+    failoverBytes,
+    staleFailover,
     oldestPendingAt,
     oldestFailoverAt,
   };

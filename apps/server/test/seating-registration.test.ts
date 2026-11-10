@@ -103,7 +103,7 @@ test("a valid plan whose bytes exceed the read cap is refused before anything is
   }
   const big = freezeSeatPlan({ format: "woco.seatlayout.v1", name: "Big", bands: [{ id: band, name: "All", style: 0 }], items });
   assert.ok(encodeSeatPlan(big).length > MAX_SEAT_PLAN_BYTES, "the fixture is over the cap");
-  await assert.rejects(storeSeatPlan(big, { batchId: "00", target: "wocoBee" }), SeatPlanTooLargeError);
+  await assert.rejects(storeSeatPlan(big, { batchId: "00", target: "wocoBee" }, "0x" + "aa".repeat(20)), SeatPlanTooLargeError);
 });
 
 test("a registration receipt counts only the ledger's own logs, and a seated one must say Seated", () => {

@@ -536,7 +536,10 @@ test("Etherna site uploads are non-deferred", () => {
   assert.ok(start > 0, "uploadSiteObjects not found");
   const next = src.indexOf("\nexport ", start + 10);
   const body = src.slice(start, next > 0 ? next : undefined);
-  assert.match(body, /"Swarm-Deferred-Upload":\s*"false"/);
+  // Through the one /bytes sender (#912), which writes the header from this flag.
+  assert.match(body, /postPlainBytes\([^)]*deferred: false/);
+  const sender = sourceOf("../src/lib/swarm/plain-bytes.ts");
+  assert.match(sender, /"Swarm-Deferred-Upload": opts\.deferred \? "true" : "false"/);
 });
 
 test("an event-page deploy whitelists its page and feed on our gateway", () => {
