@@ -671,6 +671,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     within ~5 min of Etherna taking writes again, however long the outage. Slice 2a: also one file per `/bytes`
     root stamped on WoCo (`kind: "bytes"` - event image/manifest/order key, avatar, site image, seat plan),
     moved back by re-uploading the same bytes at level 0 and cleared ONLY when Etherna returns the same root.
+    Slice 2b: website and event-page DEPLOYS too (each part, and the feed manifest - built here, never Etherna's
+    POST /feeds - as `bytes` roots) and the server-signed SOCs (site pointer, site events index/config, legacy
+    event feeds, server content feeds) as ordinary SOC entries; no new file kind, so no new rollback hazard.
     ROLLBACK to a pre-2a build refuses the WHOLE ledger on the first such file (fail closed): move the
     `"kind":"bytes"` files out before rolling back, back in after. `ethernaFailover.plainTree` red = Etherna
     stored a small save at a root that is not the level-0 tree: `/bytes` saves can no longer move back)

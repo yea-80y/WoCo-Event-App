@@ -175,8 +175,10 @@ test("objects are stored with /bytes at redundancy 0 on the deploy's batch, root
   const c = clientBuild();
   uploads.length = 0;
   answer = "correct";
-  const bytes = await mod.uploadSiteObjects("wocoBee", "aa".repeat(32), c);
+  const store = () => mod.deployStore({ target: "wocoBee", batchId: "aa".repeat(32) });
+  const { bytes, rootLanded } = await mod.uploadSiteObjects(store(), c);
   assert.equal(bytes, c.objects.reduce((n, o) => n + o.data.length, 0));
+  assert.equal(rootLanded, "woco");
   assert.deepEqual(uploads.map((u) => u.size), c.objects.map((o) => o.data.length), "in order, root last");
   for (const u of uploads) {
     assert.equal(u.headers["swarm-redundancy-level"], "0");
@@ -184,8 +186,8 @@ test("objects are stored with /bytes at redundancy 0 on the deploy's batch, root
     assert.equal(u.headers["swarm-deferred-upload"], "false");
   }
   answer = "wrong";
-  await assert.rejects(mod.uploadSiteObjects("wocoBee", "aa".repeat(32), c), /expected/);
+  await assert.rejects(mod.uploadSiteObjects(store(), c), /expected/);
   answer = "fail";
-  await assert.rejects(mod.uploadSiteObjects("wocoBee", "aa".repeat(32), c), /402/);
+  await assert.rejects(mod.uploadSiteObjects(store(), c), /402/);
   answer = "correct";
 });

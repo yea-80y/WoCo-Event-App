@@ -20,6 +20,9 @@ import {
   siteRuntimeKits,
   storeForTarget,
   uploadSiteObjects,
+  deployStore,
+  storeFeedManifest,
+  collectionRootChunk,
   type SiteRuntimeKit,
 } from "../lib/site/collection-publish.js";
 import { updateDomainsForSite } from "../lib/domains/service.js";
@@ -46,8 +49,9 @@ import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js
  *  storage-ledger.ts). A site links the shared runtime (#1032), so a deploy is a
  *  few KB of its own and the cap now meters the site's own objects only. */
 const FREE_HOSTING_QUOTA_BYTES = Number(process.env.FREE_HOSTING_QUOTA_BYTES) || 100 * 1024 * 1024;
-import { getEthernaBee, registerEthernaOffer, writeEthernaFeedUpdate, prepareEthernaFeedIndex, fetchEthernaRootChunk } from "../lib/etherna/upload.js";
-import { isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from "../lib/swarm/storage-busy.js";
+import { registerEthernaOffer } from "../lib/etherna/upload.js";
+import { writeEthernaFeedUpdate } from "../lib/etherna/soc-send.js";
+import { feedIndexUnavailableBody, isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from "../lib/swarm/storage-busy.js";
 import { beginDeploy, CLIENT_POINTER_HOLD_MS, DEPLOY_IN_PROGRESS_CODE, DEPLOY_IN_PROGRESS_MESSAGE } from "../lib/site/deploy-guard.js";
 import {
   siteConfigTopic,
@@ -140,9 +144,7 @@ async function eventIndexOwnerRefusal(
 }
 
 /** Where a deploy's pointer update goes, resolved before its upload (#943). */
-type PointerPlan =
-  | { rail: "etherna"; prepared: { feedManifestHash: string; nextIndex: bigint } }
-  | { rail: "woco"; nextIndex: bigint };
+type PointerPlan = { rail: "etherna" | "woco"; nextIndex: bigint };
 
 /** The SEO + PWA head tags baked into a deployed site: now in packages/shared (#1032 slice 2). */
 export { deployHeadLines } from "@woco/shared";
@@ -213,21 +215,28 @@ async function stampEventSigners(
  * the shared Etherna platform batch): a 4KB feed page must never trip the
  * purchase or verification gate. Any failure falls back to the WoCo batch —
  * feed routing is an optimisation of postage lifetime, never publish-blocking —
- * EXCEPT a dead platform batch (#610), which refuses: the page would stay on WoCo
- * with nothing listing it to move back, and a bee read that cannot yet see the
- * last Etherna page can lower the cached index and fork the feed across the two
- * nodes. The deploy that follows refuses on the same guard anyway.
+ * EXCEPT a dead platform batch (#610). With the Etherna failover able to take the
+ * pages (`routeSave`, #912) they go ahead: each is listed and stamped on WoCo, its
+ * feed still resolved over both stores, and moved back. Otherwise it refuses: a
+ * page on WoCo with nothing listing it would never move back, and a WoCo-only
+ * index could fork the feed across the two nodes. Every write to a dest from here
+ * passes `failover: { parent }` (`siteFeedWrite`).
  */
 function siteFeedDest(ownerAddress: string, gatewayUrl: string | undefined): BatchSelection | undefined {
   if (!gatewayUrl) return undefined;
   try {
-    const sel = batchForDeploy({ ownerAddress, gatewayUrl, deployType: "event" });
+    const sel = routeSave(() => batchForDeploy({ ownerAddress, gatewayUrl, deployType: "event" }));
     return sel.target === "etherna" ? sel : undefined;
   } catch (e) {
     if (e instanceof PlatformBatchUnavailable) throw e;
     console.warn("[sites] feed batch routing failed — WoCo batch fallback:", (e as Error).message);
     return undefined;
   }
+}
+
+/** How a site's platform-written page is written: its dest, failing over to WoCo for the owner's batch. */
+function siteFeedWrite(ownerAddress: string, dest: BatchSelection | undefined): { dest?: BatchSelection; failover?: { parent: string } } {
+  return dest ? { dest, failover: { parent: ownerAddress } } : {};
 }
 
 /** Resolve the site's home gateway from the owner's directory entry (the
@@ -482,8 +491,8 @@ sitesRouter.post("/", requireAuth, async (c) => {
       // the client's retry writes every page again: each is a whole page, never
       // a delta, so a second copy of one that landed changes nothing.
       const [eventsWrite, ...configWrites] = await Promise.allSettled([
-        writeFeedPage(eventsTopic, eventsPage, { dest: feedDest }),
-        ...configPages.map(([topic, page]) => writeFeedPage(topic, page, { dest: feedDest })),
+        writeFeedPage(eventsTopic, eventsPage, siteFeedWrite(parentAddress, feedDest)),
+        ...configPages.map(([topic, page]) => writeFeedPage(topic, page, siteFeedWrite(parentAddress, feedDest))),
       ]);
       if (eventsWrite.status === "fulfilled") {
         // Publish rewrote the events index — drop the events-full memo (declared
@@ -742,9 +751,11 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
       }
       index.updatedAt = Date.now();
 
-      await writeFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)), encodeJsonFeed(index), {
-        dest: await siteFeedDestFromDirectory(parentAddress, siteId),
-      });
+      await writeFeedPage(
+        Topic.fromString(siteEventsIndexTopic(siteId)),
+        encodeJsonFeed(index),
+        siteFeedWrite(parentAddress, await siteFeedDestFromDirectory(parentAddress, siteId)),
+      );
       rememberWrittenEventsIndex(siteId, index);
       // A write just changed the index; drop the events-full memo so the next
       // deployed-site visitor reads the new list instead of the 5-min-stale copy.
@@ -786,9 +797,11 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
       index.events = index.events.filter((e) => e.eventId !== eventId);
       index.updatedAt = Date.now();
 
-      await writeFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)), encodeJsonFeed(index), {
-        dest: await siteFeedDestFromDirectory(parentAddress, siteId),
-      });
+      await writeFeedPage(
+        Topic.fromString(siteEventsIndexTopic(siteId)),
+        encodeJsonFeed(index),
+        siteFeedWrite(parentAddress, await siteFeedDestFromDirectory(parentAddress, siteId)),
+      );
       rememberWrittenEventsIndex(siteId, index);
       _siteEventsFull.delete(siteId); // see add-event handler — keep visitors fresh
       return index;
@@ -933,14 +946,15 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // The server stamps the owner; the browser rendered with the same stamp.
     const site: Site = { ...body.site, ownerAddress: parentAddress };
 
+    // With the Etherna failover (#912): a batch the chain refuses still takes the
+    // deploy (stamped on WoCo, moved back), and the quota below meters the batch it
+    // is meant for.
     let selection;
     try {
-      selection = batchForDeploy({
-        ownerAddress: parentAddress,
-        gatewayUrl,
-        deployType: "website",
-        freeHostingEligible: await isVerifiedOrganiser(parentAddress),
-      });
+      const freeHostingEligible = await isVerifiedOrganiser(parentAddress);
+      selection = routeSave(() =>
+        batchForDeploy({ ownerAddress: parentAddress, gatewayUrl, deployType: "website", freeHostingEligible }),
+      );
     } catch (err) {
       if (err instanceof BatchPurchaseRequired) {
         return c.json({ ok: false, error: err.message, code: "BATCH_PURCHASE_REQUIRED" }, 402);
@@ -954,7 +968,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const { batchId, target } = selection;
     const signer = getPlatformSigner();
     const owner = getPlatformOwner();
-    const bee = target === "etherna" ? getEthernaBee() : getBee();
+    const bee = getBee();
     // Event images are uploaded to WoCo Bee at event-creation time and are not
     // re-uploaded during site deploy. Inject contentGatewayUrl so the runtime
     // always fetches event images from WoCo Bee regardless of site host.
@@ -1006,23 +1020,36 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     // production path, so client ownership must hold there first of all.
     const feedOwnerSigner =
       body.clientFeed && published.status === "found" ? published.siteFeedSigner : undefined;
-    const pointer: PointerPlan =
-      target === "etherna"
-        ? {
-            rail: "etherna",
-            prepared: await prepareEthernaFeedIndex({
-              topic,
-              batchId,
-              ownerHex: feedOwnerSigner ? feedOwnerSigner.replace(/^0x/, "") : owner.toHex(),
-            }),
-          }
-        : { rail: "woco", nextIndex: await resolveFeedNextIndex(topic, feedOwnerSigner ?? owner.toHex(), "woco") };
+    // Our bee's lookup as the start, then forward over every store the feed lives on
+    // (`feed-index.ts`) - never Etherna's lookup, which an outage cannot answer
+    // (#912; it refused 403 for hours on 2026-10-23, 500 once on 11-06). During an outage the
+    // relay ledger's read rule decides for Etherna, and an update sent there that
+    // our bee has not seen yet refuses the deploy rather than fork the feed.
+    const feedOwnerHex = (feedOwnerSigner ?? owner.toHex()).replace(/^0x/, "").toLowerCase();
+    let pointer: PointerPlan;
+    try {
+      pointer = { rail: target === "etherna" ? "etherna" : "woco", nextIndex: await resolveFeedNextIndex(topic, feedOwnerHex, target === "etherna" ? "etherna" : "woco") };
+    } catch (err) {
+      if (isStorageBusy(err)) throw err;
+      console.warn(`[sites/deploy] ${siteId}: pointer index undecidable, refused: ${(err as Error)?.message ?? err}`);
+      return c.json(feedIndexUnavailableBody(), 503);
+    }
 
     // Six small objects; everything else is linked from the release, which is
-    // already stored (and on Etherna a site root's offer serves it, slice 0).
-    await uploadSiteObjects(target, batchId, collection);
+    // already stored (and on Etherna a site root's offer serves it, slice 0). On
+    // Etherna each goes through the one save layer: with the failover on, what
+    // Etherna cannot take is stamped on WoCo and moved back to this owner's batch.
+    const store = deployStore(selection, { parent: parentAddress });
+    const { rootLanded } = await uploadSiteObjects(store, collection);
     const contentHash = collection.root;
-    if (target === "etherna") await registerEthernaOffer(contentHash);
+    // Bounded and non-fatal: the site is stored; a missing offer only delays
+    // anonymous Etherna reads. A root on WoCo is offered when it moves back.
+    if (target === "etherna" && rootLanded === "etherna") {
+      await registerEthernaOffer(contentHash).catch((e) => console.warn("[sites/deploy] etherna root offer failed (non-fatal):", e));
+    }
+    // The feed's manifest, stored by us (`storeFeedManifest`): Etherna's POST /feeds
+    // made the same bytes, and cannot answer in an outage.
+    const ethernaManifest = target === "etherna" ? await storeFeedManifest(store, feedOwnerHex, topic.toHex()) : "";
 
     // Every deploy lands in the storage ledger regardless of batch: it is both
     // the quota meter and the per-owner migration manifest (re-stamp walks it).
@@ -1045,13 +1072,13 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     if (feedOwnerSigner && pointer.rail === "etherna") {
       // Same steps as the platform-signed Etherna write, minus signing — the
       // client signs the update SOC and pushes it via /api/swarm/soc (which
-      // routes to the same Etherna user batch).
-      const chunkBytes = await fetchEthernaRootChunk(contentHash);
-      feedManifestHash = pointer.prepared.feedManifestHash;
+      // routes to the same Etherna user batch, and fails over like any relay).
+      // The update carries the root node the server just admitted, never a read.
+      feedManifestHash = ethernaManifest;
       holdAfterMs = CLIENT_POINTER_HOLD_MS;
       multisiteFeed = {
-        nextIndex: Number(pointer.prepared.nextIndex),
-        rootChunkPayloadB64: Buffer.from(chunkBytes.subarray(8)).toString("base64"),
+        nextIndex: Number(pointer.nextIndex),
+        rootChunkPayloadB64: Buffer.from(collection.rootNode).toString("base64"),
       };
     } else if (feedOwnerSigner && pointer.rail === "woco") {
       try {
@@ -1085,16 +1112,18 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       }
     } else if (pointer.rail === "etherna") {
       // Etherna's Beehive only resolves feeds written with inline SOC (uploadPayload).
-      // writeEthernaFeedUpdate bypasses bee-js auth issues and uses raw HTTP with
-      // the correct inline-chunk SOC format (confirmed by etherna-soc-legacy-probe.ts).
-      feedManifestHash = await writeEthernaFeedUpdate({
+      // writeEthernaFeedUpdate signs here and sends raw HTTP with the inline-chunk
+      // SOC format (confirmed by etherna-soc-legacy-probe.ts), failing over like a relay.
+      await writeEthernaFeedUpdate({
         topic,
-        contentHash,
+        index: pointer.nextIndex,
+        rootChunk: collectionRootChunk(collection),
         batchId,
         signer,
         ownerHex: owner.toHex(),
-        prepared: pointer.prepared,
+        failover: { parent: parentAddress, ethernaRefused: selection.ethernaRefused },
       });
+      feedManifestHash = ethernaManifest;
     } else {
       // WoCo Bee — inline SOC write; fall back to uploadReference if root chunk
       // exceeds 4096B (unlikely for a site manifest but handled defensively).
@@ -1248,6 +1277,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       console.warn(`[sites/deploy] storage busy: ${e.message}`);
       return storageBusy(c);
     }
+    // The failover list filled (or a batch went) after the route chose: nothing usable to store on.
+    if (e instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: e.message, code: e.code }, 503);
     console.error("[sites/deploy]", e);
     return c.json({ ok: false, error: e instanceof Error ? e.message : "Deploy failed" }, 500);
   } finally {

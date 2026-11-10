@@ -6,7 +6,7 @@ import { PlatformBatchUnavailable, type BatchSelection } from "../etherna/batch-
 import { FAILOVER_ETHERNA_ATTEMPTS, noteFailedOver, notePlainTreeMismatch, relayPlan } from "../etherna/failover.js";
 import { ethernaPaused } from "../etherna/breaker.js";
 import { noteBytesFailover } from "../etherna/relay-ledger.js";
-import { BEE_CALL_TIMEOUT_MS, beeUploadSem, isTransientSwarmError, withRetries, withTimeout } from "./upload-queue.js";
+import { BEE_CALL_TIMEOUT_MS, beeUploadSem, FULL_UPLOAD_BUDGET as FULL_BUDGET, isTransientSwarmError, withRetries, withTimeout, type UploadBudget } from "./upload-queue.js";
 import { plainBytesTimeoutMs, plainTreeRoot, postPlainBytes } from "./plain-bytes.js";
 import { whitelistHashes } from "./whitelist.js";
 import type { Hex64 } from "@woco/shared";
@@ -16,44 +16,74 @@ import { isBeeResponseTooLarge } from "./bee-read-cap.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
-const FULL_BUDGET = { attempts: 5, timeoutMs: BEE_CALL_TIMEOUT_MS };
+export interface EthernaSaveOptions {
+  /** With the rail on, a save Etherna cannot take is stamped on WoCo and moved back to `parent`'s batch. */
+  failover?: { parent?: string };
+  /** The address the caller computed (a deploy's objects, a feed manifest): either store answering another refuses the save. */
+  expected?: string;
+  /** Etherna leg only: answer before the store has pushed the chunks (default) or after (deploys, #613). */
+  deferred?: boolean;
+  /** Offer the save for anonymous Etherna reads (default). A deploy offers its root alone. */
+  offer?: boolean;
+  /** What Etherna gets when nothing can follow it (the rail off). Default 5 attempts, 60 s each. */
+  ethernaBudget?: UploadBudget;
+  /** An earlier part of the same deploy already went to WoCo: skip the Etherna try (breaker.ts ignores fast failures). */
+  skipEtherna?: boolean;
+}
+
+export type EthernaSave = { ref: Hex64; landed: "etherna" | "woco" };
 
 /**
- * A save meant for Etherna (#912 slice 2a). Level 0 on every leg
+ * A save meant for Etherna (#912 slices 2a, 2b) - the one bytes save layer, for a
+ * single save and for each object of a deploy. Level 0 on every leg
  * (`plain-bytes.ts`), so a save the failover stamps on WoCo has the address it
  * would have had on Etherna and can move back under it.
  *
  * Without `failover`, or with the rail off, exactly as before: Etherna or an
  * error. With it, Etherna gets a short try (none when the router already refused
- * its batch, the breaker is open, or under `force`), then the save is stamped on
- * WoCo and its root listed for the sweep to move back.
+ * its batch, the breaker is open, under `force`, or `skipEtherna`), then the save
+ * is stamped on WoCo and its root listed for the sweep to move back.
  */
-async function saveForEtherna(bytes: Uint8Array, selection: BatchSelection, failover?: { parent?: string }): Promise<Hex64> {
+export async function saveForEtherna(bytes: Uint8Array, selection: BatchSelection, opts: EthernaSaveOptions = {}): Promise<EthernaSave> {
   if (bytes.byteLength === 0) throw Object.assign(new Error("bytes upload: nothing to store"), { status: 400 });
-  const plan = failover ? relayPlan(selection.ethernaRefused) : "etherna";
+  const plan = opts.failover ? relayPlan(selection.ethernaRefused) : "etherna";
   // A refused batch handed over without the failover able to take the save.
   if (selection.ethernaRefused !== undefined && plan !== "woco") throw new PlatformBatchUnavailable(selection.ethernaRefused);
-  const plain = plainTreeRoot(bytes);
-  if (plan !== "woco") {
+  const want = opts.expected ?? plainTreeRoot(bytes);
+  if (plan === "etherna" || (plan === "etherna-then-woco" && !opts.skipEtherna)) {
+    let ref: string | undefined;
     try {
-      const ref = await withRetries(
-        (timeoutMs) => postPlainBytes("etherna", selection.batchId, bytes, { timeoutMs, deferred: true }),
-        plan === "etherna" ? FULL_BUDGET : { attempts: FAILOVER_ETHERNA_ATTEMPTS, timeoutMs: plainBytesTimeoutMs(bytes.length) },
+      ref = await withRetries(
+        (timeoutMs) => postPlainBytes("etherna", selection.batchId, bytes, { timeoutMs, deferred: opts.deferred ?? true }),
+        plan === "etherna"
+          ? (opts.ethernaBudget ?? FULL_BUDGET)
+          : { attempts: FAILOVER_ETHERNA_ATTEMPTS, timeoutMs: plainBytesTimeoutMs(bytes.length) },
         // A slow failure has paused Etherna (breaker.ts): no second wait before
         // WoCo. Two waits on an 8 MB image would outlast the edge's 100 s.
         plan === "etherna" ? isTransientSwarmError : (e) => isTransientSwarmError(e) && ethernaPaused() === null,
       );
-      if (plain !== null && plain !== ref) notePlainTreeMismatch(bytes.length);
-      // Fire-and-forget the offer: it only enables ANONYMOUS gateway reads (e.g.
-      // the event image); the server's own reads are bearer-authed. A missed offer
-      // only delays anonymous reads until something re-registers, never a claim.
-      void registerEthernaOffer(ref).catch((err) =>
-        console.warn(`[etherna] offer-register failed (non-fatal) for ${ref}: ${(err as Error)?.message}`),
-      );
-      return ref as Hex64;
     } catch (err) {
       if (plan === "etherna") throw err;
       console.warn(`[swarm] Etherna could not take ${bytes.length} bytes, stamping them on WoCo: ${(err as Error)?.message ?? err}`);
+    }
+    if (ref !== undefined) {
+      if (want !== null && want !== ref) {
+        notePlainTreeMismatch(bytes.length);
+        // Outside the failover: an Etherna that is up but builds another tree would
+        // leave a WoCo copy that could never move back under the address asked for.
+        if (opts.expected !== undefined) {
+          throw new Error(`Etherna stored ${bytes.length} bytes at ${ref.slice(0, 12)}…, expected ${want.slice(0, 12)}…`);
+        }
+      }
+      // Fire-and-forget the offer: it only enables ANONYMOUS gateway reads (e.g.
+      // the event image); the server's own reads are bearer-authed. A missed offer
+      // only delays anonymous reads until something re-registers, never a claim.
+      if (opts.offer ?? true) {
+        void registerEthernaOffer(ref).catch((err) =>
+          console.warn(`[etherna] offer-register failed (non-fatal) for ${ref}: ${(err as Error)?.message}`),
+        );
+      }
+      return { ref: ref as Hex64, landed: "etherna" };
     }
   }
   const ref = await withRetries(
@@ -61,19 +91,19 @@ async function saveForEtherna(bytes: Uint8Array, selection: BatchSelection, fail
     FULL_BUDGET,
     isTransientSwarmError,
   );
-  // Our bee built something other than the plain tree: it could never move back.
-  if (plain !== null && plain !== ref) {
-    throw new Error(`our bee stored ${bytes.length} bytes at ${ref.slice(0, 12)}…, not the level-0 root ${plain.slice(0, 12)}…`);
+  // Our bee built something other than the address asked for: it could never move back.
+  if (want !== null && want !== ref) {
+    throw new Error(`our bee stored ${bytes.length} bytes at ${ref.slice(0, 12)}…, not the level-0 root ${want.slice(0, 12)}…`);
   }
   // Listed after the stamp: nothing refers to the root until the caller has it
   // (relay-ledger.ts `noteBytesFailover`). Never hand back a root nothing will move.
-  if (!noteBytesFailover(ref, failover!.parent)) {
+  if (!noteBytesFailover(ref, opts.failover!.parent)) {
     throw new PlatformBatchUnavailable("the Etherna failover list is full or unreadable");
   }
   noteFailedOver();
   // Readers that fall back to our gateway (event images, avatars) find it there.
   await whitelistHashes([ref]).catch((err) => console.warn(`[swarm] failover whitelist failed (non-fatal) for ${ref.slice(0, 12)}…:`, err));
-  return ref as Hex64;
+  return { ref: ref as Hex64, landed: "woco" };
 }
 
 /** Delay helper */
@@ -112,7 +142,7 @@ export async function uploadToBytes(
   }
   if (selection?.target === "etherna") {
     if (options?.redundancyLevel) throw new Error("an Etherna save is always stored at redundancy level 0 (#912)");
-    return saveForEtherna(bytes, selection, options?.failover);
+    return (await saveForEtherna(bytes, selection, { failover: options?.failover })).ref;
   }
   const batchId = selection?.batchId ?? requirePostageBatch();
 
@@ -279,7 +309,9 @@ function rememberOversized(ref: string): void {
 export async function downloadFromBytes(ref: string, { wocoBeeOnly = false }: { wocoBeeOnly?: boolean } = {}): Promise<string> {
   const key = ref.toLowerCase().replace(/^0x/, "");
   if (oversizedRefs.has(key)) throw new ResponseTooLargeError(SWARM_READ_MAX_BYTES, "bytes download");
-  if (!wocoBeeOnly) await ensureEthernaToken();
+  // Etherna's sign-in down must not stop our bee being asked (#912): its read then
+  // goes without a token and fails on its own, and our bee answers.
+  if (!wocoBeeOnly) await ensureEthernaToken().catch((err) => console.warn(`[swarm] Etherna token unavailable for a read: ${(err as Error)?.message ?? err}`));
   const etherna = !wocoBeeOnly && process.env.ETHERNA_ENABLED === "true";
 
   let delay = 500;

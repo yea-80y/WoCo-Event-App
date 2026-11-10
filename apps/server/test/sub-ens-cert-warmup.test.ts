@@ -531,13 +531,18 @@ test("Etherna site uploads are non-deferred", () => {
   // Deferred, Etherna's node pushes a 5 MB site out in the background: 326 s to
   // open from a second node, against 171 s non-deferred (2026-09-21, #613).
   // Since #1032 every site and event page goes up as browser-built objects.
+  // Each part goes through the deploy's store (#912 slice 2b): on WoCo straight to the
+  // one /bytes sender, on Etherna through the save layer, both non-deferred.
   const src = sourceOf("../src/lib/site/collection-publish.ts");
-  const start = src.indexOf("export async function uploadSiteObjects");
-  assert.ok(start > 0, "uploadSiteObjects not found");
+  const start = src.indexOf("export function deployStore");
+  assert.ok(start > 0, "deployStore not found");
   const next = src.indexOf("\nexport ", start + 10);
   const body = src.slice(start, next > 0 ? next : undefined);
-  // Through the one /bytes sender (#912), which writes the header from this flag.
-  assert.match(body, /postPlainBytes\([^)]*deferred: false/);
+  assert.match(body, /postPlainBytes\("wocoBee"[^)]*deferred: false/);
+  assert.match(body, /saveForEtherna\(data, selection, \{[^}]*deferred: false/);
+  // The save layer hands the flag to the Etherna leg (its WoCo leg stays deferred).
+  const layer = sourceOf("../src/lib/swarm/bytes.ts");
+  assert.match(layer, /postPlainBytes\("etherna", selection\.batchId, bytes, \{ timeoutMs, deferred: opts\.deferred \?\? true \}\)/);
   const sender = sourceOf("../src/lib/swarm/plain-bytes.ts");
   assert.match(sender, /"Swarm-Deferred-Upload": opts\.deferred \? "true" : "false"/);
 });

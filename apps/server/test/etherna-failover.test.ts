@@ -1244,9 +1244,15 @@ test("every SOC this server sends to Etherna goes through postSocToEtherna, whic
   const fn = upload.slice(upload.indexOf("export async function postSocToEtherna("));
   const body = fn.slice(0, fn.indexOf("\n}\n"));
   assert.ok(body.indexOf("noteEthernaSend(") > 0 && body.indexOf("noteEthernaSend(") < body.indexOf("/soc/"), "listed before the POST");
-  // bee-js pointed at Etherna could write a SOC around it; only the site deploy holds one,
-  // and its Etherna branches use the raw writers above.
+  // bee-js pointed at Etherna could write a SOC around it: since slice 2b nothing holds
+  // one (the site deploy's last use went with Etherna's POST /feeds), and nothing may.
   const code = (p: string) => readFileSync(p, "utf-8").split("\n").filter((l) => !/^\s*(\/\/|\*)/.test(l)).join("\n");
-  const holders = sourceFiles(SRC).filter((p) => /getEthernaBee\(\)/.test(code(p)));
-  assert.deepEqual(holders.map((p) => p.slice(SRC.length)).sort(), ["lib/etherna/upload.ts", "routes/sites.ts"]);
+  assert.deepEqual(sourceFiles(SRC).filter((p) => /getEthernaBee|new Bee\(ETHERNA/.test(code(p))), []);
+  // Nor any request to Etherna's /feeds (manifests are built here, indexes resolved from
+  // our bee), nor a deploy reading the root chunk back from Etherna (the pointer update
+  // carries the root node the server admitted). Reads of a chunk stay (soc-read.ts).
+  const ethernaFeeds = sourceFiles(SRC).filter((p) => /\$\{ETHERNA_[A-Z_]+\}\/feeds\//.test(code(p)));
+  assert.deepEqual(ethernaFeeds.map((p) => p.slice(SRC.length)), []);
+  const gone = /prepareEthernaFeedIndex|prepareEthernaFeedUpdate|fetchEthernaRootChunk/;
+  assert.deepEqual(sourceFiles(SRC).filter((p) => gone.test(code(p))).map((p) => p.slice(SRC.length)), []);
 });

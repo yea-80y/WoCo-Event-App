@@ -16,11 +16,8 @@
  * padded with newlines.
  */
 
-// The layout's constants, shared with `feed-manifest-address.ts`, which builds the same shape.
-export const VERSION_02 = "5768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f";
-export const TYPE_WITH_METADATA = 16;
-export const SLASH = 47;
-export const ADDRESS_BYTES = 32;
+// The layout's constants, shared with the builder of the same shape (`@woco/shared/swarm/feed-manifest`).
+import { ADDRESS_BYTES, SLASH, TYPE_WITH_METADATA, VERSION_02 } from "@woco/shared/swarm/feed-manifest";
 
 function hex(b: Uint8Array): string {
   let s = "";

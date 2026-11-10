@@ -33,6 +33,7 @@ import {
 import { FEED_FAMILY_STORES, type FeedFamily, type VersionedFeedRead } from "@woco/shared";
 import { requirePostageBatch } from "../../config/swarm.js";
 import { platformEthernaBatch } from "../etherna/batch-router.js";
+import { routeSave } from "../etherna/failover.js";
 import {
   invalidateContentFeedVersion,
   readContentFeedJsonResult,
@@ -69,14 +70,18 @@ export interface FeedWriteIo {
  * land where the probe does not look first.
  */
 export function destinationForFamily(family: FeedFamily): SocUploadDestination {
-  if (FEED_FAMILY_STORES[family] === "etherna") return platformEthernaBatch();
+  // A platform batch the chain refuses still takes the write when the Etherna
+  // failover can (`routeSave`, #912): stamped on WoCo, moved back to that batch.
+  if (FEED_FAMILY_STORES[family] === "etherna") return routeSave(platformEthernaBatch);
   return { target: "wocoBee", batchId: requirePostageBatch() };
 }
 
 const liveIo: FeedWriteIo = {
   readHead: (owner, topic, family) => readContentFeedJsonResult(owner, topic, family),
   destination: destinationForFamily,
-  upload: (input, dest) => uploadSignedSoc(input, dest),
+  // With the Etherna failover (#912): no parent, so it moves back to the platform batch.
+  upload: (input, dest) =>
+    uploadSignedSoc(input, dest, dest.target === "etherna" ? { failover: { ethernaRefused: dest.ethernaRefused } } : {}),
   invalidate: invalidateContentFeedVersion,
 };
 

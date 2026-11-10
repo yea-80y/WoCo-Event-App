@@ -29,6 +29,9 @@ const MAX_CONCURRENT = Number(process.env.UPLOAD_CONCURRENCY) || 6;
  */
 export const BEE_CALL_TIMEOUT_MS = 60_000;
 
+/** A store write nothing can follow (no failover): 5 attempts, a full call each. */
+export const FULL_UPLOAD_BUDGET: UploadBudget = { attempts: 5, timeoutMs: BEE_CALL_TIMEOUT_MS };
+
 /**
  * Per-call timeout for a Bee /bzz tar collection upload. Higher than the
  * single-chunk timeout because tars can be megabytes (whole site bundle) and

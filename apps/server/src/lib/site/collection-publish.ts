@@ -30,6 +30,12 @@ import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { readCapped } from "../http/read-capped.js";
 import { postPlainBytes } from "../swarm/plain-bytes.js";
+import { saveForEtherna } from "../swarm/bytes.js";
+import { ethernaPaused } from "../etherna/breaker.js";
+import type { BatchSelection } from "../etherna/batch-router.js";
+import { expectedFeedManifestHash, feedManifestChildChunk, feedManifestRootChunk } from "@woco/shared/swarm/feed-manifest";
+import { calculateCacAddress, encodeSpan } from "@woco/shared/swarm/soc";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 /** Everything a build needs from one store's copy of a release. */
 export interface SiteRuntimeKit {
@@ -60,14 +66,30 @@ async function ethernaAuth(): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${token}` };
 }
 
-/** The live readers: manifest nodes from the store itself, the template bytes from our bee. */
+async function readNode(url: string, headers: Record<string, string>, store: string): Promise<Uint8Array> {
+  const r = await fetch(url, { headers, signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
+  if (!r.ok) throw new Error(`release node ${store} ${r.status}`);
+  return readCapped(r, NODE_MAX_BYTES, "release manifest node");
+}
+
+/**
+ * The live readers: manifest nodes from the store itself, the template bytes from our
+ * bee. An Etherna node Etherna cannot serve is read from our bee (#912): Etherna's
+ * chunks reach the network, and every node is checked against its address below, so
+ * where the bytes came from does not matter - only that a deploy during an outage
+ * still has its release.
+ */
 export const liveKitReads = {
   async node(store: SiteRuntimeStore, address: string): Promise<Uint8Array> {
-    const url = store === "etherna" ? `${ETHERNA_FETCH_BASE}/bytes/${address}` : `${BEE_URL}/bytes/${address}`;
-    const headers = store === "etherna" ? await ethernaAuth() : {};
-    const r = await fetch(url, { headers, signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
-    if (!r.ok) throw new Error(`release node ${store} ${r.status}`);
-    return readCapped(r, NODE_MAX_BYTES, "release manifest node");
+    if (store !== "etherna") return readNode(`${BEE_URL}/bytes/${address}`, {}, store);
+    // Etherna paused after a slow failure (breaker.ts): straight to our bee, not 20 s a node.
+    if (ethernaPaused() !== null) return readNode(`${BEE_URL}/bytes/${address}`, {}, "etherna (our bee)");
+    try {
+      return await readNode(`${ETHERNA_FETCH_BASE}/bytes/${address}`, await ethernaAuth(), store);
+    } catch (err) {
+      console.warn(`[site-runtime] Etherna could not serve release node ${address.slice(0, 12)}…, reading it from our bee: ${(err as Error)?.message ?? err}`);
+      return readNode(`${BEE_URL}/bytes/${address}`, {}, "etherna (our bee)");
+    }
   },
   async template(wocoRoot: string, indexDocument: string): Promise<Uint8Array> {
     const r = await fetch(`${BEE_URL}/bzz/${wocoRoot}/${indexDocument}`, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
@@ -235,27 +257,92 @@ export function admitClientEventPage(input: {
   });
 }
 
+/** Where one deploy stores its parts: each must land at the address the server computed. */
+export interface DeployStore {
+  put(data: Uint8Array, address: string): Promise<"etherna" | "woco">;
+}
+
 /**
- * Store each object with `/bytes` at redundancy 0 (`postPlainBytes`: bee would
- * erasure-code by default and change every address) and insist the store returns
- * the address we computed. Root last, so the root never exists before what it
- * points at. Not deferred: bee's default returns once the node holds the chunks
- * and pushes them in the background, so every other reader waits - measured
- * 2026-09-21 on 5 MB collections, 326 s deferred vs 171 s without until the page
- * opened from our bee (#613).
+ * One deploy's store. Each part goes with `/bytes` at redundancy 0 (bee would
+ * erasure-code by default and change every address), and the store must answer the
+ * address we computed. Not deferred on Etherna: bee's default returns once the node
+ * holds the chunks and pushes them in the background, so every other reader waits -
+ * measured 2026-09-21 on 5 MB collections, 326 s deferred vs 171 s without until the
+ * page opened from our bee (#613).
+ *
+ * On Etherna through the one bytes save layer (`saveForEtherna`, #912 slice 2b): with
+ * the rail on, a part Etherna cannot take is stamped on WoCo and moved back to
+ * `failover.parent`'s batch. Once one part has gone to WoCo the rest go straight
+ * there - the breaker ignores a fast failure, so a 503 would otherwise cost every
+ * part two tries. Parts already on Etherna stay there: each is content-addressed, so
+ * a reader cannot tell which batch stamped it.
+ */
+export function deployStore(selection: BatchSelection, failover?: { parent?: string }): DeployStore {
+  let detoured = false;
+  return {
+    async put(data, address) {
+      if (selection.target !== "etherna") {
+        const reference = await postPlainBytes("wocoBee", selection.batchId, data, { timeoutMs: READ_TIMEOUT_MS * 3, deferred: false });
+        if (reference !== address) throw new Error(`site object stored at ${reference.slice(0, 12)}, expected ${address.slice(0, 12)}`);
+        return "woco";
+      }
+      const { landed } = await saveForEtherna(data, selection, {
+        failover,
+        expected: address,
+        deferred: false,
+        // The deploy offers its root once (a root's offer serves what it links).
+        offer: false,
+        // With the rail off, what a deploy always gave Etherna: one try, the page waits on it
+        // (with it on, the save layer's short failover try applies).
+        ethernaBudget: { attempts: 1, timeoutMs: READ_TIMEOUT_MS * 3 },
+        skipEtherna: detoured,
+      });
+      if (landed === "woco") detoured = true;
+      return landed;
+    },
+  };
+}
+
+/**
+ * Store a deploy's objects, root last, so the root never exists before what it points
+ * at. Resolves to the bytes stored and where the root landed: only a root on Etherna
+ * is offered now; one on WoCo is offered when the sweep moves it back.
  */
 export async function uploadSiteObjects(
-  target: "etherna" | "wocoBee",
-  batchId: string,
+  store: DeployStore,
   collection: SiteCollection,
-): Promise<number> {
+): Promise<{ bytes: number; rootLanded: "etherna" | "woco" }> {
   let bytes = 0;
+  let rootLanded: "etherna" | "woco" = "etherna";
   for (const o of collection.objects) {
-    const reference = await postPlainBytes(target, batchId, o.data, { timeoutMs: READ_TIMEOUT_MS * 3, deferred: false });
-    if (reference !== o.address) {
-      throw new Error(`site object stored at ${reference.slice(0, 12)}, expected ${o.address.slice(0, 12)}`);
-    }
+    rootLanded = await store.put(o.data, o.address);
     bytes += o.data.length;
   }
-  return bytes;
+  return { bytes, rootLanded };
+}
+
+/**
+ * Store the manifest of `ownerHex`'s feed at `topicHex` ourselves, built as bee builds
+ * it (`@woco/shared/swarm/feed-manifest`, equal to every manifest Etherna made in
+ * production), instead of asking Etherna's `POST /feeds` - which an outage refuses.
+ * The "/" child first (a name's lookup reads it; never left to a stranger's stamp),
+ * then the root. Resolves to the manifest's address.
+ */
+export async function storeFeedManifest(store: DeployStore, ownerHex: string, topicHex: string): Promise<string> {
+  const owner = ownerHex.toLowerCase().replace(/^0x/, "");
+  const child = feedManifestChildChunk().subarray(8);
+  await store.put(child, bytesToHex(calculateCacAddress(encodeSpan(child.length), child)));
+  const root = feedManifestRootChunk(owner, topicHex.toLowerCase()).subarray(8);
+  const address = expectedFeedManifestHash(owner, topicHex.toLowerCase());
+  await store.put(root, address);
+  return address;
+}
+
+/** The pointer update's body: the root chunk, span then node (`SiteCollection.rootNode`, ≤ 4096). */
+export function collectionRootChunk(collection: SiteCollection): Uint8Array {
+  const span = encodeSpan(collection.rootNode.length);
+  const chunk = new Uint8Array(span.length + collection.rootNode.length);
+  chunk.set(span);
+  chunk.set(collection.rootNode, span.length);
+  return chunk;
 }
