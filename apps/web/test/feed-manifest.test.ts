@@ -2,14 +2,13 @@
  * A feed manifest is read exactly as bee reads it (#186): the feed a name follows is
  * decided by the one "/" fork bee resolves through, never by feed-looking JSON found
  * elsewhere in the bytes. Checked against a real root chunk and against manifests
- * bee-js builds (bee-js's marshal is the format bee reads).
+ * bee-js builds (bee-js's marshal is the format bee reads). The builder's own vectors
+ * live with it (packages/shared/test/swarm/feed-manifest.test.ts).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MantarayNode, NULL_ADDRESS } from "@ethersphere/bee-js";
 import { calculateCacAddress } from "@woco/shared/swarm/soc";
-import { eventPageFeedTopic } from "@woco/shared";
-import { keccak256, toUtf8Bytes } from "ethers";
 import { feedOfManifestChunk } from "../src/lib/swarm/feed-manifest.ts";
 import { expectedFeedManifestHash, feedManifestRootChunk } from "../src/lib/swarm/feed-manifest-address.ts";
 
@@ -98,14 +97,6 @@ test("the manifest bee makes is built here byte for byte, and bee-js is not the 
   assert.deepEqual(beeJs.subarray(200), REAL.subarray(200));
 });
 
-test("an event page's name target is worked out from its signer and event id alone", () => {
-  // hackathon.woco.eth -> event 43becb36's page feed (event-name-link.test.ts).
-  const topic = keccak256(toUtf8Bytes(eventPageFeedTopic("43becb36-2b71-4d55-bf23-6c18b6bed32f"))).slice(2);
-  assert.equal(topic, TOPIC);
-  assert.equal(expectedFeedManifestHash(OWNER, topic), "d24237682b360376b613321850e4e5e035823d68b2659392afea95162e7ca0b7");
-  assert.equal(expectedFeedManifestHash(OWNER, TOPIC), addressOf(REAL));
-});
-
 test("any other feed's manifest reads back as that feed, under its own address", () => {
   const owner = "0123456789abcdef0123456789abcdef01234567";
   const topic = "ab".repeat(32);
@@ -113,16 +104,4 @@ test("any other feed's manifest reads back as that feed, under its own address",
   assert.deepEqual(feedOfManifestChunk(chunk), { owner, topic });
   assert.equal(expectedFeedManifestHash(owner, topic), addressOf(chunk));
   assert.notEqual(expectedFeedManifestHash(owner, topic), expectedFeedManifestHash(OWNER, TOPIC));
-});
-
-test("only a bare lowercase owner and topic are accepted, so a typo can never name some other feed", () => {
-  for (const [owner, topic] of [
-    [`0x${OWNER}`, TOPIC],
-    [OWNER.toUpperCase(), TOPIC],
-    [OWNER.slice(2), TOPIC],
-    [OWNER, TOPIC.slice(2)],
-    [OWNER, `0x${TOPIC}`],
-  ]) {
-    assert.throws(() => expectedFeedManifestHash(owner!, topic!));
-  }
 });
