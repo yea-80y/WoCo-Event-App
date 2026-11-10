@@ -67,11 +67,12 @@ test("the creator gate runs before anything is uploaded", () => {
 });
 
 test("the page feed is prepared only for a signing client, owned by the pinned signer", () => {
-  assert.match(route, /const pagePrep = body\.clientFeed === true\s*\?\s*await prepareEthernaFeedIndex\(/);
-  assert.match(route, /: null;/);
-  assert.match(route, /if \(body\.clientFeed === true && pagePrep\) \{/);
-  assert.match(route, /ownerHex: gate\.signer\.replace/);
+  assert.match(route, /let pageIndex: bigint \| null = null;\s*if \(body\.clientFeed === true\) \{/);
+  assert.match(route, /const pageOwnerHex = gate\.signer\.replace/);
+  assert.match(route, /if \(body\.clientFeed === true && pageIndex !== null\) \{/);
   assert.match(route, /pageFeed = \{ owner: gate\.signer, nextIndex: /);
+  // The manifest is the pinned signer's feed's, stored by us (#912 slice 2b).
+  assert.match(route, /feedManifestHash = await storeFeedManifest\(store, pageOwnerHex, pageTopic\.toHex\(\)\);/);
   // Declared empty; the only assignment of a manifest is the client-owned branch.
   assert.match(route, /let feedManifestHash = "";/);
   assert.equal(route.match(/^\s+feedManifestHash = /gm)?.length, 1);
@@ -79,10 +80,12 @@ test("the page feed is prepared only for a signing client, owned by the pinned s
 
 test("the page feed's index is resolved before the page is uploaded, once (#943)", () => {
   // After the upload, a refusal there cost the whole upload - and the retry did it again.
-  const resolve = route.indexOf("await prepareEthernaFeedIndex(");
+  const resolve = route.indexOf("await resolveFeedNextIndex(");
   const upload = route.indexOf("uploadSiteObjects(");
   assert.ok(resolve > 0 && upload > resolve);
-  assert.equal(route.match(/prepareEthernaFeed(Index|Update)\(/g)?.length, 1, "no second resolution after the upload");
+  assert.equal(route.match(/resolveFeedNextIndex\(|prepareEthernaFeed(Index|Update)\(/g)?.length, 1, "no second resolution after the upload");
+  // An index nobody can settle refuses with a typed 503 before anything is stored.
+  assert.ok(route.indexOf("feedIndexUnavailableBody()") > resolve && route.indexOf("feedIndexUnavailableBody()") < upload);
 });
 
 test("the carrier baked into the page comes from the same record, never the request", () => {

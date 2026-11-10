@@ -25,8 +25,10 @@ import {
 } from "../lib/etherna/batch-router.js";
 import { recordUpload } from "../lib/swarm/storage-ledger.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
-import { registerEthernaOffer, prepareEthernaFeedIndex } from "../lib/etherna/upload.js";
-import { isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from "../lib/swarm/storage-busy.js";
+import { registerEthernaOffer } from "../lib/etherna/upload.js";
+import { feedIndexUnavailableBody, isStorageBusy, storageBusyBody, STORAGE_BUSY_RETRY_AFTER_HEADER } from "../lib/swarm/storage-busy.js";
+import { routeSave } from "../lib/etherna/failover.js";
+import { resolveFeedNextIndex } from "../lib/swarm/feeds.js";
 import { beginDeploy, CLIENT_POINTER_HOLD_MS, DEPLOY_IN_PROGRESS_CODE, DEPLOY_IN_PROGRESS_MESSAGE } from "../lib/site/deploy-guard.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
 import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
@@ -36,6 +38,8 @@ import {
   serveRuntimeKit,
   siteRuntimeKits,
   uploadSiteObjects,
+  deployStore,
+  storeFeedManifest,
   type SiteRuntimeKit,
 } from "../lib/site/collection-publish.js";
 import { siteRuntimeReleases } from "../lib/site/runtime-release.js";
@@ -215,13 +219,11 @@ site.post("/deploy", requireAuth, async (c) => {
     const head = parseEventPageHead(body.head);
     if (!head) return c.json({ ok: false, error: "The page's title or image is missing or malformed", code: "COLLECTION_MISMATCH" }, 400);
 
+    // With the Etherna failover (#912): a batch the chain refuses still takes the
+    // page (stamped on WoCo, moved back to this organiser's batch).
     let selection;
     try {
-      selection = batchForDeploy({
-        ownerAddress: parentAddress,
-        gatewayUrl: ETHERNA_URL,
-        deployType: "event",
-      });
+      selection = routeSave(() => batchForDeploy({ ownerAddress: parentAddress, gatewayUrl: ETHERNA_URL, deployType: "event" }));
     } catch (err) {
       if (err instanceof BatchPurchaseRequired) {
         return c.json({ ok: false, error: err.message, code: "BATCH_PURCHASE_REQUIRED" }, 402);
@@ -252,19 +254,33 @@ site.post("/deploy", requireAuth, async (c) => {
     // guard above keeps another deploy of this page from resolving the same index
     // during the upload. Only for a signing client, owned by the signer pinned at
     // create.
-    const pagePrep = body.clientFeed === true
-      ? await prepareEthernaFeedIndex({
-          topic: Topic.fromString(eventPageFeedTopic(eventId)),
-          batchId,
-          ownerHex: gate.signer.replace(/^0x/, ""),
-        })
-      : null;
+    // Our bee's lookup as the start, then forward over both stores
+    // (`resolveFeedNextIndex`) - never Etherna's lookup, which its gateway refuses
+    // and an outage cannot answer (#912); an update not yet settled refuses.
+    const pageTopic = Topic.fromString(eventPageFeedTopic(eventId));
+    const pageOwnerHex = gate.signer.replace(/^0x/, "").toLowerCase();
+    let pageIndex: bigint | null = null;
+    if (body.clientFeed === true) {
+      try {
+        pageIndex = await resolveFeedNextIndex(pageTopic, pageOwnerHex, "etherna");
+      } catch (err) {
+        if (isStorageBusy(err)) throw err;
+        console.warn(`[site/deploy] ${eventId}: page index undecidable, refused: ${(err as Error)?.message ?? err}`);
+        return c.json(feedIndexUnavailableBody(), 503);
+      }
+    }
 
     // Five small objects; the runtime is linked from the release. Anonymously
     // readable once the root is offered (a site root's offer serves what it links).
-    await uploadSiteObjects("etherna", batchId, collection);
+    // Through the one save layer: with the failover on, what Etherna cannot take is
+    // stamped on WoCo and moved back to this organiser's batch.
+    const store = deployStore(selection, { parent: parentAddress });
+    const { rootLanded } = await uploadSiteObjects(store, collection);
     const contentHash = collection.root;
-    await registerEthernaOffer(contentHash);
+    // Bounded and non-fatal; a root on WoCo is offered when it moves back.
+    if (rootLanded === "etherna") {
+      await registerEthernaOffer(contentHash).catch((e) => console.warn("[site/deploy] etherna root offer failed (non-fatal):", e));
+    }
 
     // Event pages are exempt from the free-hosting gate (publishing an event must
     // never block on it) but their bytes still land in the ledger — it is the
@@ -289,12 +305,14 @@ site.post("/deploy", requireAuth, async (c) => {
     let feedManifestHash = "";
     let pageFeed: { owner: string; nextIndex: number } | undefined;
     let nameRecorded = true;
-    if (body.clientFeed === true && pagePrep) {
-      feedManifestHash = pagePrep.feedManifestHash;
+    if (body.clientFeed === true && pageIndex !== null) {
+      // The page feed's manifest, stored by us: Etherna's POST /feeds made the same
+      // bytes, and cannot answer in an outage.
+      feedManifestHash = await storeFeedManifest(store, pageOwnerHex, pageTopic.toHex());
       // The owner travels with the update so the browser refuses to sign a feed
       // it does not own.
       holdAfterMs = CLIENT_POINTER_HOLD_MS;
-      pageFeed = { owner: gate.signer, nextIndex: Number(pagePrep.nextIndex) };
+      pageFeed = { owner: gate.signer, nextIndex: Number(pageIndex) };
       // Etherna answers 402 to an anonymous /bzz/{manifest}/ without an offer.
       void registerEthernaOffer(feedManifestHash).catch((e) =>
         console.warn("[site/deploy] etherna feed-manifest offer failed (non-fatal):", e));

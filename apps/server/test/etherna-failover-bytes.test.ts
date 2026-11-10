@@ -543,9 +543,10 @@ test("every save meant for Etherna asks for the failover", () => {
   }
   const svc = readFileSync(join(SRC, "lib/event/service.ts"), "utf-8");
   assert.match(svc, /const saveOpts = \{ failover: \{ parent: creatorAddress \} \};/);
-  // Without a feed signer the server signs the event feed onto this batch itself, and
-  // a server-signed Etherna write has no failover: a refused batch stays refused.
-  assert.match(svc, /const batchSelection = creatorFeedSigner \? routeSave\(chooseBatch\) : chooseBatch\(\);/);
+  // Since slice 2b the event feed the server signs without a feed signer fails over
+  // too, so a refused batch takes the whole create - and that write asks for it.
+  assert.match(svc, /const batchSelection = routeSave\(chooseBatch\);/);
+  assert.match(svc, /fresh: true,[\s\S]{0,120}dest: batchSelection, failover: \{ parent: creatorAddress \}/);
   // The order key's second leg is the WoCo copy browsers read: no selection, no failover.
   assert.match(svc, /\[uploadToBytes\(bytes\)\]/);
 });

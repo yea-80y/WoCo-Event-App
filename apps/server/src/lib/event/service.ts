@@ -47,23 +47,32 @@ import {
  * Batch routing for a LEGACY (platform-signed) event detail feed restamp —
  * follows the event's self-described storage gateway (#48), so the feed lives
  * and dies with the event content it describes. Cold path only; Phase B events
- * (creatorFeedSigner set) never reach the platform write at all.
+ * (creatorFeedSigner set) never reach the platform write at all. A dead platform
+ * batch (#610) refuses unless the Etherna failover can take the page (`routeSave`,
+ * #912) - see siteFeedDest. Written with `legacyEventFeedWrite`.
  */
 function legacyEventFeedDest(feed: Pick<EventFeed, "creatorAddress" | "gatewayUrl">): BatchSelection | undefined {
   if (!feed.gatewayUrl) return undefined;
   try {
-    const sel = batchForDeploy({
-      ownerAddress: feed.creatorAddress.toLowerCase(),
-      gatewayUrl: feed.gatewayUrl,
-      deployType: "event",
-    });
+    const sel = routeSave(() =>
+      batchForDeploy({
+        ownerAddress: feed.creatorAddress.toLowerCase(),
+        gatewayUrl: feed.gatewayUrl!,
+        deployType: "event",
+      }),
+    );
     return sel.target === "etherna" ? sel : undefined;
   } catch (e) {
-    // A dead platform batch refuses, never detours - see siteFeedDest (#610).
     if (e instanceof PlatformBatchUnavailable) throw e;
     console.warn("[event] legacy feed batch routing failed — WoCo fallback:", (e as Error).message);
     return undefined;
   }
+}
+
+/** A legacy event feed page's write options: its dest, failing over to WoCo for the organiser's batch. */
+function legacyEventFeedWrite(feed: Pick<EventFeed, "creatorAddress" | "gatewayUrl">): { dest?: BatchSelection; failover?: { parent: string } } {
+  const dest = legacyEventFeedDest(feed);
+  return dest ? { dest, failover: { parent: feed.creatorAddress.toLowerCase() } } : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -181,11 +190,10 @@ export async function createEventV2(opts: {
   const onEtherna = !gatewayUrl || isEthernaGateway(gatewayUrl);
   const chooseBatch = () =>
     batchForDeploy({ ownerAddress: creatorAddress, gatewayUrl: onEtherna ? ETHERNA_URL : gatewayUrl, deployType: "event" });
-  // With a feed signer every write here is a /bytes save, which the Etherna
-  // failover can take even when the chain refuses the batch (#912). Without one
-  // the server signs the event feed onto this batch itself (below), and a
-  // server-signed Etherna write has no failover yet: the refusal stands.
-  const batchSelection = creatorFeedSigner ? routeSave(chooseBatch) : chooseBatch();
+  // Every write here can fail over (#912): the /bytes saves, and without a feed
+  // signer the event feed the server signs onto this batch itself (below), so a
+  // batch the chain refuses still takes the event when the failover can.
+  const batchSelection = routeSave(chooseBatch);
   const saveOpts = { failover: { parent: creatorAddress } };
 
   const emit = (phase: string, current: number, total: number, message: string) =>
@@ -315,7 +323,7 @@ export async function createEventV2(opts: {
     await writeFeedPage(topicEvent(eventId), encodeJsonFeed(eventFeed), {
       fresh: true,
       // Same batch as the event content itself (#48).
-      dest: batchSelection.target === "etherna" ? batchSelection : undefined,
+      ...(batchSelection.target === "etherna" ? { dest: batchSelection, failover: { parent: creatorAddress } } : {}),
     });
   } else {
     emit("finalize", 0, 1, "Preparing event feed for signing...");
@@ -448,7 +456,7 @@ export async function confirmSeriesOnChain(
   // no key for it and must never write it. The client merges onChainEventId into the
   // feed it owns and re-signs the SOC (see PublishButton). Legacy events: platform write.
   if (!feed.creatorFeedSigner) {
-    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated), { dest: legacyEventFeedDest(feed) });
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated), legacyEventFeedWrite(feed));
   }
   // Re-seed (not just invalidate) with the onChainEventId-merged feed so the test
   // purchase's reserve/claim immediately after registration reads the v2 event from
@@ -528,7 +536,7 @@ export async function stampEventSubEns(
   // Phase B: client-owned feed — the client re-signs the SOC with the label (the
   // route returns `updated` for that). Legacy events: platform write here.
   if (!feed.creatorFeedSigner) {
-    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated), { dest: legacyEventFeedDest(feed) });
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated), legacyEventFeedWrite(feed));
   }
   invalidateEventCache(eventId);
   return updated;
@@ -717,7 +725,7 @@ export async function updateEventMetadata(opts: {
   // server has no key for the client-owned SOC; the route returns `updated` for
   // the client to re-sign (same contract as confirmSeriesOnChain).
   if (source === "platform" && !feed.creatorFeedSigner) {
-    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated), { dest: legacyEventFeedDest(feed) });
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(updated), legacyEventFeedWrite(feed));
   }
 
   // Invalidate — never prime. On the hint path a forged-but-self-consistent feed
@@ -814,7 +822,7 @@ export async function deleteEventIfNoOrders(opts: {
   // Same trust rule as update-meta: only a platform-sourced basis may be
   // platform-written. Phase B: the owner overwrites their SOC client-side.
   if (source === "platform" && !feed.creatorFeedSigner) {
-    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(tombstoned), { dest: legacyEventFeedDest(feed) });
+    await writeFeedPage(topicEvent(eventId), encodeJsonFeed(tombstoned), legacyEventFeedWrite(feed));
   }
   invalidateEventCache(eventId);
   if (feed.creatorFeedSigner) {

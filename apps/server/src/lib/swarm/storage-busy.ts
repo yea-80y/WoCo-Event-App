@@ -45,3 +45,19 @@ export function storageBusyBody(): { ok: false; error: string; code: string; ret
 
 /** `Retry-After` in whole seconds. */
 export const STORAGE_BUSY_RETRY_AFTER_HEADER = String(Math.ceil(STORAGE_BUSY_RETRY_MS / 1000));
+
+/**
+ * A deploy's pointer index could not be settled (#912 slice 2b): a store could not
+ * say whether the next index is taken - during an Etherna outage, an update sent to
+ * Etherna and not yet on our bee, or a failover list not yet trusted. Refused before
+ * anything is stored: a guess could fork the page's feed.
+ */
+export const FEED_INDEX_UNAVAILABLE_CODE = "STORAGE_UNAVAILABLE";
+
+export function feedIndexUnavailableBody(): { ok: false; error: string; code: string } {
+  return {
+    ok: false,
+    error: "Storage can't confirm this page's next update right now - please try again in a few minutes.",
+    code: FEED_INDEX_UNAVAILABLE_CODE,
+  };
+}

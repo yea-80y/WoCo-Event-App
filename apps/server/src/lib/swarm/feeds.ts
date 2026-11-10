@@ -2,8 +2,9 @@ import { FeedIndex, type Topic } from "@ethersphere/bee-js";
 import zlib from "node:zlib";
 import { getBee, getPlatformSigner, getPlatformOwner, requirePostageBatch } from "../../config/swarm.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
-import type { BatchSelection } from "../etherna/batch-router.js";
-import { writeEthernaFeedPage } from "../etherna/upload.js";
+import { PlatformBatchUnavailable, type BatchSelection } from "../etherna/batch-router.js";
+import { writeEthernaFeedPage } from "../etherna/soc-send.js";
+import { FAILOVER_ETHERNA_TIMEOUT_MS } from "../etherna/failover.js";
 import { decideFeedWriteRetry } from "./feed-write-retry.js";
 import { feedSources, firstFreeIndex, readFeedUpdate, type FeedDest } from "./feed-index.js";
 import { ethernaSource, isOnlyBeeChunk500, wocoBeeSource } from "./soc-read.js";
@@ -402,6 +403,10 @@ export interface WriteFeedPageOptions {
    *  previous update. The index cache and read-your-writes above are what keep
    *  that window from losing an edit (#186). */
   dest?: BatchSelection;
+  /** The Etherna failover (#912 slice 2b): with the rail on, a page Etherna cannot
+   *  take is stamped on WoCo and moved back to `parent`'s batch (none = the platform
+   *  batch). Required to hand over a `dest` the router refused (`routeSave`). */
+  failover?: { parent?: string };
 }
 
 export async function writeFeedPage(
@@ -429,7 +434,30 @@ async function doWriteFeedPage(
   // An update's payload is its page, inline. A larger one would be wrapped by
   // bee-js and could never match its own read-back.
   if (page.length > 4096) throw new Error(`feed page is ${page.length} bytes, max 4096`);
+  // A batch the router refused, handed over without the failover to take the page.
+  if (options.dest?.ethernaRefused !== undefined && !options.failover) throw new PlatformBatchUnavailable(options.dest.ethernaRefused);
   const etherna = options.dest?.target === "etherna";
+  try {
+    return await writeAtIndex(topic, key, page, options, etherna);
+  } catch (err) {
+    // A failed write meant for Etherna may still have reached Etherna (#912): the
+    // index it used is no longer known to be free. Forget it, so the next write -
+    // with other bytes - walks instead of taking it, and while Etherna is down the
+    // listed send makes that walk refuse rather than fork the feed.
+    if (etherna) feedNextIndex.delete(key);
+    throw err;
+  }
+}
+
+async function writeAtIndex(
+  topic: Topic,
+  key: string,
+  page: Uint8Array,
+  options: WriteFeedPageOptions,
+  etherna: boolean,
+): Promise<void> {
+  // A page that lands on WoCo in a failover is still an Etherna feed's update: its
+  // next index is resolved over both stores (`feedSources("etherna")`).
   const dest: FeedDest = etherna ? "etherna" : "woco";
   const owner = platformOwnerHex();
   // Always an explicit index. bee-js's own discovery (`findNextIndex`) answers 0
@@ -439,11 +467,12 @@ async function doWriteFeedPage(
   const MAX_ATTEMPTS = 5;
   let delay = feedWriteBaseBackoffMs;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    let landedOn: FeedDest = dest;
     try {
       const release = await beeUploadSem.acquire();
       try {
         if (etherna) {
-          await withTimeout(
+          landedOn = await withTimeout(
             writeEthernaFeedPage({
               topic,
               index,
@@ -451,8 +480,12 @@ async function doWriteFeedPage(
               batchId: options.dest!.batchId,
               signer: getPlatformSigner(),
               ownerHex: owner,
+              ...(options.failover
+                ? { failover: { parent: options.failover.parent, ethernaRefused: options.dest!.ethernaRefused } }
+                : {}),
             }),
-            BEE_CALL_TIMEOUT_MS,
+            // Etherna's short try, then the WoCo stamp.
+            BEE_CALL_TIMEOUT_MS + FAILOVER_ETHERNA_TIMEOUT_MS,
             `etherna feed write ${key.slice(0, 16)}`,
           );
         } else {
@@ -503,7 +536,8 @@ async function doWriteFeedPage(
     // there: a taken index keeps the update already on it (another process
     // writing these feeds with the same key, or a lookup that read behind).
     // Outside the upload semaphore - a read must not hold up other uploads.
-    const landed = await readFeedUpdate(owner, topic, index, etherna ? [ethernaSource] : [wocoBeeSource]);
+    // From the store the page went to: a failover write is on our bee, not Etherna.
+    const landed = await readFeedUpdate(owner, topic, index, landedOn === "etherna" ? [ethernaSource] : [wocoBeeSource]);
     if (landed.status === "found" && !sameBytes(landed.soc.payload, page)) {
       if (options.fresh) throw new Error(`feed ${key.slice(0, 16)}: written as fresh but index 0 already holds an update`);
       console.warn(`[swarm] Feed ${key.slice(0, 16)}: index ${index} already held another update — writing past it`);

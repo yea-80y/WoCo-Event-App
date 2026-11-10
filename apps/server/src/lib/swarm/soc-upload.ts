@@ -49,27 +49,13 @@ import {
   SOC_SIGNATURE_SIZE,
   SOC_MAX_PAYLOAD_SIZE,
 } from "@woco/shared";
-import { BEE_URL, requirePostageBatch } from "../../config/swarm.js";
-import {
-  BEE_CALL_TIMEOUT_MS,
-  isTransientSwarmError,
-  withRetries as withUploadRetries,
-  withTimeout,
-  type UploadBudget,
-} from "./upload-queue.js";
+import { requirePostageBatch } from "../../config/swarm.js";
+import { isTransientSwarmError, withRetries as withUploadRetries } from "./upload-queue.js";
 import { whitelistHashes } from "./whitelist.js";
 import { markHealed, readVerifiedSoc } from "./soc-read.js";
-import { postSocToEtherna, registerEthernaOffer } from "../etherna/upload.js";
-import { noteFailover } from "../etherna/relay-ledger.js";
-import { PlatformBatchUnavailable } from "../etherna/batch-router.js";
-import {
-  FAILOVER_ETHERNA_ATTEMPTS,
-  FAILOVER_ETHERNA_TIMEOUT_MS,
-  noteFailedOver,
-  relayPlan,
-} from "../etherna/failover.js";
+import { registerEthernaOffer } from "../etherna/upload.js";
+import { FULL_BUDGET, postSocToWocoBee, sendSocForEtherna, type LegRunner, type SocFailover, type SocWire } from "../etherna/soc-send.js";
 import { observeStatementBytes } from "../social/participants.js";
-import { errorSnippet } from "../http/read-capped.js";
 
 
 const HEX_RE = /^[0-9a-fA-F]+$/;
@@ -119,16 +105,17 @@ export interface SocReference {
 export interface SocUploadDestination {
   target: "wocoBee" | "etherna";
   batchId: string;
+  /** Set by `routeSave`: the chain refuses this Etherna batch (#610). Only with failover. */
+  ethernaRefused?: string;
 }
 
-/** The relay's Etherna failover (#912). Only `POST /api/swarm/soc` asks for it. */
+/**
+ * The Etherna failover (#912): `parent` is whose Etherna batch the chunk moves back
+ * to (the relay's verified session parent; none = the platform batch), and
+ * `ethernaRefused` a batch the router already refused (#610): straight to WoCo.
+ */
 export interface SocUploadOptions {
-  failover?: {
-    /** The verified session parent: whose Etherna batch the chunk moves back to. */
-    parent: string;
-    /** The router already refused Etherna's batch (#610): straight to WoCo. */
-    ethernaRefused?: string;
-  };
+  failover?: SocFailover;
 }
 
 /**
@@ -253,79 +240,15 @@ export async function uploadSignedSoc(
   const soc: SocWire = { ownerHex, identifierHex: bytesToHex(identifier), sigHex: bytesToHex(signature), body };
 
   if (dest?.target === "etherna") {
-    const plan = opts.failover ? relayPlan(opts.failover.ethernaRefused) : "etherna";
-    // A batch the chain refuses, and the failover can no longer take the save
-    // (its list filled since the route asked): never post it there (#610).
-    if (opts.failover?.ethernaRefused !== undefined && plan !== "woco") {
-      throw new PlatformBatchUnavailable(opts.failover.ethernaRefused);
-    }
-    if (plan !== "woco") {
-      try {
-        await withRetries(
-          (timeoutMs) => postSocToEtherna({ ...soc, batchId: dest.batchId, timeoutMs }),
-          plan === "etherna" ? FULL_BUDGET : { attempts: FAILOVER_ETHERNA_ATTEMPTS, timeoutMs: FAILOVER_ETHERNA_TIMEOUT_MS },
-        );
-        return await accepted(soc, socAddress, payload, true);
-      } catch (err) {
-        if (plan === "etherna") throw err;
-        console.warn(`[swarm] Etherna could not take ${socAddress.slice(0, 12)}…, stamping it on WoCo: ${(err as Error)?.message ?? err}`);
-      }
-    }
-    // Listed BEFORE the stamp: a crash after it must not leave a chunk on WoCo
-    // that nothing moves back. A stamp that then fails leaves an entry the sweep
-    // ends once neither store has the chunk. Not listed, no detour: the save
-    // fails as it would with the rail off.
-    if (!noteFailover(socAddress, ownerHex, soc.identifierHex, opts.failover!.parent)) {
-      throw new PlatformBatchUnavailable("the Etherna failover list is full or unreadable");
-    }
-    await withRetries((timeoutMs) => postSocToWocoBee(soc, requirePostageBatch(), timeoutMs), FULL_BUDGET);
-    noteFailedOver();
-    return await accepted(soc, socAddress, payload, false);
+    const landed = await sendSocForEtherna(soc, dest.batchId, { failover: opts.failover, run: withRetries });
+    return await accepted(soc, socAddress, payload, landed === "etherna");
   }
 
   await withRetries((timeoutMs) => postSocToWocoBee(soc, dest?.batchId ?? requirePostageBatch(), timeoutMs), FULL_BUDGET);
   return await accepted(soc, socAddress, payload, false);
 }
 
-interface SocWire {
-  ownerHex: string;
-  identifierHex: string;
-  sigHex: string;
-  body: Uint8Array;
-}
-
-const FULL_BUDGET = { attempts: 5, timeoutMs: BEE_CALL_TIMEOUT_MS };
-
-async function postSocToWocoBee(soc: SocWire, batchId: string, timeoutMs: number): Promise<void> {
-  const resp = await withTimeout(
-    fetch(`${BEE_URL}/soc/${soc.ownerHex}/${soc.identifierHex}?sig=${soc.sigHex}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "Swarm-Postage-Batch-Id": batchId,
-        // Buffer locally + push in the BACKGROUND, returning immediately —
-        // exactly like the legacy feed/bytes writes (bytes.ts, feeds.ts).
-        // Without this, Bee defaults to a SYNCHRONOUS upload that blocks
-        // until the chunk is pushed to the network (~25-30s observed),
-        // which was the entire publish-step-1→2 regression. The chunk is
-        // readable from this node immediately, so server-side reads
-        // (register-on-chain) and the whitelisted gateway read still work.
-        // Etherna manages its own upload pipeline, so it's WoCo-only.
-        "Swarm-Deferred-Upload": "true",
-      },
-      body: Buffer.from(soc.body),
-    }),
-    timeoutMs,
-    "soc upload",
-  );
-  if (!resp.ok) {
-    const e = new Error(`Bee SOC upload ${resp.status}: ${await errorSnippet(resp, 200)}`) as Error & { status?: number };
-    e.status = resp.status;
-    throw e;
-  }
-}
-
-async function withRetries(send: (timeoutMs: number) => Promise<void>, budget: UploadBudget): Promise<void> {
+const withRetries: LegRunner = async (send, budget) => {
   try {
     await withUploadRetries(send, budget, isTransientSwarmError);
   } catch (err) {
@@ -335,7 +258,7 @@ async function withRetries(send: (timeoutMs: number) => Promise<void>, budget: U
     if (e?.status !== undefined && e.status !== 429 && e.status < 500) e.status = 502;
     throw err;
   }
-}
+};
 
 /** The bookkeeping after a stamp landed, wherever it landed. */
 async function accepted(soc: SocWire, socAddress: string, payload: Uint8Array, onEtherna: boolean): Promise<SocReference> {

@@ -14,6 +14,7 @@
  *
  * One chunk store stands for the network; our bee and Etherna are two fronts on it.
  */
+import { feedManifestFor } from "@woco/shared/swarm/feed-manifest";
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -518,7 +519,8 @@ test("deploy (Etherna): our bee cannot say whether the pointer's index 0 is take
   assert.equal(ok.status, 200, JSON.stringify(ok.json));
   assert.deepEqual(bzzUploads, ["etherna"]);
   assert.equal(feedHistory(shared.multisiteFeedTopic(siteId)).length, 1);
-  assert.equal(ok.json.data!.feedManifestHash, "ef".repeat(32));
+  // The manifest is built and stored here (#912 slice 2b), never Etherna's POST /feeds.
+  assert.equal(ok.json.data!.feedManifestHash, feedManifestFor(PLATFORM_OWNER, shared.multisiteFeedTopic(siteId)));
   await settle();
 });
 
@@ -879,12 +881,14 @@ test("every pointer branch of the site deploy resolves its index once, before th
   const upload = route.indexOf("uploadSiteObjects(");
   assert.ok(upload > 0);
   assert.equal(route.split("uploadSiteObjects(").length - 1, 1, "one upload path");
-  for (const resolver of ["prepareEthernaFeedIndex(", "resolveFeedNextIndex("]) {
-    const at = route.indexOf(resolver);
-    assert.ok(at > 0 && at < upload, `${resolver} before the upload`);
-    assert.equal(route.split(resolver).length - 1, 1, `${resolver} once`);
-  }
-  assert.ok(!route.includes("prepareEthernaFeedUpdate("), "no resolution bundled with the post-upload chunk read");
+  // Both rails, one resolution (#912 slice 2b: Etherna's own lookup is gone).
+  const at = route.indexOf("resolveFeedNextIndex(");
+  assert.ok(at > 0 && at < upload, "resolveFeedNextIndex( before the upload");
+  assert.equal(route.split("resolveFeedNextIndex(").length - 1, 1, "resolveFeedNextIndex( once");
+  for (const gone of ["prepareEthernaFeedIndex(", "prepareEthernaFeedUpdate(", "fetchEthernaRootChunk("]) assert.ok(!route.includes(gone), gone);
+  // An index nobody can settle refuses with a typed 503 before anything is stored.
+  const refusal = route.indexOf("feedIndexUnavailableBody()");
+  assert.ok(refusal > at && refusal < upload);
 });
 
 test("the deploy lock is taken only after ownership is settled, so a non-owner can never hold it", () => {

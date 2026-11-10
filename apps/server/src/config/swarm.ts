@@ -7,8 +7,8 @@ capBeeResponses();
 
 export const ETHERNA_ENABLED = process.env.ETHERNA_ENABLED === "true";
 
-// getBee() always reads/writes via the local node — per-deploy Etherna uploads
-// use getEthernaBee() (lib/etherna/upload.ts) and never go through here.
+// getBee() always reads/writes via the local node — Etherna writes go over raw
+// HTTP (lib/etherna/upload.ts, lib/swarm/plain-bytes.ts) and never through here.
 export const BEE_URL = process.env.BEE_URL || "http://localhost:3323";
 // Internal proxy URL — for admin/whitelist calls. Distinct from BEE_URL (raw bee).
 // On Hetzner: http://bee-proxy:3000 (rewritten by deploy sed). Laptop: public gateway.

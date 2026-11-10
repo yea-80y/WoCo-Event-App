@@ -239,7 +239,6 @@ const etherna: Server = createServer(async (req, res) => {
 let swarm: typeof import("../src/config/swarm.js");
 let feeds: typeof import("../src/lib/swarm/feeds.js");
 let socRead: typeof import("../src/lib/swarm/soc-read.js");
-let upload: typeof import("../src/lib/etherna/upload.js");
 let busy: typeof import("../src/lib/swarm/storage-busy.js");
 
 const ETHERNA = { target: "etherna" as const, batchId: "cd".repeat(32) };
@@ -277,7 +276,6 @@ before(async () => {
   swarm = await import("../src/config/swarm.js");
   feeds = await import("../src/lib/swarm/feeds.js");
   socRead = await import("../src/lib/swarm/soc-read.js");
-  upload = await import("../src/lib/etherna/upload.js");
   busy = await import("../src/lib/swarm/storage-busy.js");
   feeds.__feedWriteTestHooks.setBaseBackoffMs(0);
 });
@@ -526,7 +524,7 @@ describe("the skip-list shape is typed, and still refuses", () => {
     const t = freshTopic();
     net.beeChunks500 = true;
     await assert.rejects(
-      upload.prepareEthernaFeedIndex({ topic: t, batchId: ETHERNA.batchId, ownerHex: OTHER_OWNER }),
+      feeds.resolveFeedNextIndex(t, OTHER_OWNER, "etherna"),
       isBusy,
     );
     assert.equal(uploads.length, 0);
@@ -555,7 +553,7 @@ describe("the skip-list shape is typed, and still refuses", () => {
     const t = freshTopic();
     net.ethernaChunks500 = true;
     await assert.rejects(
-      upload.prepareEthernaFeedIndex({ topic: t, batchId: ETHERNA.batchId, ownerHex: OTHER_OWNER }),
+      feeds.resolveFeedNextIndex(t, OTHER_OWNER, "etherna"),
       (e: unknown) => e instanceof Error && !isBusy(e) && /cannot tell whether index 0/.test(e.message),
     );
   });
@@ -718,24 +716,21 @@ describe("read-your-writes", () => {
 // Deploy pointer feeds (no cache, same lost-write class)
 // ---------------------------------------------------------------------------
 
-describe("prepareEthernaFeedUpdate", () => {
-  const prep = (topic: Topic, owner: string) =>
-    upload.prepareEthernaFeedUpdate({ topic, contentHash: CONTENT_HASH, batchId: ETHERNA.batchId, ownerHex: owner });
+describe("deploy pointer index (#912 slice 2b: our bee's lookup, walked over both stores)", () => {
+  const prep = (topic: Topic, owner: string) => feeds.resolveFeedNextIndex(topic, owner, "etherna");
 
-  test("an Etherna lookup error throws — any non-OK used to mean index 0, keeping the old pointer", async () => {
+  test("a lookup error throws - any non-OK used to mean index 0, keeping the old pointer", async () => {
     const t = freshTopic();
     seed(t, 0n, page("old pointer"), OTHER_KEY, "etherna");
-    net.ethernaFeeds = { status: 500 };
-    await assert.rejects(prep(t, OTHER_OWNER), /Etherna feed lookup 500/);
+    net.lookupAnswer = { status: 500, message: "boom" };
+    await assert.rejects(prep(t, OTHER_OWNER));
   });
 
-  test("404 starts at 0 and walks; a lookup behind is walked forward", async () => {
-    const fresh = freshTopic();
-    assert.equal((await prep(fresh, OTHER_OWNER)).nextIndex, 0n);
+  test("404 starts at 0 and walks; updates only Etherna holds are walked past", async () => {
+    assert.equal(await prep(freshTopic(), OTHER_OWNER), 0n);
     const t = freshTopic();
     for (let i = 0n; i < 3n; i++) seed(t, i, page(`p${i}`), OTHER_KEY, "etherna");
-    net.ethernaFeeds = { status: 200, next: 1n };
-    assert.equal((await prep(t, OTHER_OWNER)).nextIndex, 3n);
+    assert.equal(await prep(t, OTHER_OWNER), 3n);
   });
 });
 
