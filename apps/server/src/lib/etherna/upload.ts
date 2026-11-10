@@ -140,6 +140,7 @@ export async function prepareEthernaFeedIndex(opts: {
   // 1. Create feed manifest (POST) and read current index (GET) in parallel.
   //    POST /feeds/{owner}/{topic} → { reference: manifestHash }
   //    GET  /feeds/{owner}/{topic} → header swarm-feed-index-next (404 for fresh feed)
+  //    Both time out: a hung Etherna otherwise holds the deploy open forever.
   const [manifestRes, indexRes] = await Promise.all([
     fetch(`${ETHERNA_GW}${feedPath}`, {
       method: "POST",
@@ -147,9 +148,11 @@ export async function prepareEthernaFeedIndex(opts: {
         "Swarm-Postage-Batch-Id": batchId,
         Authorization: `Bearer ${token}`,
       },
+      signal: AbortSignal.timeout(BEE_CALL_TIMEOUT_MS),
     }),
     fetch(`${ETHERNA_GW}${feedPath}`, {
       headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(BEE_CALL_TIMEOUT_MS),
     }),
   ]);
 
@@ -166,11 +169,17 @@ export async function prepareEthernaFeedIndex(opts: {
   // Only the headers are wanted; the body is the feed's resolved content, which
   // the feed's owner chooses. Cancel it rather than leave it transferring.
   await indexRes.body?.cancel().catch(() => {});
-  if (indexRes.status === 403) {
-    // Etherna's gateway refuses every authenticated feed lookup (nginx 403,
-    // first seen 2026-10-23). The lookup is only a start: our bee's lookup is
-    // another lower bound, and the same walk over both sources decides.
-    console.warn(`[etherna] feed lookup refused (403) for ${topicHex.slice(0, 16)} - resolving from our bee`);
+  if (indexRes.status === 403 || indexRes.status >= 500) {
+    // Etherna's gateway refused every authenticated feed lookup for some hours
+    // on 2026-10-23 (nginx 403, fixed by Etherna that day) and failed one on
+    // 2026-11-06 (500: a site republish refused, the next one went through;
+    // the only one since launch). The lookup is only a start: our bee's lookup is
+    // another lower bound, and the same walk over both sources decides - it
+    // refuses when either cannot say whether an index is taken, except that
+    // with the #912 ledger warm an unreachable Etherna is excused and our bee's
+    // 404 decides (every Etherna write this server made is listed until our
+    // bee has it). A 5xx makes that rule decide more often than a 403 did.
+    console.warn(`[etherna] feed lookup ${indexRes.status} for ${topicHex.slice(0, 16)} - resolving from our bee`);
     const { resolveFeedNextIndex } = await import("../swarm/feeds.js");
     return { feedManifestHash, nextIndex: await resolveFeedNextIndex(topic, ownerHex, "etherna") };
   }

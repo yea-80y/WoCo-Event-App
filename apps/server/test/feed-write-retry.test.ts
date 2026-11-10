@@ -722,11 +722,47 @@ describe("prepareEthernaFeedUpdate", () => {
   const prep = (topic: Topic, owner: string) =>
     upload.prepareEthernaFeedUpdate({ topic, contentHash: CONTENT_HASH, batchId: ETHERNA.batchId, ownerHex: owner });
 
-  test("an Etherna lookup error throws — any non-OK used to mean index 0, keeping the old pointer", async () => {
+  test("an Etherna lookup refused or failed is resolved from our bee and walked — never index 0, which kept the old pointer", async () => {
+    for (const status of [403, 500, 502, 503, 504]) {
+      const t = freshTopic();
+      seed(t, 0n, page("old pointer"), OTHER_KEY, "etherna");
+      seed(t, 1n, page("newer pointer"), OTHER_KEY, "etherna");
+      net.ethernaFeeds = { status };
+      assert.equal((await prep(t, OTHER_OWNER)).nextIndex, 2n, `Etherna lookup ${status}`);
+    }
+  });
+
+  test("a failed Etherna lookup our bee reads behind (Etherna's writes not there yet): walked forward on Etherna", async () => {
+    const t = freshTopic();
+    for (let i = 0n; i < 3n; i++) seed(t, i, page(`p${i}`), OTHER_KEY, "etherna");
+    net.ethernaFeeds = { status: 500 };
+    net.beeMissesEtherna = true;
+    assert.equal((await prep(t, OTHER_OWNER)).nextIndex, 3n);
+  });
+
+  test("a failed Etherna lookup where the walk cannot tell: refuse, nothing chosen", async () => {
     const t = freshTopic();
     seed(t, 0n, page("old pointer"), OTHER_KEY, "etherna");
     net.ethernaFeeds = { status: 500 };
-    await assert.rejects(prep(t, OTHER_OWNER), /Etherna feed lookup 500/);
+    net.ethernaChunks500 = true;
+    await assert.rejects(prep(t, OTHER_OWNER), /cannot tell whether index/);
+  });
+
+  test("both Etherna requests that start a pointer update time out (a hung Etherna held the deploy open)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../src/lib/etherna/upload.ts", import.meta.url), "utf8");
+    const fn = src.slice(src.indexOf("export async function prepareEthernaFeedIndex"), src.indexOf("export async function fetchEthernaRootChunk"));
+    assert.equal(fn.match(/fetch\(/g)?.length, 2);
+    assert.equal(fn.match(/signal: AbortSignal\.timeout\(BEE_CALL_TIMEOUT_MS\)/g)?.length, 2);
+  });
+
+  test("any other Etherna lookup answer still refuses", async () => {
+    const t = freshTopic();
+    seed(t, 0n, page("old pointer"), OTHER_KEY, "etherna");
+    for (const status of [400, 401, 429]) {
+      net.ethernaFeeds = { status };
+      await assert.rejects(prep(t, OTHER_OWNER), new RegExp(`Etherna feed lookup ${status}`));
+    }
   });
 
   test("404 starts at 0 and walks; a lookup behind is walked forward", async () => {
