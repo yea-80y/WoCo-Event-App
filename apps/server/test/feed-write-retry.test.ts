@@ -106,7 +106,12 @@ const net = {
   /** Etherna's GET /feeds: a status, and for 200 the next index it reports. */
   ethernaFeeds: { status: 404 } as { status: number; next?: bigint },
   feedLookups: 0,
+  /** POST /soc on Etherna answers this status; `stored`: it kept the chunk first (a send that landed, then failed). */
+  ethernaSocFails: null as null | { status: number; stored: boolean },
+  /** At each bee /soc POST: was its address already in the relay ledger? */
+  listedAtBeePost: [] as boolean[],
 };
+let relayLedger: typeof import("../src/lib/etherna/relay-ledger.js") | null = null;
 
 /** A content root chunk Etherna serves for the deploy-pointer tests (span ‖ data). */
 const CONTENT_HASH = "cc".repeat(32);
@@ -165,8 +170,17 @@ async function handleSocPost(req: IncomingMessage, res: ServerResponse, via: "be
   const [, , owner, id] = url.pathname.split("/");
   const body = await readBody(req);
   uploads.push({ via, owner: owner!.toLowerCase(), index: indexOfIdentifier(id!.toLowerCase()) });
-  if (via === "bee" && net.beeUploadFails) return json(res, net.beeUploadFails, { code: net.beeUploadFails, message: "batch with id not found" });
   const addr = hex(calculateSocAddress(unhex(id!), unhex(owner!)));
+  if (via === "bee" && relayLedger) net.listedAtBeePost.push(relayLedger.getRelayEntry(addr) !== undefined);
+  if (via === "bee" && net.beeUploadFails) return json(res, net.beeUploadFails, { code: net.beeUploadFails, message: "batch with id not found" });
+  const fails = via === "etherna" ? net.ethernaSocFails : null;
+  if (fails) {
+    if (fails.stored && !chunks.has(addr)) {
+      chunks.set(addr, Binary.concatBytes(unhex(id!), unhex(url.searchParams.get("sig")!), body));
+      viaEtherna.add(addr);
+    }
+    return json(res, fails.status, { code: fails.status, message: "Exception invoking node API" });
+  }
   if (!chunks.has(addr)) {
     chunks.set(addr, Binary.concatBytes(unhex(id!), unhex(url.searchParams.get("sig")!), body));
     if (via === "etherna") viaEtherna.add(addr);
@@ -300,6 +314,8 @@ beforeEach(() => {
     beeUploadFails: null,
     ethernaFeeds: { status: 404 },
     feedLookups: 0,
+    ethernaSocFails: null,
+    listedAtBeePost: [],
   });
   uploads.length = 0;
 });
@@ -766,4 +782,79 @@ test("every bee-js feed upload in the server names its index (F1: the WoCo site 
     }
   }
   assert.ok(calls >= 4, "the scan found the known call sites");
+});
+
+// ---------------------------------------------------------------------------
+// Etherna failover (#912 slice 2b): platform-signed pages meant for Etherna
+// ---------------------------------------------------------------------------
+
+describe("Etherna failover", () => {
+  let restoreCwd = "";
+  beforeEach(async () => {
+    relayLedger = await import("../src/lib/etherna/relay-ledger.js");
+    restoreCwd = process.cwd();
+    process.chdir(mkdtempSync(join(tmpdir(), "woco-feed-failover-")));
+    let t = Date.now();
+    relayLedger.__resetRelayLedgerForTest({ now: () => t });
+    relayLedger.loadRelayLedger();
+    t += relayLedger.WARMUP_MS;
+    process.env.ETHERNA_FAILOVER = "auto";
+    (await import("../src/lib/etherna/breaker.js")).__resetEthernaBreaker();
+  });
+  after(() => {
+    delete process.env.ETHERNA_FAILOVER;
+    relayLedger?.__resetRelayLedgerForTest();
+    relayLedger = null;
+    if (restoreCwd) process.chdir(restoreCwd);
+  });
+
+  test("Etherna refusing: the page lands on WoCo, listed before the stamp, confirmed there; the next write takes index + 1", async () => {
+    const t = freshTopic();
+    net.ethernaSocFails = { status: 503, stored: false };
+    net.ethernaChunks500 = true;
+    await feeds.writeFeedPage(t, page("a"), { dest: ETHERNA, failover: { parent: `0x${"aa".repeat(20)}` } });
+    assert.equal(textAt(OWNER, t, 0n), "a");
+    assert.deepEqual(net.listedAtBeePost, [true], "listed before the bee POST");
+    const e = relayLedger!.getRelayEntry(addressFor(OWNER, t, 0n));
+    assert.equal(e?.status, "failover");
+    assert.equal(e?.parent, `0x${"aa".repeat(20)}`);
+    // Read back from where it landed: confirmed, not disputed by an Etherna that cannot answer.
+    assert.deepEqual(hooks().cachedEntry(t), { next: 1n, confirmedAt: "etherna", disputed: false });
+    const before = net.feedLookups;
+    await feeds.writeFeedPage(t, page("b"), { dest: ETHERNA, failover: {} });
+    assert.equal(textAt(OWNER, t, 1n), "b");
+    assert.equal(net.feedLookups, before, "no walk");
+  });
+
+  test("fork guard: a write that may have reached Etherna and then failed leaves no cached index for the next one", async () => {
+    const t = freshTopic();
+    await feeds.writeFeedPage(t, page("a"), { dest: ETHERNA, failover: {} }); // index 0, on Etherna
+    assert.equal(hooks().cachedNextIndex(t), 1n);
+    // Etherna keeps "b" at index 1 and answers 503; the WoCo stamp then fails too.
+    net.ethernaSocFails = { status: 503, stored: true };
+    net.beeUploadFails = 500;
+    await assert.rejects(feeds.writeFeedPage(t, page("b"), { dest: ETHERNA, failover: {} }));
+    assert.equal(hooks().cachedEntry(t), undefined, "the index it used is no longer known to be free");
+    // Our bee has "a" but has not seen "b" yet, Etherna cannot be asked: "c" must refuse, never take index 1.
+    net.beeUploadFails = null;
+    viaEtherna.delete(addressFor(OWNER, t, 0n));
+    net.beeMissesEtherna = true;
+    net.ethernaChunks500 = true;
+    uploads.length = 0;
+    await assert.rejects(feeds.writeFeedPage(t, page("c"), { dest: ETHERNA, failover: {} }), /cannot tell whether index 1 is taken/);
+    assert.deepEqual(uploads, [], "nothing written over the update Etherna holds");
+    assert.equal(textAt(OWNER, t, 1n), "b");
+  });
+
+  test("a batch the router refused is never written without the failover", async () => {
+    const t = freshTopic();
+    const { PlatformBatchUnavailable } = await import("../src/lib/etherna/batch-router.js");
+    await assert.rejects(
+      feeds.writeFeedPage(t, page("a"), { dest: { ...ETHERNA, ethernaRefused: "batch gone" } }),
+      (e: unknown) => e instanceof PlatformBatchUnavailable,
+    );
+    assert.deepEqual(uploads, []);
+    await feeds.writeFeedPage(t, page("a"), { dest: { ...ETHERNA, ethernaRefused: "batch gone" }, failover: {} });
+    assert.deepEqual(uploads.map((u) => u.via), ["bee"], "with it: straight to WoCo");
+  });
 });

@@ -81,6 +81,8 @@ const skipped = (addr: string) => (skippedUntil.get(addr) ?? -1) > clock;
 const lookupFails = new Set<string>();
 /** Etherna's gateway refusing every authenticated feed lookup (nginx 403, 2026-10-23). */
 let ethernaLookupRefused = false;
+/** Etherna's node API down (2026-11-05: "Exception invoking node API"): 503 to all but sign-in. */
+let ethernaDown = false;
 
 const hex = (b: Uint8Array) => Binary.uint8ArrayToHex(b);
 const unhex = (h: string) => Binary.hexToUint8Array(h);
@@ -184,6 +186,7 @@ const bee: Server = createServer(async (req, res) => {
 const etherna: Server = createServer(async (req, res) => {
   const path = (req.url ?? "").split("?")[0]!;
   if (req.method === "POST" && path === "/token") return json(res, 200, { access_token: "t", expires_in: 3600 });
+  if (ethernaDown) return json(res, 503, { code: 503, message: "Exception invoking node API" });
   if (req.method === "POST" && path === "/bytes") return bytesPost(req, res, "etherna");
   if (req.method === "POST" && path.startsWith("/soc/")) return socPost(req, res);
   if (req.method === "POST" && path.includes("/offers")) return json(res, 200, {});
@@ -903,4 +906,101 @@ test("the deploy lock is taken only after ownership is settled, so a non-owner c
     const lock = body.indexOf("beginDeploy(");
     assert.ok(check > 0 && lock > check, `${file}: beginDeploy after the ownership check`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Etherna down (#912 slice 2b): deploys land on WoCo and are listed to move back
+// ---------------------------------------------------------------------------
+
+/** Etherna down and the failover on, with a warm ledger of its own; restored after. */
+async function withEthernaDown(mode: "auto" | "off", body: (ledger: typeof import("../src/lib/etherna/relay-ledger.js")) => Promise<void>): Promise<void> {
+  const ledger = await import("../src/lib/etherna/relay-ledger.js");
+  const soc = await import("../src/lib/swarm/soc-read.js");
+  let t = Date.now();
+  ledger.__resetRelayLedgerForTest({ now: () => t });
+  rmSync(join(dir, ".data", "etherna-relay-ledger"), { recursive: true, force: true });
+  ledger.loadRelayLedger();
+  t += ledger.WARMUP_MS;
+  if (mode === "auto") process.env.ETHERNA_FAILOVER = "auto";
+  ethernaDown = true;
+  try {
+    await body(ledger);
+  } finally {
+    ethernaDown = false;
+    delete process.env.ETHERNA_FAILOVER;
+    soc.__resetEthernaBreaker();
+    ledger.__resetRelayLedgerForTest();
+    await settle();
+  }
+}
+
+/** The addresses of the parts a deploy body carries, as bee addresses them at level 0. */
+const partsOf = (objects: string[]) => objects.map((b64) => bytesTreeChunks(new Uint8Array(Buffer.from(b64, "base64"))).at(-1)!.address);
+
+test("Etherna down: a website deploy lands on WoCo - every part, the manifest and the pointer listed for the owner", async () => {
+  await withEthernaDown("auto", async (ledger) => {
+    const who = await organiser();
+    const siteId = newSiteId();
+    const d = deployBody(who, siteId, ETHERNA_URL);
+    const r = await call(who, `/api/sites/${siteId}/deploy`, d.body);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.deepEqual(bzzUploads, ["bee"], "the root stamped on WoCo");
+    const topic = shared.multisiteFeedTopic(siteId);
+    const manifest = feedManifestFor(PLATFORM_OWNER, topic);
+    assert.equal(r.json.data!.feedManifestHash, manifest);
+    assert.equal(feedHistory(topic).length, 1, "the pointer written, on WoCo");
+    const owner = who.address.toLowerCase();
+    const expected = [...partsOf(d.body.collection.objects), manifest, updateAddress(PLATFORM_OWNER, topicHexOf(topic), 0n)];
+    assert.equal(expected.at(-3), d.root);
+    for (const addr of expected) {
+      const e = ledger.getRelayEntry(addr);
+      assert.equal(e?.status, "failover", addr);
+      assert.equal(e?.parent, owner, addr);
+    }
+    // Still down: a redeploy takes the next index, resolved over both stores.
+    await settle();
+    feeds.__feedWriteTestHooks.clearCache();
+    const again = await deploy(who, siteId, ETHERNA_URL);
+    assert.equal(again.status, 200, JSON.stringify(again.json));
+    assert.equal(feedHistory(topic).length, 2, "index 1 - never the taken 0");
+  });
+});
+
+test("Etherna down: an event page deploys on WoCo, its manifest listed, the browser handed index 0", async () => {
+  await withEthernaDown("auto", async (ledger) => {
+    const who = await organiser();
+    const eventId = eventOf(who);
+    const d = await pageDeployBody(who, eventId, { title: "Friday Gig", imageHash: "ab".repeat(32) });
+    const r = await call(who, "/api/site/deploy", d.body);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.deepEqual(r.json.data!.pageFeed, { owner: PAGE_SIGNER, nextIndex: 0 });
+    const manifest = feedManifestFor(PAGE_SIGNER, shared.eventPageFeedTopic(eventId));
+    assert.equal(r.json.data!.feedManifestHash, manifest);
+    for (const addr of [d.root, manifest]) assert.equal(ledger.getRelayEntry(addr)?.parent, who.address.toLowerCase(), addr);
+  });
+});
+
+test("Etherna down: an update sent to Etherna and not yet on our bee refuses the deploy - typed 503, nothing stored", async () => {
+  await withEthernaDown("auto", async (ledger) => {
+    const who = await organiser();
+    const siteId = newSiteId();
+    const topicHex = topicHexOf(shared.multisiteFeedTopic(siteId));
+    const id = Binary.uint8ArrayToHex(Binary.keccak256(Binary.concatBytes(unhex(topicHex), FeedIndex.fromBigInt(0n).toUint8Array())));
+    ledger.noteEthernaSend(updateAddress(PLATFORM_OWNER, topicHex, 0n), PLATFORM_OWNER, id);
+    const r = await deploy(who, siteId, ETHERNA_URL);
+    assert.equal(r.status, 503, JSON.stringify(r.json));
+    assert.equal(r.json.code, "STORAGE_UNAVAILABLE");
+    assert.deepEqual(bzzUploads, []);
+    assert.equal(ledger.relayLedgerState().failover, 0, "nothing stamped, nothing listed");
+  });
+});
+
+test("Etherna down, failover off: the deploy fails as before - nothing stamped on WoCo", async () => {
+  await withEthernaDown("off", async (ledger) => {
+    const who = await organiser();
+    const r = await deploy(who, newSiteId(), ETHERNA_URL);
+    assert.ok(r.status >= 500, JSON.stringify(r.json));
+    assert.deepEqual(bzzUploads, []);
+    assert.equal(ledger.relayLedgerState().failover, 0);
+  });
 });
