@@ -255,8 +255,8 @@ site.post("/deploy", requireAuth, async (c) => {
     // during the upload. Only for a signing client, owned by the signer pinned at
     // create.
     // Our bee's lookup as the start, then forward over both stores
-    // (`resolveFeedNextIndex`) - never Etherna's lookup, which its gateway refuses
-    // and an outage cannot answer (#912); an update not yet settled refuses.
+    // (`resolveFeedNextIndex`) - never Etherna's lookup, which an outage cannot
+    // answer (#912); an update not yet settled refuses.
     const pageTopic = Topic.fromString(eventPageFeedTopic(eventId));
     const pageOwnerHex = gate.signer.replace(/^0x/, "").toLowerCase();
     let pageIndex: bigint | null = null;

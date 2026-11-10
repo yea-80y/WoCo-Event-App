@@ -747,6 +747,19 @@ describe("deploy pointer index (#912 slice 2b: our bee's lookup, walked over bot
     const t = freshTopic();
     for (let i = 0n; i < 3n; i++) seed(t, i, page(`p${i}`), OTHER_KEY, "etherna");
     assert.equal(await prep(t, OTHER_OWNER), 3n);
+    // Our bee reads behind (Etherna's writes not there yet): walked forward on Etherna (#1113's case).
+    const behind = freshTopic();
+    for (let i = 0n; i < 3n; i++) seed(behind, i, page(`p${i}`), OTHER_KEY, "etherna");
+    net.beeMissesEtherna = true;
+    assert.equal(await prep(behind, OTHER_OWNER), 3n);
+  });
+
+  test("the walk cannot tell (Etherna unreadable, its update not on our bee): refuse, nothing chosen", async () => {
+    const t = freshTopic();
+    seed(t, 0n, page("old pointer"), OTHER_KEY, "etherna");
+    net.beeMissesEtherna = true;
+    net.ethernaChunks500 = true;
+    await assert.rejects(prep(t, OTHER_OWNER), /cannot tell whether index/);
   });
 });
 

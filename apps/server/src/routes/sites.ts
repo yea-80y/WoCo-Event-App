@@ -1021,8 +1021,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const feedOwnerSigner =
       body.clientFeed && published.status === "found" ? published.siteFeedSigner : undefined;
     // Our bee's lookup as the start, then forward over every store the feed lives on
-    // (`feed-index.ts`) - never Etherna's lookup, which its gateway refuses (403
-    // since 2026-10-23) and an outage cannot answer (#912). During an outage the
+    // (`feed-index.ts`) - never Etherna's lookup, which an outage cannot answer
+    // (#912; it refused 403 for hours on 2026-10-23, 500 once on 11-06). During an outage the
     // relay ledger's read rule decides for Etherna, and an update sent there that
     // our bee has not seen yet refuses the deploy rather than fork the feed.
     const feedOwnerHex = (feedOwnerSigner ?? owner.toHex()).replace(/^0x/, "").toLowerCase();
