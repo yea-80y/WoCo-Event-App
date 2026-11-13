@@ -38,7 +38,7 @@
     "axios": "^1.21.0",
     "dotenv": "^18.0.9",
     "tar": "^7.5.22",
-    "typescript": "~5.9.3"
+    "typescript": "~7.0.2"
   },
   "overrides": {
     "@ethersphere/bee-js": {
