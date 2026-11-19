@@ -53,7 +53,7 @@ export interface ListingRow {
 }
 
 const rows = new Map<string, ListingRow>();
-/** Changes made on purpose while FILE could not be understood: what PENDING_FILE holds. */
+/** Changes made on purpose while FILE could not take them (broken, or not there and not yet restored): what PENDING_FILE holds. */
 const pending = new Map<string, ListingRow>();
 let loaded = false;
 /** Why the file on disk could not be understood, or null. While set, nothing is written to it. */
@@ -107,9 +107,16 @@ function readRows(file: string): Map<string, ListingRow> | "missing" | { why: st
  * change made before the first rebuild answered "no" to, and the rebuild then
  * published a directory of that one event.
  *
+ * FILE is only ever written from memory that is whole. Written before the
+ * restore, it would hold a few rows and load at the next start as the whole
+ * listing: a restart before the first rebuild, and that rebuild published a
+ * directory of those rows alone. So until the restore, what people change goes
+ * to PENDING_FILE, whether FILE is broken or simply not there, and a FILE that
+ * was not there is written by the restore, once memory is whole.
+ *
  * What people change while FILE is unreadable must outlive the repair, or a
  * cancelled, taken down or deleted event comes back with the repaired file's
- * older rows. Those changes go to PENDING_FILE. It is read at every start, so
+ * older rows. Those changes stay in PENDING_FILE. It is read at every start, so
  * they survive a restart while FILE is still broken, and once FILE loads again
  * they are applied on top of it and PENDING_FILE is removed. Restored rows are
  * not changes and are not kept there: the repaired file knows better.
@@ -145,16 +152,17 @@ function ensureLoaded(): void {
     rows.set(k, v);
     pending.set(k, v);
   }
-  if (unreadable) return;
+  // Only over a FILE that loaded: on their own these rows are not the whole listing.
+  if (incomplete) return;
   if (!writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state")) return;
   rmSync(PENDING_FILE, { force: true });
   pending.clear();
-  console.warn(`[listing-state] applied ${kept.size} change(s) made while event-listing-state.json was unreadable`);
+  console.warn(`[listing-state] applied ${kept.size} change(s) made while event-listing-state.json could not be used`);
 }
 
-/** Save a change someone made to `eventId`'s row. */
+/** Save a change someone made to `eventId`'s row: in FILE once it can hold the whole listing, beside it until then. */
 function persist(eventId: string): void {
-  if (!unreadable) {
+  if (!unreadable && !incomplete) {
     if (!writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state")) return;
     // Left behind when the rewrite at start-up failed. FILE holds its rows now;
     // applied again at the next start, it would undo changes made since.
@@ -182,8 +190,7 @@ export function needsRestoreFromSnapshot(): boolean {
  * Give each card of the last snapshot a row where there is none (each card WAS
  * a listed event), and count memory as complete again. Never over a row that is
  * there: that is a file row, or an unlist, cancel or delete made since, and the
- * snapshot is older than all of them. Written to FILE when it is usable, so a
- * lost file is rebuilt; never to PENDING_FILE.
+ * snapshot is older than all of them. Restored rows never go to PENDING_FILE.
  */
 export function restoreFromSnapshot(cards: SnapshotCard[]): number {
   ensureLoaded();
@@ -194,7 +201,13 @@ export function restoreFromSnapshot(cards: SnapshotCard[]): number {
     restored++;
   }
   incomplete = false;
-  if (restored > 0 && !unreadable) writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state");
+  // Memory is whole now, so a FILE that was not there is written: the restored
+  // rows and the changes kept beside it meanwhile. A broken FILE stays as it is.
+  if (unreadable || rows.size === 0) return restored;
+  if (writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state") && pending.size > 0) {
+    rmSync(PENDING_FILE, { force: true });
+    pending.clear();
+  }
   return restored;
 }
 
