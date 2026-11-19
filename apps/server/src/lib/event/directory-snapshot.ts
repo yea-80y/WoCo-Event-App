@@ -227,6 +227,8 @@ export function _setSnapshotIoForTest(fake: Partial<SnapshotIo> | null): void {
   _cache = null;
   _neverWrittenAt = null;
   _failedRebuilds = 0;
+  _rebuiltHere = false;
+  _bootSettled = false;
 }
 
 /** Tests only: pin the clock (null restores it). */
@@ -332,6 +334,10 @@ function fingerprint(cards: SnapshotCard[], resolution: SnapshotResolutionEntry[
 let _rebuildQueue: Promise<void> = Promise.resolve();
 /** Rebuilds that failed in a row. */
 let _failedRebuilds = 0;
+/** This process has completed a rebuild, so the snapshot it holds is one it built or checked in full. */
+let _rebuiltHere = false;
+/** Boot has finished trying to read or create the directory. */
+let _bootSettled = false;
 
 /** Serialise rebuilds (the pointer feed is single-writer). One that fails rejects
  *  its own caller and never the rebuild queued behind it. */
@@ -356,10 +362,15 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
   }
   const base = read.kind === "found" ? read.snapshot : null;
   const neverWritten = read.kind === "never-written";
-  // With no snapshot to build on (a new feed generation, or an unreadable one)
-  // an incremental rebuild would publish a table holding only this trigger's
-  // registrations and leave the rest out until the next reconcile.
-  const full = opts.full || !base;
+  // Full until this process has completed a rebuild of its own, because until
+  // then it has nothing sound to build on incrementally:
+  //  - no snapshot (a new feed generation, or an unreadable one): the table
+  //    would hold only this trigger's registrations;
+  //  - a snapshot it only read. Bee's lookup is a lower bound, so after a restart
+  //    the one read can be the update before the newest, and building on it
+  //    would drop what the newest added. A full rebuild takes nothing from the
+  //    base that the server's own records do not hold.
+  const full = opts.full || !_rebuiltHere;
 
   // Data-loss self-heal: a lost/empty .data overlay would make every event read as
   // unlisted, and the next full reconcile would publish an EMPTY snapshot — wiping
@@ -432,6 +443,7 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
   // independent) the meaningful payload — cards + resolution; builtAt always differs.
   if (base && fingerprint(base.cards, base.resolution) === fingerprint(cards, resolution)) {
     _cache = { at: now(), snapshot: base };
+    _rebuiltHere = true;
     return;
   }
 
@@ -459,6 +471,7 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
   // walks forward from index 1.
   await io.writePointer(encodeJsonFeed(pointer), neverWritten);
   _cache = { at: now(), snapshot };
+  _rebuiltHere = true;
   console.log(`[snapshot] rebuilt: ${cards.length} cards, ${resolution.length} registrations, ref=${ref.slice(0, 12)}…`);
 }
 
@@ -516,10 +529,10 @@ export async function startDirectoryAtBoot(
     const read = await readBase();
     if (read.kind === "unreadable") {
       console.warn(`[startup] event directory: no readable snapshot (${read.why})`);
-      return;
+    } else {
+      if (read.kind === "never-written") await rebuildSnapshot({ full: true, knownNeverWritten: true });
+      console.log(`[startup] event directory ready (${_cache?.snapshot.cards.length ?? 0} entries)`);
     }
-    if (read.kind === "never-written") await rebuildSnapshot({ full: true, knownNeverWritten: true });
-    console.log(`[startup] event directory ready (${_cache?.snapshot.cards.length ?? 0} entries)`);
   } catch (err) {
     if (isStorageBusy(err) && retriesLeft > 0) {
       console.warn(`[startup] event directory: storage busy, trying again in ${Math.round(STORAGE_BUSY_RETRY_MS / 1000)}s`);
@@ -528,17 +541,22 @@ export async function startDirectoryAtBoot(
     }
     console.warn("[startup] event directory could not be started:", err);
   }
+  _bootSettled = true;
 }
 
 /** Rebuilds failing in a row before the directory counts as stuck: one or two are a bee hiccup. */
 const STUCK_AFTER_FAILED_REBUILDS = 3;
 
 /**
- * `/api/health` section, red when this process does not publish or its rebuilds
- * keep failing. Not publishing is right for a dev server and an alarm in
- * production: `.env` there is the master copy, so one line would switch the
- * directory off with only a log line to show for it. Counts and booleans only:
- * the endpoint is public.
+ * `/api/health` section. Red when:
+ *  - this process does not publish. Right for a dev server, an alarm in
+ *    production: `.env` there is the master copy, so one line would switch the
+ *    directory off with only a log line to show for it;
+ *  - boot is over and no snapshot is held (`cards` null): the directory is
+ *    serving nothing, because it could be neither read nor created. Green again
+ *    as soon as a read or a rebuild succeeds;
+ *  - rebuilds keep failing: new and edited events are not reaching it.
+ * Counts and booleans only: the endpoint is public.
  */
 export function directoryHealth(): {
   ok: boolean;
@@ -548,8 +566,9 @@ export function directoryHealth(): {
   cards: number | null;
 } {
   const publishing = directoryPublishingEnabled();
+  const servingNothing = _bootSettled && _cache === null;
   return {
-    ok: publishing && _failedRebuilds < STUCK_AFTER_FAILED_REBUILDS,
+    ok: publishing && !servingNothing && _failedRebuilds < STUCK_AFTER_FAILED_REBUILDS,
     publishing,
     failedRebuilds: _failedRebuilds,
     builtAt: _cache?.snapshot.builtAt ?? null,

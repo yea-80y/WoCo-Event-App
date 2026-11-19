@@ -71,6 +71,7 @@ import { startDomainPoller } from "./lib/domains/poller.js";
 import { onchainRegistryHealth } from "./lib/event/onchain-registry.js";
 import { issuerBindingHealth } from "./lib/issuer/binding.js";
 import { directoryHealth, startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
+import { listingStateHealth } from "./lib/event/listing-state.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
@@ -500,8 +501,13 @@ function healthReport() {
     // The public events directory. `publishing` false is an alarm here: only a
     // dev server runs with DIRECTORY_PUBLISH=off, and a production one that does
     // has stopped updating the directory. `failedRebuilds` at 3 or more in a row
-    // is one too: new and edited events are not reaching it.
+    // is one too: new and edited events are not reaching it. So is `cards` null
+    // once boot is over: nothing is being served.
     directory: directoryHealth(),
+    // The listing overlay (event-listing-state.json): which events WoCo lists.
+    // `unreadable` is an alarm: the file is left as it is for repair, changes are
+    // held in memory only and are lost at the next restart.
+    listingState: listingStateHealth(),
     // Each event's feed signer + verified creator, pinned at create (#670): the
     // money path's only carrier for an UNLISTED event. `unreadable` true, or
     // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no

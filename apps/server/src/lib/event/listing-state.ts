@@ -53,21 +53,64 @@ export interface ListingRow {
 
 const rows = new Map<string, ListingRow>();
 let loaded = false;
+/** Why the file on disk could not be understood, or null. While set, nothing is written to it. */
+let unreadable: string | null = null;
 
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  let raw: string;
   try {
-    const obj = JSON.parse(readFileSync(FILE, "utf-8")) as Record<string, ListingRow>;
-    for (const [k, v] of Object.entries(obj)) rows.set(k, v);
-    console.log(`[listing-state] Loaded ${rows.size} event listing rows`);
-  } catch {
+    raw = readFileSync(FILE, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
     // No file yet — default-exclude means an empty overlay is a valid cold start.
+    if (code === "ENOENT") return;
+    return refuseFile(`exists but could not be read (${code ?? "unknown error"})`);
   }
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return refuseFile("is not valid JSON");
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return refuseFile("is not a JSON object");
+  for (const [k, v] of Object.entries(obj as Record<string, ListingRow>)) rows.set(k, v);
+  console.log(`[listing-state] Loaded ${rows.size} event listing rows`);
+}
+
+/**
+ * A file that is there and cannot be understood is not an empty overlay. Read
+ * as one, the first listing change (or the builder's reseed) wrote a new file
+ * over it, and with it went every unlisted and deleted event's row, which no
+ * snapshot holds. So it is left exactly as it is for repair. The server carries
+ * on from memory: listed events come back through the builder's reseed, and
+ * changes made meanwhile are lost at the restart that follows the repair.
+ */
+function refuseFile(why: string): void {
+  unreadable = why;
+  console.error(
+    `[listing-state] ALARM: event-listing-state.json ${why} - left as it is for repair. Listing changes are ` +
+      "held in memory only and are lost at the next restart (/api/health listingState)",
+  );
 }
 
 function persist(): void {
+  if (unreadable) return;
   writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state");
+}
+
+/** `/api/health` section. Counts only: this endpoint is public. */
+export function listingStateHealth(): { ok: boolean; unreadable: boolean; rows: number } {
+  ensureLoaded();
+  return { ok: unreadable === null, unreadable: unreadable !== null, rows: rows.size };
+}
+
+/** Tests only: forget memory so the next call reloads from disk. */
+export function __resetListingStateForTest(): void {
+  rows.clear();
+  loaded = false;
+  unreadable = null;
 }
 
 /** Set the global-directory listing flag. `seed` (when given) refreshes the card
