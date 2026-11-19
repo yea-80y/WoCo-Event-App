@@ -609,7 +609,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     broadcast that died" path AND the /api/health alarm that says one did)
   event-listing-state.json (#37 global-directory overlay) — if lost, the builder self-heals by
   reseeding from the last snapshot (directory-snapshot.ts) rather than publishing an empty
-  directory, but that only recovers events already in a snapshot
+  directory, but that only recovers events already in a snapshot. Present-but-unreadable is
+  never overwritten: changes are held in memory until the restart after the repair,
+  `/api/health` `listingState` alarms. `directory` alarms when the public list is not being
+  rebuilt (`DIRECTORY_PUBLISH=off` outside dev), is serving nothing, or 3 rebuilds failed
   ticket-sales.json (#645 part C — sessionId → payment intent + minted slots + what we
     refunded ourselves. Refunds and chargebacks void tickets THROUGH it. Losing it fails OPEN:
     every refunded ticket reads valid at the door again. The money side does not depend on

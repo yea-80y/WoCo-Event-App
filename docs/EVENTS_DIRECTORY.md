@@ -91,8 +91,17 @@ missing blob.
 - **Dev never publishes.** A rebuild publishes what this server's overlay lists,
   under the platform key. Both dev start commands set `DIRECTORY_PUBLISH=off`:
   the process reads the directory and never rebuilds it.
+- **A process's first rebuild is full.** Until it has rebuilt once, the snapshot
+  it holds was only read, and bee's lookup can return the update before the
+  newest. Building on that incrementally would drop what the newest added.
 - **Health.** `/api/health` `directory` is red when `publishing` is false (an
-  alarm anywhere but a dev server) or three rebuilds have failed in a row.
+  alarm anywhere but a dev server), when boot is over and no snapshot is held
+  (nothing is being served), or when three rebuilds have failed in a row.
+- **An unreadable listing file is never overwritten.** `event-listing-state.json`
+  present but not readable as rows is left for repair; the server carries on
+  from memory (listed events return through the reseed) and `/api/health`
+  `listingState` is red. Changes made meanwhile are lost at the restart after
+  the repair. A file that is not there is still an empty overlay.
 
 ## Reads
 
