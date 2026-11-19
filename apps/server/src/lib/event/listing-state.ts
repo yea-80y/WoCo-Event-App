@@ -60,7 +60,9 @@ let loaded = false;
 let unreadable: string | null = null;
 /** PENDING_FILE is there and cannot be understood: it is not applied and not written either. */
 let pendingUnreadable = false;
-/** FILE did not load (not there, or not understood), so memory may lack rows it held. */
+/** PENDING_FILE is on disk and understood: FILE, as it is on disk, is not known to hold the whole listing. */
+let sideFile = false;
+/** Memory may lack rows of listed events: FILE did not load, or it loaded beside PENDING_FILE. */
 let incomplete = false;
 
 function isRow(v: unknown): v is ListingRow {
@@ -117,16 +119,23 @@ function readRows(file: string): Map<string, ListingRow> | "missing" | { why: st
  * What people change while FILE is unreadable must outlive the repair, or a
  * cancelled, taken down or deleted event comes back with the repaired file's
  * older rows. Those changes stay in PENDING_FILE. It is read at every start, so
- * they survive a restart while FILE is still broken, and once FILE loads again
- * they are applied on top of it and PENDING_FILE is removed. Restored rows are
- * not changes and are not kept there: the repaired file knows better.
+ * they survive a restart while FILE is still broken. Restored rows are not
+ * changes and are not kept there: the repaired file knows better.
+ *
+ * A repaired FILE is somebody's older copy. Events listed after that copy was
+ * taken have no row in it, and only the last snapshot knows them: read as the
+ * whole listing, it dropped them from the next directory. So a broken FILE
+ * always leaves PENDING_FILE behind, empty when nothing was changed, and a FILE
+ * that loads beside PENDING_FILE is incomplete like any other: memory is FILE,
+ * then those changes on top, and nothing is written until the builder has
+ * restored the rows it lacks. Then FILE is written whole and PENDING_FILE goes.
+ * Removing PENDING_FILE by hand says "take FILE exactly as it is".
  */
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
 
   const main = readRows(FILE);
-  incomplete = !(main instanceof Map);
   if (main instanceof Map) {
     for (const [k, v] of main) rows.set(k, v);
     console.log(`[listing-state] Loaded ${rows.size} event listing rows`);
@@ -139,47 +148,59 @@ function ensureLoaded(): void {
   }
 
   const kept = readRows(PENDING_FILE);
-  if (kept === "missing") return;
-  if (!(kept instanceof Map)) {
+  if (kept instanceof Map) {
+    sideFile = true;
+    for (const [k, v] of kept) {
+      rows.set(k, v);
+      pending.set(k, v);
+    }
+    if (main instanceof Map) {
+      console.warn(
+        `[listing-state] event-listing-state.json loaded beside its side file (${kept.size} change(s) applied over it): ` +
+          "the builder restores what it lacks from the last snapshot before it is written again",
+      );
+    }
+  } else if (kept !== "missing") {
     pendingUnreadable = true;
     console.error(
       `[listing-state] ALARM: event-listing-state.pending.json ${kept.why} - the changes it holds are NOT applied ` +
         "and it is left as it is (/api/health listingState)",
     );
-    return;
+  } else if (unreadable) {
+    writeSideFile();
   }
-  for (const [k, v] of kept) {
-    rows.set(k, v);
-    pending.set(k, v);
-  }
-  // Only over a FILE that loaded: on their own these rows are not the whole listing.
-  if (incomplete) return;
-  if (!writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state")) return;
+  incomplete = !(main instanceof Map) || sideFile;
+}
+
+function writeSideFile(): void {
+  if (writeJsonAtomic(PENDING_FILE, Object.fromEntries(pending), "listing-state-pending")) sideFile = true;
+}
+
+/** FILE has just been written from memory that is whole: PENDING_FILE has nothing left to say. */
+function dropSideFile(): void {
+  if (!sideFile) return;
   rmSync(PENDING_FILE, { force: true });
   pending.clear();
-  console.warn(`[listing-state] applied ${kept.size} change(s) made while event-listing-state.json could not be used`);
+  sideFile = false;
 }
 
 /** Save a change someone made to `eventId`'s row: in FILE once it can hold the whole listing, beside it until then. */
 function persist(eventId: string): void {
   if (!unreadable && !incomplete) {
-    if (!writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state")) return;
-    // Left behind when the rewrite at start-up failed. FILE holds its rows now;
-    // applied again at the next start, it would undo changes made since.
-    if (pending.size > 0) {
-      rmSync(PENDING_FILE, { force: true });
-      pending.clear();
-    }
+    // The side file is still there when the restore's own write failed. Applied
+    // again at the next start, it would undo changes made since.
+    if (writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state")) dropSideFile();
     return;
   }
   if (pendingUnreadable) return;
   pending.set(eventId, rows.get(eventId)!);
-  writeJsonAtomic(PENDING_FILE, Object.fromEntries(pending), "listing-state-pending");
+  writeSideFile();
 }
 
 /**
- * Whether memory may lack rows the file held: it did not load. Until the builder
- * has restored from the last snapshot, "no row" does not mean "not listed".
+ * Whether memory may lack rows of listed events: FILE did not load, or it was
+ * put back beside its side file. Until the builder has restored from the last
+ * snapshot, "no row" does not mean "not listed".
  */
 export function needsRestoreFromSnapshot(): boolean {
   ensureLoaded();
@@ -201,13 +222,11 @@ export function restoreFromSnapshot(cards: SnapshotCard[]): number {
     restored++;
   }
   incomplete = false;
-  // Memory is whole now, so a FILE that was not there is written: the restored
-  // rows and the changes kept beside it meanwhile. A broken FILE stays as it is.
+  // Memory is whole now, so FILE is written: the restored rows and the changes
+  // kept beside it meanwhile. A broken FILE stays as it is, and its side file
+  // with it, for the copy an operator puts back.
   if (unreadable || rows.size === 0) return restored;
-  if (writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state") && pending.size > 0) {
-    rmSync(PENDING_FILE, { force: true });
-    pending.clear();
-  }
+  if (writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state")) dropSideFile();
   return restored;
 }
 
@@ -229,6 +248,7 @@ export function __resetListingStateForTest(): void {
   loaded = false;
   unreadable = null;
   pendingUnreadable = false;
+  sideFile = false;
   incomplete = false;
 }
 
