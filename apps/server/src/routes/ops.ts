@@ -78,7 +78,7 @@ import { getOrderRecord, ledgerReadable, ordersForEmailHash, type OrderRecord } 
 import { hashEmail } from "../lib/event/claim-service.js";
 import { heldOrdersHealth, paidUnstored } from "../lib/attendee-batch/held-orders.js";
 import { MAX_LIMIT as RETENTION_MAX_LIMIT, previewOrderRetention, runOrderRetention } from "../lib/attendee-batch/retention.js";
-import { getListingSeed, isListedForSnapshot, listedEventIds, setListed } from "../lib/event/listing-state.js";
+import { getListingSeed, isListedForSnapshot, listedEventIds, needsRestoreFromSnapshot, setListed } from "../lib/event/listing-state.js";
 import { directoryPublishingEnabled, rebuildSnapshotFull, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 
 const ops = new Hono<AppEnv>();
@@ -659,10 +659,14 @@ export function _setDirectoryRebuildForTest(fake: typeof directoryRebuild): void
   directoryRebuild = fake;
 }
 
-/** GET /api/ops/directory — every event the public directory lists, by its stored card title. */
+/**
+ * GET /api/ops/directory — every event the public directory lists, by its stored card title.
+ * `complete` false: the listing file did not load and the builder has not restored it yet, so
+ * events the public directory still shows can be missing here.
+ */
 ops.get("/directory", (c) => {
   const listed = listedEventIds().map((eventId) => ({ eventId, title: getListingSeed(eventId)?.title ?? null }));
-  return c.json({ ok: true, data: { count: listed.length, listed } });
+  return c.json({ ok: true, data: { count: listed.length, listed, complete: !needsRestoreFromSnapshot() } });
 });
 
 /**
@@ -670,19 +674,27 @@ ops.get("/directory", (c) => {
  *
  * The platform takes an event out of the public directory. Same effect as the
  * organiser's own unlist: the listing flag is cleared and the event can be listed
- * again. Emptying the listing file instead does not work - the next rebuild
- * re-seeds every card from the last snapshot.
+ * again. Never by editing the listing file: an empty one unlists every event at
+ * the next rebuild.
+ *
+ * While the listing is incomplete (its file did not load and the builder has not
+ * restored it yet) "no row" is not "not listed": the event can be in the public
+ * directory, and the restore would give it a listed row. The takedown is
+ * recorded all the same, as a row the restore never writes over, and the answer
+ * says so (`recorded`), since nobody can say yet whether it was listed.
  */
 ops.post("/events/:id/unlist", async (c) => {
   const eventId = c.req.param("id");
   const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
   const by = (body?.by || "").trim().slice(0, 100);
   if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
-  if (!isListedForSnapshot(eventId)) return c.json({ ok: true, data: { eventId, wasListed: false } });
+  const wasListed = isListedForSnapshot(eventId);
+  const unknown = !wasListed && needsRestoreFromSnapshot();
+  if (!wasListed && !unknown) return c.json({ ok: true, data: { eventId, wasListed: false } });
   setListed(eventId, false);
   directoryRebuild.schedule(eventId);
-  console.warn(`[ops] event ${eventId} unlisted by ${by}`);
-  return c.json({ ok: true, data: { eventId, wasListed: true } });
+  console.warn(`[ops] event ${eventId} unlisted by ${by}${unknown ? " (listing incomplete: recorded ahead of the restore)" : ""}`);
+  return c.json({ ok: true, data: { eventId, wasListed, ...(unknown ? { recorded: true } : {}) } });
 });
 
 /** POST /api/ops/directory/rebuild   { by } — a full reconcile now, instead of waiting for the 30-minute timer. */

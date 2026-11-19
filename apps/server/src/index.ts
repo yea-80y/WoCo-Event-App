@@ -506,9 +506,10 @@ function healthReport() {
     directory: directoryHealth(),
     // The listing overlay (event-listing-state.json): which events WoCo lists.
     // `unreadable` is an alarm: the file is left as it is for repair, and what
-    // people change meanwhile (`pending`) waits in a side file until it loads again.
-    // `pending` is also above 0, briefly and with no alarm, for a file that is not
-    // there: its changes wait the same way until the builder has restored it.
+    // people change meanwhile (`pending`) waits in a side file. `pending` above 0
+    // with no alarm: the file is missing, or was put back, and its changes wait
+    // the same way until the builder's next rebuild has restored it (which a
+    // server that never rebuilds, or cannot read the last snapshot, never does).
     listingState: listingStateHealth(),
     // Each event's feed signer + verified creator, pinned at create (#670): the
     // money path's only carrier for an UNLISTED event. `unreadable` true, or
@@ -1128,7 +1129,7 @@ void logSponsorReadiness();
 // then serves from, and the first snapshot of a feed generation nobody has
 // written. Every 30 minutes: a full reconcile, which heals snapshot drift (edits,
 // expired events, a lost incremental trigger) from the server's registrations
-// and writes only when something changed. Under DIRECTORY_PUBLISH=off (dev)
+// and, after this process's first one, writes only when something changed. Under DIRECTORY_PUBLISH=off (dev)
 // neither runs: the process reads the directory and never rebuilds it.
 startSnapshotMaintenance();
 // Organiser takings sit on a manual payout schedule and are released after each
