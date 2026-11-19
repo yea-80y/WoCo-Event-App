@@ -161,4 +161,16 @@ describe("POST /directory/rebuild", () => {
     assert.equal(res.status, 400);
     assert.equal(fullRuns, 0);
   });
+
+  test("a server that does not rebuild the directory says so, never \"rebuilt\"", async () => {
+    process.env.DIRECTORY_PUBLISH = "off";
+    try {
+      const res = await post("/directory/rebuild", { by: "test" });
+      assert.equal(res.status, 409);
+      assert.match((await res.json()).error, /DIRECTORY_PUBLISH=off/);
+      assert.equal(fullRuns, 0);
+    } finally {
+      delete process.env.DIRECTORY_PUBLISH;
+    }
+  });
 });
