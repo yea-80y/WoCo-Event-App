@@ -49,6 +49,8 @@ test("(c) lost overlay + prior snapshot ⇒ the restore populates rows (not an e
   assert.equal(ls.restoreFromSnapshot(base), 2); // would otherwise publish EMPTY, wiping the directory
   assert.equal(ls.needsRestoreFromSnapshot(), false);
   for (const c of base) assert.equal(ls.isExplicitlyListed(c.eventId), true, `${c.eventId} kept`);
+  // A self-hosted event resolves from nowhere else: without the seed the next full rebuild drops it.
+  assert.deepEqual(ls.getListingSeed("s2"), base[1], "the restored row keeps the card as its seed");
 });
 
 test("(a) federated /list row (seed+apiUrl, no on-chain registration) IS surfaced", () => {

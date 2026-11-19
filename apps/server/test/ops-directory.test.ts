@@ -12,7 +12,7 @@
 
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SnapshotCard } from "@woco/shared";
@@ -31,6 +31,10 @@ let fullFails: Error | null = null;
 
 before(async () => {
   process.chdir(mkdtempSync(join(tmpdir(), "woco-ops-directory-")));
+  // A server whose listing file loaded. The rebuild is replaced below, so nothing
+  // here would ever restore a missing one, and changes would wait beside it.
+  mkdirSync(join(process.cwd(), ".data"));
+  writeFileSync(join(process.cwd(), ".data", "event-listing-state.json"), "{}");
   ops = await import("../src/routes/ops.js");
   ls = await import("../src/lib/event/listing-state.js");
   ops._setDirectoryRebuildForTest({

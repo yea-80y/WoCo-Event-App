@@ -13,7 +13,11 @@
  *  - memory is INCOMPLETE until the builder has restored the last snapshot's
  *    events, whatever rows it already holds. Asking "are there no rows?" was
  *    answered "no" by one change (or by the side file), and the next rebuild
- *    then published a directory of that one event.
+ *    then published a directory of that one event;
+ *  - the file on disk is never a partial one. A file that is not there is
+ *    incomplete too, and a change written to it before the restore loaded as
+ *    the whole listing after a restart. Until the restore, changes go to the
+ *    side file, and the restore writes the file.
  */
 
 import { test, before, beforeEach } from "node:test";
@@ -66,15 +70,19 @@ const pendingIds = () => Object.keys(JSON.parse(readFileSync(PENDING, "utf-8")))
 
 /**
  * One rebuild by the real directory builder, against a last snapshot that lists
- * `listed`. Every listed event resolves, nothing is registered. Returns the ids
- * the rebuild published, or null when it found nothing to change.
+ * `listed`, or one bee cannot read ("unreadable"). Every listed event resolves,
+ * nothing is registered. Returns the ids the rebuild published, or null when it
+ * found nothing to change.
  */
-async function rebuildAgainst(listed: string[]): Promise<string[] | null> {
+async function rebuildAgainst(listed: string[] | "unreadable"): Promise<string[] | null> {
   const REF = "ab".repeat(32);
-  const last: EventsSnapshot = { v: 1, builtAt: AT, registrationCount: 0, cards: listed.map((id) => card(id)), resolution: [] };
+  const cards = listed === "unreadable" ? [] : listed.map((id) => card(id));
+  const last: EventsSnapshot = { v: 1, builtAt: AT, registrationCount: 0, cards, resolution: [] };
   let published: string[] | null = null;
   snap._setSnapshotIoForTest({
-    readPointer: async () => ({ status: "ok", data: feeds.encodeJsonFeed({ v: 1, snapshotRef: REF, builtAt: AT, count: listed.length }) }),
+    readPointer: async () => listed === "unreadable"
+      ? { status: "error", error: new Error("bee could not read the feed") }
+      : { status: "ok", data: feeds.encodeJsonFeed({ v: 1, snapshotRef: REF, builtAt: AT, count: listed.length }) },
     readBlob: async () => JSON.stringify(last),
     writeBlob: async (json) => {
       published = (JSON.parse(json) as EventsSnapshot).cards.map((c) => c.eventId).sort();
@@ -188,7 +196,42 @@ test("the builder: a lost file is restored even when a change came before the fi
   const published = await rebuildAgainst(["s1", "s2"]);
   assert.deepEqual(published, ["created", "s1", "s2"]);
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(FILE, "utf-8"))).sort(), ["created", "s1", "s2"], "and the lost file is rebuilt");
-  assert.equal(existsSync(PENDING), false, "the side file is only for a file that is there and broken");
+  assert.equal(existsSync(PENDING), false, "the change waited beside the file and is in it now");
+  assert.equal(ls.listingStateHealth().pending, 0);
+  restart();
+  assert.equal(ls.needsRestoreFromSnapshot(), false, "the file on disk is the whole listing");
+});
+
+test("the builder: a lost file, a change, then a restart before the first rebuild, does not shrink the directory", async () => {
+  // The change used to be written straight to a new file: one row, read after the restart as the whole listing.
+  ls.setListed("created", true, card("created"), { explicitlyListed: true });
+  restart();
+  assert.equal(ls.needsRestoreFromSnapshot(), true, "one change is not the whole listing, across a restart too");
+  assert.deepEqual(await rebuildAgainst(["s1", "s2"]), ["created", "s1", "s2"]);
+});
+
+test("the builder: a broken file removed instead of repaired, then two restarts, does not shrink the directory", async () => {
+  writeFileSync(FILE, BROKEN);
+  ls.setListed("s2", false); // taken down while it was broken
+  rmSync(FILE);              // the operator has no good copy and removes it
+  restart();
+  assert.equal(ls.needsRestoreFromSnapshot(), true);
+  assert.equal(existsSync(FILE), false, "the takedown alone is not written as the listing");
+  assert.deepEqual(pendingIds(), ["s2"]);
+  restart();
+  assert.equal(ls.needsRestoreFromSnapshot(), true, "and a second start still knows the listing is not whole");
+  assert.deepEqual(await rebuildAgainst(["s1", "s2", "s3"]), ["s1", "s3"], "every other event is kept and the takedown holds");
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(FILE, "utf-8"))).sort(), ["s1", "s2", "s3"]);
+  assert.equal(existsSync(PENDING), false);
+});
+
+test("the builder: a lost file and a snapshot bee cannot read stay refused across a restart, whatever was changed", async () => {
+  ls.setListed("created", true, card("created"), { explicitlyListed: true });
+  await assert.rejects(rebuildAgainst("unreadable"), /listing overlay is incomplete/);
+  restart();
+  await assert.rejects(rebuildAgainst("unreadable"), /listing overlay is incomplete/, "not a directory of the one event that changed");
+  assert.equal(existsSync(FILE), false);
+  assert.equal(ls.isExplicitlyListed("created"), true, "the change itself is kept");
 });
 
 test("after the repair, a restart applies those changes over the repaired file and removes the side file", () => {
@@ -259,13 +302,45 @@ test("a side file that cannot be understood is not applied, not overwritten, and
   assert.equal(readFileSync(PENDING, "utf-8"), BROKEN);
 });
 
-test("a file that is not there has no rows, needs the restore, and the first change writes it", () => {
+test("a file that is not there has no rows and needs the restore; a change waits beside it until then", () => {
   assert.equal(existsSync(FILE), false);
   assert.deepEqual(ls.listingStateHealth(), { ok: true, unreadable: false, rows: 0, pending: 0 });
   assert.equal(ls.needsRestoreFromSnapshot(), true, "it may have been lost: only the last snapshot can say what was listed");
+
   ls.setListed("e1", true, card("e1"));
+  assert.equal(existsSync(FILE), false, "one row is not the whole listing, and a file holding it would load as whole");
+  assert.deepEqual(pendingIds(), ["e1"]);
+  assert.deepEqual(ls.listingStateHealth(), { ok: true, unreadable: false, rows: 1, pending: 1 });
+
+  restart();
+  assert.equal(ls.isListedForSnapshot("e1"), true, "the change is kept across the restart");
+  assert.equal(existsSync(FILE), false, "and the start does not write the file from the side file");
+  assert.equal(ls.needsRestoreFromSnapshot(), true);
+
+  assert.equal(ls.restoreFromSnapshot([card("s1")]), 1);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(FILE, "utf-8"))).sort(), ["e1", "s1"], "written once memory is whole");
+  assert.equal(existsSync(PENDING), false);
+  assert.deepEqual(ls.listingStateHealth(), { ok: true, unreadable: false, rows: 2, pending: 0 });
+
+  ls.setListed("e2", true, card("e2"));
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(FILE, "utf-8"))).sort(), ["e1", "e2", "s1"], "and changes go to the file from then on");
+  assert.equal(existsSync(PENDING), false);
+});
+
+test("a file that is not there, with a change and nothing to restore, is still written by the restore", () => {
+  // A new server: no snapshot has ever listed anything.
+  ls.setListed("e1", true, card("e1"));
+  assert.equal(ls.restoreFromSnapshot([]), 0);
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(FILE, "utf-8"))), ["e1"]);
-  assert.equal(ls.needsRestoreFromSnapshot(), true, "one row is not the whole listing");
+  assert.equal(existsSync(PENDING), false);
+  restart();
+  assert.equal(ls.needsRestoreFromSnapshot(), false);
+  assert.equal(ls.isListedForSnapshot("e1"), true);
+});
+
+test("a file that is not there, with nothing changed and nothing to restore, is not written", () => {
+  assert.equal(ls.restoreFromSnapshot([]), 0);
+  assert.equal(existsSync(FILE), false);
   assert.equal(existsSync(PENDING), false);
 });
 
