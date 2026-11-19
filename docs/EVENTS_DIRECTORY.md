@@ -105,12 +105,19 @@ missing blob.
   is none, and never writes over a row that is there (an unlist, cancel or
   delete). A lost file is rebuilt that way. An empty file (`{}`) is whole:
   nothing is listed.
+- **The listing file on disk is never a partial one.** A file holding a few
+  rows loads as the whole listing at the next start. So until the builder has
+  restored, what people change is kept in `event-listing-state.pending.json`,
+  whether the file is missing or unreadable. The restore writes a missing file,
+  those changes included, and removes the pending file.
 - **An unreadable listing file is never overwritten.** It is left for repair
   and `/api/health` `listingState` is red. What people change meanwhile (a
   cancel, takedown, unlist, delete, a new event) is kept in
   `event-listing-state.pending.json`, survives restarts, and is applied over the
   file once it loads again; restored rows are not kept there. Repair = put a
-  good file back, keep the pending file, restart.
+  good file back, keep the pending file, restart. With no good copy, remove the
+  file and keep the pending file: the listing is restored from the last
+  snapshot, with those changes on top.
 
 ## Reads
 

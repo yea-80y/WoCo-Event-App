@@ -611,9 +611,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   incomplete, and the builder restores a row for each event of the last snapshot that has none
   (directory-snapshot.ts) rather than publishing a directory without them; that only recovers
   events already in a snapshot (an empty `{}` file is whole: nothing listed). Present-but-unreadable
-  is never overwritten: changes made meanwhile go to event-listing-state.pending.json (keep it:
-  it is applied over the repaired file at the next start, then removed), `/api/health`
-  `listingState` alarms. `directory` alarms when the public list is not being rebuilt
+  is never overwritten, and a missing one is written only by that restore (never a partial file):
+  changes made meanwhile go to event-listing-state.pending.json (keep it: it is applied over the
+  repaired or restored file, then removed), `/api/health` `listingState` alarms. `directory` alarms when the public list is not being rebuilt
   (`DIRECTORY_PUBLISH=off` outside dev), is serving nothing, or 3 rebuilds failed
   ticket-sales.json (#645 part C — sessionId → payment intent + minted slots + what we
     refunded ourselves. Refunds and chargebacks void tickets THROUGH it. Losing it fails OPEN:
