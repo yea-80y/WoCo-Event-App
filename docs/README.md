@@ -26,6 +26,7 @@ matters**. This index sorts every tracked document by how much you should trust 
 | [SITE_BUILDER.md](./SITE_BUILDER.md) | How organiser websites are built, published and addressed |
 | [SUBENS_IDENTITY.md](./SUBENS_IDENTITY.md) | `*.woco.eth` names, and how mainnet ENS resolves to an L2 registry |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Setup, tests, CI gates, conventions, traps |
+| [LICENSING.md](./LICENSING.md) | Which part is MIT and which is FSL-1.1-MIT, what each allows, and how to ask for more |
 
 ### How this folder is organised
 
