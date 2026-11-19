@@ -81,16 +81,18 @@ missing blob.
   create (an event from before that record existed has none in a table built
   from nothing). An event outside the table counts as unregistered: it shows only
   when listed deliberately. Its record stays in `.data/onchain-events.json`.
-- **At boot.** One full reconcile: its strict read warms the cache, and on a feed
-  nobody has written it publishes the first snapshot. Storage busy is retried
-  twice, 65 s apart. A reconcile that changes nothing writes nothing.
+- **At boot.** One strict read of the pointer feed. Found: the display serves
+  it and nothing is rebuilt (a restart is the worst moment to resolve every
+  event again). Never written: the first snapshot is published. Storage busy:
+  retried twice, 65 s apart. Unreadable otherwise: left to the next reconcile.
 - **A new generation.** Raising `EVENTS_SNAPSHOT_GENERATION` starts the pointer
   feed again at index 0. Nothing is carried over and the old feed is never read.
-  The boot reconcile writes it; `POST /api/ops/directory/rebuild` is the manual
-  fallback.
+  Boot writes it; `POST /api/ops/directory/rebuild` is the manual fallback.
 - **Dev never publishes.** A rebuild publishes what this server's overlay lists,
   under the platform key. Both dev start commands set `DIRECTORY_PUBLISH=off`:
   the process reads the directory and never rebuilds it.
+- **Health.** `/api/health` `directory` is red when `publishing` is false (an
+  alarm anywhere but a dev server) or three rebuilds have failed in a row.
 
 ## Reads
 
