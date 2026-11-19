@@ -2,7 +2,8 @@
   import NoticeConfirmPrompt from '../privacy/NoticeConfirmPrompt.svelte';
   import { ownNoticeStatus, type OwnNoticeStatus } from '../../legal/own-notice-status.js';
   import type { Site, SiteDeploySubEns, SiteEventEntry, TemplateId } from "@woco/shared";
-  import { multisiteFeedTopic, newSiteFromTemplate, siteConfigTopic, subEnsName, FEATURES } from "@woco/shared";
+  import { multisiteFeedTopic, newSiteFromTemplate, siteConfigTopic, siteEventsIndexTopic, subEnsName, FEATURES } from "@woco/shared";
+  import { siteIdForSave } from "./owned-site-id.js";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import { onDestroy, onMount } from 'svelte';
   import { publishSite, deploySite, loadSite, getSiteEvents, uploadSiteImage, type DeploySiteResult } from "../../api/sites.js";
@@ -417,6 +418,22 @@
     }, 5000);
   }
 
+  /**
+   * A draft is started before sign-in, under a placeholder id. Its first save
+   * gives it the id derived from the account (owned-site-id.ts), before anything
+   * is signed or stored under the placeholder.
+   */
+  function adoptOwnedSiteId() {
+    if (!auth.parent) return;
+    const live =
+      mySites.some((r) => r.siteId === site.siteId) ||
+      localStorage.getItem(`woco:site-content-hash:${site.siteId}`) !== null;
+    const id = siteIdForSave(site.siteId, auth.parent, live);
+    if (id === site.siteId) return;
+    site.siteId = id;
+    site.eventsIndexTopic = siteEventsIndexTopic(id);
+  }
+
   /** The tap's passkey sheet is open, before `publishState` says publishing: a second
    *  tap would otherwise start a second publish behind the same sheet. */
   let publishArming = false;
@@ -471,6 +488,7 @@
      * the right modal) and retry. */
     const publishSequence = async () => {
       await auth.ensureOrganiserUnlock();
+      adoptOwnedSiteId();
       if (pendingLogoBase64) {
         const imgRes = await uploadSiteImage(pendingLogoBase64, gatewayUrl);
         if (!imgRes.ok) {
