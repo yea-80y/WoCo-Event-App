@@ -74,6 +74,10 @@ let _cache: { at: number; snapshot: EventsSnapshot } | null = null;
 let _readInFlight: Promise<EventsSnapshot | null> | null = null;
 /** When a display read last learned that the feed has never been written. */
 let _neverWrittenAt: number | null = null;
+/** Display reads stay off the pointer feed until then: a rebuild's read of it was just refused as busy. */
+let _quietUntil: number | null = null;
+/** Past the retry (`STORAGE_BUSY_RETRY_MS`), so that the retry reads before any request does. */
+const DISPLAY_QUIET_MARGIN_MS = 5_000;
 
 /** A blob's JSON as a snapshot, or null when it is JSON of another shape. Throws on text that is not JSON. */
 function parseSnapshot(json: string): EventsSnapshot | null {
@@ -118,7 +122,9 @@ async function readSnapshotFromSwarm(): Promise<EventsSnapshot | "never-written"
  * it for other feeds: every read of such a feed is a miss on its first chunk, and
  * a few misses inside a minute make bee refuse that chunk for the next one
  * (`storage-busy.ts`). A read that could not answer is never held: it is not
- * "nothing there".
+ * "nothing there". Once a rebuild has been refused that way, though, requests
+ * stay off the feed until its retry is due (`_quietUntil`): their reads were
+ * what kept the refusal going, and with it the feed's first write.
  */
 export async function getEventsSnapshot(): Promise<EventsSnapshot | null> {
   if (_cache) {
@@ -126,6 +132,7 @@ export async function getEventsSnapshot(): Promise<EventsSnapshot | null> {
     return _cache.snapshot;
   }
   if (_neverWrittenAt !== null && now() - _neverWrittenAt < READ_CACHE_TTL_MS) return null;
+  if (_quietUntil !== null && now() < _quietUntil) return null;
   return refreshRead();
 }
 
@@ -156,10 +163,27 @@ async function resolveCard(entry: { wocoEventId: string; creatorFeedSigner?: str
   // Pass the known signer so getEvent skips the directory-carrier lookup (which
   // would re-enter listEvents → getEventsSnapshot). getEvent returns null for a
   // tombstoned feed; the listing overlay already excludes those, so a null here
-  // just means "resolve from the seed fallback instead".
+  // just means "its content could not be read now" (`cardOnMiss`).
   const feed = await getEvent(entry.wocoEventId, entry.creatorFeedSigner).catch(() => null);
-  if (feed) return cardFromFeed(feed);
-  return getListingSeed(entry.wocoEventId); // federated / transient-miss fallback
+  return feed ? cardFromFeed(feed) : null;
+}
+
+/**
+ * The card for an event whose content could not be read just now.
+ *
+ * A self-hosted event's never can be, here: its seed, set by `/list` (the only
+ * thing that knows its `apiUrl`), IS its card, and a re-list has to show.
+ *
+ * For any other event the miss is a passing one, and the card already published
+ * came from the organiser's own feed. The seed is captured at create and never
+ * follows an edit, so putting it in the card's place showed an edited event's
+ * first title and date until the next reconcile, and every process's first
+ * rebuild resolves all of them cold. The seed is for an event with no card yet.
+ */
+function cardOnMiss(eventId: string, published: SnapshotCard | undefined): SnapshotCard | null {
+  const seed = getListingSeed(eventId);
+  if (seed?.apiUrl) return seed;
+  return published ?? seed;
 }
 
 /** Merge resolution entries by onChainEventId, newest write wins for the signer. */
@@ -201,8 +225,8 @@ export interface SnapshotIo {
  * lets a reader find the event's content.
  *
  * An event created before the pinned record existed has none, so a table built
- * from nothing publishes it without a signer. Its card still resolves, through
- * the listing overlay's seed (`resolveCard`).
+ * from nothing publishes it without a signer. Its card is then the listing
+ * overlay's seed (`cardOnMiss`).
  */
 export function registrationsWithSigners(): SnapshotResolutionEntry[] {
   return getAllResolutionEntries().map((e) => {
@@ -228,6 +252,7 @@ export function _setSnapshotIoForTest(fake: Partial<SnapshotIo> | null): void {
   io = fake ? { ...liveIo, ...fake } : liveIo;
   _cache = null;
   _neverWrittenAt = null;
+  _quietUntil = null;
   _failedRebuilds = 0;
   _rebuiltHere = false;
   _bootSettled = false;
@@ -291,7 +316,12 @@ async function readBase(): Promise<BaseRead> {
   const read = await io.readPointer();
   if (read.status === "absent") return { kind: "never-written" };
   if (read.status === "error") {
-    if (isStorageBusy(read.error)) throw read.error;
+    if (isStorageBusy(read.error)) {
+      // Each read of the missing chunk puts more peers on bee's skip list, and
+      // requests for the directory would keep it full past the caller's retry.
+      _quietUntil = now() + STORAGE_BUSY_RETRY_MS + DISPLAY_QUIET_MARGIN_MS;
+      throw read.error;
+    }
     return { kind: "unreadable", why: read.error.message };
   }
   const pointer = decodeJsonFeed<EventsSnapshotPointer>(read.data);
@@ -353,12 +383,13 @@ export function rebuildSnapshot(opts: RebuildOpts = {}): Promise<void> {
 
 async function doRebuild(opts: RebuildOpts): Promise<void> {
   const read: BaseRead = opts.knownNeverWritten && !_cache ? { kind: "never-written" } : await readBase();
-  // Data-loss self-heal. A listing overlay that did not load (lost, or unreadable)
-  // may lack rows for listed events, and no row means not listed: the rebuild
-  // would publish a directory without them. The last snapshot's cards are what
-  // put them back, so with the snapshot unreadable too there is no record left
-  // of what was listed, and the rebuild is refused. With the overlay whole, an
-  // unreadable snapshot costs nothing: overlay and registrations rebuild every card.
+  // Data-loss self-heal. A listing overlay that is incomplete (lost, unreadable,
+  // or an older copy put back) may lack rows for listed events, and no row means
+  // not listed: the rebuild would publish a directory without them. The last
+  // snapshot's cards are what put them back, so with the snapshot unreadable too
+  // there is no record left of what was listed, and the rebuild is refused. With
+  // the overlay whole, an unreadable snapshot is survivable: the overlay and the
+  // server's registration record rebuild every card, as far as that record loaded.
   if (needsRestoreFromSnapshot()) {
     if (read.kind === "unreadable") {
       throw new Error(`the directory snapshot is unreadable and the listing overlay is incomplete (${read.why})`);
@@ -421,9 +452,8 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
     const include = byEvent.has(eventId) ? isListedForSnapshot(eventId) : isExplicitlyListed(eventId);
     if (!include) { existing.delete(eventId); continue; }
     // Registered → resolve with its known signer. Unregistered → resolve by id
-    // (getEvent's carrier/legacy path, then the /list seed fallback — where a
-    // federated event's apiUrl lives, since getEvent can't reach a remote server).
-    const card = await io.resolveCard(byEvent.get(eventId) ?? { wocoEventId: eventId });
+    // (getEvent's carrier/legacy path). Content that cannot be read: `cardOnMiss`.
+    const card = (await io.resolveCard(byEvent.get(eventId) ?? { wocoEventId: eventId })) ?? cardOnMiss(eventId, existing.get(eventId));
     if (card) existing.set(eventId, card);
     else existing.delete(eventId);
   }
@@ -441,9 +471,13 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
   // blob (fresh Swarm chunks on the platform batch), so an unconditional periodic
   // reconcile would churn postage capacity for no reason. Fingerprint (order-
   // independent) the meaningful payload — cards + resolution; builtAt always differs.
-  if (base && fingerprint(base.cards, base.resolution) === fingerprint(cards, resolution)) {
+  //
+  // Never on a process's first rebuild. Its base was only read, and bee's lookup
+  // can answer with the update before the newest: "same as what I read" then says
+  // nothing about what is live, which may still list an event unlisted since.
+  // Writing once makes the live directory this rebuild's, whatever was read.
+  if (_rebuiltHere && base && fingerprint(base.cards, base.resolution) === fingerprint(cards, resolution)) {
     _cache = { at: now(), snapshot: base };
-    _rebuiltHere = true;
     return;
   }
 
@@ -511,9 +545,9 @@ let _maintenanceStarted = false;
 
 /**
  * At boot: one strict read of the pointer feed.
- *  - Found: held for the display, and nothing is rebuilt. A restart is the worst
- *    moment to resolve every listed event again: a card whose content read
- *    missed would be published from its create-time seed and stay for 30 minutes.
+ *  - Found: held for the display, and nothing is rebuilt. Nothing has changed
+ *    that a rebuild could publish, and it would read every listed event's
+ *    content cold; the first trigger or the reconcile does that soon enough.
  *  - Never written (a new feed generation): the first snapshot is published
  *    now, so requests are not left reading a feed that is not there.
  *  - Bee refusing the feed's first chunk: tried again past its one-minute
