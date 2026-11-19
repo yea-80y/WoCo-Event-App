@@ -375,6 +375,12 @@ is stamped server-side from the verified parentAddress. Save, logo upload and de
 organiser or the owner's own live Etherna batch, on EVERY gateway (2026-10-02 — the router's
 free-hosting check alone covered only the Etherna fallback).
 
+SITE IDS PROVE THEIR OWNER: `s2-{nonce}-{tag}`, the tag derived from the owner's account address
+(`@woco/shared` `site/site-id.ts`, format FROZEN). Every site write checks the id against the verified
+parent BEFORE any Swarm read (`lib/site/site-owner-rule.ts`), so no pointer state decides ownership.
+Old random ids are refused (409 `SITE_ID_RETIRED`) except three test sites listed there. The builder
+gives a draft its id at the first signed-in save (`builder/owned-site-id.ts`), never before sign-in.
+
 MY SITES: `GET /api/sites/mine` reads the creator's Swarm directory. localStorage
 `woco:my-sites` is a write-through cache seeded for instant paint; the API is truth.
 

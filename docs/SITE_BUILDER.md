@@ -110,8 +110,24 @@ because "your site exists but is missing from your list" is recoverable and "you
 publish" is not.
 
 Write endpoints use the same EIP-712 session delegation as events, and the owner is stamped
-**server-side from the verified parent address** — never from the request body. An ownership
-read that cannot answer refuses (503) rather than treating the site as unclaimed (#181).
+**server-side from the verified parent address** — never from the request body.
+
+**Whose a site is comes from its id, not from a record.** A site id is
+`s2-{nonce}-{tag}`, the tag being 20 bytes of keccak256 over a fixed label, the owner's account
+address and the nonce (`@woco/shared` `site/site-id.ts`; the format is frozen). Publish, deploy,
+event add and remove, and the custom-domain bind check the id against the verified account
+before any Swarm read (`lib/site/site-owner-rule.ts`), so a pointer that is lost or reads as
+absent cannot hand a site to the next caller, and the owner can always write it again. The
+builder gives a draft its id at the first signed-in save (`builder/owned-site-id.ts`); the id
+is a placeholder until then.
+
+Ids made before this are random and prove nothing. Three test sites are kept by a closed list
+in `site-owner-rule.ts`; any other old id answers 409 `SITE_ID_RETIRED` on every write. An id
+is bound to one account: moving a site to another account is not possible.
+
+The read still matters for the rest: one that cannot answer refuses (503) rather than letting
+a write be built on a state nobody could read (#181), and the event and domain routes answer
+404 for a site that was never published.
 
 **Who may save, upload a logo or deploy:** a Stripe-verified organiser, or an owner with their
 own live Etherna batch - checked on every gateway, before anything is stored
