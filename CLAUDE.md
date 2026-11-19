@@ -613,9 +613,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   events already in a snapshot (an empty `{}` file is whole: nothing listed). Present-but-unreadable
   is never overwritten, and a missing one is written only by that restore (never a partial file):
   changes made meanwhile go to event-listing-state.pending.json. Repair = remove the broken file,
-  KEEP the pending file, restart (restored from the last snapshot, changes on top). A backup put
-  back beside the pending file counts as an older copy and is completed the same way, but re-lists
-  what was unlisted or deleted since it was taken (docs/EVENTS_DIRECTORY.md). `listingState` alarms.
+  KEEP the pending file, restart (restored from the last snapshot, changes on top). Never put a
+  backup back instead, and after a whole-`.data` restore remove this file before the first start:
+  an older copy wins over the snapshot wherever they disagree (docs/EVENTS_DIRECTORY.md).
+  `listingState` alarms.
   ROLLBACK: an older build ignores the pending file and overwrites an unreadable listing: repair first. `directory` alarms when the public list is not being rebuilt
   (`DIRECTORY_PUBLISH=off` outside dev), is serving nothing, or 3 rebuilds failed
   ticket-sales.json (#645 part C — sessionId → payment intent + minted slots + what we

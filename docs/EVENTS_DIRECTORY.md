@@ -80,8 +80,9 @@ missing blob.
   overlay incomplete too (see below) the rebuild is refused, because the last
   snapshot is then the only record of what was listed.
 - **Content that cannot be read.** An event whose own feed misses keeps the
-  card already published; the create-time seed is used only when it has no card
-  yet. A self-hosted event (`apiUrl`) is always published from its `/list` seed.
+  card already published; the seed is used only when it has no card yet. An
+  event hosted on another server (a seed `apiUrl` that is not this server's own)
+  is always published from its `/list` seed.
 - **What the table holds.** Only registrations that name their contract on the
   active chain (`isPublishedRegistration`), each with the feed signer pinned at
   create (an event from before that record existed has none in a table built
@@ -129,14 +130,18 @@ missing blob.
   listing is restored from the last snapshot, exactly what was public, with the
   pending changes on top. Lost that way: deleted events' tombstones, and the
   rows of events created but not yet registered (list those by hand once they
-  register). Putting a backup copy back instead keeps those, but a file that
-  loads beside the pending file is an older copy: the pending changes go on
-  top, the builder restores the events the last snapshot lists and the copy
-  lacks, and only then is the file written. An event unlisted or deleted after
-  the copy was taken and before the file broke is LISTED AGAIN by the copy:
-  check for those before choosing it. Removing the pending file takes the file
-  exactly as it is. With the last snapshot unreadable as well, rebuilds are
-  refused until one of the two is settled.
+  register). Do NOT put a backup copy back instead. A file that loads beside
+  the pending file is completed (the pending changes go on top, the builder
+  adds the events the last snapshot lists and the copy has no row for, and only
+  then is the file written), but wherever the copy and the snapshot disagree
+  the copy wins, and the copy is the older of the two: an event listed since
+  comes off the directory if the copy holds it as unlisted, and one unlisted or
+  deleted since goes back on. Removing the pending file takes a file exactly as
+  it is. With the last snapshot unreadable as well, rebuilds are refused until
+  one of the two is settled.
+- **After restoring `.data` from a backup** the listing file is such an older
+  copy, with no pending file to say so: remove `event-listing-state.json`
+  before the first start, and the listing is restored from the last snapshot.
 - **Rollback.** A build from before this ignores the pending file and writes
   over an unreadable listing file. Repair first; a pending file left behind is
   applied over the listing at the next start of this build.
