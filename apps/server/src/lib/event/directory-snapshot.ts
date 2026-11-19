@@ -29,7 +29,9 @@ import { isStorageBusy, STORAGE_BUSY_RETRY_MS } from "../swarm/storage-busy.js";
 import { topicEventsSnapshot } from "../swarm/topics.js";
 import { getRecordedFeedSigner } from "./feed-signer-record.js";
 import { getAllResolutionEntries } from "./onchain-registry.js";
-import { isListedForSnapshot, isExplicitlyListed, getListingSeed, listedEventIds, hasAnyRows, setListed } from "./listing-state.js";
+import {
+  isListedForSnapshot, isExplicitlyListed, getListingSeed, listedEventIds, needsRestoreFromSnapshot, restoreFromSnapshot,
+} from "./listing-state.js";
 
 // ---------------------------------------------------------------------------
 // Card shaping — the ONE place event content becomes a listing card. Reused by
@@ -351,13 +353,19 @@ export function rebuildSnapshot(opts: RebuildOpts = {}): Promise<void> {
 
 async function doRebuild(opts: RebuildOpts): Promise<void> {
   const read: BaseRead = opts.knownNeverWritten && !_cache ? { kind: "never-written" } : await readBase();
-  if (read.kind === "unreadable") {
-    // Survivable while the listing overlay has rows: overlay and registrations
-    // rebuild every card. With the overlay empty too, the last snapshot is the
-    // only record of what was listed.
-    if (!hasAnyRows()) {
-      throw new Error(`the directory snapshot is unreadable and the listing overlay is empty (${read.why})`);
+  // Data-loss self-heal. A listing overlay that did not load (lost, or unreadable)
+  // may lack rows for listed events, and no row means not listed: the rebuild
+  // would publish a directory without them. The last snapshot's cards are what
+  // put them back, so with the snapshot unreadable too there is no record left
+  // of what was listed, and the rebuild is refused. With the overlay whole, an
+  // unreadable snapshot costs nothing: overlay and registrations rebuild every card.
+  if (needsRestoreFromSnapshot()) {
+    if (read.kind === "unreadable") {
+      throw new Error(`the directory snapshot is unreadable and the listing overlay is incomplete (${read.why})`);
     }
+    const restored = restoreFromSnapshot(read.kind === "found" ? read.snapshot.cards : []);
+    if (restored > 0) console.warn(`[listing-state] overlay incomplete: restored ${restored} listed event(s) from the last snapshot`);
+  } else if (read.kind === "unreadable") {
     console.warn(`[snapshot] no readable snapshot (${read.why}): rebuilding in full from server records`);
   }
   const base = read.kind === "found" ? read.snapshot : null;
@@ -372,15 +380,6 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
   //    event and takes every registration from the server's own records, so
   //    nothing the newest update added can be missing from it.
   const full = opts.full || !_rebuiltHere;
-
-  // Data-loss self-heal: a lost/empty .data overlay would make every event read as
-  // unlisted, and the next full reconcile would publish an EMPTY snapshot — wiping
-  // the live directory. If the overlay is empty but a prior snapshot exists, reseed
-  // the overlay from that snapshot (each card WAS a listed event) before building.
-  if (!hasAnyRows() && base && base.cards.length > 0) {
-    console.warn(`[listing-state] overlay empty but snapshot has ${base.cards.length} cards — reseeded from snapshot`);
-    for (const card of base.cards) setListed(card.eventId, true, card, { explicitlyListed: true, fromSnapshot: true });
-  }
 
   // Resolution table: previous snapshot + new register-success entries, plus the
   // server's full registration map on a full reconcile. Filtered after the merge,

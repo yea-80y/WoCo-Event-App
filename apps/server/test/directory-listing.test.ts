@@ -38,17 +38,17 @@ function card(eventId: string, extra: Partial<SnapshotCard> = {}): SnapshotCard 
   };
 }
 
-test("(precondition) fresh overlay has no rows — the empty-overlay state Fix 2 guards", () => {
-  assert.equal(ls.hasAnyRows(), false);
+test("(precondition) an overlay file that is not there has no rows and needs the restore Fix 2 guards", () => {
+  assert.equal(ls.listingStateHealth().rows, 0);
+  assert.equal(ls.needsRestoreFromSnapshot(), true);
 });
 
-test("(c) empty overlay + prior snapshot ⇒ reseed populates rows (not an empty publish)", () => {
-  // Simulate the builder's reseed loop over a non-empty base snapshot.
+test("(c) lost overlay + prior snapshot ⇒ the restore populates rows (not an empty publish)", () => {
+  // What the builder does with the last snapshot's cards.
   const base = [card("s1"), card("s2", { apiUrl: "https://organiser.example" })];
-  assert.equal(ls.hasAnyRows(), false); // would otherwise publish EMPTY, wiping the directory
-  for (const c of base) ls.setListed(c.eventId, true, c, { explicitlyListed: true });
-  assert.equal(ls.hasAnyRows(), true);
-  for (const c of base) assert.equal(ls.isListedForSnapshot(c.eventId), true, `${c.eventId} kept`);
+  assert.equal(ls.restoreFromSnapshot(base), 2); // would otherwise publish EMPTY, wiping the directory
+  assert.equal(ls.needsRestoreFromSnapshot(), false);
+  for (const c of base) assert.equal(ls.isExplicitlyListed(c.eventId), true, `${c.eventId} kept`);
 });
 
 test("(a) federated /list row (seed+apiUrl, no on-chain registration) IS surfaced", () => {

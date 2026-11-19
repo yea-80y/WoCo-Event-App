@@ -102,8 +102,8 @@ describe("POST /events/:id/unlist", () => {
     assert.equal(res.status, 200);
     assert.deepEqual((await res.json()).data, { eventId: "evt-out", wasListed: true });
     assert.equal(ls.isListedForSnapshot("evt-out"), false);
-    // The row stays, so an overlay of unlisted rows is never "empty" and never re-seeded.
-    assert.equal(ls.hasAnyRows(), true);
+    // The row stays: an unlist is a row the snapshot restore never writes over.
+    assert.ok(ls.listingStateHealth().rows > 0);
     assert.equal(ls.getListingSeed("evt-out")?.title, "Test night");
     assert.equal((rowOnDisk("evt-out") as { listed: boolean }).listed, false);
     assert.deepEqual(scheduled, ["evt-out"]);

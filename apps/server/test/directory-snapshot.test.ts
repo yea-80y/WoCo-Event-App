@@ -4,8 +4,8 @@
  * What is pinned here:
  *  - the pointer feed is generation 2, a different feed from the launch one;
  *  - a rebuild never takes "bee could not read the last snapshot" for "there is
- *    no snapshot": with an empty listing overlay that would publish an empty
- *    directory over a live one;
+ *    no snapshot": with a listing overlay that did not load, that would publish
+ *    a directory missing every event the overlay no longer has a row for;
  *  - a feed read as never written is written at index 0 with no probe first, and
  *    bee's one-minute refusal of a missing first chunk is neither answer;
  *  - a rebuild with nothing to build on takes the whole registration table, not
@@ -16,7 +16,8 @@
  *  - a process started by the dev scripts never rebuilds the directory.
  *
  * The listing overlay is the real module on a temp `.data`, so the tests run in
- * order: the empty-overlay cases first, and rows only ever accumulate after.
+ * order: the cases that need an overlay that did not load first, and rows only
+ * ever accumulate after.
  */
 
 import { test, before } from "node:test";
@@ -220,44 +221,54 @@ test("the pointer feed is generation 2, a different feed from the launch one", (
 });
 
 // ---------------------------------------------------------------------------
-// Empty overlay. Nothing below this block may run before it.
+// A listing overlay that did not load (here: its file is not there yet).
+// Nothing below this block may run before it: its last test writes the file.
 // ---------------------------------------------------------------------------
 
-test("empty overlay: a snapshot bee could not read refuses the rebuild and writes nothing", async () => {
-  assert.equal(ls.hasAnyRows(), false, "these cases need the overlay empty");
+/** A restart with the overlay file still missing: memory may lack listed rows again. */
+function overlayNotLoaded(): void {
+  ls.__resetListingStateForTest();
+  assert.equal(ls.needsRestoreFromSnapshot(), true, "these cases need an overlay that did not load");
+}
+
+test("overlay not loaded: a snapshot bee could not read refuses the rebuild and writes nothing", async () => {
+  overlayNotLoaded();
   for (const [why, init] of UNREADABLE) {
     const h = install(init);
-    await assert.rejects(snap.rebuildSnapshot({ full: true }), /listing overlay is empty/, why);
+    await assert.rejects(snap.rebuildSnapshot({ full: true }), /listing overlay is incomplete/, why);
     assert.equal(h.written.length, 0, `${why}: nothing may be published`);
     assert.equal(h.blobWrites, 0, `${why}: nothing may be uploaded`);
+    assert.equal(ls.needsRestoreFromSnapshot(), true, `${why}: still waiting for a snapshot it can restore from`);
   }
 });
 
-test("empty overlay: bee refusing the feed's first chunk is not \"never written\"", async () => {
-  assert.equal(ls.hasAnyRows(), false);
+test("overlay not loaded: bee refusing the feed's first chunk is not \"never written\"", async () => {
+  overlayNotLoaded();
   const h = install({ pointer: "busy" });
   await assert.rejects(snap.rebuildSnapshot({ full: true }), (err) => busy.isStorageBusy(err));
   assert.equal(h.written.length, 0);
   assert.equal(h.blobWrites, 0);
 });
 
-test("empty overlay: a feed never written gets its first snapshot, written as a first update", async () => {
-  assert.equal(ls.hasAnyRows(), false);
+test("overlay not loaded: a feed never written gets its first snapshot, written as a first update", async () => {
+  overlayNotLoaded();
   const h = install({ pointer: "absent" });
   await snap.rebuildSnapshot({ full: true });
   assert.equal(h.written.length, 1);
   assert.deepEqual(h.fresh, [true], "index 0, with no probe of the feed before it");
   assert.deepEqual(h.last().cards, []);
   assert.equal(h.written[0].count, 0);
+  assert.equal(ls.needsRestoreFromSnapshot(), false, "no snapshot ever existed: there is nothing to restore");
 });
 
-test("empty overlay: a readable last snapshot reseeds the overlay and its cards survive", async () => {
-  assert.equal(ls.hasAnyRows(), false);
+test("overlay not loaded: a readable last snapshot restores the listing and its cards survive", async () => {
+  overlayNotLoaded();
   const prior = snapshotJson([card("s1"), card("s2")], [registration("s1", { chainId: MAINNET })]);
   const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: prior }, registrations: [registration("s1", { chainId: MAINNET })] });
   await snap.rebuildSnapshot({ full: true });
-  assert.equal(ls.isListedForSnapshot("s1"), true, "s1 reseeded from the last snapshot");
-  assert.equal(ls.isExplicitlyListed("s2"), true, "s2 (never registered) reseeded as a deliberate listing");
+  assert.equal(ls.isListedForSnapshot("s1"), true, "s1 restored from the last snapshot");
+  assert.equal(ls.isExplicitlyListed("s2"), true, "s2 (never registered) restored as a deliberate listing");
+  assert.equal(ls.needsRestoreFromSnapshot(), false);
   // Same cards, same table: nothing new to publish, and the directory still serves both.
   assert.equal(h.written.length, 0);
   assert.deepEqual(ids((await snap.getEventsSnapshot())!.cards), ["s1", "s2"]);
@@ -265,7 +276,7 @@ test("empty overlay: a readable last snapshot reseeds the overlay and its cards 
 });
 
 // ---------------------------------------------------------------------------
-// From here the overlay holds s1 and s2, both listed.
+// From here the overlay is whole: it holds s1 and s2, both listed.
 // ---------------------------------------------------------------------------
 
 test("a feed never written builds in full, even from a trigger that named one event", async () => {
@@ -311,7 +322,7 @@ test("once this process has rebuilt, a trigger stays incremental and the write i
   assert.deepEqual(h.fresh, [false]);
 });
 
-test("an unreadable snapshot with overlay rows rebuilds in full from server records", async () => {
+test("an unreadable snapshot with the overlay whole rebuilds in full from server records", async () => {
   for (const [why, init] of UNREADABLE) {
     const h = install({ ...init, registrations: [registration("s1", { chainId: MAINNET }), registration("e1", { chainId: MAINNET })] });
     await snap.rebuildSnapshot({ touchedEventIds: ["s2"] });
@@ -322,7 +333,7 @@ test("an unreadable snapshot with overlay rows rebuilds in full from server reco
   }
 });
 
-test("bee refusing the feed's first chunk stops the rebuild before anything is uploaded, overlay rows or not", async () => {
+test("bee refusing the feed's first chunk stops the rebuild before anything is uploaded, overlay whole or not", async () => {
   const h = install({ pointer: "busy", registrations: [registration("s1", { chainId: MAINNET })] });
   await assert.rejects(snap.rebuildSnapshot({ full: true }), (err) => busy.isStorageBusy(err));
   assert.equal(h.blobWrites, 0);
@@ -614,7 +625,7 @@ test("health: red when boot is over and nothing is held, green as soon as a read
 
 test("health: red after three rebuilds fail in a row, green again after one that works", async () => {
   const h = install({ pointer: "error" });
-  // The overlay has rows, so an unreadable snapshot is rebuilt: make the write fail.
+  // The overlay is whole, so an unreadable snapshot is rebuilt: make the write fail.
   for (let i = 1; i <= 3; i++) {
     h.failPointerWrite = new Error("batch not usable");
     await assert.rejects(snap.rebuildSnapshot({ full: true }));
