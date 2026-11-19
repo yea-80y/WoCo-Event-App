@@ -16,12 +16,16 @@
 
 import { ETHERNA_URL, isEthernaGateway } from "../etherna/batch-router.js";
 import type {
-  EventFeed, EventsSnapshot, EventsSnapshotPointer, SnapshotCard, SnapshotResolutionEntry,
+  EventFeed, EventsSnapshot, EventsSnapshotPointer, Hex64, SnapshotCard, SnapshotResolutionEntry,
 } from "@woco/shared";
 import { normaliseTags, normaliseGeo } from "@woco/shared";
+import { getActiveChainId } from "../chain/event-contract.js";
 import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
-import { readFeedPage, writeFeedPage, encodeJsonFeed, decodeJsonFeed } from "../swarm/feeds.js";
+import {
+  readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed, type FeedReadStrictResult,
+} from "../swarm/feeds.js";
 import { topicEventsSnapshot } from "../swarm/topics.js";
+import { getRecordedFeedSigner } from "./feed-signer-record.js";
 import { getAllResolutionEntries } from "./onchain-registry.js";
 import { isListedForSnapshot, isExplicitlyListed, getListingSeed, listedEventIds, hasAnyRows, setListed } from "./listing-state.js";
 
@@ -132,6 +136,105 @@ function mergeResolution(...lists: SnapshotResolutionEntry[][]): SnapshotResolut
   return [...byId.values()];
 }
 
+/**
+ * Everything a rebuild reads or writes outside this module, as one object a test
+ * can replace. The rebuild had no test before this: its uploads land on whatever
+ * bee the process is pointed at, and in development that is production's.
+ */
+export interface SnapshotIo {
+  readPointer(): Promise<FeedReadStrictResult>;
+  readBlob(ref: string): Promise<string>;
+  writeBlob(json: string): Promise<Hex64>;
+  writePointer(page: Uint8Array): Promise<void>;
+  resolveCard(entry: { wocoEventId: string; creatorFeedSigner?: string }): Promise<SnapshotCard | null>;
+  registrations(): SnapshotResolutionEntry[];
+  activeChainId(): number;
+}
+
+/**
+ * The server's registrations as table entries, each with its event's feed signer.
+ * The registry does not hold the signer, and a full rebuild used to get it only
+ * from the last snapshot's table. With nothing to build on, every entry would be
+ * published without the one field that lets a reader find the event's content.
+ * The record pinned at create (#670) is where the register-success trigger takes
+ * it from too (`resolutionSigner`), so the two never disagree.
+ */
+export function registrationsWithSigners(): SnapshotResolutionEntry[] {
+  return getAllResolutionEntries().map((e) => {
+    const signer = getRecordedFeedSigner(e.wocoEventId)?.signer;
+    return signer ? { ...e, creatorFeedSigner: signer } : e;
+  });
+}
+
+const liveIo: SnapshotIo = {
+  readPointer: () => readFeedPageStrict(topicEventsSnapshot()),
+  readBlob: (ref) => downloadFromBytes(ref),
+  writeBlob: (json) => uploadToBytes(json),
+  writePointer: (page) => writeFeedPage(topicEventsSnapshot(), page),
+  resolveCard,
+  registrations: registrationsWithSigners,
+  activeChainId: getActiveChainId,
+};
+let io = liveIo;
+
+/** Tests only: swap the rebuild's I/O (null restores it) and forget the cached snapshot. */
+export function _setSnapshotIoForTest(fake: Partial<SnapshotIo> | null): void {
+  io = fake ? { ...liveIo, ...fake } : liveIo;
+  _cache = null;
+}
+
+/**
+ * Whether a registration goes in the published table. The table exists so the
+ * directory can be checked against a contract's `Registered` log, and so the
+ * builder knows which events count as registered: an entry that names no
+ * contract can be checked against none, and one on another chain can no longer
+ * sell (`saleContractFor`). Either would also be rewritten into every blob for
+ * good. Such an event stays in the server's own records, its tickets still
+ * verify, and it can still be listed deliberately.
+ */
+export function isPublishedRegistration(entry: SnapshotResolutionEntry, activeChainId: number): boolean {
+  return entry.contract !== undefined && entry.chainId === activeChainId;
+}
+
+/**
+ * The snapshot a rebuild builds on, or null when there is none to build on.
+ *
+ * Never the lenient display read: that answers null for a feed bee failed to
+ * read as well as for one never written, and a rebuild taking the first for the
+ * second skips the reseed in `doRebuild` and can publish an empty directory over
+ * a live one. A snapshot that cannot be read is survivable while the listing
+ * overlay has rows, because overlay and registrations rebuild every card, so
+ * that rebuild goes ahead in full. With the overlay empty as well, the last
+ * snapshot is the only record of what was listed, and the rebuild is refused.
+ */
+async function baseForRebuild(): Promise<EventsSnapshot | null> {
+  if (_cache) return _cache.snapshot;
+  const read = await io.readPointer();
+  if (read.status === "absent") return null;
+  let unreadable: string;
+  if (read.status === "error") {
+    unreadable = read.error.message;
+  } else {
+    const pointer = decodeJsonFeed<EventsSnapshotPointer>(read.data);
+    if (!pointer?.snapshotRef) {
+      unreadable = "the pointer did not decode";
+    } else {
+      try {
+        const snap = JSON.parse(await io.readBlob(pointer.snapshotRef)) as EventsSnapshot;
+        if (Array.isArray(snap?.cards) && Array.isArray(snap?.resolution)) return snap;
+        unreadable = `blob ${pointer.snapshotRef.slice(0, 12)}… is not a snapshot`;
+      } catch (err) {
+        unreadable = `blob ${pointer.snapshotRef.slice(0, 12)}…: ${(err as Error)?.message ?? err}`;
+      }
+    }
+  }
+  if (!hasAnyRows()) {
+    throw new Error(`the last directory snapshot is unreadable and the listing overlay is empty (${unreadable})`);
+  }
+  console.warn(`[snapshot] last snapshot unreadable (${unreadable}): rebuilding in full from server records`);
+  return null;
+}
+
 interface RebuildOpts {
   /** Re-resolve every event from the full resolution table (periodic / ops). */
   full?: boolean;
@@ -164,7 +267,11 @@ export function rebuildSnapshot(opts: RebuildOpts = {}): Promise<void> {
 }
 
 async function doRebuild(opts: RebuildOpts): Promise<void> {
-  const base = await getEventsSnapshot();
+  const base = await baseForRebuild();
+  // With no snapshot to build on (a new feed generation, or an unreadable one)
+  // an incremental rebuild would publish a table holding only this trigger's
+  // registrations and leave the rest out until the next reconcile.
+  const full = opts.full || !base;
 
   // Data-loss self-heal: a lost/empty .data overlay would make every event read as
   // unlisted, and the next full reconcile would publish an EMPTY snapshot — wiping
@@ -176,12 +283,14 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
   }
 
   // Resolution table: previous snapshot + new register-success entries, plus the
-  // server's full registration map on a full reconcile.
+  // server's full registration map on a full reconcile. Filtered after the merge,
+  // so an entry already published drops out once the active chain moves on.
+  const activeChainId = io.activeChainId();
   const resolution = mergeResolution(
     base?.resolution ?? [],
     opts.addResolution ?? [],
-    opts.full ? getAllResolutionEntries() : [],
-  );
+    full ? io.registrations() : [],
+  ).filter((e) => isPublishedRegistration(e, activeChainId));
 
   // Distinct events, and which to (re)resolve. Incremental keeps prior cards and
   // only re-resolves touched events + any candidate with no card yet.
@@ -202,7 +311,7 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
   const touched = new Set(opts.touchedEventIds ?? []);
   const toResolve = new Set<string>();
   for (const eventId of candidates) {
-    if (opts.full || touched.has(eventId) || !existing.has(eventId)) toResolve.add(eventId);
+    if (full || touched.has(eventId) || !existing.has(eventId)) toResolve.add(eventId);
   }
 
   for (const eventId of toResolve) {
@@ -215,7 +324,7 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
     // Registered → resolve with its known signer. Unregistered → resolve by id
     // (getEvent's carrier/legacy path, then the /list seed fallback — where a
     // federated event's apiUrl lives, since getEvent can't reach a remote server).
-    const card = await resolveCard(byEvent.get(eventId) ?? { wocoEventId: eventId });
+    const card = await io.resolveCard(byEvent.get(eventId) ?? { wocoEventId: eventId });
     if (card) existing.set(eventId, card);
     else existing.delete(eventId);
   }
@@ -248,9 +357,9 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
 
   // Upload the immutable blob, then repoint. Order matters: a pointer must never
   // name a blob that isn't uploaded yet.
-  const ref = await uploadToBytes(JSON.stringify(snapshot));
+  const ref = await io.writeBlob(JSON.stringify(snapshot));
   const pointer: EventsSnapshotPointer = { v: 1, snapshotRef: ref, builtAt: snapshot.builtAt, count: cards.length };
-  await writeFeedPage(topicEventsSnapshot(), encodeJsonFeed(pointer));
+  await io.writePointer(encodeJsonFeed(pointer));
   _cache = { at: Date.now(), snapshot };
   console.log(`[snapshot] rebuilt: ${cards.length} cards, ${resolution.length} registrations, ref=${ref.slice(0, 12)}…`);
 }
