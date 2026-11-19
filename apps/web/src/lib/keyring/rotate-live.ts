@@ -364,6 +364,9 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
           const events = await getSiteEvents(entry.siteId);
           if (!events.ok) throw new Error(`site ${entry.siteId} events unreadable`);
           const pub = await publishSite(site, events.data?.events ?? [], keys.feedSigner, ETHERNA_GATEWAY_URL);
+          // A site from before ids proved their owner: nobody can save it again, so
+          // there is nothing to move, and it must not stop the sites after it.
+          if (!pub.ok && pub.code === "SITE_ID_RETIRED") continue;
           if (!pub.ok) throw new Error(pub.error ?? `site ${entry.siteId} not republished`);
           const dep = await deploySite(
             entry.siteId,

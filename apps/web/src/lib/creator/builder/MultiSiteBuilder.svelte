@@ -3,7 +3,7 @@
   import { ownNoticeStatus, type OwnNoticeStatus } from '../../legal/own-notice-status.js';
   import type { Site, SiteDeploySubEns, SiteEventEntry, TemplateId } from "@woco/shared";
   import { multisiteFeedTopic, newSiteFromTemplate, siteConfigTopic, siteEventsIndexTopic, subEnsName, FEATURES } from "@woco/shared";
-  import { siteIdForSave } from "./owned-site-id.js";
+  import { siteIdForSave, siteIsLive } from "./owned-site-id.js";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import { onDestroy, onMount } from 'svelte';
   import { publishSite, deploySite, loadSite, getSiteEvents, uploadSiteImage, type DeploySiteResult } from "../../api/sites.js";
@@ -425,13 +425,21 @@
    */
   function adoptOwnedSiteId() {
     if (!auth.parent) return;
-    const live =
-      mySites.some((r) => r.siteId === site.siteId) ||
-      localStorage.getItem(`woco:site-content-hash:${site.siteId}`) !== null;
-    const id = siteIdForSave(site.siteId, auth.parent, live);
-    if (id === site.siteId) return;
+    const placeholder = site.siteId;
+    const live = siteIsLive(
+      mySites.find((r) => r.siteId === placeholder),
+      localStorage.getItem(`woco:site-content-hash:${placeholder}`) !== null ||
+        cacheGet<Site>(cacheKey.siteConfig(placeholder)) !== null,
+    );
+    const id = siteIdForSave(placeholder, auth.parent, live);
+    if (id === placeholder) return;
     site.siteId = id;
     site.eventsIndexTopic = siteEventsIndexTopic(id);
+    // The draft's card on My Sites, if it has one, is under the placeholder.
+    if (mySites.some((r) => r.siteId === placeholder)) {
+      mySites = mySites.filter((r) => r.siteId !== placeholder);
+      saveMySites(auth.parent, mySites);
+    }
   }
 
   /** The tap's passkey sheet is open, before `publishState` says publishing: a second

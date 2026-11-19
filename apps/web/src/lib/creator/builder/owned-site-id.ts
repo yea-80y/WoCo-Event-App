@@ -1,4 +1,19 @@
-import { newOwnedSiteId, siteIdOwnedBy } from "@woco/shared";
+import { newOwnedSiteId, siteIdOwnedBy, type SiteDirectoryEntry } from "@woco/shared";
+
+/**
+ * Has this site been put live? `record` is its My Sites card, `storedHere` whether
+ * this device holds a copy that came from a deploy or from the server.
+ *
+ * Being on the My Sites list is not enough: going back to the list adds the
+ * draft in hand as a card, with none of these set. Counting that as live kept
+ * the draft's placeholder id, which the server then refused for good.
+ */
+export function siteIsLive(
+  record: Pick<SiteDirectoryEntry, "publishedAt" | "deployedUrl" | "feedHash"> | undefined,
+  storedHere: boolean,
+): boolean {
+  return storedHere || !!(record && (record.publishedAt || record.deployedUrl || record.feedHash));
+}
 
 /**
  * The id a site is saved under.
