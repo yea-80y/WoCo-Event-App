@@ -56,6 +56,8 @@ export function siteOwnerRefusal(
   return {
     status: 409,
     code: SITE_ID_RETIRED_CODE,
-    error: "This site was made with an earlier version of WoCo. Refresh the app and start the site again to publish it.",
+    // An app loaded before the change still makes old ids: a refresh fixes a new
+    // draft by itself. A site published under an old id has to be started again.
+    error: "This site was made with an earlier version of WoCo. Refresh the app and try again. If you see this again, start the site afresh to publish it.",
   };
 }
