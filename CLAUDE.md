@@ -607,10 +607,11 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   email-failures.json (the undelivered-ticket ledger — the /api/health alarm reads it)
   broadcast-jobs/*.json (hash-only send accounting — losing it loses the "resume the
     broadcast that died" path AND the /api/health alarm that says one did)
-  event-listing-state.json (#37 global-directory overlay) — if lost, the builder self-heals by
-  reseeding from the last snapshot (directory-snapshot.ts) rather than publishing an empty
-  directory, but that only recovers events already in a snapshot. Present-but-unreadable is
-  never overwritten: changes made meanwhile go to event-listing-state.pending.json (keep it:
+  event-listing-state.json (#37 global-directory overlay) — if lost or unreadable the listing is
+  incomplete, and the builder restores a row for each event of the last snapshot that has none
+  (directory-snapshot.ts) rather than publishing a directory without them; that only recovers
+  events already in a snapshot (an empty `{}` file is whole: nothing listed). Present-but-unreadable
+  is never overwritten: changes made meanwhile go to event-listing-state.pending.json (keep it:
   it is applied over the repaired file at the next start, then removed), `/api/health`
   `listingState` alarms. `directory` alarms when the public list is not being rebuilt
   (`DIRECTORY_PUBLISH=off` outside dev), is serving nothing, or 3 rebuilds failed

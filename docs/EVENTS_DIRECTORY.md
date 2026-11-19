@@ -73,9 +73,10 @@ missing blob.
   rebuild from the server's registrations and the overlay, written at index 0
   with no probe first. Bee refusing the feed's first chunk for a minute
   (`storage-busy.ts`): nothing is concluded or uploaded, and the caller retries.
-  Unreadable otherwise: a full rebuild while the overlay has rows; with the
-  overlay empty too the rebuild is refused, because the last snapshot is then the
-  only record of what was listed.
+  Unreadable otherwise: a full rebuild from the server's records while the
+  listing overlay is whole; with the overlay incomplete too (it did not load,
+  see below) the rebuild is refused, because the last snapshot is then the only
+  record of what was listed.
 - **What the table holds.** Only registrations that name their contract on the
   active chain (`isPublishedRegistration`), each with the feed signer pinned at
   create (an event from before that record existed has none in a table built
@@ -97,14 +98,19 @@ missing blob.
 - **Health.** `/api/health` `directory` is red when `publishing` is false (an
   alarm anywhere but a dev server), when boot is over and no snapshot is held
   (nothing is being served), or when three rebuilds have failed in a row.
-- **An unreadable listing file is never overwritten.** `event-listing-state.json`
-  present but not readable as rows is left for repair; the server carries on
-  from memory (listed events return through the reseed) and `/api/health`
-  `listingState` is red. What people change meanwhile (a cancel, takedown,
-  unlist, delete, a new event) is kept in `event-listing-state.pending.json`,
-  survives restarts, and is applied over the file once it loads again; rows the
-  reseed restored are not. Repair = put a good file back, keep the pending file,
-  restart. A file that is not there is still an empty overlay.
+- **A listing overlay that did not load is incomplete.** With
+  `event-listing-state.json` missing, or present but not readable as rows,
+  memory may lack rows for listed events, and no row means not listed. Before
+  it builds, the builder gives each card of the last snapshot a row where there
+  is none, and never writes over a row that is there (an unlist, cancel or
+  delete). A lost file is rebuilt that way. An empty file (`{}`) is whole:
+  nothing is listed.
+- **An unreadable listing file is never overwritten.** It is left for repair
+  and `/api/health` `listingState` is red. What people change meanwhile (a
+  cancel, takedown, unlist, delete, a new event) is kept in
+  `event-listing-state.pending.json`, survives restarts, and is applied over the
+  file once it loads again; restored rows are not kept there. Repair = put a
+  good file back, keep the pending file, restart.
 
 ## Reads
 
