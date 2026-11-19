@@ -100,7 +100,8 @@ export interface EventsSnapshot {
  * so a feed is only as alive as its first update, and each lookup takes longer
  * the more updates it holds. Raising this starts a new feed at index 0 on the
  * current batch. Nothing is carried over: the builder makes the first snapshot
- * from its own registration records, and the previous feed is never read again.
+ * from its own registrations and listing decisions, and the previous feed is
+ * never read again.
  *
  * Generation 1 was `woco/event/directory/snapshot`, with no suffix.
  */

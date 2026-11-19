@@ -7,11 +7,12 @@
  *              content → copy+normalise into cards → apply the listing overlay →
  *              upload an immutable blob → O(1) pointer-feed write.
  *   - TRIGGERS: a debounced incremental rebuild on register-success / edit / (un)list,
- *              plus a periodic + manual full reconcile.
+ *              plus a full reconcile at boot, every 30 minutes, and on request.
  *
- * The snapshot is a CACHE, NOT TRUTH — rebuildable from any surviving snapshot
- * forward (each blob embeds the onChainEventId→content resolution table the chain
- * log lacks). A missed rebuild degrades freshness, never integrity.
+ * The snapshot is a CACHE, NOT TRUTH. This server rebuilds it from its own
+ * registrations and listing overlay; anyone else can rebuild from a surviving
+ * snapshot forward (each blob embeds the onChainEventId→content resolution table
+ * the chain log lacks). A missed rebuild degrades freshness, never integrity.
  */
 
 import { ETHERNA_URL, isEthernaGateway } from "../etherna/batch-router.js";
@@ -24,6 +25,7 @@ import { uploadToBytes, downloadFromBytes } from "../swarm/bytes.js";
 import {
   readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed, type FeedReadStrictResult,
 } from "../swarm/feeds.js";
+import { isStorageBusy, STORAGE_BUSY_RETRY_MS } from "../swarm/storage-busy.js";
 import { topicEventsSnapshot } from "../swarm/topics.js";
 import { getRecordedFeedSigner } from "./feed-signer-record.js";
 import { getAllResolutionEntries } from "./onchain-registry.js";
@@ -67,14 +69,35 @@ export function cardFromFeed(feed: EventFeed, extra?: { apiUrl?: string }): Snap
 const READ_CACHE_TTL_MS = 60_000;
 let _cache: { at: number; snapshot: EventsSnapshot } | null = null;
 let _readInFlight: Promise<EventsSnapshot | null> | null = null;
+/** When a display read last found no snapshot. */
+let _emptyReadAt = 0;
+
+/** A blob's JSON as a snapshot, or null when it is JSON of another shape. Throws on text that is not JSON. */
+function parseSnapshot(json: string): EventsSnapshot | null {
+  const snap = JSON.parse(json) as EventsSnapshot | null;
+  return Array.isArray(snap?.cards) && Array.isArray(snap?.resolution) ? snap : null;
+}
+
+/**
+ * Take a snapshot that was read or built as the current one, unless a newer one
+ * is already held. A lookup of the pointer feed is a lower bound (`feed-index.ts`):
+ * for minutes after a write bee can still answer with the update before it, and
+ * a rebuild that built on that older snapshot would drop what the newer one added.
+ */
+function remember(snapshot: EventsSnapshot): void {
+  if (_cache && snapshot.builtAt < _cache.snapshot.builtAt) {
+    _cache.at = Date.now();
+    return;
+  }
+  _cache = { at: Date.now(), snapshot };
+}
 
 async function readSnapshotFromSwarm(): Promise<EventsSnapshot | null> {
-  const page = await readFeedPage(topicEventsSnapshot());
+  const page = await io.readPointerForDisplay();
   const pointer = page ? decodeJsonFeed<EventsSnapshotPointer>(page) : null;
   if (!pointer?.snapshotRef) return null;
   try {
-    const raw = await downloadFromBytes(pointer.snapshotRef);
-    return JSON.parse(raw) as EventsSnapshot;
+    return parseSnapshot(await io.readBlob(pointer.snapshotRef));
   } catch (err) {
     console.error("[snapshot] blob fetch failed:", err);
     return null;
@@ -85,12 +108,18 @@ async function readSnapshotFromSwarm(): Promise<EventsSnapshot | null> {
  * Current directory snapshot. SWR: serve the cached copy and refresh behind the
  * response once stale; only a cold process pays the (cheap: 1 pointer + 1 blob)
  * read. Returns null before the first snapshot exists (→ empty directory).
+ *
+ * A read that found nothing is not repeated for the same interval. Every read of
+ * a feed nobody has written is a miss on its first chunk, and a few misses inside
+ * a minute make bee refuse that chunk for the next one (`storage-busy.ts`), which
+ * is what would then refuse the write that creates the feed.
  */
 export async function getEventsSnapshot(): Promise<EventsSnapshot | null> {
   if (_cache) {
     if (Date.now() - _cache.at >= READ_CACHE_TTL_MS) void refreshRead();
     return _cache.snapshot;
   }
+  if (Date.now() - _emptyReadAt < READ_CACHE_TTL_MS) return null;
   return refreshRead();
 }
 
@@ -99,8 +128,9 @@ function refreshRead(): Promise<EventsSnapshot | null> {
   _readInFlight = (async () => {
     try {
       const snap = await readSnapshotFromSwarm();
-      if (snap) _cache = { at: Date.now(), snapshot: snap };
-      return snap ?? _cache?.snapshot ?? null;
+      if (snap) remember(snap);
+      else _emptyReadAt = Date.now();
+      return _cache?.snapshot ?? null;
     } finally {
       _readInFlight = null;
     }
@@ -137,27 +167,37 @@ function mergeResolution(...lists: SnapshotResolutionEntry[][]): SnapshotResolut
 }
 
 /**
- * Everything a rebuild reads or writes outside this module, as one object a test
- * can replace. The rebuild had no test before this: its uploads land on whatever
- * bee the process is pointed at, and in development that is production's.
+ * The directory's Swarm reads and writes, its registrations and its card
+ * resolver, as one object a test can replace. The rebuild had no test before
+ * this: its uploads land on whatever bee the process is pointed at, and in
+ * development that is production's. The listing overlay is not here: tests run
+ * the real one on a temp `.data`.
  */
 export interface SnapshotIo {
+  /** The rebuild's read: absent, unreadable and found are three answers. */
   readPointer(): Promise<FeedReadStrictResult>;
+  /** The display read: null for absent and for unreadable alike. */
+  readPointerForDisplay(): Promise<Uint8Array | null>;
   readBlob(ref: string): Promise<string>;
   writeBlob(json: string): Promise<Hex64>;
-  writePointer(page: Uint8Array): Promise<void>;
+  /** `fresh`: the feed has never been written, so the update goes to index 0 with no read first. */
+  writePointer(page: Uint8Array, fresh: boolean): Promise<void>;
   resolveCard(entry: { wocoEventId: string; creatorFeedSigner?: string }): Promise<SnapshotCard | null>;
   registrations(): SnapshotResolutionEntry[];
   activeChainId(): number;
 }
 
 /**
- * The server's registrations as table entries, each with its event's feed signer.
- * The registry does not hold the signer, and a full rebuild used to get it only
- * from the last snapshot's table. With nothing to build on, every entry would be
- * published without the one field that lets a reader find the event's content.
- * The record pinned at create (#670) is where the register-success trigger takes
- * it from too (`resolutionSigner`), so the two never disagree.
+ * The server's registrations as table entries, each with its event's feed signer
+ * where one was pinned at create (#670). The registry does not hold the signer,
+ * and a full rebuild used to get it only from the last snapshot's table: with
+ * nothing to build on, every entry would be published without the one field that
+ * lets a reader find the event's content.
+ *
+ * An event created before the pinned record existed gets no signer here. The
+ * listing overlay's card seed holds one for some of them, and is deliberately not
+ * used: `/list` rewrites it, and this value becomes the signer the money path
+ * reads the event under.
  */
 export function registrationsWithSigners(): SnapshotResolutionEntry[] {
   return getAllResolutionEntries().map((e) => {
@@ -168,19 +208,38 @@ export function registrationsWithSigners(): SnapshotResolutionEntry[] {
 
 const liveIo: SnapshotIo = {
   readPointer: () => readFeedPageStrict(topicEventsSnapshot()),
+  readPointerForDisplay: () => readFeedPage(topicEventsSnapshot()),
   readBlob: (ref) => downloadFromBytes(ref),
   writeBlob: (json) => uploadToBytes(json),
-  writePointer: (page) => writeFeedPage(topicEventsSnapshot(), page),
+  writePointer: (page, fresh) => writeFeedPage(topicEventsSnapshot(), page, fresh ? { fresh: true } : {}),
   resolveCard,
   registrations: registrationsWithSigners,
   activeChainId: getActiveChainId,
 };
 let io = liveIo;
 
-/** Tests only: swap the rebuild's I/O (null restores it) and forget the cached snapshot. */
+/** Tests only: swap the directory's I/O (null restores it) and forget what was read. */
 export function _setSnapshotIoForTest(fake: Partial<SnapshotIo> | null): void {
   io = fake ? { ...liveIo, ...fake } : liveIo;
   _cache = null;
+  _emptyReadAt = 0;
+}
+
+/** Tests only: run the display refresh now, as an expired cache would. */
+export function _refreshSnapshotForTest(): Promise<EventsSnapshot | null> {
+  return refreshRead();
+}
+
+/**
+ * Whether this process rebuilds the public directory. A rebuild publishes what
+ * THIS server's listing overlay says is listed, signed with the platform key. A
+ * development server runs on the production key and bee with a `.data` of its
+ * own, so its rebuild would replace the live directory with a laptop's view of
+ * it, every 30 minutes. The dev scripts set `DIRECTORY_PUBLISH=off`; such a
+ * process still reads the directory.
+ */
+export function directoryPublishingEnabled(): boolean {
+  return process.env.DIRECTORY_PUBLISH !== "off";
 }
 
 /**
@@ -197,22 +256,32 @@ export function isPublishedRegistration(entry: SnapshotResolutionEntry, activeCh
 }
 
 /**
- * The snapshot a rebuild builds on, or null when there is none to build on.
+ * The snapshot a rebuild builds on (`base`, null when there is none), and
+ * whether the feed has never been written.
  *
- * Never the lenient display read: that answers null for a feed bee failed to
- * read as well as for one never written, and a rebuild taking the first for the
- * second skips the reseed in `doRebuild` and can publish an empty directory over
- * a live one. A snapshot that cannot be read is survivable while the listing
- * overlay has rows, because overlay and registrations rebuild every card, so
- * that rebuild goes ahead in full. With the overlay empty as well, the last
- * snapshot is the only record of what was listed, and the rebuild is refused.
+ * The cached snapshot when there is one: it was read or built, never assumed.
+ * Otherwise a strict read, because the display read answers null for a feed bee
+ * failed to read as well as for one never written, and a rebuild taking the
+ * first for the second skips the reseed in `doRebuild` and can publish an empty
+ * directory over a live one. Four answers:
+ *  - found: build on it;
+ *  - never written: build in full, and write index 0 without probing it again;
+ *  - bee is refusing the feed's first chunk for a minute (`storage-busy.ts`):
+ *    the same answer for a feed never written and for one it cannot reach, so
+ *    nothing is concluded and nothing uploaded. Thrown as is, for the caller to
+ *    retry past the window;
+ *  - unreadable otherwise: survivable while the listing overlay has rows,
+ *    because overlay and registrations rebuild every card, so the rebuild goes
+ *    ahead in full. With the overlay empty too, the last snapshot is the only
+ *    record of what was listed, and the rebuild is refused.
  */
-async function baseForRebuild(): Promise<EventsSnapshot | null> {
-  if (_cache) return _cache.snapshot;
+async function baseForRebuild(): Promise<{ base: EventsSnapshot | null; neverWritten: boolean }> {
+  if (_cache) return { base: _cache.snapshot, neverWritten: false };
   const read = await io.readPointer();
-  if (read.status === "absent") return null;
+  if (read.status === "absent") return { base: null, neverWritten: true };
   let unreadable: string;
   if (read.status === "error") {
+    if (isStorageBusy(read.error)) throw read.error;
     unreadable = read.error.message;
   } else {
     const pointer = decodeJsonFeed<EventsSnapshotPointer>(read.data);
@@ -220,8 +289,11 @@ async function baseForRebuild(): Promise<EventsSnapshot | null> {
       unreadable = "the pointer did not decode";
     } else {
       try {
-        const snap = JSON.parse(await io.readBlob(pointer.snapshotRef)) as EventsSnapshot;
-        if (Array.isArray(snap?.cards) && Array.isArray(snap?.resolution)) return snap;
+        const snap = parseSnapshot(await io.readBlob(pointer.snapshotRef));
+        if (snap) {
+          remember(snap);
+          return { base: snap, neverWritten: false };
+        }
         unreadable = `blob ${pointer.snapshotRef.slice(0, 12)}… is not a snapshot`;
       } catch (err) {
         unreadable = `blob ${pointer.snapshotRef.slice(0, 12)}…: ${(err as Error)?.message ?? err}`;
@@ -229,10 +301,10 @@ async function baseForRebuild(): Promise<EventsSnapshot | null> {
     }
   }
   if (!hasAnyRows()) {
-    throw new Error(`the last directory snapshot is unreadable and the listing overlay is empty (${unreadable})`);
+    throw new Error(`the directory snapshot is unreadable and the listing overlay is empty (${unreadable})`);
   }
-  console.warn(`[snapshot] last snapshot unreadable (${unreadable}): rebuilding in full from server records`);
-  return null;
+  console.warn(`[snapshot] no readable snapshot (${unreadable}): rebuilding in full from server records`);
+  return { base: null, neverWritten: false };
 }
 
 interface RebuildOpts {
@@ -262,12 +334,13 @@ let _rebuildQueue: Promise<void> = Promise.resolve();
 /** Serialise rebuilds (the pointer feed is single-writer) and swallow errors so a
  *  failed rebuild never rejects a caller — the snapshot is a cache. */
 export function rebuildSnapshot(opts: RebuildOpts = {}): Promise<void> {
+  if (!directoryPublishingEnabled()) return Promise.resolve();
   _rebuildQueue = _rebuildQueue.catch(() => undefined).then(() => doRebuild(opts));
   return _rebuildQueue;
 }
 
 async function doRebuild(opts: RebuildOpts): Promise<void> {
-  const base = await baseForRebuild();
+  const { base, neverWritten } = await baseForRebuild();
   // With no snapshot to build on (a new feed generation, or an unreadable one)
   // an incremental rebuild would publish a table holding only this trigger's
   // registrations and leave the rest out until the next reconcile.
@@ -359,7 +432,10 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
   // name a blob that isn't uploaded yet.
   const ref = await io.writeBlob(JSON.stringify(snapshot));
   const pointer: EventsSnapshotPointer = { v: 1, snapshotRef: ref, builtAt: snapshot.builtAt, count: cards.length };
-  await io.writePointer(encodeJsonFeed(pointer));
+  // A feed read as never written is written as one: no probe of index 0 for bee
+  // to refuse, and if that read was wrong the write finds index 0 taken and
+  // throws, where a walk past the real updates would make this snapshot the head.
+  await io.writePointer(encodeJsonFeed(pointer), neverWritten);
   _cache = { at: Date.now(), snapshot };
   console.log(`[snapshot] rebuilt: ${cards.length} cards, ${resolution.length} registrations, ref=${ref.slice(0, 12)}…`);
 }
@@ -398,9 +474,38 @@ export function rebuildSnapshotFull(): Promise<void> {
 const RECONCILE_INTERVAL_MS = 30 * 60_000;
 let _maintenanceStarted = false;
 
-/** Start the periodic full reconcile. Idempotent; called once from server startup. */
+/**
+ * The first reconcile, at boot. Its one strict read of the pointer feed warms
+ * the cache, so nothing else needs to read the feed at startup, and on a feed
+ * generation nobody has written it publishes the first snapshot, before requests
+ * start reading a feed that is not there. When bee is already refusing that
+ * feed's first chunk, it tries again past the one-minute window, twice.
+ */
+export async function reconcileAtBoot(
+  retryIn: (ms: number, run: () => Promise<void>) => void = (ms, run) => void setTimeout(() => void run(), ms).unref?.(),
+  retriesLeft = 2,
+): Promise<void> {
+  try {
+    await rebuildSnapshotFull();
+    console.log(`[startup] event directory ready (${_cache?.snapshot.cards.length ?? 0} entries)`);
+  } catch (err) {
+    if (isStorageBusy(err) && retriesLeft > 0) {
+      console.warn(`[startup] event directory: storage busy, trying again in ${Math.round(STORAGE_BUSY_RETRY_MS / 1000)}s`);
+      retryIn(STORAGE_BUSY_RETRY_MS, () => reconcileAtBoot(retryIn, retriesLeft - 1));
+      return;
+    }
+    console.warn("[startup] event directory reconcile failed:", err);
+  }
+}
+
+/** Reconcile now, then every 30 minutes. Idempotent; called once from server startup. */
 export function startSnapshotMaintenance(): void {
   if (_maintenanceStarted) return;
   _maintenanceStarted = true;
+  if (!directoryPublishingEnabled()) {
+    console.log("[snapshot] DIRECTORY_PUBLISH=off: this process reads the public directory and never rebuilds it");
+    return;
+  }
+  void reconcileAtBoot();
   setInterval(() => void rebuildSnapshotFull().catch(() => undefined), RECONCILE_INTERVAL_MS).unref?.();
 }

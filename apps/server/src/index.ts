@@ -68,7 +68,6 @@ import { firstWriteRetryHealth } from "./lib/swarm/first-write-retry.js";
 import { apiBodyLimit } from "./lib/http/body-limit.js";
 import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
-import { listEvents } from "./lib/event/service.js";
 import { onchainRegistryHealth } from "./lib/event/onchain-registry.js";
 import { issuerBindingHealth } from "./lib/issuer/binding.js";
 import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
@@ -1112,16 +1111,12 @@ startDomainPoller();
 assertEventContractConfig();
 
 void logSponsorReadiness();
-// Prime the directory-snapshot read cache (#37: 1 pointer + 1 blob) so the first
-// GET /api/events after a restart serves from memory instead of a cold read.
-void listEvents().then(
-  (d) => console.log(`[startup] event directory primed (${d.length} entries)`),
-  (err) => console.warn("[startup] event directory prime failed:", err),
-);
-// Periodic full reconcile — heals snapshot drift (edits, expired events, a lost
-// incremental trigger) from the chain-log registrations. Does NOT force an initial
-// rebuild: a fresh deploy leaves the snapshot as-is until a publish/list or the
-// ops rebuild endpoint runs the cutover, so the switch-over is deliberate.
+// The directory: a full reconcile now and every 30 minutes, which heals snapshot
+// drift (edits, expired events, a lost incremental trigger) from the server's
+// registrations. The one at boot is also what reads the pointer feed first, so
+// the first GET /api/events serves from memory, and what publishes the first
+// snapshot of a feed generation nobody has written. A reconcile that changes
+// nothing writes nothing. Off entirely under DIRECTORY_PUBLISH=off (dev).
 startSnapshotMaintenance();
 // Organiser takings sit on a manual payout schedule and are released after each
 // event by this sweep. If it stops running, no organiser gets paid — and funds

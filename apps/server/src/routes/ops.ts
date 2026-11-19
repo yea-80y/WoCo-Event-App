@@ -79,7 +79,7 @@ import { hashEmail } from "../lib/event/claim-service.js";
 import { heldOrdersHealth, paidUnstored } from "../lib/attendee-batch/held-orders.js";
 import { MAX_LIMIT as RETENTION_MAX_LIMIT, previewOrderRetention, runOrderRetention } from "../lib/attendee-batch/retention.js";
 import { getListingSeed, isListedForSnapshot, listedEventIds, setListed } from "../lib/event/listing-state.js";
-import { rebuildSnapshotFull, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
+import { directoryPublishingEnabled, rebuildSnapshotFull, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -690,6 +690,10 @@ ops.post("/directory/rebuild", async (c) => {
   const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
   const by = (body?.by || "").trim().slice(0, 100);
   if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  // Otherwise the rebuild is a silent no-op and this would answer "rebuilt".
+  if (!directoryPublishingEnabled()) {
+    return c.json({ ok: false, error: "This server does not rebuild the directory (DIRECTORY_PUBLISH=off)" }, 409);
+  }
   try {
     await directoryRebuild.full();
   } catch (err) {
