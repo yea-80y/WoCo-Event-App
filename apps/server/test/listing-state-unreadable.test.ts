@@ -116,6 +116,7 @@ for (const [what, bytes] of UNREADABLE) {
     writeFileSync(FILE, bytes);
     assert.deepEqual(ls.listingStateHealth(), { ok: false, unreadable: true, rows: 0, pending: 0 });
     assert.equal(ls.needsRestoreFromSnapshot(), true);
+    assert.deepEqual(pendingIds(), [], "the side file is there from the start: it marks whatever is put back as a copy to complete");
 
     // Everything that writes the overlay: a listing, an unlist, a delete, and the builder's restore.
     ls.setListed("new1", true, card("new1"), { explicitlyListed: true });
@@ -181,12 +182,51 @@ test("the builder: a change made before the first rebuild, then a restart, does 
   assert.deepEqual(pendingIds(), ["created", "s2"], "restored rows are not changes: the repaired file knows better");
 });
 
-test("the builder: with the file unreadable and nothing changed, the directory keeps its events and nothing is published", async () => {
+test("the builder: with the file unreadable and nothing changed, the directory keeps its events", async () => {
   writeFileSync(FILE, BROKEN);
-  assert.equal(await rebuildAgainst(["s1", "s2"]), null);
+  assert.deepEqual(await rebuildAgainst(["s1", "s2"]), ["s1", "s2"]);
   assert.deepEqual(ls.listedEventIds().sort(), ["s1", "s2"]);
   assert.equal(readFileSync(FILE, "utf-8"), BROKEN);
-  assert.equal(existsSync(PENDING), false);
+  assert.deepEqual(pendingIds(), [], "restored rows are not changes");
+});
+
+test("the builder: a repair with an older copy keeps the events listed after that copy was taken", async () => {
+  // Last night's copy knows nothing of "since". Read as the whole listing, it dropped that event from the directory.
+  writeFileSync(FILE, BROKEN);
+  assert.deepEqual(await rebuildAgainst(["old", "since"]), ["old", "since"], "nothing was changed while it was broken");
+  writeFileSync(FILE, JSON.stringify({
+    old: { listed: true, explicitlyListed: true, updatedAt: AT },
+    gone: { listed: false, tombstoned: true, updatedAt: AT },
+  }));
+  restart();
+  assert.equal(ls.needsRestoreFromSnapshot(), true, "a file put back beside the side file is a copy to complete");
+  assert.equal(readFileSync(FILE, "utf-8").includes("since"), false, "and is not written until it has been");
+
+  assert.deepEqual(await rebuildAgainst(["old", "since"]), ["old", "since"], "the directory keeps both events");
+  assert.deepEqual(ls.listedEventIds().sort(), ["old", "since"]);
+  assert.equal(ls.isListedForSnapshot("gone"), false, "what only the copy knew is kept");
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(FILE, "utf-8"))).sort(), ["gone", "old", "since"]);
+  assert.equal(existsSync(PENDING), false, "the file is whole again");
+  restart();
+  assert.equal(ls.needsRestoreFromSnapshot(), false);
+});
+
+test("the builder: a broken file replaced by an empty one does not empty the directory", async () => {
+  writeFileSync(FILE, BROKEN);
+  ls.setListed("s2", false);
+  writeFileSync(FILE, "{}"); // "repaired" by starting the file again
+  restart();
+  assert.deepEqual(await rebuildAgainst(["s1", "s2", "s3"]), ["s1", "s3"], "the last snapshot's events are kept, and the takedown holds");
+});
+
+test("removing the side file by hand takes the repaired file exactly as it is", async () => {
+  writeFileSync(FILE, BROKEN);
+  ls.setListed("s2", false);
+  writeFileSync(FILE, JSON.stringify({ s1: { listed: true, explicitlyListed: true, updatedAt: AT } }));
+  rmSync(PENDING);
+  restart();
+  assert.equal(ls.needsRestoreFromSnapshot(), false);
+  assert.deepEqual(await rebuildAgainst(["s1", "s2", "s3"]), ["s1"]);
 });
 
 test("the builder: a lost file is restored even when a change came before the first rebuild", async () => {
@@ -234,49 +274,58 @@ test("the builder: a lost file and a snapshot bee cannot read stay refused acros
   assert.equal(ls.isExplicitlyListed("created"), true, "the change itself is kept");
 });
 
-test("after the repair, a restart applies those changes over the repaired file and removes the side file", () => {
+test("after the repair, those changes apply over the repaired file, the restore fills what it lacks, and the side file goes", () => {
   writeFileSync(FILE, BROKEN);
   ls.setListed("cancelled", false);               // cancelled, taken down or unlisted while the file was broken
   ls.setTombstoned("deleted");                    // deleted while it was broken
   ls.setListed("created", true, card("created")); // created while it was broken
-  ls.restoreFromSnapshot([card("restored")]);
+  ls.restoreFromSnapshot([card("restored"), card("since")]);
 
-  // The operator restores an older copy: both removed events are still listed in it.
-  writeFileSync(FILE, JSON.stringify({
+  // The operator restores an older copy: both removed events are still listed in it, and "since" is not in it.
+  const copy = JSON.stringify({
     cancelled: { listed: true, explicitlyListed: true, updatedAt: AT },
     deleted: { listed: true, explicitlyListed: true, updatedAt: AT },
     restored: { listed: true, updatedAt: AT },
     untouched: { listed: false, tombstoned: true, updatedAt: AT },
-  }));
+  });
+  writeFileSync(FILE, copy);
   restart();
 
-  assert.deepEqual(ls.listingStateHealth(), { ok: true, unreadable: false, rows: 5, pending: 0 });
-  assert.equal(ls.needsRestoreFromSnapshot(), false, "the file loaded: the listing is whole");
+  assert.deepEqual(ls.listingStateHealth(), { ok: true, unreadable: false, rows: 5, pending: 3 });
+  assert.equal(ls.needsRestoreFromSnapshot(), true, "the copy may lack events listed since it was taken");
   assert.equal(ls.isListedForSnapshot("cancelled"), false, "stays out of the directory");
   assert.equal(ls.isListedForSnapshot("deleted"), false);
   ls.setListed("deleted", true, card("deleted"), { explicitlyListed: true });
   assert.equal(ls.isListedForSnapshot("deleted"), false, "and stays deleted");
   assert.equal(ls.isListedForSnapshot("created"), true);
-  assert.equal(ls.isExplicitlyListed("restored"), false, "a row the builder restored never overrides the repaired file");
-  assert.equal(existsSync(PENDING), false, "applied once, then gone");
+  assert.equal(readFileSync(FILE, "utf-8"), copy, "nothing is written to the file until the restore");
+
+  assert.equal(ls.restoreFromSnapshot([card("restored"), card("since"), card("cancelled")]), 1, "only the event with no row anywhere");
+  assert.equal(ls.isExplicitlyListed("since"), true);
+  assert.equal(ls.isExplicitlyListed("restored"), false, "a row the builder restores never overrides the repaired file");
+  assert.equal(ls.isListedForSnapshot("cancelled"), false, "nor a change made while it was broken");
+  assert.equal(existsSync(PENDING), false, "applied, written, then gone");
+  assert.deepEqual(ls.listingStateHealth(), { ok: true, unreadable: false, rows: 6, pending: 0 });
 
   const written = JSON.parse(readFileSync(FILE, "utf-8"));
-  assert.deepEqual(Object.keys(written).sort(), ["cancelled", "created", "deleted", "restored", "untouched"]);
+  assert.deepEqual(Object.keys(written).sort(), ["cancelled", "created", "deleted", "restored", "since", "untouched"]);
   assert.equal(written.cancelled.listed, false);
   assert.equal(written.deleted.tombstoned, true);
   assert.equal(written.untouched.tombstoned, true, "what the file already held is kept");
 
   restart();
+  assert.equal(ls.needsRestoreFromSnapshot(), false);
   assert.equal(ls.isListedForSnapshot("cancelled"), false, "and it holds across the next restart, from the file alone");
 });
 
-test("a side file the start-up rewrite could not apply is removed by the next write that lands", { skip: process.getuid?.() === 0 }, () => {
+test("a side file the restore could not fold in is removed by the next write that lands", { skip: process.getuid?.() === 0 }, () => {
   writeFileSync(FILE, BROKEN);
   ls.setListed("cancelled", false);
   writeFileSync(FILE, JSON.stringify({ cancelled: { listed: true, updatedAt: AT } }));
+  restart();
   chmodSync(DATA, 0o500); // the repaired file is readable, and nothing can be written beside it
   try {
-    restart();
+    ls.restoreFromSnapshot([]);
     assert.equal(ls.isListedForSnapshot("cancelled"), false, "the change is in effect all the same");
     assert.equal(existsSync(PENDING), true, "and still on disk: the file does not hold it yet");
   } finally {
@@ -285,6 +334,7 @@ test("a side file the start-up rewrite could not apply is removed by the next wr
   ls.setListed("cancelled", true, card("cancelled"), { explicitlyListed: true });
   assert.equal(existsSync(PENDING), false, "the file holds everything now");
   restart();
+  assert.equal(ls.needsRestoreFromSnapshot(), false);
   assert.equal(ls.isListedForSnapshot("cancelled"), true, "so the older change is not applied again over the newer one");
 });
 
@@ -298,6 +348,7 @@ test("a side file that cannot be understood is not applied, not overwritten, and
   // With the main file broken as well, changes cannot be kept: the side file still is not written over.
   restart();
   writeFileSync(FILE, BROKEN);
+  assert.equal(ls.needsRestoreFromSnapshot(), true, "with neither file usable the listing is as incomplete as it gets");
   ls.setListed("new1", true, card("new1"));
   assert.equal(readFileSync(PENDING, "utf-8"), BROKEN);
 });

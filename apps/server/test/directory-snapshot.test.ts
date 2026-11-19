@@ -91,6 +91,8 @@ interface Harness {
   blobs: Map<string, string | Error>;
   registrations: SnapshotResolutionEntry[];
   chainId: number;
+  /** Events whose own content cannot be read just now. */
+  unresolvable: Set<string>;
   /** The next pointer write throws this, once. */
   failPointerWrite: Error | null;
   /** Every pointer written, in order, and whether each was written as a first update. */
@@ -118,6 +120,7 @@ function install(
     blobs: new Map(Object.entries(init.blobs ?? {})),
     registrations: init.registrations ?? [],
     chainId: init.chainId ?? MAINNET,
+    unresolvable: new Set(),
     failPointerWrite: null,
     written: [],
     fresh: [],
@@ -176,7 +179,7 @@ function install(
     // The event's own content, as the builder would resolve it.
     async resolveCard(entry) {
       h.cardReads++;
-      return card(entry.wocoEventId);
+      return h.unresolvable.has(entry.wocoEventId) ? null : card(entry.wocoEventId);
     },
     ...(init.realRegistrations
       ? {}
@@ -269,10 +272,10 @@ test("overlay not loaded: a readable last snapshot restores the listing and its 
   assert.equal(ls.isListedForSnapshot("s1"), true, "s1 restored from the last snapshot");
   assert.equal(ls.isExplicitlyListed("s2"), true, "s2 (never registered) restored as a deliberate listing");
   assert.equal(ls.needsRestoreFromSnapshot(), false);
-  // Same cards, same table: nothing new to publish, and the directory still serves both.
-  assert.equal(h.written.length, 0);
+  // Same cards, same table, and the directory still serves both.
+  assert.deepEqual(ids(h.last().cards), ["s1", "s2"]);
   assert.deepEqual(ids((await snap.getEventsSnapshot())!.cards), ["s1", "s2"]);
-  assert.equal(h.displayReads, 0, "served from what the rebuild read, with no second read of the feed");
+  assert.equal(h.displayReads, 0, "served from what the rebuild built, with no second read of the feed");
 });
 
 // ---------------------------------------------------------------------------
@@ -311,7 +314,6 @@ test("once this process has rebuilt, a trigger stays incremental and the write i
   const prior = snapshotJson([card("s1"), card("s2")], [registration("s1", { chainId: MAINNET })]);
   const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: prior }, registrations: [registration("s1", { chainId: MAINNET })] });
   await snap.rebuildSnapshot({ full: true });
-  assert.equal(h.written.length, 0, "the full rebuild found nothing to change");
   assert.equal(h.registrationReads, 1);
 
   h.registrations = [...h.registrations, registration("unseen", { chainId: MAINNET })];
@@ -319,7 +321,46 @@ test("once this process has rebuilt, a trigger stays incremental and the write i
   assert.equal(h.registrationReads, 1, "an incremental rebuild takes its table from the snapshot held, plus its trigger");
   assert.deepEqual(tableIds(h.last().resolution), ["e1", "s1"]);
   assert.deepEqual(ids(h.last().cards), ["e1", "s1", "s2"]);
+  assert.deepEqual(h.fresh, [false, false]);
+});
+
+test("a process's first rebuild publishes even when it matches the snapshot it read", async () => {
+  // What was read at restart can be the update before the newest. The newest still lists "gone",
+  // unlisted just before the restart: matching the older one says nothing about what is live.
+  const read = snapshotJson([card("s1"), card("s2")], [registration("s1", { chainId: MAINNET })]);
+  const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: read }, registrations: [registration("s1", { chainId: MAINNET })] });
+  await snap.rebuildSnapshot({ full: true });
+  assert.equal(h.written.length, 1, "written once, so the live directory is this server's records whatever was read");
+  assert.deepEqual(ids(h.last().cards), ["s1", "s2"]);
   assert.deepEqual(h.fresh, [false]);
+
+  await snap.rebuildSnapshot({ full: true });
+  assert.equal(h.written.length, 1, "after that, a rebuild that changes nothing writes nothing");
+});
+
+test("content that can be read replaces the card already published", async () => {
+  const prior = snapshotJson([card("s1", { title: "title before the edit" }), card("s2")], []);
+  const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: prior }, registrations: [registration("s1", { chainId: MAINNET })] });
+  await snap.rebuildSnapshot({ touchedEventIds: ["s1"] });
+  assert.equal(h.last().cards.find((c) => c.eventId === "s1")?.title, "s1", "the organiser's own content, read now");
+});
+
+test("after a rebuild is refused as busy, requests stay off the feed until its retry has had its turn", async () => {
+  let t = 1_000_000;
+  snap._setSnapshotClockForTest(() => t);
+  try {
+    const h = install({ pointer: "busy" });
+    await assert.rejects(snap.rebuildSnapshot({ full: true }), (err) => busy.isStorageBusy(err));
+    assert.equal(await snap.getEventsSnapshot(), null);
+    t += busy.STORAGE_BUSY_RETRY_MS;
+    assert.equal(await snap.getEventsSnapshot(), null);
+    assert.equal(h.displayReads, 0, "their reads are what keeps bee's refusal going past the retry");
+    t += 5_000;
+    await snap.getEventsSnapshot();
+    assert.equal(h.displayReads, 1, "then they read again");
+  } finally {
+    snap._setSnapshotClockForTest(null);
+  }
 });
 
 test("an unreadable snapshot with the overlay whole rebuilds in full from server records", async () => {
@@ -671,4 +712,48 @@ test("both dev start commands switch directory publishing off", () => {
   assert.match(pkg.scripts["dev:notunnel"], /(^| )DIRECTORY_PUBLISH=off (.* )?tsx /, "set before the command it applies to");
   // The production start command must not carry it.
   assert.doesNotMatch(pkg.scripts.start, /DIRECTORY_PUBLISH/);
+});
+
+// ---------------------------------------------------------------------------
+// Content that cannot be read. Last in the file: these add rows to the overlay.
+// ---------------------------------------------------------------------------
+
+/** The card the directory now serves for an event, written or not. */
+const served = async (eventId: string) => (await snap.getEventsSnapshot())!.cards.find((c) => c.eventId === eventId);
+
+test("content that cannot be read keeps the card already published, not the create-time seed", async () => {
+  // The seed is captured at create and never follows an edit; a process's first rebuild reads every event cold.
+  ls.setListed("m1", true, card("m1", { title: "title at create" }), { explicitlyListed: true });
+  const prior = snapshotJson([card("m1", { title: "title after an edit" })], []);
+  const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: prior } });
+  h.unresolvable.add("m1");
+  await snap.rebuildSnapshot({ touchedEventIds: ["m1"] });
+  assert.equal((await served("m1"))?.title, "title after an edit");
+});
+
+test("content that cannot be read, for an event with no card yet, is published from its seed", async () => {
+  ls.setListed("m2", true, card("m2", { title: "title at create" }), { explicitlyListed: true });
+  const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: snapshotJson([], []) } });
+  h.unresolvable.add("m2");
+  await snap.rebuildSnapshot({ full: true });
+  assert.equal((await served("m2"))?.title, "title at create");
+});
+
+test("a self-hosted event is published from its seed, and a re-list replaces its card", async () => {
+  // Its content is never readable here: the seed /list wrote is its card.
+  const apiUrl = "https://organiser.example";
+  ls.setListed("fed1", true, card("fed1", { title: "re-listed title", apiUrl }), { explicitlyListed: true });
+  const prior = snapshotJson([card("fed1", { title: "title when first listed", apiUrl })], []);
+  const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: prior } });
+  h.unresolvable.add("fed1");
+  await snap.rebuildSnapshot({ touchedEventIds: ["fed1"] });
+  assert.equal((await served("fed1"))?.title, "re-listed title");
+});
+
+test("content that cannot be read, with no card and no seed, leaves the event out", async () => {
+  ls.setListed("m3", true, undefined, { explicitlyListed: true });
+  const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: snapshotJson([], []) } });
+  h.unresolvable.add("m3");
+  await snap.rebuildSnapshot({ full: true });
+  assert.equal((await served("m3")), undefined);
 });
