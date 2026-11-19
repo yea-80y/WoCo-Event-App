@@ -23,6 +23,17 @@ function isPrivateHost(hostname: string): boolean {
   return false;
 }
 
+/** Whether `url` is this server's own public API (`PUBLIC_API_BASE`), by origin. False when that is not set. */
+export function isOwnPublicApiUrl(url: string): boolean {
+  const base = (process.env.PUBLIC_API_BASE || "").trim();
+  if (!base) return false;
+  try {
+    return new URL(url).origin === new URL(base).origin;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Returns a public-safe API URL or undefined.
  *

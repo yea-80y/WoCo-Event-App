@@ -674,8 +674,8 @@ ops.get("/directory", (c) => {
  *
  * The platform takes an event out of the public directory. Same effect as the
  * organiser's own unlist: the listing flag is cleared and the event can be listed
- * again. Never by editing the listing file: an empty one unlists every event at
- * the next rebuild.
+ * again. Never by editing the listing file: an empty one (with no pending file
+ * beside it) unlists every event at the next rebuild.
  *
  * While the listing is incomplete (its file did not load and the builder has not
  * restored it yet) "no row" is not "not listed": the event can be in the public

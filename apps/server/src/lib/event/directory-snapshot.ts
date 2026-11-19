@@ -27,6 +27,7 @@ import {
 } from "../swarm/feeds.js";
 import { isStorageBusy, STORAGE_BUSY_RETRY_MS } from "../swarm/storage-busy.js";
 import { topicEventsSnapshot } from "../swarm/topics.js";
+import { isOwnPublicApiUrl } from "../url/public-api-url.js";
 import { getRecordedFeedSigner } from "./feed-signer-record.js";
 import { getAllResolutionEntries } from "./onchain-registry.js";
 import {
@@ -171,8 +172,10 @@ async function resolveCard(entry: { wocoEventId: string; creatorFeedSigner?: str
 /**
  * The card for an event whose content could not be read just now.
  *
- * A self-hosted event's never can be, here: its seed, set by `/list` (the only
- * thing that knows its `apiUrl`), IS its card, and a re-list has to show.
+ * An event hosted on another server never can be, here: its seed, set by `/list`
+ * (the only thing that knows its `apiUrl`), IS its card, and a re-list has to
+ * show. An `apiUrl` alone does not say that: `/list` stamps this server's own
+ * address on the events it hosts.
  *
  * For any other event the miss is a passing one, and the card already published
  * came from the organiser's own feed. The seed is captured at create and never
@@ -182,7 +185,7 @@ async function resolveCard(entry: { wocoEventId: string; creatorFeedSigner?: str
  */
 function cardOnMiss(eventId: string, published: SnapshotCard | undefined): SnapshotCard | null {
   const seed = getListingSeed(eventId);
-  if (seed?.apiUrl) return seed;
+  if (seed?.apiUrl && !isOwnPublicApiUrl(seed.apiUrl)) return seed;
   return published ?? seed;
 }
 
