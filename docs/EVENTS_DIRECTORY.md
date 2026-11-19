@@ -100,8 +100,11 @@ missing blob.
 - **An unreadable listing file is never overwritten.** `event-listing-state.json`
   present but not readable as rows is left for repair; the server carries on
   from memory (listed events return through the reseed) and `/api/health`
-  `listingState` is red. Changes made meanwhile are lost at the restart after
-  the repair. A file that is not there is still an empty overlay.
+  `listingState` is red. What people change meanwhile (a cancel, takedown,
+  unlist, delete, a new event) is kept in `event-listing-state.pending.json`,
+  survives restarts, and is applied over the file once it loads again; rows the
+  reseed restored are not. Repair = put a good file back, keep the pending file,
+  restart. A file that is not there is still an empty overlay.
 
 ## Reads
 
