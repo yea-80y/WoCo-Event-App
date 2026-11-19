@@ -12,7 +12,7 @@ one owner. (Schema + invariants: `packages/shared/src/event/snapshot.ts`; builde
 |---|---|---|---|
 | 1. TRUTH | Onchain (`WoCoTicketLedger` on Arbitrum Sepolia today; `WoCoEventV2` before it) | `Registered` log, one entry per ticket series: `onChainEventId`, organiser, supply, manifest **digest** | Platform sponsor wallet (gas-sponsored on behalf of the organiser) |
 | 2. CONTENT | Swarm (new events stamped on Etherna, #617) | Event feed (SOC) + series manifests + images | **Creator** (client-owned feed signer) — the organiser's content, portable, listable anywhere |
-| 3. SPEED | Swarm | ONE immutable snapshot blob + a pointer feed at `woco/event/directory/snapshot` | **Platform signer** (the only centralised piece) |
+| 3. SPEED | Swarm | ONE immutable snapshot blob + a pointer feed at `woco/event/directory/snapshot/{generation}` (`eventsSnapshotTopicName` in `@woco/shared`; generation 2 since 2026-11) | **Platform signer** (the only centralised piece) |
 
 - A directory paint = 1 pointer-feed read + 1 blob fetch, regardless of event count.
   The blob is immutable ⇒ hard CDN caching.
@@ -67,6 +67,20 @@ Rebuilds: debounced incremental (1.5s, coalesces multi-series publishes) +
 30-min full reconcile + fingerprint skip (no churn when nothing changed).
 Order: blob upload first, pointer write second — the pointer never names a
 missing blob.
+
+- **What a rebuild builds on.** The last snapshot, read strictly. None yet (a new
+  generation): a full rebuild from the server's registrations and the overlay.
+  Unreadable: the same, while the overlay has rows; with the overlay empty too
+  the rebuild is refused, because the last snapshot is then the only record of
+  what was listed.
+- **What the table holds.** Only registrations that name their contract on the
+  active chain (`isPublishedRegistration`), each with the feed signer pinned at
+  create. An event outside the table counts as unregistered: it shows only when
+  listed deliberately. Its record stays in `.data/onchain-events.json`.
+- **A new generation.** Raising `EVENTS_SNAPSHOT_GENERATION` starts the pointer
+  feed again at index 0. Nothing is carried over and the old feed is never read.
+  After deploying one, run `POST /api/ops/directory/rebuild` once: until the first
+  snapshot is written, every `GET /api/events` looks for a feed that is not there.
 
 ## Reads
 

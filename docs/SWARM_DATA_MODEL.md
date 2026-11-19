@@ -124,7 +124,7 @@ There are two topic schemes, for two different classes of data.
 ### Path-shaped topics, for platform and content feeds
 
 ```
-woco/event/directory[/snapshot]      global listing (platform-signed pointer → snapshot blob)
+woco/event/directory/snapshot/{gen}  global listing (platform-signed pointer → snapshot blob; name in @woco/shared)
 woco/event/{eventId}                 event details + ticket series
 woco/event/creator/{address}         per-organiser index (never deleted from; paged, #950)
 woco/profile/data/{address}          profile

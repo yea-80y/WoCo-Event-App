@@ -250,7 +250,7 @@ PATTERNS:
 - Retry with exponential backoff for feed propagation delays
 
 FEED TOPICS:
-  woco/event/directory                    # Global event listing
+  woco/event/directory/snapshot/{gen}     # Global event listing: pointer to the snapshot blob (docs/EVENTS_DIRECTORY.md)
   woco/event/{eventId}                    # Event details + ticket series
   woco/event/creator/{ethAddress}         # Per-organiser event index (never deleted from)
   woco/object/collection/{ethAddress}     # User's collection
