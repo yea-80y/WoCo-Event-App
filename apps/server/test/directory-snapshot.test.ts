@@ -739,15 +739,41 @@ test("content that cannot be read, for an event with no card yet, is published f
   assert.equal((await served("m2"))?.title, "title at create");
 });
 
-test("a self-hosted event is published from its seed, and a re-list replaces its card", async () => {
+/** Run with this server's public address set, as production has it. */
+async function withPublicApiBase(base: string, run: () => Promise<void>): Promise<void> {
+  const before = process.env.PUBLIC_API_BASE;
+  process.env.PUBLIC_API_BASE = base;
+  try {
+    await run();
+  } finally {
+    if (before === undefined) delete process.env.PUBLIC_API_BASE;
+    else process.env.PUBLIC_API_BASE = before;
+  }
+}
+
+test("an event hosted on another server is published from its seed, and a re-list replaces its card", async () => {
   // Its content is never readable here: the seed /list wrote is its card.
-  const apiUrl = "https://organiser.example";
-  ls.setListed("fed1", true, card("fed1", { title: "re-listed title", apiUrl }), { explicitlyListed: true });
-  const prior = snapshotJson([card("fed1", { title: "title when first listed", apiUrl })], []);
-  const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: prior } });
-  h.unresolvable.add("fed1");
-  await snap.rebuildSnapshot({ touchedEventIds: ["fed1"] });
-  assert.equal((await served("fed1"))?.title, "re-listed title");
+  await withPublicApiBase("https://api.woco.example", async () => {
+    const apiUrl = "https://organiser.example";
+    ls.setListed("fed1", true, card("fed1", { title: "re-listed title", apiUrl }), { explicitlyListed: true });
+    const prior = snapshotJson([card("fed1", { title: "title when first listed", apiUrl })], []);
+    const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: prior } });
+    h.unresolvable.add("fed1");
+    await snap.rebuildSnapshot({ touchedEventIds: ["fed1"] });
+    assert.equal((await served("fed1"))?.title, "re-listed title");
+  });
+});
+
+test("an event this server hosts, listed through /list, keeps its published card when its content cannot be read", async () => {
+  // /list stamps this server's own address on such a seed: an apiUrl alone does not mean "hosted elsewhere".
+  await withPublicApiBase("https://api.woco.example/", async () => {
+    ls.setListed("own1", true, card("own1", { title: "title when listed", apiUrl: "https://api.woco.example" }), { explicitlyListed: true });
+    const prior = snapshotJson([card("own1", { title: "title after an edit", apiUrl: "https://api.woco.example" })], []);
+    const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: prior } });
+    h.unresolvable.add("own1");
+    await snap.rebuildSnapshot({ touchedEventIds: ["own1"] });
+    assert.equal((await served("own1"))?.title, "title after an edit");
+  });
 });
 
 test("content that cannot be read, with no card and no seed, leaves the event out", async () => {
