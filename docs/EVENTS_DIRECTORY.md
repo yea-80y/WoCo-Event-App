@@ -72,11 +72,16 @@ missing blob.
   with none in memory, a strict read. Never written (a new generation): a full
   rebuild from the server's registrations and the overlay, written at index 0
   with no probe first. Bee refusing the feed's first chunk for a minute
-  (`storage-busy.ts`): nothing is concluded or uploaded, and the caller retries.
-  Unreadable otherwise: a full rebuild from the server's records while the
-  listing overlay is whole; with the overlay incomplete too (it did not load,
-  see below) the rebuild is refused, because the last snapshot is then the only
-  record of what was listed.
+  (`storage-busy.ts`): nothing is concluded or uploaded, and the caller retries;
+  requests for the directory stay off the feed for 70 s, because their reads
+  are what keeps the refusal going.
+  Unreadable otherwise: a full rebuild from the server's records (as far as
+  `onchain-events.json` loaded) while the listing overlay is whole; with the
+  overlay incomplete too (see below) the rebuild is refused, because the last
+  snapshot is then the only record of what was listed.
+- **Content that cannot be read.** An event whose own feed misses keeps the
+  card already published; the create-time seed is used only when it has no card
+  yet. A self-hosted event (`apiUrl`) is always published from its `/list` seed.
 - **What the table holds.** Only registrations that name their contract on the
   active chain (`isPublishedRegistration`), each with the feed signer pinned at
   create (an event from before that record existed has none in a table built
@@ -92,9 +97,13 @@ missing blob.
 - **Dev never publishes.** A rebuild publishes what this server's overlay lists,
   under the platform key. Both dev start commands set `DIRECTORY_PUBLISH=off`:
   the process reads the directory and never rebuilds it.
-- **A process's first rebuild is full.** Until it has rebuilt once, the snapshot
-  it holds was only read, and bee's lookup can return the update before the
-  newest. Building on that incrementally would drop what the newest added.
+- **A process's first rebuild is full, and always publishes.** Until it has
+  rebuilt once, the snapshot it holds was only read, and bee's lookup can return
+  the update before the newest. Building on that incrementally would drop what
+  the newest added, and "same as what was read" says nothing about what is live
+  (the newest may still list an event unlisted since). One write per process
+  makes the live directory this server's records; after it the fingerprint skip
+  applies.
 - **Health.** `/api/health` `directory` is red when `publishing` is false (an
   alarm anywhere but a dev server), when boot is over and no snapshot is held
   (nothing is being served), or when three rebuilds have failed in a row.
@@ -108,16 +117,29 @@ missing blob.
 - **The listing file on disk is never a partial one.** A file holding a few
   rows loads as the whole listing at the next start. So until the builder has
   restored, what people change is kept in `event-listing-state.pending.json`,
-  whether the file is missing or unreadable. The restore writes a missing file,
-  those changes included, and removes the pending file.
+  and the restore then writes the file whole and removes the pending file.
+  Until then an operator unlist is recorded even for an event with no row
+  (`recorded` in its answer), and `GET /api/ops/directory` says `complete: false`.
 - **An unreadable listing file is never overwritten.** It is left for repair
-  and `/api/health` `listingState` is red. What people change meanwhile (a
-  cancel, takedown, unlist, delete, a new event) is kept in
-  `event-listing-state.pending.json`, survives restarts, and is applied over the
-  file once it loads again; restored rows are not kept there. Repair = put a
-  good file back, keep the pending file, restart. With no good copy, remove the
-  file and keep the pending file: the listing is restored from the last
-  snapshot, with those changes on top.
+  and `/api/health` `listingState` is red. A pending file is written beside it
+  at once, empty until something changes; what people change meanwhile (a
+  cancel, takedown, unlist, delete, a new event) is kept there and survives
+  restarts. Restored rows are not kept there.
+- **Repair.** Remove the broken file, KEEP the pending file, restart: the
+  listing is restored from the last snapshot, exactly what was public, with the
+  pending changes on top. Lost that way: deleted events' tombstones, and the
+  rows of events created but not yet registered (list those by hand once they
+  register). Putting a backup copy back instead keeps those, but a file that
+  loads beside the pending file is an older copy: the pending changes go on
+  top, the builder restores the events the last snapshot lists and the copy
+  lacks, and only then is the file written. An event unlisted or deleted after
+  the copy was taken and before the file broke is LISTED AGAIN by the copy:
+  check for those before choosing it. Removing the pending file takes the file
+  exactly as it is. With the last snapshot unreadable as well, rebuilds are
+  refused until one of the two is settled.
+- **Rollback.** A build from before this ignores the pending file and writes
+  over an unreadable listing file. Repair first; a pending file left behind is
+  applied over the listing at the next start of this build.
 
 ## Reads
 
