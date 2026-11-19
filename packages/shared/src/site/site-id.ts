@@ -50,7 +50,8 @@ export function newOwnedSiteId(owner: string): string {
 /** Is `siteId` a v2 id made for `owner`? False for anything malformed; never throws. */
 export function siteIdOwnedBy(siteId: string, owner: string): boolean {
   const match = typeof siteId === "string" ? OWNED_SITE_ID_RE.exec(siteId) : null;
-  const address = typeof owner === "string" ? owner.toLowerCase() : "";
-  if (!match || !ADDRESS_RE.test(address)) return false;
-  return tagFor(address, match[1]) === match[2];
+  if (!match || typeof owner !== "string") return false;
+  // No shape check on `owner`: an id is only ever made for a well-formed address,
+  // so anything else has no tag that matches.
+  return tagFor(owner.toLowerCase(), match[1]) === match[2];
 }
