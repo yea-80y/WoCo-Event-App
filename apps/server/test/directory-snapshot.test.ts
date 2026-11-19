@@ -281,15 +281,31 @@ test("a feed never written builds in full, even from a trigger that named one ev
   assert.deepEqual(h.fresh, [true]);
 });
 
-test("with a snapshot to build on, a trigger stays incremental and the write is an ordinary update", async () => {
-  const prior = snapshotJson([card("s1"), card("s2")], [registration("s1", { chainId: MAINNET })]);
+test("the first rebuild of a process is full, even on a snapshot it read", async () => {
+  // What bee gave back at restart is the update before the newest: e1's registration is not in it.
+  const stale = snapshotJson([card("s1"), card("s2")], [registration("s1", { chainId: MAINNET })]);
   const h = install({
     pointer: { ref: PRIOR_REF },
-    blobs: { [PRIOR_REF]: prior },
+    blobs: { [PRIOR_REF]: stale },
     registrations: [registration("s1", { chainId: MAINNET }), registration("e1", { chainId: MAINNET })],
   });
+  await snap.rebuildSnapshot({ touchedEventIds: ["s2"] });
+  assert.equal(h.registrationReads, 1, "built from the server's own records, not on the snapshot it read");
+  assert.deepEqual(tableIds(h.last().resolution), ["e1", "s1"]);
+  assert.deepEqual(ids(h.last().cards), ["e1", "s1", "s2"]);
+  assert.deepEqual(h.fresh, [false]);
+});
+
+test("once this process has rebuilt, a trigger stays incremental and the write is an ordinary update", async () => {
+  const prior = snapshotJson([card("s1"), card("s2")], [registration("s1", { chainId: MAINNET })]);
+  const h = install({ pointer: { ref: PRIOR_REF }, blobs: { [PRIOR_REF]: prior }, registrations: [registration("s1", { chainId: MAINNET })] });
+  await snap.rebuildSnapshot({ full: true });
+  assert.equal(h.written.length, 0, "the full rebuild found nothing to change");
+  assert.equal(h.registrationReads, 1);
+
+  h.registrations = [...h.registrations, registration("unseen", { chainId: MAINNET })];
   await snap.rebuildSnapshot({ addResolution: [registration("e1", { chainId: MAINNET })] });
-  assert.equal(h.registrationReads, 0, "an incremental rebuild takes its table from the last snapshot");
+  assert.equal(h.registrationReads, 1, "an incremental rebuild takes its table from the snapshot held, plus its trigger");
   assert.deepEqual(tableIds(h.last().resolution), ["e1", "s1"]);
   assert.deepEqual(ids(h.last().cards), ["e1", "s1", "s2"]);
   assert.deepEqual(h.fresh, [false]);
@@ -440,6 +456,7 @@ test("an older snapshot read back from bee never replaces the newer one held", a
   // And the next rebuild builds on the newer one: nothing to change, so nothing written.
   await snap.rebuildSnapshot({ touchedEventIds: ["cur1"] });
   assert.equal(h.written.length, 1);
+  assert.equal(h.registrationReads, 1, "incremental: this process built the snapshot it holds");
 
   h.blobs.set(PRIOR_REF, snapshotJson([card("newer")], [], "2999-01-01T00:00:00.000Z"));
   await snap._refreshSnapshotForTest();
@@ -551,9 +568,11 @@ test("boot: storage busy is retried twice, then left to the 30-minute reconcile"
   assert.equal(retries.length, 1);
   await retries[0]();
   assert.equal(retries.length, 2);
+  assert.equal(snap.directoryHealth().ok, true, "still trying: not an alarm yet");
   await retries[1]();
   assert.equal(retries.length, 2, "no third retry");
   assert.equal(h.pointerReads, 3, "three attempts in all");
+  assert.equal(snap.directoryHealth().ok, false, "boot is over and the directory is serving nothing");
 });
 
 test("boot: an unreadable snapshot, or a first write that fails, is not retried and nothing is published", async () => {
@@ -581,6 +600,16 @@ test("health: green while publishing, with what is being served", async () => {
   assert.equal(health.ok, true);
   assert.equal(health.builtAt, h.last().builtAt);
   assert.equal(health.cards, h.last().cards.length);
+});
+
+test("health: red when boot is over and nothing is held, green as soon as a read works", async () => {
+  const prior = snapshotJson([card("s1")], [registration("s1", { chainId: MAINNET })]);
+  const h = install({ pointer: "error", blobs: { [PRIOR_REF]: prior } });
+  await snap.startDirectoryAtBoot(() => assert.fail("nothing to retry"));
+  assert.deepEqual([snap.directoryHealth().ok, snap.directoryHealth().cards], [false, null]);
+  h.pointer = { ref: PRIOR_REF };
+  await snap.getEventsSnapshot();
+  assert.deepEqual([snap.directoryHealth().ok, snap.directoryHealth().cards], [true, 1]);
 });
 
 test("health: red after three rebuilds fail in a row, green again after one that works", async () => {
