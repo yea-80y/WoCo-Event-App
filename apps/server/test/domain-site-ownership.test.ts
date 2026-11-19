@@ -17,15 +17,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Site } from "@woco/shared";
+import { ownedSiteId, type Site } from "@woco/shared";
 
 import { decideSiteBind } from "../src/lib/domains/site-ownership.js";
 import type { SiteConfigReaders } from "../src/lib/site/service.js";
 import { encodeJsonFeed } from "../src/lib/swarm/feeds.js";
 
-const SITE_ID = "site-under-test";
 /** Stored lowercase, as a publish stamps it. */
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+/** OWNER's by the id itself (site-owner-rule.ts). */
+const SITE_ID = ownedSiteId(OWNER, "000000000001");
+/** An id from before ids proved their owner. */
+const EARLIER_ID = "site-under-test";
 /** The SAME address as the caller sees it — EIP-55 checksummed by getAddress(). */
 const OWNER_CHECKSUMMED = "0xAAaAAaAAaAAaAAaAAaAAaAAaAAaAAaAAaAAaAAaA";
 const STRANGER = "0xbBBbBBbBBbBBbBBbBBbBBbBBbBBbBBbBBbBBbBBb";
@@ -48,24 +51,54 @@ const foundReaders = (owner = OWNER) =>
 
 // ── 1. "could not read" must never be treated as "unclaimed" ─────────────────
 
-test("an undecidable ownership read refuses — it is not an unclaimed site", async () => {
-  // The sharpest case, and the one a caller can provoke: retry until a read
-  // fails and the gate hands over somebody else's site (#181).
-  const d = await decideSiteBind(
-    SITE_ID,
-    STRANGER,
-    readers({ readConfigPage: async () => ({ status: "error", error: new Error("bee timeout") }) }),
-  );
+const failingReaders = () =>
+  readers({ readConfigPage: async () => ({ status: "error", error: new Error("bee timeout") }) });
+
+test("an undecidable read refuses the owner — it is not an unclaimed site", async () => {
+  const d = await decideSiteBind(SITE_ID, OWNER, failingReaders());
   assert.equal(d.ok, false);
   assert.equal(d.ok === false ? d.status : 0, 503);
 });
 
 // ── 2. the vulnerability itself ──────────────────────────────────────────────
 
-test("a caller who does not own the site cannot bind a domain to it", async () => {
-  const d = await decideSiteBind(SITE_ID, STRANGER, foundReaders());
+test("a caller who does not own the site cannot bind a domain to it, whatever the read says", async () => {
+  // The id says whose the site is. Before it did, a caller could retry until a
+  // read failed, or wait for a pointer to be lost, and be handed the site (#181).
+  for (const [name, r] of [["published", foundReaders()], ["lost", readers()], ["unreadable", failingReaders()]] as const) {
+    const d = await decideSiteBind(SITE_ID, STRANGER, r);
+    assert.equal(d.ok, false, name);
+    assert.equal(d.ok === false ? d.status : 0, 403, name);
+  }
+});
+
+test("a stranger is refused before anything is read", async () => {
+  let reads = 0;
+  const counting = readers({ readConfigPage: async () => { reads++; return { status: "absent" }; } });
+  await decideSiteBind(SITE_ID, STRANGER, counting);
+  await decideSiteBind(EARLIER_ID, OWNER, counting);
+  assert.equal(reads, 0);
+});
+
+test("a pointer naming someone else refuses even the id's owner", async () => {
+  const d = await decideSiteBind(SITE_ID, OWNER, foundReaders(STRANGER.toLowerCase()));
   assert.equal(d.ok, false);
   assert.equal(d.ok === false ? d.status : 0, 403);
+});
+
+test("an id from before ids proved their owner is refused, unless it is one of the kept sites", async () => {
+  const published = readers({
+    readConfigPage: async () => ({ status: "ok", data: encodeJsonFeed({ ...legacySite(), siteId: EARLIER_ID }) }),
+  });
+  const refused = await decideSiteBind(EARLIER_ID, OWNER, published);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.ok === false ? refused.status : 0, 409);
+  assert.equal(refused.ok === false ? refused.code : "", "SITE_ID_RETIRED");
+
+  const kept = new Map([[EARLIER_ID, OWNER]]);
+  assert.equal((await decideSiteBind(EARLIER_ID, OWNER_CHECKSUMMED, published, kept)).ok, true);
+  const stranger = await decideSiteBind(EARLIER_ID, STRANGER, published, kept);
+  assert.equal(stranger.ok === false ? stranger.status : 0, 403);
 });
 
 // ── 3. the regression the fix most needs ─────────────────────────────────────

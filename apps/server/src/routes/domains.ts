@@ -58,7 +58,7 @@ domains.post("/", requireAuth, async (c) => {
       // caller legitimately controls could be pointed at anyone's siteId (#216).
       const decision = await decideSiteBind(siteId, parentAddress);
       if (!decision.ok) {
-        return c.json({ ok: false, error: decision.error }, decision.status);
+        return c.json({ ok: false, error: decision.error, ...(decision.code ? { code: decision.code } : {}) }, decision.status);
       }
       target = { siteId };
     } else {

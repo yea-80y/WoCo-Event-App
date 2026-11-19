@@ -339,7 +339,8 @@ async function call(parent: Wallet, path: string, payload: unknown, method: "POS
   return { status: resp.status, retryAfter: resp.headers.get("retry-after"), json: (await resp.json()) as Reply["json"] };
 }
 
-const newSiteId = () => `site-${randomUUID().slice(0, 12)}`;
+/** A new site id, `who`'s by the id itself (site-owner-rule.ts). */
+const newSiteId = (who: Wallet) => shared.newOwnedSiteId(who.address);
 const publish = (who: Wallet, siteId: string, events: Array<{ eventId: string }> = []) =>
   call(who, "/api/sites", { site: { siteId, theme: { brandName: "First" } }, events });
 
@@ -382,7 +383,7 @@ const settle = () => new Promise((r) => setTimeout(r, 300));
 
 test("publish: the config feed skip-listed - a typed 503, nothing written; after the minute it publishes", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   skipListFirstChunk(shared.siteConfigTopic(siteId));
 
   const refused = await publish(who, siteId);
@@ -400,7 +401,7 @@ test("publish: the config feed skip-listed - a typed 503, nothing written; after
 
 test("publish: reads before the first save put it on the skip list (the owner's report), and it is typed", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   // The builder opening the new site: display reads of a feed nobody has written.
   for (let i = 0; i < MISSES_TO_SKIP; i++) {
     const r = await app.request(`/api/sites/${siteId}`);
@@ -414,7 +415,7 @@ test("publish: reads before the first save put it on the skip list (the owner's 
 
 test("publish: config lands, events index refused - a typed 503, and the retry finishes both, idempotently", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   const eventId = randomUUID();
   // The organiser's own event, so its signer is stamped from their directory (no event read).
   const signer = Wallet.createRandom().address.toLowerCase();
@@ -456,7 +457,7 @@ test("publish: config lands, events index refused - a typed 503, and the retry f
 
 test("publish: the normal path is unchanged - one write per feed, a 200", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   const r = await publish(who, siteId);
   assert.equal(r.status, 200);
   assert.deepEqual(r.json, { ok: true, data: { siteId } });
@@ -468,7 +469,7 @@ test("publish: the normal path is unchanged - one write per feed, a 200", async 
 
 test("publish: an undecidable read that is NOT the skip-list shape keeps its old answer", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   assert.equal((await publish(who, siteId)).status, 200);
   await settle();
   feeds.__feedWriteTestHooks.clearCache(); // a restart: no read-your-writes copy
@@ -490,7 +491,7 @@ test("publish: an undecidable read that is NOT the skip-list shape keeps its old
 
 test("deploy (WoCo): the pointer feed skip-listed - a typed 503 BEFORE the collection is uploaded", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   skipListFirstChunk(shared.multisiteFeedTopic(siteId));
 
   assertStorageBusy(await deploy(who, siteId, "https://gateway.woco-net.com"));
@@ -511,7 +512,7 @@ test("deploy (WoCo): the pointer feed skip-listed - a typed 503 BEFORE the colle
 
 test("deploy (Etherna): our bee cannot say whether the pointer's index 0 is taken - typed 503, nothing uploaded", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   skipListFirstChunk(shared.multisiteFeedTopic(siteId));
 
   assertStorageBusy(await deploy(who, siteId, ETHERNA_URL));
@@ -529,7 +530,7 @@ test("deploy (Etherna): our bee cannot say whether the pointer's index 0 is take
 
 test("deploy (Etherna): Etherna refuses the feed lookup (403) - resolved from our bee, and a redeploy takes the next index", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   ethernaLookupRefused = true;
   try {
     const first = await deploy(who, siteId, ETHERNA_URL);
@@ -549,7 +550,7 @@ test("deploy (Etherna): Etherna refuses the feed lookup (403) - resolved from ou
 
 test("deploy: the normal path is unchanged, and a redeploy writes the next index", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   const first = await deploy(who, siteId, "https://gateway.woco-net.com");
   assert.equal(first.status, 200, JSON.stringify(first.json));
   await settle();
@@ -562,7 +563,7 @@ test("deploy: the normal path is unchanged, and a redeploy writes the next index
 
 test("deploy: a second deploy of the same site while one is running is refused, not raced onto its index", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   // Hold the first deploy inside its upload.
   let release!: () => void;
   const held = new Promise<void>((r) => (release = r));
@@ -593,7 +594,7 @@ test("deploy: a second deploy of the same site while one is running is refused, 
 
 test("deploy: the stored site is the browser's build, linking the release, and the ledger names the link", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   const { body, root } = deployBody(who, siteId, "https://gateway.woco-net.com");
   const ok = await call(who, `/api/sites/${siteId}/deploy`, body);
   assert.equal(ok.status, 200, JSON.stringify(ok.json));
@@ -613,7 +614,7 @@ test("deploy: the stored site is the browser's build, linking the release, and t
 
 test("deploy: an app from before browser-built sites is told to update, and nothing is uploaded", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   const r = await call(who, `/api/sites/${siteId}/deploy`, { apiUrl: PUBLIC_BASE, gatewayUrl: "https://gateway.woco-net.com", site: siteFor(siteId) });
   assert.equal(r.status, 400);
   assert.equal(r.json.code, "CLIENT_BUILD_REQUIRED");
@@ -623,7 +624,7 @@ test("deploy: an app from before browser-built sites is told to update, and noth
 
 test("deploy: a build that differs from the server's rebuild is refused before anything is uploaded", async () => {
   const who = await organiser();
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   const { body } = deployBody(who, siteId, "https://gateway.woco-net.com");
   const html = Buffer.from(body.collection.objects[0]!, "base64");
   html[html.length - 2] ^= 1;
@@ -747,13 +748,13 @@ test("deploy: a website's name is checked like an event page's, and rendered ali
   const who = await organiser();
   // A fresh site each time: repeated reads of one never-saved site trip bee's skip list first.
   for (const bad of ["", "ab", "Acme", "a--b", 'a"><script>', 7]) {
-    const id = newSiteId();
+    const id = newSiteId(who);
     const { body } = deployBody(who, id, "https://gateway.woco-net.com");
     const r = await call(who, `/api/sites/${id}/deploy`, { ...body, site: { ...body.site, subEnsLabel: bad } });
     assert.deepEqual([r.status, r.json.error], [400, "subEnsLabel is not a valid name"], String(bad));
   }
   // Built without the name, sent with it: the server renders the name, so the bytes differ.
-  const siteId = newSiteId();
+  const siteId = newSiteId(who);
   const { body } = deployBody(who, siteId, "https://gateway.woco-net.com");
   const r = await call(who, `/api/sites/${siteId}/deploy`, { ...body, site: { ...body.site, subEnsLabel: "acme-pub" } });
   assert.deepEqual([r.status, r.json.code], [409, "COLLECTION_MISMATCH"]);
@@ -940,7 +941,7 @@ const partsOf = (objects: string[]) => objects.map((b64) => bytesTreeChunks(new 
 test("Etherna down: a website deploy lands on WoCo - every part, the manifest and the pointer listed for the owner", async () => {
   await withEthernaDown("auto", async (ledger) => {
     const who = await organiser();
-    const siteId = newSiteId();
+    const siteId = newSiteId(who);
     const d = deployBody(who, siteId, ETHERNA_URL);
     const r = await call(who, `/api/sites/${siteId}/deploy`, d.body);
     assert.equal(r.status, 200, JSON.stringify(r.json));
@@ -983,7 +984,7 @@ test("Etherna down: an event page deploys on WoCo, its manifest listed, the brow
 test("Etherna down: an update sent to Etherna and not yet on our bee refuses the deploy - typed 503, nothing stored", async () => {
   await withEthernaDown("auto", async (ledger) => {
     const who = await organiser();
-    const siteId = newSiteId();
+    const siteId = newSiteId(who);
     const topicHex = topicHexOf(shared.multisiteFeedTopic(siteId));
     const id = Binary.uint8ArrayToHex(Binary.keccak256(Binary.concatBytes(unhex(topicHex), FeedIndex.fromBigInt(0n).toUint8Array())));
     ledger.noteEthernaSend(updateAddress(PLATFORM_OWNER, topicHex, 0n), PLATFORM_OWNER, id);
@@ -998,7 +999,7 @@ test("Etherna down: an update sent to Etherna and not yet on our bee refuses the
 test("Etherna down, failover off: the deploy fails as before - nothing stamped on WoCo", async () => {
   await withEthernaDown("off", async (ledger) => {
     const who = await organiser();
-    const r = await deploy(who, newSiteId(), ETHERNA_URL);
+    const r = await deploy(who, newSiteId(who), ETHERNA_URL);
     assert.ok(r.status >= 500, JSON.stringify(r.json));
     assert.deepEqual(bzzUploads, []);
     assert.equal(ledger.relayLedgerState().failover, 0);

@@ -20,10 +20,11 @@
  */
 
 import { resolveSiteConfig, type SiteConfigReaders } from "../site/service.js";
+import { siteOwnerRefusal } from "../site/site-owner-rule.js";
 
 export type SiteBindDecision =
   | { ok: true }
-  | { ok: false; status: 403 | 404 | 503; error: string };
+  | { ok: false; status: 403 | 404 | 409 | 503; error: string; code?: string };
 
 /**
  * Decide whether `parentAddress` may bind a domain to `siteId`.
@@ -37,7 +38,13 @@ export async function decideSiteBind(
   siteId: string,
   parentAddress: string,
   readers?: SiteConfigReaders,
+  earlierOwners?: ReadonlyMap<string, string>,
 ): Promise<SiteBindDecision> {
+  // Whose site it is comes from the id (site-owner-rule.ts), before any read. The
+  // read below still says whether the site exists, and refuses when it cannot tell.
+  const byId = siteOwnerRefusal(siteId, parentAddress, earlierOwners);
+  if (byId) return { ok: false, ...byId };
+
   const existing = await resolveSiteConfig(siteId, readers);
 
   if (existing.status === "unavailable") {

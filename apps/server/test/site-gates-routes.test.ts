@@ -106,9 +106,13 @@ function topicHex(topic: string): string {
   return Topic.fromString(topic).toHex().replace(/^0x/, "").toLowerCase();
 }
 
-/** A fresh siteId whose config feed answers with `mode`. */
-function siteWith(mode: Mode): string {
-  const siteId = `site-${randomUUID().slice(0, 12)}`;
+/** A fresh siteId, `owner`'s by the id itself, whose config feed answers with `mode`. */
+function siteWith(mode: Mode, owner: string = Wallet.createRandom().address): string {
+  return siteAt(shared.newOwnedSiteId(owner), mode);
+}
+
+/** `siteId`, whatever its shape, with a config feed that answers with `mode`. */
+function siteAt(siteId: string, mode: Mode): string {
   const t = topicHex(shared.siteConfigTopic(siteId));
   modes.set(t, mode);
   SITE_BY_TOPIC.set(t, siteId);
@@ -187,25 +191,49 @@ const DECISIONS: Array<{ name: string; send: (who: Wallet, siteId: string) => Re
 ];
 
 for (const d of DECISIONS) {
-  test(`${d.name}: an undecidable config read is a retryable 503, never a pass`, async () => {
-    const { status, json } = await d.send(await organiser(), siteWith("error"));
+  test(`${d.name}: an undecidable config read is a retryable 503 for the owner, never a pass`, async () => {
+    const who = await organiser();
+    const { status, json } = await d.send(who, siteWith("error", who.address));
     assert.equal(status, 503);
     assert.match(String(json.error), UNDECIDABLE);
   });
 
-  test(`${d.name}: a stranger to an existing site is refused (403)`, async () => {
-    const owner = Wallet.createRandom().address.toLowerCase();
-    const { status, json } = await d.send(await organiser(), siteWith({ owner }));
+  // The id says whose the site is, so no state of the pointer lets a stranger in.
+  // "absent" is the one that used to: a lost pointer stamped the next caller owner.
+  for (const [state, mode] of [["published", null], ["lost (the pointer reads absent)", "absent"], ["unreadable", "error"]] as const) {
+    test(`${d.name}: a stranger to a site that is ${state} is refused (403)`, async () => {
+      const owner = Wallet.createRandom().address.toLowerCase();
+      const { status, json } = await d.send(await organiser(), siteWith(mode ?? { owner }, owner));
+      assert.equal(status, 403);
+      assert.equal(json.error, "Not the site owner");
+    });
+  }
+
+  test(`${d.name}: an id from before ids proved their owner is refused (409), whatever its pointer says`, async () => {
+    const who = await organiser();
+    for (const mode of ["absent", { owner: who.address.toLowerCase() }] as const) {
+      const { status, json } = await d.send(who, siteAt(`site-${randomUUID().slice(0, 12)}`, mode));
+      assert.equal(status, 409);
+      assert.equal((json as { code?: string }).code, "SITE_ID_RETIRED");
+    }
+  });
+
+  test(`${d.name}: a pointer naming someone else is refused (403), even for the id's owner`, async () => {
+    // Cannot be written by this code: only the id's owner passes the gate that stamps it.
+    const who = await organiser();
+    const other = Wallet.createRandom().address.toLowerCase();
+    const { status, json } = await d.send(who, siteWith({ owner: other }, who.address));
     assert.equal(status, 403);
     assert.equal(json.error, "Not the site owner");
   });
 }
 
-test("publish and deploy pass the gate when no site exists; event add/remove answer 404", async () => {
+test("the owner passes publish and deploy when no site exists; event add/remove answer 404", async () => {
   const who = await organiser();
   for (const d of DECISIONS) {
-    const { status, json } = await d.send(who, siteWith("absent"));
+    const { status, json } = await d.send(who, siteWith("absent", who.address));
     assert.notEqual(status, 403, d.name);
+    assert.notEqual(status, 409, d.name);
     assert.doesNotMatch(String(json.error), UNDECIDABLE, d.name);
     if (d.name.startsWith("event")) assert.equal(status, 404, d.name);
   }
@@ -214,7 +242,8 @@ test("publish and deploy pass the gate when no site exists; event add/remove ans
 // --- Deploy input refused before anything uses it -----------------------------
 
 test("site deploy refuses a gateway that is not on the allowlist (400)", async () => {
-  const { status } = await call(await organiser(), "POST", `/api/sites/${siteWith("absent")}/deploy`, {
+  const who = await organiser();
+  const { status } = await call(who, "POST", `/api/sites/${siteWith("absent", who.address)}/deploy`, {
     apiUrl: PUBLIC_BASE,
     gatewayUrl: "https://gateway.example.org",
   });
@@ -226,7 +255,7 @@ test("site deploy refuses a gateway that is not on the allowlist (400)", async (
 const withCollection = (siteId: string, collection: unknown, site: unknown = { siteId, theme: { brandName: "x", palette: { accent: "#000", bg: "#fff" } }, pages: [] }) =>
   ({ apiUrl: PUBLIC_BASE, site, collection });
 const deployWith = async (who: Wallet, body: (siteId: string) => unknown, published = false) => {
-  const siteId = siteWith(published ? { owner: who.address.toLowerCase() } : "absent");
+  const siteId = siteWith(published ? { owner: who.address.toLowerCase() } : "absent", who.address);
   const r = await call(who, "POST", `/api/sites/${siteId}/deploy`, body(siteId));
   return { status: r.status, code: (r.json as { code?: string }).code };
 };

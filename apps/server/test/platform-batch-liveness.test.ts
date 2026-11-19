@@ -553,10 +553,13 @@ async function mintDelegation() {
  * checked BEFORE the batch is chosen. These cases are about the batch refusal,
  * so their caller is verified and the refusal under test is the one reached.
  */
-async function postAs(path: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
+async function postAs(
+  path: string,
+  body: unknown | ((parent: string) => unknown),
+): Promise<{ status: number; json: Record<string, unknown> }> {
   const d = await mintDelegation();
   setStripeAccount(d.parent.address.toLowerCase(), `acct_${randomUUID().slice(0, 8)}`, true);
-  const text = JSON.stringify(body);
+  const text = JSON.stringify(typeof body === "function" ? body(d.parent.address) : body);
   const timestamp = String(Date.now());
   const nonce = randomUUID();
   const challenge = ["woco-session-v1", "POST", path, timestamp, nonce, sha256Hex(text)].join("\n");
@@ -602,7 +605,8 @@ test("the /soc relay answers 503 STORAGE_UNAVAILABLE", async () => {
 
 test("site publish refuses rather than detour its feed pages to WoCo", async () => {
   await readEtherna(async () => notFound());
-  const res = await postAs("/api/sites", { site: { siteId: "site-610-liveness" }, gatewayUrl: ETHERNA });
+  const { newOwnedSiteId } = await import("@woco/shared");
+  const res = await postAs("/api/sites", (parent) => ({ site: { siteId: newOwnedSiteId(parent) }, gatewayUrl: ETHERNA }));
   assertStorageUnavailable(res, "POST /api/sites");
 });
 
