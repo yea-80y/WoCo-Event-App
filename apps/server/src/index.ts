@@ -505,8 +505,8 @@ function healthReport() {
     // once boot is over: nothing is being served.
     directory: directoryHealth(),
     // The listing overlay (event-listing-state.json): which events WoCo lists.
-    // `unreadable` is an alarm: the file is left as it is for repair, changes are
-    // held in memory only and are lost at the next restart.
+    // `unreadable` is an alarm: the file is left as it is for repair, and what
+    // people change meanwhile (`pending`) waits in a side file until it loads again.
     listingState: listingStateHealth(),
     // Each event's feed signer + verified creator, pinned at create (#670): the
     // money path's only carrier for an UNLISTED event. `unreadable` true, or

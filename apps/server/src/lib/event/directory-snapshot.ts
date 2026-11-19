@@ -368,8 +368,9 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
   //    would hold only this trigger's registrations;
   //  - a snapshot it only read. Bee's lookup is a lower bound, so after a restart
   //    the one read can be the update before the newest, and building on it
-  //    would drop what the newest added. A full rebuild takes nothing from the
-  //    base that the server's own records do not hold.
+  //    would drop what the newest added. A full rebuild resolves every listed
+  //    event and takes every registration from the server's own records, so
+  //    nothing the newest update added can be missing from it.
   const full = opts.full || !_rebuiltHere;
 
   // Data-loss self-heal: a lost/empty .data overlay would make every event read as
@@ -378,7 +379,7 @@ async function doRebuild(opts: RebuildOpts): Promise<void> {
   // the overlay from that snapshot (each card WAS a listed event) before building.
   if (!hasAnyRows() && base && base.cards.length > 0) {
     console.warn(`[listing-state] overlay empty but snapshot has ${base.cards.length} cards — reseeded from snapshot`);
-    for (const card of base.cards) setListed(card.eventId, true, card, { explicitlyListed: true });
+    for (const card of base.cards) setListed(card.eventId, true, card, { explicitlyListed: true, fromSnapshot: true });
   }
 
   // Resolution table: previous snapshot + new register-success entries, plus the
