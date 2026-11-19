@@ -70,7 +70,7 @@ import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { onchainRegistryHealth } from "./lib/event/onchain-registry.js";
 import { issuerBindingHealth } from "./lib/issuer/binding.js";
-import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
+import { directoryHealth, startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
@@ -497,6 +497,11 @@ function healthReport() {
     // series that cannot sell until an operator repairs it. `fileUnreadable`
     // is the whole file: nothing sells or registers, and it is never written.
     onchainRegistry: onchainRegistryHealth(),
+    // The public events directory. `publishing` false is an alarm here: only a
+    // dev server runs with DIRECTORY_PUBLISH=off, and a production one that does
+    // has stopped updating the directory. `failedRebuilds` at 3 or more in a row
+    // is one too: new and edited events are not reaching it.
+    directory: directoryHealth(),
     // Each event's feed signer + verified creator, pinned at create (#670): the
     // money path's only carrier for an UNLISTED event. `unreadable` true, or
     // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no
@@ -1111,12 +1116,12 @@ startDomainPoller();
 assertEventContractConfig();
 
 void logSponsorReadiness();
-// The directory: a full reconcile now and every 30 minutes, which heals snapshot
-// drift (edits, expired events, a lost incremental trigger) from the server's
-// registrations. The one at boot is also what reads the pointer feed first, so
-// the first GET /api/events serves from memory, and what publishes the first
-// snapshot of a feed generation nobody has written. A reconcile that changes
-// nothing writes nothing. Off entirely under DIRECTORY_PUBLISH=off (dev).
+// The directory. Now: one strict read of its pointer feed, which the display
+// then serves from, and the first snapshot of a feed generation nobody has
+// written. Every 30 minutes: a full reconcile, which heals snapshot drift (edits,
+// expired events, a lost incremental trigger) from the server's registrations
+// and writes only when something changed. Under DIRECTORY_PUBLISH=off (dev)
+// neither runs: the process reads the directory and never rebuilds it.
 startSnapshotMaintenance();
 // Organiser takings sit on a manual payout schedule and are released after each
 // event by this sweep. If it stops running, no organiser gets paid — and funds
