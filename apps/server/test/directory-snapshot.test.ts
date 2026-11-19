@@ -99,6 +99,7 @@ interface Harness {
   pointerReads: number;
   displayReads: number;
   registrationReads: number;
+  cardReads: number;
   /** The snapshot behind the last pointer written. */
   last(): EventsSnapshot;
 }
@@ -123,6 +124,7 @@ function install(
     pointerReads: 0,
     displayReads: 0,
     registrationReads: 0,
+    cardReads: 0,
     last() {
       const p = h.written[h.written.length - 1];
       assert.ok(p, "nothing was written");
@@ -142,8 +144,10 @@ function install(
     },
     async readPointerForDisplay() {
       h.displayReads++;
-      if (typeof h.pointer === "string") return h.pointer === "garbage" ? new TextEncoder().encode("not json at all") : null;
-      return page(h.pointer.ref);
+      if (h.pointer === "absent") return { status: "absent" };
+      if (h.pointer === "error" || h.pointer === "busy") return { status: "error", error: new Error("bee answered 500") };
+      if (h.pointer === "garbage") return { status: "ok", data: new TextEncoder().encode("not json at all") };
+      return { status: "ok", data: page(h.pointer.ref) };
     },
     async readBlob(ref) {
       const blob = h.blobs.get(ref);
@@ -170,6 +174,7 @@ function install(
     },
     // The event's own content, as the builder would resolve it.
     async resolveCard(entry) {
+      h.cardReads++;
       return card(entry.wocoEventId);
     },
     ...(init.realRegistrations
@@ -263,7 +268,7 @@ test("empty overlay: a readable last snapshot reseeds the overlay and its cards 
 // From here the overlay holds s1 and s2, both listed.
 // ---------------------------------------------------------------------------
 
-test("a new generation builds in full, even from a trigger that named one event", async () => {
+test("a feed never written builds in full, even from a trigger that named one event", async () => {
   ls.setListed("e1", true, card("e1")); // listed at create, never by /list: needs its registration to show
   const h = install({
     pointer: "absent",
@@ -441,23 +446,92 @@ test("an older snapshot read back from bee never replaces the newer one held", a
   assert.deepEqual(ids((await snap.getEventsSnapshot())!.cards), ["newer"], "a newer one is taken");
 });
 
-test("a read that found no snapshot is not repeated on every request", async () => {
-  const h = install({ pointer: "absent" });
-  assert.equal(await snap.getEventsSnapshot(), null);
-  assert.equal(await snap.getEventsSnapshot(), null);
-  assert.equal(await snap.getEventsSnapshot(), null);
-  assert.equal(h.displayReads, 1);
+test("\"never written\" is held for a minute, then asked again", async () => {
+  let t = 1_000_000;
+  snap._setSnapshotClockForTest(() => t);
+  try {
+    const h = install({ pointer: "absent" });
+    assert.equal(await snap.getEventsSnapshot(), null);
+    assert.equal(await snap.getEventsSnapshot(), null);
+    t += 59_000;
+    assert.equal(await snap.getEventsSnapshot(), null);
+    assert.equal(h.displayReads, 1, "one read of a feed that is not there, however many requests");
+    t += 1_000;
+    assert.equal(await snap.getEventsSnapshot(), null);
+    assert.equal(h.displayReads, 2, "asked again once the minute is up");
+  } finally {
+    snap._setSnapshotClockForTest(null);
+  }
+});
+
+test("a read that could not answer is never held as \"nothing there\"", async () => {
+  const prior = snapshotJson([card("s1")], [registration("s1", { chainId: MAINNET })]);
+  for (const pointer of ["error", "garbage"] as const) {
+    const h = install({ pointer, blobs: { [PRIOR_REF]: prior } });
+    assert.equal(await snap.getEventsSnapshot(), null);
+    h.pointer = { ref: PRIOR_REF };
+    assert.deepEqual(ids((await snap.getEventsSnapshot())!.cards), ["s1"], `${pointer}: the next request reads again`);
+    assert.equal(h.displayReads, 2);
+  }
+});
+
+test("a new snapshot is never dated before the one it replaces", async () => {
+  const prior = snapshotJson([card("s1")], [registration("s1", { chainId: MAINNET })], "2999-01-01T00:00:00.000Z");
+  const h = install({
+    pointer: { ref: PRIOR_REF },
+    blobs: { [PRIOR_REF]: prior },
+    registrations: [registration("s1", { chainId: MAINNET }), registration("cur1", { chainId: MAINNET })],
+  });
+  await snap.rebuildSnapshot({ full: true });
+  assert.equal(h.written.length, 1);
+  assert.ok(h.last().builtAt > "2999-01-01T00:00:00.000Z", `${h.last().builtAt} must sort after the base`);
 });
 
 // ---------------------------------------------------------------------------
-// The reconcile at boot
+// At boot
 // ---------------------------------------------------------------------------
+
+test("boot: an existing snapshot is read once and nothing is rebuilt", async () => {
+  const prior = snapshotJson([card("s1"), card("s2")], [registration("s1", { chainId: MAINNET })]);
+  const h = install({
+    pointer: { ref: PRIOR_REF },
+    blobs: { [PRIOR_REF]: prior },
+    // A reconcile here would add cur1 and publish; boot must not.
+    registrations: [registration("s1", { chainId: MAINNET }), registration("cur1", { chainId: MAINNET })],
+  });
+  await snap.startDirectoryAtBoot(() => assert.fail("nothing to retry"));
+  assert.equal(h.pointerReads, 1);
+  assert.equal(h.cardReads, 0, "no event is resolved again at boot");
+  assert.equal(h.written.length, 0);
+  assert.equal(h.blobWrites, 0);
+  assert.deepEqual(ids((await snap.getEventsSnapshot())!.cards), ["s1", "s2"]);
+  assert.equal(h.displayReads, 0, "the display serves what boot read");
+});
+
+test("boot: a feed never written gets its first snapshot, from one read of it", async () => {
+  const h = install({ pointer: "absent", registrations: [registration("cur1", { chainId: MAINNET })] });
+  await snap.startDirectoryAtBoot(() => assert.fail("nothing to retry"));
+  assert.equal(h.pointerReads, 1, "the rebuild does not read the missing feed a second time");
+  assert.equal(h.written.length, 1);
+  assert.deepEqual(h.fresh, [true]);
+  assert.ok(ids(h.last().cards).includes("cur1"));
+});
+
+test("boot: its rebuild does not write a first update over a snapshot another rebuild wrote meanwhile", async () => {
+  const h = install({ pointer: "absent", registrations: [registration("cur1", { chainId: MAINNET })] });
+  // A trigger's rebuild ran between boot's read and boot's own rebuild.
+  await snap.rebuildSnapshot({ full: true });
+  assert.deepEqual(h.fresh, [true]);
+  h.registrations = [...h.registrations, registration("e1", { chainId: MAINNET })];
+  await snap.rebuildSnapshot({ full: true, knownNeverWritten: true });
+  assert.deepEqual(h.fresh, [true, false], "the feed exists now: an ordinary update, built on what is held");
+});
 
 test("boot: storage busy is retried past the window, and the first snapshot is then published", async () => {
   const h = install({ pointer: "busy", registrations: [registration("cur1", { chainId: MAINNET })] });
   const retries: Array<{ ms: number; run: () => Promise<void> }> = [];
   const retryIn = (ms: number, run: () => Promise<void>) => void retries.push({ ms, run });
-  await snap.reconcileAtBoot(retryIn);
+  await snap.startDirectoryAtBoot(retryIn);
   assert.equal(h.written.length, 0);
   assert.equal(retries.length, 1);
   assert.equal(retries[0].ms, busy.STORAGE_BUSY_RETRY_MS);
@@ -466,14 +540,14 @@ test("boot: storage busy is retried past the window, and the first snapshot is t
   await retries[0].run();
   assert.equal(h.written.length, 1);
   assert.deepEqual(h.fresh, [true]);
-  assert.equal(retries.length, 1, "a reconcile that worked asks for no more retries");
+  assert.equal(retries.length, 1, "a start that worked asks for no more retries");
 });
 
 test("boot: storage busy is retried twice, then left to the 30-minute reconcile", async () => {
   const h = install({ pointer: "busy" });
   const retries: Array<() => Promise<void>> = [];
   const retryIn = (_ms: number, run: () => Promise<void>) => void retries.push(run);
-  await snap.reconcileAtBoot(retryIn);
+  await snap.startDirectoryAtBoot(retryIn);
   assert.equal(retries.length, 1);
   await retries[0]();
   assert.equal(retries.length, 2);
@@ -482,12 +556,44 @@ test("boot: storage busy is retried twice, then left to the 30-minute reconcile"
   assert.equal(h.pointerReads, 3, "three attempts in all");
 });
 
-test("boot: a failure that is not storage busy is not retried", async () => {
+test("boot: an unreadable snapshot, or a first write that fails, is not retried and nothing is published", async () => {
+  for (const [why, init] of UNREADABLE) {
+    const h = install(init);
+    await snap.startDirectoryAtBoot(() => assert.fail(`${why}: nothing to retry`));
+    assert.equal(h.written.length, 0, why);
+    assert.equal(h.blobWrites, 0, `${why}: left to the reconcile, which knows what to do with it`);
+  }
   const h = install({ pointer: "absent" });
   h.failPointerWrite = new Error("batch not usable");
-  const retries: Array<() => Promise<void>> = [];
-  await snap.reconcileAtBoot((_ms, run) => void retries.push(run));
-  assert.equal(retries.length, 0);
+  await snap.startDirectoryAtBoot(() => assert.fail("a write failure is not storage busy"));
+  assert.equal(h.written.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Health
+// ---------------------------------------------------------------------------
+
+test("health: green while publishing, with what is being served", async () => {
+  const h = install({ pointer: "absent", registrations: [registration("cur1", { chainId: MAINNET })] });
+  assert.deepEqual(snap.directoryHealth(), { ok: true, publishing: true, failedRebuilds: 0, builtAt: null, cards: null });
+  await snap.rebuildSnapshot({ full: true });
+  const health = snap.directoryHealth();
+  assert.equal(health.ok, true);
+  assert.equal(health.builtAt, h.last().builtAt);
+  assert.equal(health.cards, h.last().cards.length);
+});
+
+test("health: red after three rebuilds fail in a row, green again after one that works", async () => {
+  const h = install({ pointer: "error" });
+  // The overlay has rows, so an unreadable snapshot is rebuilt: make the write fail.
+  for (let i = 1; i <= 3; i++) {
+    h.failPointerWrite = new Error("batch not usable");
+    await assert.rejects(snap.rebuildSnapshot({ full: true }));
+    assert.equal(snap.directoryHealth().failedRebuilds, i);
+    assert.equal(snap.directoryHealth().ok, i < 3, `after ${i} failure(s)`);
+  }
+  await snap.rebuildSnapshot({ full: true });
+  assert.deepEqual([snap.directoryHealth().failedRebuilds, snap.directoryHealth().ok], [0, true]);
 });
 
 // ---------------------------------------------------------------------------
@@ -502,11 +608,12 @@ test("DIRECTORY_PUBLISH=off: a rebuild reads nothing and writes nothing, and the
     assert.equal(snap.directoryPublishingEnabled(), false);
     await snap.rebuildSnapshot({ full: true });
     await snap.rebuildSnapshotFull();
-    await snap.reconcileAtBoot(() => assert.fail("nothing to retry"));
+    await snap.startDirectoryAtBoot(() => assert.fail("nothing to retry"));
     assert.equal(h.pointerReads, 0);
     assert.equal(h.blobWrites, 0);
     assert.equal(h.written.length, 0);
     assert.deepEqual(ids((await snap.getEventsSnapshot())!.cards), ["s1"]);
+    assert.deepEqual([snap.directoryHealth().publishing, snap.directoryHealth().ok], [false, false], "an alarm, wherever it is not a dev server");
   } finally {
     delete process.env.DIRECTORY_PUBLISH;
   }
@@ -516,8 +623,12 @@ test("DIRECTORY_PUBLISH=off: a rebuild reads nothing and writes nothing, and the
 test("both dev start commands switch directory publishing off", () => {
   const pkg = JSON.parse(readFileSync(join(SERVER_DIR, "package.json"), "utf-8")) as { scripts: Record<string, string> };
   assert.equal(pkg.scripts.dev, "node scripts/dev-with-tunnel.mjs");
-  assert.match(readFileSync(join(SERVER_DIR, "scripts/dev-with-tunnel.mjs"), "utf-8"), /^devEnv\.DIRECTORY_PUBLISH = "off";$/m);
-  assert.match(pkg.scripts["dev:notunnel"], /(^| )DIRECTORY_PUBLISH=off /);
+  const tunnel = readFileSync(join(SERVER_DIR, "scripts/dev-with-tunnel.mjs"), "utf-8");
+  const set = tunnel.search(/^devEnv\.DIRECTORY_PUBLISH = "off";$/m);
+  const start = tunnel.indexOf("env: devEnv");
+  assert.ok(set !== -1, "the tunnel script sets the switch");
+  assert.ok(start !== -1 && set < start, "and sets it before it starts the server with that environment");
+  assert.match(pkg.scripts["dev:notunnel"], /(^| )DIRECTORY_PUBLISH=off (.* )?tsx /, "set before the command it applies to");
   // The production start command must not carry it.
   assert.doesNotMatch(pkg.scripts.start, /DIRECTORY_PUBLISH/);
 });
