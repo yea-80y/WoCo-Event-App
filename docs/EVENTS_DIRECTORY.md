@@ -68,19 +68,29 @@ Rebuilds: debounced incremental (1.5s, coalesces multi-series publishes) +
 Order: blob upload first, pointer write second — the pointer never names a
 missing blob.
 
-- **What a rebuild builds on.** The last snapshot, read strictly. None yet (a new
-  generation): a full rebuild from the server's registrations and the overlay.
-  Unreadable: the same, while the overlay has rows; with the overlay empty too
-  the rebuild is refused, because the last snapshot is then the only record of
-  what was listed.
+- **What a rebuild builds on.** The snapshot this process last built or read;
+  with none in memory, a strict read. Never written (a new generation): a full
+  rebuild from the server's registrations and the overlay, written at index 0
+  with no probe first. Bee refusing the feed's first chunk for a minute
+  (`storage-busy.ts`): nothing is concluded or uploaded, and the caller retries.
+  Unreadable otherwise: a full rebuild while the overlay has rows; with the
+  overlay empty too the rebuild is refused, because the last snapshot is then the
+  only record of what was listed.
 - **What the table holds.** Only registrations that name their contract on the
   active chain (`isPublishedRegistration`), each with the feed signer pinned at
-  create. An event outside the table counts as unregistered: it shows only when
-  listed deliberately. Its record stays in `.data/onchain-events.json`.
+  create (an event from before that record existed has none in a table built
+  from nothing). An event outside the table counts as unregistered: it shows only
+  when listed deliberately. Its record stays in `.data/onchain-events.json`.
+- **At boot.** One full reconcile: its strict read warms the cache, and on a feed
+  nobody has written it publishes the first snapshot. Storage busy is retried
+  twice, 65 s apart. A reconcile that changes nothing writes nothing.
 - **A new generation.** Raising `EVENTS_SNAPSHOT_GENERATION` starts the pointer
   feed again at index 0. Nothing is carried over and the old feed is never read.
-  After deploying one, run `POST /api/ops/directory/rebuild` once: until the first
-  snapshot is written, every `GET /api/events` looks for a feed that is not there.
+  The boot reconcile writes it; `POST /api/ops/directory/rebuild` is the manual
+  fallback.
+- **Dev never publishes.** A rebuild publishes what this server's overlay lists,
+  under the platform key. Both dev start commands set `DIRECTORY_PUBLISH=off`:
+  the process reads the directory and never rebuilds it.
 
 ## Reads
 

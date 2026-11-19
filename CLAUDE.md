@@ -98,7 +98,9 @@ DEV COMMANDS:
   frontend = Swarm feed behind gateway.woco-net.com and woco.eth.limo; API =
   events-api.woco-net.com. Deploys are manual (rsync + compose rebuild).
 - IMPORTANT for dev: `npm run dev:server` tunnels to the PRODUCTION bee — anything you
-  publish locally lands in the real platform feeds. Be careful.
+  publish locally lands in the real platform feeds. Be careful. The one thing a dev
+  server never does is rebuild the public events directory: the dev scripts set
+  `DIRECTORY_PUBLISH=off` (a rebuild would publish the laptop's own listing).
 - Required server env (names only; see `apps/server/.env.example`): EMAIL_HASH_SECRET,
   PAYMENT_QUOTE_SECRET, STRIPE_WEBHOOK_SECRET + STRIPE_WEBHOOK_SECRET_PLATFORM,
   SHOP_SPENDER_SECRET, ZERODEV_RPC, POSTAGE_BATCH_ID, FEED_PRIVATE_KEY, ALLOWED_HOSTS,
