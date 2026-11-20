@@ -240,7 +240,9 @@ part of that, and is not ours). No tool does that second upload yet.
 Before anything builds on a release the script checks the stored manifest against the build, that
 every file larger than one chunk is erasure-coded at the level asked for, that a website and an event
 page build on it with the shared builders, and that every file reads back as built through our own
-gateway and through Etherna's. `--hold` stops there: the release is stored and checked, and the app
+gateway and through Etherna's. Etherna answers an upload minutes before our bee can fetch it (up to
+six for a 9 MB runtime, 2026-11-20), so the reads through our gateway wait up to 20 minutes for an
+upload the same run made. `--hold` stops there: the release is stored and checked, and the app
 and the server still build on the previous one. `--release-held` checks it again and makes it the
 latest. A signed descriptor
 (`packages/shared/src/site/runtime-release.ts`) is written to the `woco-site-runtime-v1` feed under

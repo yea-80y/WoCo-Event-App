@@ -73,6 +73,38 @@ function servedTypeProblem(file, contentType) {
 }
 
 /**
+ * Read something the network should serve, asking again while it does not.
+ *
+ * A failed read is tried `quick` more times a few seconds apart, as a hiccup
+ * would be. Past that, a run that has just uploaded keeps asking until `until`:
+ * Etherna answers an upload before the network carries it. Our bee could not
+ * fetch either runtime of the first release made this way for between one and a
+ * half and six minutes after its upload returned (2026-11-20, 9 MB each), and a
+ * check that gave up after ten seconds refused two sound uploads. `until` of 0 is
+ * a release uploaded earlier: nothing to wait for, a miss is a miss.
+ *
+ * `get` resolves to the thing read, or to nothing when it was not served; a `get`
+ * that throws was not served. Null when it never came.
+ */
+async function readServed(get, { until = 0, quick = 3, quickMs = 3000, slowMs = 15_000, now = Date.now, sleep, onWait } = {}) {
+  let waiting = false;
+  for (let attempt = 0; ; attempt++) {
+    const got = await Promise.resolve().then(get).catch(() => null);
+    if (got) return got;
+    if (attempt < quick) {
+      await sleep(quickMs);
+      continue;
+    }
+    if (now() >= until) return null;
+    if (!waiting) {
+      waiting = true;
+      if (onWait) onWait();
+    }
+    await sleep(slowMs);
+  }
+}
+
+/**
  * Why a release must not go onto this batch, from the live server's own
  * `/api/health` `postage.releases` section. Etherna holds the batch and has taken
  * saves onto a batch that had already expired (2026-10-16), so its word alone is
@@ -106,5 +138,6 @@ module.exports = {
   manifestDifference,
   storedFileProblem,
   servedTypeProblem,
+  readServed,
   releaseWatchProblems,
 };

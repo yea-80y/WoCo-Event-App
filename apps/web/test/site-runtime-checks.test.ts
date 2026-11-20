@@ -18,6 +18,10 @@ const checks = req("../../../scripts/site-runtime-checks.cjs") as {
   manifestDifference: (local: string[], stored: string[]) => { missing: string[]; extra: string[] };
   storedFileProblem: (span: { length: number; coded: boolean; level: number }, size: number, level: number) => string | null;
   servedTypeProblem: (file: string, contentType: string | null) => string | null;
+  readServed: <T>(get: () => Promise<T | null> | T | null, opts: {
+    until?: number; quick?: number; quickMs?: number; slowMs?: number;
+    now?: () => number; sleep: (ms: number) => Promise<void>; onWait?: () => void;
+  }) => Promise<T | null>;
   releaseWatchProblems: (section: unknown, releaseBatch: string, minTtlSeconds: number) => string[];
 };
 const batches = req("../../../scripts/swarm-batches.cjs") as {
@@ -202,6 +206,74 @@ test("--release-held is not refused for a batch its own held upload filled; an u
 });
 
 // ---------------------------------------------------------------------------
+// Reading an upload back: a fresh one is waited for, an earlier one is not
+// ---------------------------------------------------------------------------
+
+/** A clock that only moves when the code under test sleeps, and a source served from `servedAt`. */
+function network(servedAt: number) {
+  let clock = 0;
+  const sleeps: number[] = [];
+  let asked = 0;
+  let waits = 0;
+  return {
+    opts: (until: number) => ({
+      until, now: () => clock, onWait: () => { waits++; },
+      sleep: async (ms: number) => { sleeps.push(ms); clock += ms; },
+    }),
+    get: async () => { asked++; return clock >= servedAt ? { body: "bytes" } : null; },
+    seen: () => ({ asked, waits, sleeps, clock }),
+  };
+}
+const MIN = 60_000;
+
+test("what is served at once is read once, with no wait", async () => {
+  const n = network(0);
+  assert.deepEqual(await checks.readServed(n.get, n.opts(0)), { body: "bytes" });
+  assert.deepEqual(n.seen(), { asked: 1, waits: 0, sleeps: [], clock: 0 });
+});
+
+test("a hiccup is tried again a few seconds apart, without calling it a wait", async () => {
+  const n = network(5000);
+  assert.deepEqual(await checks.readServed(n.get, n.opts(0)), { body: "bytes" });
+  assert.deepEqual(n.seen(), { asked: 3, waits: 0, sleeps: [3000, 3000], clock: 6000 });
+});
+
+test("a release uploaded earlier is not waited for: four reads, then it is a miss", async () => {
+  const n = network(Infinity);
+  assert.equal(await checks.readServed(n.get, n.opts(0)), null);
+  assert.deepEqual(n.seen(), { asked: 4, waits: 0, sleeps: [3000, 3000, 3000], clock: 9000 });
+});
+
+test("an upload this run made is waited for until our bee serves it", async () => {
+  // Six minutes: the longest seen on the first release made this way.
+  const n = network(6 * MIN);
+  assert.deepEqual(await checks.readServed(n.get, n.opts(20 * MIN)), { body: "bytes" });
+  const { waits, clock, sleeps } = n.seen();
+  assert.equal(waits, 1, "said once that it is waiting");
+  assert.ok(clock >= 6 * MIN && clock < 6 * MIN + 15_000, "read as soon as it was served");
+  assert.deepEqual(sleeps.slice(0, 4), [3000, 3000, 3000, 15_000]);
+});
+
+test("an upload that never reaches our bee is a miss once its time is up, not before", async () => {
+  const n = network(Infinity);
+  assert.equal(await checks.readServed(n.get, n.opts(20 * MIN)), null);
+  const { waits, clock } = n.seen();
+  assert.equal(waits, 1);
+  assert.ok(clock >= 20 * MIN && clock < 20 * MIN + 15_000, "gave up at the deadline");
+});
+
+test("a read that throws was not served, and is asked again", async () => {
+  let rejected = 0;
+  const rejects = async () => { if (rejected++ < 2) throw new Error("socket hang up"); return { body: "bytes" }; };
+  let thrown = 0;
+  const throws = () => { if (thrown++ < 2) throw new Error("not even a promise"); return { body: "bytes" }; };
+  assert.deepEqual(await checks.readServed(rejects, { sleep: async () => {} }), { body: "bytes" });
+  assert.deepEqual(await checks.readServed(throws, { sleep: async () => {} }), { body: "bytes" });
+  assert.equal(rejected, 3);
+  assert.equal(thrown, 3);
+});
+
+// ---------------------------------------------------------------------------
 // The script uses them, in the order that keeps a bad release from going live
 // ---------------------------------------------------------------------------
 
@@ -219,7 +291,8 @@ test("the publish script runs every check before the first thing it stores, and 
   const dryStop = at("if (DRY_RUN && !held) {");
   const upload = at("up = await upload(L);");
   const redescribe = at("sameRootDescription(root, held.runtimes[L.line].root)");
-  const verify = at("await verify(L, root);");
+  // Only an upload this run made is waited for; a release held earlier gets no wait.
+  const verify = at("await verify(L, root, up ? Date.now() + NETWORK_WAIT_MS : 0);");
   const archive = at("if (up) archive(L, up);");
   const holdStop = at("if (HOLD) {");
   const feedWrite = at(".uploadPayload(coreBatch, payload");
@@ -254,8 +327,13 @@ test("the publish script hands each check the real thing to judge", () => {
   has("releaseWatchProblems((await healthRes.json().catch(() => null))?.postage?.releases, releaseBatch, RELEASE_BATCH_MIN_TTL_SECONDS);");
   has("if (watch.length) die(watch.join('; '));");
   // The two reads go to two different places, and the trial is the shared builders, not a stand-in.
-  has("const viaGateway = (p) => read(() => fetch(`${GATEWAY}${p}`));");
-  has("const viaEtherna = (p) => read(() => etherna.get(p));");
+  // Our bee is given time to fetch a fresh upload; Etherna, which holds what it took, is not.
+  has("const viaGateway = (p) => read(() => fetch(`${GATEWAY}${p}`), networkBy);");
+  has("const viaEtherna = (p) => read(() => etherna.get(p), 0);");
+  has("}, { until, sleep, onWait });");
+  // A root node our bee does not serve, and one it serves wrongly, each stop the run.
+  has("if (!nodeBack) die(");
+  has("if (Buffer.compare(nodeBack.body, Buffer.from(rootNode)) !== 0) die(");
   has("return collection.buildSiteCollection({ ...on, site,");
   has("return collection.buildEventPageCollection({");
 });

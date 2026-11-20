@@ -53,7 +53,7 @@ const https = require('https');
 const path = require('path');
 const { releaseBatchProblems, rootChunkSpan, RELEASE_BATCH_MIN_TTL_SECONDS } = require('./swarm-batches.cjs');
 const {
-  heldReleaseProblems, sameRootDescription, manifestDifference, storedFileProblem, servedTypeProblem, releaseWatchProblems,
+  heldReleaseProblems, sameRootDescription, manifestDifference, storedFileProblem, servedTypeProblem, readServed, releaseWatchProblems,
 } = require('./site-runtime-checks.cjs');
 
 const flags = new Set(process.argv.slice(2));
@@ -83,6 +83,11 @@ const REDUNDANCY_LEVEL = '1';
 const CHUNK = 4096;
 /** An undeferred upload answers when every chunk is pushed; past this it is not going to. */
 const UPLOAD_TIMEOUT_MS = 30 * 60_000;
+/**
+ * How long our bee is given to fetch an upload this run just made. Etherna answers
+ * before the network carries it: six minutes was the longest seen (2026-11-20).
+ */
+const NETWORK_WAIT_MS = 20 * 60_000;
 /** Each runtime: how it is built and where. Index documents come from the shared module. */
 const LINES = [
   { line: 'site', script: 'build:multisite', dist: path.join(REPO, 'apps/web/dist-multisite') },
@@ -442,10 +447,14 @@ async function main() {
    * (where pages stored on Etherna are served).
    *
    * Not proved: that every data chunk reached the network. A read rebuilds a missing
-   * chunk from the parity, so it cannot tell; the upload is undeferred, which is
-   * Etherna's node saying each chunk was pushed.
+   * chunk from the parity, so it cannot tell. The upload is undeferred, but Etherna
+   * answers it minutes before our bee can fetch it (2026-11-20), so its answer is not
+   * that proof either: the reads through our gateway are what shows it arrived.
+   *
+   * `networkBy` is how long our bee has to fetch an upload this run just made (0 for
+   * a release held earlier). Reads from Etherna never wait: it holds what it took.
    */
-  async function verify(L, root) {
+  async function verify(L, root, networkBy) {
     const index = shared.SITE_RUNTIME_INDEX_DOCUMENT[L.line];
     const local = built[L.line].files;
     const sizeOf = (f) => fs.statSync(path.join(L.dist, f)).size;
@@ -471,18 +480,21 @@ async function main() {
     if (mantaray.mantarayNodeAddress(rootNode) !== root.root) die(`${L.line}: the root node does not match its address`);
     const entry = await mantaray.resolveMantarayPath(rootNode, index, (a) => etherna.bytes(a));
     await whitelist([root.root]);
-    const read = async (get) => {
-      for (let attempt = 0; ; attempt++) {
-        const r = await get().catch(() => null);
-        if (r?.ok) return { body: Buffer.from(await r.arrayBuffer()), type: r.headers.get('content-type') };
-        if (attempt === 3) return null;
-        await sleep(3000);
-      }
+    let saidWaiting = false;
+    const onWait = () => {
+      if (saidWaiting) return;
+      saidWaiting = true;
+      console.log(`  ${L.line}: our bee does not serve this upload yet - asking again for up to ${NETWORK_WAIT_MS / 60_000} minutes...`);
     };
-    const viaGateway = (p) => read(() => fetch(`${GATEWAY}${p}`));
-    const viaEtherna = (p) => read(() => etherna.get(p));
+    const read = (get, until) => readServed(async () => {
+      const r = await get();
+      return r.ok ? { body: Buffer.from(await r.arrayBuffer()), type: r.headers.get('content-type') } : null;
+    }, { until, sleep, onWait });
+    const viaGateway = (p) => read(() => fetch(`${GATEWAY}${p}`), networkBy);
+    const viaEtherna = (p) => read(() => etherna.get(p), 0);
     const nodeBack = await viaGateway(`/bytes/${root.root}`);
-    if (!nodeBack || Buffer.compare(nodeBack.body, Buffer.from(rootNode)) !== 0) die(`${L.line}: our bee does not serve the root node Etherna holds`);
+    if (!nodeBack) die(`${L.line}: our bee does not serve the root node Etherna holds`);
+    if (Buffer.compare(nodeBack.body, Buffer.from(rootNode)) !== 0) die(`${L.line}: our bee serves a root node that is not the one Etherna holds`);
     const template = await viaGateway(`/bzz/${root.root}/${index}`);
     if (!template || bytesTreeRoot(new Uint8Array(template.body)) !== entry) die(`${L.line}: the template our bee serves does not match its entry in the manifest`);
 
@@ -521,7 +533,7 @@ async function main() {
       root = await describe(up.ref, index);
     }
     console.log(`Checking the ${L.line} runtime at ${root.root}...`);
-    await verify(L, root);
+    await verify(L, root, up ? Date.now() + NETWORK_WAIT_MS : 0);
     if (up) archive(L, up);
     runtimes[L.line] = { dist: built[L.line].dist, roots: { woco: root, etherna: root } };
   }
