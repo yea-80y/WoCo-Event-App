@@ -18,6 +18,11 @@ const checks = req("../../../scripts/site-runtime-checks.cjs") as {
   manifestDifference: (local: string[], stored: string[]) => { missing: string[]; extra: string[] };
   storedFileProblem: (span: { length: number; coded: boolean; level: number }, size: number, level: number) => string | null;
   servedTypeProblem: (file: string, contentType: string | null) => string | null;
+  notHereYet: (status: number) => boolean;
+  readServed: <T>(get: () => Promise<T | null> | T | null, opts: {
+    until?: number; quick?: number; quickMs?: number; slowMs?: number;
+    now?: () => number; sleep: (ms: number) => Promise<void>; onWait?: () => void;
+  }) => Promise<T | null>;
   releaseWatchProblems: (section: unknown, releaseBatch: string, minTtlSeconds: number) => string[];
 };
 const batches = req("../../../scripts/swarm-batches.cjs") as {
@@ -202,6 +207,112 @@ test("--release-held is not refused for a batch its own held upload filled; an u
 });
 
 // ---------------------------------------------------------------------------
+// Reading an upload back: a fresh one is waited for, an earlier one is not
+// ---------------------------------------------------------------------------
+
+/** A clock that only moves when the code under test sleeps, and a source served from `servedAt`. */
+function network(servedAt: number) {
+  let clock = 0;
+  const sleeps: number[] = [];
+  let asked = 0;
+  let waits = 0;
+  return {
+    opts: (until: number) => ({
+      until, now: () => clock, onWait: () => { waits++; },
+      sleep: async (ms: number) => { sleeps.push(ms); clock += ms; },
+    }),
+    get: async () => { asked++; return clock >= servedAt ? { body: "bytes" } : null; },
+    seen: () => ({ asked, waits, sleeps, clock }),
+  };
+}
+const MIN = 60_000;
+
+test("what is served at once is read once, with no wait", async () => {
+  const n = network(0);
+  assert.deepEqual(await checks.readServed(n.get, n.opts(0)), { body: "bytes" });
+  assert.deepEqual(n.seen(), { asked: 1, waits: 0, sleeps: [], clock: 0 });
+});
+
+test("a hiccup is tried again a few seconds apart, without calling it a wait", async () => {
+  const n = network(5000);
+  assert.deepEqual(await checks.readServed(n.get, n.opts(0)), { body: "bytes" });
+  assert.deepEqual(n.seen(), { asked: 3, waits: 0, sleeps: [3000, 3000], clock: 6000 });
+});
+
+test("a release uploaded earlier is not waited for: four reads, then it is a miss", async () => {
+  const n = network(Infinity);
+  assert.equal(await checks.readServed(n.get, n.opts(0)), null);
+  assert.deepEqual(n.seen(), { asked: 4, waits: 0, sleeps: [3000, 3000, 3000], clock: 9000 });
+});
+
+test("an upload this run made is waited for until our bee serves it", async () => {
+  // Six minutes: the longest seen on the first release made this way.
+  const n = network(6 * MIN);
+  assert.deepEqual(await checks.readServed(n.get, n.opts(20 * MIN)), { body: "bytes" });
+  const { waits, clock, sleeps } = n.seen();
+  assert.equal(waits, 1, "said once that it is waiting");
+  assert.ok(clock >= 6 * MIN && clock < 6 * MIN + 15_000, "read as soon as it was served");
+  assert.deepEqual(sleeps.slice(0, 4), [3000, 3000, 3000, 15_000]);
+});
+
+test("an upload that never reaches our bee is a miss once its time is up, not before", async () => {
+  const n = network(Infinity);
+  assert.equal(await checks.readServed(n.get, n.opts(20 * MIN)), null);
+  const { waits, clock } = n.seen();
+  assert.equal(waits, 1);
+  assert.ok(clock >= 20 * MIN && clock < 20 * MIN + 15_000, "gave up at the deadline");
+});
+
+test("a refusal or an error is not waited for, even on a fresh upload: four reads, then a miss", async () => {
+  const n = network(Infinity);
+  let asked = 0;
+  const refused = async () => { asked++; throw new Error("HTTP 403"); };
+  assert.equal(await checks.readServed(refused, n.opts(20 * MIN)), null);
+  assert.equal(asked, 4);
+  assert.deepEqual(n.seen().sleeps, [3000, 3000, 3000]);
+  assert.equal(n.seen().waits, 0, "never called a wait");
+});
+
+test("errors in the middle of a wait are forgiven while 'not here yet' answers keep coming", async () => {
+  // Not here, then two errors, then not here, ... : the run of errors never reaches four.
+  const n = network(6 * MIN);
+  let asked = 0;
+  const flaky = async () => {
+    const i = asked++;
+    if (i % 3 !== 0 && n.seen().clock < 6 * MIN) throw new Error("socket hang up");
+    return n.get();
+  };
+  assert.deepEqual(await checks.readServed(flaky, n.opts(20 * MIN)), { body: "bytes" });
+  assert.ok(n.seen().clock >= 6 * MIN);
+});
+
+test("with nothing to wait for, no mix of answers is read more than seven times", async () => {
+  // The longest: three "not here yet", then errors until the fourth in a row ends it.
+  const n = network(Infinity);
+  let asked = 0;
+  const mixed = async () => { if (asked++ < 3) return null; throw new Error("HTTP 403"); };
+  assert.equal(await checks.readServed(mixed, n.opts(0)), null);
+  assert.equal(asked, 7);
+  assert.equal(n.seen().waits, 0);
+});
+
+test("only answers a bee gives while an upload is still arriving are waited for", () => {
+  for (const status of [404, 429, 500, 502, 503, 504, 524]) assert.equal(checks.notHereYet(status), true, `HTTP ${status}`);
+  for (const status of [200, 301, 400, 401, 402, 403, 409, 416]) assert.equal(checks.notHereYet(status), false, `HTTP ${status}`);
+});
+
+test("a read that throws was not served, and is asked again", async () => {
+  let rejected = 0;
+  const rejects = async () => { if (rejected++ < 2) throw new Error("socket hang up"); return { body: "bytes" }; };
+  let thrown = 0;
+  const throws = () => { if (thrown++ < 2) throw new Error("not even a promise"); return { body: "bytes" }; };
+  assert.deepEqual(await checks.readServed(rejects, { sleep: async () => {} }), { body: "bytes" });
+  assert.deepEqual(await checks.readServed(throws, { sleep: async () => {} }), { body: "bytes" });
+  assert.equal(rejected, 3);
+  assert.equal(thrown, 3);
+});
+
+// ---------------------------------------------------------------------------
 // The script uses them, in the order that keeps a bad release from going live
 // ---------------------------------------------------------------------------
 
@@ -219,7 +330,8 @@ test("the publish script runs every check before the first thing it stores, and 
   const dryStop = at("if (DRY_RUN && !held) {");
   const upload = at("up = await upload(L);");
   const redescribe = at("sameRootDescription(root, held.runtimes[L.line].root)");
-  const verify = at("await verify(L, root);");
+  // Only an upload this run made is waited for; a release held earlier gets no wait.
+  const verify = at("await verify(L, root, up ? Date.now() + NETWORK_WAIT_MS : 0);");
   const archive = at("if (up) archive(L, up);");
   const holdStop = at("if (HOLD) {");
   const feedWrite = at(".uploadPayload(coreBatch, payload");
@@ -254,8 +366,22 @@ test("the publish script hands each check the real thing to judge", () => {
   has("releaseWatchProblems((await healthRes.json().catch(() => null))?.postage?.releases, releaseBatch, RELEASE_BATCH_MIN_TTL_SECONDS);");
   has("if (watch.length) die(watch.join('; '));");
   // The two reads go to two different places, and the trial is the shared builders, not a stand-in.
-  has("const viaGateway = (p) => read(() => fetch(`${GATEWAY}${p}`));");
-  has("const viaEtherna = (p) => read(() => etherna.get(p));");
+  // Our bee is given time to fetch a fresh upload; Etherna, which holds what it took, is not.
+  has("const viaGateway = (p) => read(() => fetch(`${GATEWAY}${p}`), networkBy);");
+  has("const viaEtherna = (p) => read(() => etherna.get(p), 0);");
+  // A root node our bee does not serve, and one it serves wrongly, each stop the run.
+  has("if (nodeBack.missed) die(");
+  has("if (template.missed) die(");
+  // Only "not here yet" is waited for: the answers notHereYet names, and a body that stops.
+  // A refusal, or no answer, is a failure. The miss names the last answer either way.
+  has("if (notHereYet(r.status)) return null;");
+  assert.match(src, /if \(!r\.ok\) \{\s*if \(notHereYet\(r\.status\)\) return null;\s*throw new Error\(last\);\s*\}/);
+  assert.match(src, /\} catch \(e\) \{\s*last = `HTTP \$\{r\.status\}, then the body stopped[^\n]*\n\s*return null;\s*\}/);
+  assert.match(src, /\} catch \(e\) \{\s*last = e\?\.message \|\| 'no answer';\s*throw new Error\(last\);\s*\}/);
+  has("}, { until, sleep, onWait: () => onWait(last) });");
+  has("return got ?? { missed: last };");
+  has("const problem = back.missed ? `not served (${back.missed})` : ");
+  has("if (Buffer.compare(nodeBack.body, Buffer.from(rootNode)) !== 0) die(");
   has("return collection.buildSiteCollection({ ...on, site,");
   has("return collection.buildEventPageCollection({");
 });

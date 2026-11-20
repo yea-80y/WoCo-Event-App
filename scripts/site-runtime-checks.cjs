@@ -73,6 +73,64 @@ function servedTypeProblem(file, contentType) {
 }
 
 /**
+ * Is this answer one a bee gives while a fresh upload is still reaching it? Not
+ * found, a search that ran out of time behind the gateway (5xx), or being asked to
+ * slow down. Any other refusal (401, 403, a bad request) will be the same in twenty
+ * minutes, and is not waited for.
+ */
+const notHereYet = (status) => status === 404 || status === 429 || status >= 500;
+
+const realSleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+/**
+ * Read something the network should serve, asking again while it does not.
+ *
+ * A failed read is tried `quick` more times a few seconds apart, as a hiccup
+ * would be. Past that, a run that has just uploaded keeps asking until `until`:
+ * Etherna answers an upload before the network carries it. Our bee could not
+ * fetch either runtime of the first release made this way for between one and a
+ * half and six minutes after its upload returned (2026-11-20, 9 MB each), and a
+ * check that gave up after ten seconds refused two sound uploads. `until` of 0 is
+ * a release uploaded earlier: nothing to wait for, a miss is a miss.
+ *
+ * `get` resolves to the thing read, or to nothing when the answer was "not here
+ * yet" (`notHereYet`, or a body that stopped part way): only that is waited for. A
+ * `get` that throws is a failure waiting does not mend - a refusal, or no answer at
+ * all - so `quick` of them in a row are forgiven and the next ends the read,
+ * whatever `until` says. Null when it never came.
+ */
+async function readServed(get, { until = 0, quick = 3, quickMs = 3000, slowMs = 15_000, now = Date.now, sleep = realSleep, onWait } = {}) {
+  let waiting = false;
+  let failures = 0;
+  for (let attempt = 0; ; attempt++) {
+    let got = null;
+    let failed = false;
+    try {
+      got = await get();
+    } catch {
+      failed = true;
+    }
+    if (got) return got;
+    if (failed) {
+      if (++failures > quick) return null;
+      await sleep(quickMs);
+      continue;
+    }
+    failures = 0;
+    if (attempt < quick) {
+      await sleep(quickMs);
+      continue;
+    }
+    if (now() >= until) return null;
+    if (!waiting) {
+      waiting = true;
+      if (onWait) onWait();
+    }
+    await sleep(slowMs);
+  }
+}
+
+/**
  * Why a release must not go onto this batch, from the live server's own
  * `/api/health` `postage.releases` section. Etherna holds the batch and has taken
  * saves onto a batch that had already expired (2026-10-16), so its word alone is
@@ -106,5 +164,7 @@ module.exports = {
   manifestDifference,
   storedFileProblem,
   servedTypeProblem,
+  notHereYet,
+  readServed,
   releaseWatchProblems,
 };

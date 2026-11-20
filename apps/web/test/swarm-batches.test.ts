@@ -218,7 +218,7 @@ test("a release is uploaded once, erasure-coded, to the releases batch, after th
   const src = source("../../../scripts/publish-site-runtime.cjs");
   const batchCheck = src.indexOf("releaseBatchProblems(");
   const upload = src.indexOf("await postBuffer(`${ETHERNA_FETCH_BASE}/bzz`");
-  const verify = src.indexOf("await verify(L, root);");
+  const verify = src.indexOf("await verify(L, root, ");
   const holdStop = src.indexOf("if (HOLD) {");
   const feedWrite = src.indexOf(".uploadPayload(coreBatch, payload");
   assert.ok(batchCheck > 0 && upload > batchCheck, "the batch is checked before the upload");
