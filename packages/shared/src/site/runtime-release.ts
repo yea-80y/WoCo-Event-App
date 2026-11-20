@@ -12,10 +12,10 @@
  * root it linked, and the signature on the feed update is what makes the
  * descriptor ours. Never derive anything a site depends on from "latest" alone.
  *
- * A release carries one entry per store a page can be deployed to. Up to v6 each
+ * A release carries one entry per store a page can be deployed to. At first each
  * store held its own upload, and the same build got a different root on each (our
- * bee erasure-codes by default, Etherna does not; measured 2026-11-02). Since v7 a
- * release is stored ONCE, erasure-coded, on its own batch on Etherna
+ * bee erasure-codes by default, Etherna does not; measured 2026-11-02). Since
+ * 2026-11 a release is stored ONCE, erasure-coded, on its own batch on Etherna
  * (`scripts/publish-site-runtime.cjs`), and both entries name that one root: a
  * page links it by address wherever the page's own files are stored. `edges` are
  * the root's top-level fork prefixes (e.g. "assets/") and the address of the node

@@ -738,15 +738,22 @@ export const RELEASE_BATCH_ALARM_SECONDS = 2 * 86_400;
  * built on its releases would go blank while the release held in memory still
  * read as fine. Read from our own bee's chain-wide batch store, so the answer
  * does not depend on Etherna, whose node holds the batch.
+ *
+ * `lastTTL` is the last TTL our bee gave for this batch. A batch runs out by
+ * passing through the red zone, and the read after it has gone is the one our bee
+ * is least able to vouch for (a 404 it cannot witness, or no answer): a batch last
+ * seen under the alarm line therefore stays red until a read says otherwise, so
+ * the alarm cannot clear at the moment the batch dies.
  */
-let releasesState: { batchId: string | null; at: number | null; batchTTL: number | null; gone: boolean; error: string | null; detail: string | null } = {
-  batchId: null,
-  at: null,
-  batchTTL: null,
-  gone: false,
-  error: null,
-  detail: null,
-};
+let releasesState: {
+  batchId: string | null;
+  at: number | null;
+  batchTTL: number | null;
+  lastTTL: number | null;
+  gone: boolean;
+  error: string | null;
+  detail: string | null;
+} = { batchId: null, at: null, batchTTL: null, lastTTL: null, gone: false, error: null, detail: null };
 
 /** The configured releases batch: lowercase id, "invalid" for a value that is not one, null when unset. */
 function releaseBatchId(): string | "invalid" | null {
@@ -758,25 +765,26 @@ function releaseBatchId(): string | "invalid" | null {
 async function refreshReleases(readers: HealthReaders): Promise<void> {
   const batchId = releaseBatchId();
   if (batchId === null || batchId === "invalid") {
-    releasesState = { batchId: null, at: null, batchTTL: null, gone: false, error: null, detail: null };
+    releasesState = { batchId: null, at: null, batchTTL: null, lastTTL: null, gone: false, error: null, detail: null };
     return;
   }
   const at = Date.now();
+  const lastTTL = releasesState.batchId === batchId ? releasesState.lastTTL : null;
   try {
     const batchTTL = num((await readers.beeBatch(batchId)).batchTTL);
     releasesState =
       batchTTL === null
-        ? { batchId, at, batchTTL: null, gone: false, error: "batch response was missing fields", detail: null }
-        : { batchId, at, batchTTL, gone: false, error: null, detail: null };
+        ? { batchId, at, batchTTL: null, lastTTL, gone: false, error: "batch response was missing fields", detail: null }
+        : { batchId, at, batchTTL, lastTTL: batchTTL, gone: false, error: null, detail: null };
   } catch (err) {
     if (!isNotFound(err)) {
-      releasesState = { batchId, at, batchTTL: null, gone: false, error: publicReason(err), detail: msg(err) };
+      releasesState = { batchId, at, batchTTL: null, lastTTL, gone: false, error: publicReason(err), detail: msg(err) };
       return;
     }
     // A 404 is "gone" only with the witness `batchOnChain` asks for; else our bee cannot tell.
     const gone = (await batchOnChain(batchId, readers)) === "gone";
     releasesState = {
-      batchId, at, batchTTL: null, gone,
+      batchId, at, batchTTL: null, lastTTL, gone,
       error: gone ? "not on chain: the releases batch has expired" : "our bee's batch store cannot say whether the releases batch is on chain",
       detail: msg(err),
     };
@@ -802,7 +810,17 @@ function releasesSection(): ReleasesSection {
   if (configured === "invalid") return { ...base, ok: false, configured: true, reason: "RELEASE_BATCH_ID is not a batch id" };
   const s = releasesState.batchId === configured ? releasesState : null;
   const read = { ...base, configured: true, batch: batchLabel(configured), checkedAt: s?.at == null ? null : new Date(s.at).toISOString() };
-  if (!s || s.batchTTL === null) return { ...read, ok: s?.gone ? false : null, reason: s?.error ?? "not read yet" };
+  if (!s || s.batchTTL === null) {
+    if (s && !s.gone && s.lastTTL !== null && s.lastTTL < RELEASE_BATCH_ALARM_SECONDS) {
+      const last = Math.round((s.lastTTL / 86_400) * 100) / 100;
+      return {
+        ...read,
+        ok: false,
+        reason: `${s.error ?? "not read"}; the releases batch had ${last} days left when our bee last read it - top it up: published pages load their code from it`,
+      };
+    }
+    return { ...read, ok: s?.gone ? false : null, reason: s?.error ?? "not read yet" };
+  }
   const days = Math.round((s.batchTTL / 86_400) * 100) / 100;
   const ok = s.batchTTL >= RELEASE_BATCH_ALARM_SECONDS;
   return {
@@ -1514,7 +1532,7 @@ export function __resetHealthProbes(): void {
   chainstateReading = empty<{ block: number; chainTip: number }>();
   ethernaReading = empty<StampReading & { immutable: boolean | null }>();
   buildsState = { batchId: null, reason: null, reading: empty() };
-  releasesState = { batchId: null, at: null, batchTTL: null, gone: false, error: null, detail: null };
+  releasesState = { batchId: null, at: null, batchTTL: null, lastTTL: null, gone: false, error: null, detail: null };
   ethernaVerdict = null;
   chainAbsence = null;
   platformBatchOnChain = { at: null, listed: null, confirmed: false, batchTTL: null, reason: null };

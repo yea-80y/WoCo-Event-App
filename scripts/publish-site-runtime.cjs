@@ -7,8 +7,9 @@
  * and uploads each ONCE, erasure-coded, to the releases batch on Etherna
  * (`RELEASE_BATCH_ID`, scripts/swarm-batches.cjs): a batch of its own, so old
  * releases can lapse with it without touching the core batch or user content.
- * Every file is then read back through our own gateway and checked, and one
- * signed release descriptor (`woco.site-runtime.v2`,
+ * Every file is then read back through our own gateway and through Etherna's and
+ * checked, a page is built on it with the builders the app and the server use, and
+ * one signed release descriptor (`woco.site-runtime.v2`,
  * `packages/shared/src/site/runtime-release.ts`) is written as the next update of
  * the `woco-site-runtime-v1` feed under the frontend deploy key. That one chunk is
  * the only thing this script puts on the core batch.
@@ -23,16 +24,22 @@
  *   node scripts/publish-site-runtime.cjs [--hold | --release-held] [--dry-run] [--allow-dirty]
  *
  *   --hold          upload and check, write no feed update: the release exists but
- *                   nothing builds on it yet. For trying a page on it first.
+ *                   the app and the server build nothing on it yet, so it can be
+ *                   looked at before it is the latest.
  *   --release-held  check the held release again and make it the latest. No build,
- *                   no upload.
+ *                   no upload. A release held with --allow-dirty needs it again.
  *   --dry-run       stop before the first thing that would be stored: the upload,
  *                   or with --release-held the feed update.
  *
- * Each upload is also kept as a tar under `RELEASE_ARCHIVE_DIR` (outside the repo:
- * the server deploy copies this tree to the VM). The same tar uploaded to a new
- * releases batch lands at the same addresses, which is how a release live pages
- * still link is carried when the batch is replaced.
+ * Each release that passed its checks is also kept under `RELEASE_ARCHIVE_DIR`
+ * (outside the repo: the server deploy copies this tree to the VM) as the tar that
+ * was uploaded, with a small file beside it recording the upload's settings. The
+ * address of a release depends on those settings as well as on the bytes, so both
+ * are what storing it again on a new releases batch would start from.
+ *
+ * The releases batch must be the one the live server's alarm watches
+ * (`/api/health` `postage.releases`): that section is our own bee's record of the
+ * chain, and Etherna's answer about a batch it holds is not taken alone.
  *
  * Secrets: scripts/.env (UPLOAD_SECRET, POSTAGE_BATCH_ID = core, RELEASE_BATCH_ID,
  * RELEASE_ARCHIVE_DIR, FEED_PRIVATE_KEY = deploy key) and apps/server/.env
@@ -44,7 +51,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
-const { releaseBatchProblems, rootChunkSpan } = require('./swarm-batches.cjs');
+const { releaseBatchProblems, rootChunkSpan, RELEASE_BATCH_MIN_TTL_SECONDS } = require('./swarm-batches.cjs');
+const {
+  heldReleaseProblems, sameRootDescription, manifestDifference, storedFileProblem, servedTypeProblem, releaseWatchProblems,
+} = require('./site-runtime-checks.cjs');
 
 const flags = new Set(process.argv.slice(2));
 for (const f of flags) {
@@ -66,10 +76,13 @@ const REPO = path.resolve(__dirname, '..');
 const STATE = path.join(REPO, '.swarm/site-runtime.json');
 const HELD = path.join(REPO, '.swarm/site-runtime-held.json');
 const GATEWAY = 'https://gateway.woco-net.com';
+const API = 'https://events-api.woco-net.com';
 const HEX64 = /^[0-9a-f]{64}$/;
 /** Bee's MEDIUM: what our own bee applies when no level is named. Etherna applies none unless asked. */
 const REDUNDANCY_LEVEL = '1';
 const CHUNK = 4096;
+/** An undeferred upload answers when every chunk is pushed; past this it is not going to. */
+const UPLOAD_TIMEOUT_MS = 30 * 60_000;
 /** Each runtime: how it is built and where. Index documents come from the shared module. */
 const LINES = [
   { line: 'site', script: 'build:multisite', dist: path.join(REPO, 'apps/web/dist-multisite') },
@@ -87,6 +100,12 @@ const readEnv = (file, pick) => Object.fromEntries(
 const hex = (u8) => Buffer.from(u8).toString('hex');
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+/** Whole or not at all: a run that dies mid-write must not leave half a state file. */
+const writeFileWhole = (file, data) => {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, data);
+  fs.renameSync(`${file}.tmp`, file);
+};
 
 /** How far past bee's lookup the walk to a free feed index goes before refusing. */
 const FORWARD_WALK = 8;
@@ -148,6 +167,7 @@ function postBuffer(url, headers, body) {
       res.on('error', reject);
     });
     req.on('error', reject);
+    req.setTimeout(UPLOAD_TIMEOUT_MS, () => req.destroy(new Error(`no answer in ${UPLOAD_TIMEOUT_MS / 60_000} minutes`)));
     req.end(body);
   });
 }
@@ -159,9 +179,13 @@ async function main() {
   git('fetch', '--quiet', 'origin', 'main');
   const commit = git('rev-parse', 'HEAD');
   if (!ALLOW_DIRTY && commit !== git('rev-parse', 'origin/main')) die(`HEAD ${commit.slice(0, 8)} is not origin/main`);
+  /** Only --allow-dirty gets here with this true: the build is then not the commit it names. */
+  const dirty = Boolean(git('status', '--porcelain')) || commit !== git('rev-parse', 'origin/main');
 
   const { tsImport } = require('tsx/esm/api');
   const shared = await tsImport('../packages/shared/src/site/runtime-release.ts', __filename);
+  const collection = await tsImport('../packages/shared/src/site/collection.ts', __filename);
+  const templates = await tsImport('../packages/shared/src/site/templates.ts', __filename);
   const mantaray = await tsImport('../packages/shared/src/swarm/mantaray.ts', __filename);
   const { bytesTreeRoot } = await tsImport('../packages/shared/src/swarm/bytes-tree.ts', __filename);
   const { Bee, MantarayNode, PrivateKey, Topic } = require('@ethersphere/bee-js');
@@ -205,9 +229,16 @@ async function main() {
   };
 
   // 2. The runtimes: built now, or the ones a --hold run built and uploaded.
-  const held = RELEASE_HELD ? (fs.existsSync(HELD) ? JSON.parse(fs.readFileSync(HELD, 'utf8')) : die('no held release (.swarm/site-runtime-held.json) - run --hold first')) : null;
-  if (held && held.commit !== commit) die(`the held release was built from ${String(held.commit).slice(0, 8)}, and HEAD is ${commit.slice(0, 8)} - run --hold again`);
-  if (held && held.releaseBatch !== releaseBatch) die('the held release is on another releases batch than RELEASE_BATCH_ID - run --hold again');
+  let held = null;
+  if (RELEASE_HELD) {
+    try {
+      held = fs.existsSync(HELD) ? JSON.parse(fs.readFileSync(HELD, 'utf8')) : null;
+    } catch {
+      die('the held release file (.swarm/site-runtime-held.json) is not readable JSON - run --hold again');
+    }
+    const heldProblems = heldReleaseProblems(held, { commit, releaseBatch, allowDirty: ALLOW_DIRTY, lines: LINES.map((L) => L.line) });
+    if (heldProblems.length) die(heldProblems.join('; '));
+  }
   const built = {};
   for (const L of LINES) {
     if (!held) {
@@ -227,12 +258,18 @@ async function main() {
     built[L.line] = { dist, files };
   }
 
-  // 3. The batches. Releases: Etherna's own answer. Core: it takes the descriptor chunk.
+  // 3. The batches. Releases: Etherna's own answer, and our bee's record of the chain
+  // as the live server reports it. Core: it takes the descriptor chunk.
   const stampRes = await etherna.get(`/stamps/${releaseBatch || 'unset'}`);
+  if (!stampRes.ok && stampRes.status !== 404) die(`could not read the releases batch from Etherna (HTTP ${stampRes.status}) - re-run`);
   const problems = releaseBatchProblems(stampRes.ok ? await stampRes.json() : null, {
     release: releaseBatch, core: coreBatch, build: env.BUILD_BATCH_ID, platform: process.env.ETHERNA_PLATFORM_BATCH,
-  });
+  }, { uploading: !held });
   if (problems.length) die(problems.join('; '));
+  const healthRes = await fetch(`${API}/api/health`).catch(() => null);
+  if (!healthRes?.ok) die(`could not read the server's health (${healthRes ? `HTTP ${healthRes.status}` : 'no answer'}) - it says whether the chain still has the releases batch`);
+  const watch = releaseWatchProblems((await healthRes.json().catch(() => null))?.postage?.releases, releaseBatch, RELEASE_BATCH_MIN_TTL_SECONDS);
+  if (watch.length) die(watch.join('; '));
   const stamps = await (await fetch(`${GATEWAY}/stamps`)).json();
   const core = (stamps.stamps || []).find((s) => String(s.batchID).toLowerCase() === coreBatch);
   if (!core || !core.usable) die(`core batch ${coreBatch.slice(0, 8)} is not usable on our bee`);
@@ -309,7 +346,7 @@ async function main() {
     return;
   }
 
-  // 5. One upload per runtime, erasure-coded, and the tar kept as uploaded.
+  // 5. One upload per runtime, erasure-coded. The tar is kept once it has passed its checks.
   async function upload(L) {
     const tarPath = path.join(REPO, '.swarm/site-runtime.tar');
     fs.mkdirSync(path.dirname(tarPath), { recursive: true });
@@ -331,9 +368,15 @@ async function main() {
     let ref = '';
     try { ref = String(JSON.parse(r.text).reference).toLowerCase(); } catch { /* refused below */ }
     if (!HEX64.test(ref)) die('upload to Etherna returned no reference');
-    fs.mkdirSync(archiveDir, { recursive: true });
-    fs.writeFileSync(path.join(archiveDir, `${L.line}-${ref}.tar`), tar);
-    return ref;
+    return { ref, tar, index };
+  }
+  function archive(L, up) {
+    writeFileWhole(path.join(archiveDir, `${L.line}-${up.ref}.tar`), up.tar);
+    writeFileWhole(path.join(archiveDir, `${L.line}-${up.ref}.json`), JSON.stringify({
+      line: L.line, root: up.ref, commit, dirty, uploadedAt: new Date().toISOString(), releaseBatch,
+      redundancyLevel: Number(REDUNDANCY_LEVEL), indexDocument: up.index, errorDocument: up.index,
+      tarBytes: up.tar.length, tarSha256: sha256(up.tar),
+    }, null, 2) + '\n');
   }
 
   // 6. A root's shared directories (linked whole) and loose files (added one by one).
@@ -374,80 +417,119 @@ async function main() {
     return { root: rootRef, edges, files: filesOut, indexDocument };
   }
 
+  /** A page built on this root with the builders the app and the server use; throws when none can be. */
+  function trialPage(L, root, rootNode, template) {
+    const on = { template: template.toString('utf8'), release: root, releaseRootNode: rootNode };
+    const nobody = `0x${'0'.repeat(40)}`;
+    if (L.line === 'site') {
+      let n = 0;
+      const site = templates.newSiteFromTemplate({ siteId: 'release-check', ownerAddress: nobody, templateId: 'clean-modern-v1', idGen: () => `id${n++}`, now: 0 });
+      return collection.buildSiteCollection({ ...on, site, urls: collection.siteRenderUrls({ apiUrl: API, gatewayUrl: GATEWAY, wocoAppUrl: 'https://woco.eth.limo' }) });
+    }
+    return collection.buildEventPageCollection({
+      ...on, head: null, config: { apiUrl: API, gatewayUrl: GATEWAY, contentGatewayUrl: GATEWAY, eventId: 'release-check', eventSigner: nobody },
+    });
+  }
+
   /**
-   * Everything a page and the server will ask of this root, proved before anything
+   * What a page and the server will ask of this root, checked before anything
    * builds on it: the manifest holds exactly the files built; each file larger than
-   * one chunk is erasure-coded at its full length; the root node and the template
-   * match the addresses the server's kit checks (lib/site/collection-publish.ts);
-   * and every file reads back, byte for byte, through our own gateway - that is,
-   * from the network, the way a visitor's browser gets it.
+   * one chunk is erasure-coded, at the level asked for and at its full length; the
+   * root node and the template match the addresses the server's kit checks
+   * (lib/site/collection-publish.ts); a page builds on it; and every file reads
+   * back, byte for byte and as a type a browser will run, through our own gateway
+   * (from the network, the way a visitor's browser gets it) and through Etherna's
+   * (where pages stored on Etherna are served).
+   *
+   * Not proved: that every data chunk reached the network. A read rebuilds a missing
+   * chunk from the parity, so it cannot tell; the upload is undeferred, which is
+   * Etherna's node saying each chunk was pushed.
    */
   async function verify(L, root) {
     const index = shared.SITE_RUNTIME_INDEX_DOCUMENT[L.line];
     const local = built[L.line].files;
+    const sizeOf = (f) => fs.statSync(path.join(L.dist, f)).size;
 
     const tree = await MantarayNode.unmarshal(new Bee(ETHERNA_FETCH_BASE, { headers: await bearer() }), root.root);
     await tree.loadRecursively(new Bee(ETHERNA_FETCH_BASE, { headers: await bearer() }));
     const stored = new Map(tree.collect().map((n) => [n.fullPathString, hex(n.targetAddress)]));
-    const missing = local.filter((f) => !stored.has(f));
-    const extra = [...stored.keys()].filter((f) => !local.includes(f));
+    const { missing, extra } = manifestDifference(local, [...stored.keys()]);
     if (missing.length || extra.length) die(`${L.line}: the stored manifest is not the build (missing ${missing.slice(0, 3).join(', ') || 'none'}; extra ${extra.slice(0, 3).join(', ') || 'none'})`);
 
-    const large = local.filter((f) => fs.statSync(path.join(L.dist, f)).size > CHUNK);
+    const large = local.filter((f) => sizeOf(f) > CHUNK);
     if (large.length === 0) die(`${L.line}: no file larger than one chunk to check erasure coding on`);
-    const uncoded = [];
+    const badlyStored = [];
     await pool(large, 8, async (f) => {
       const r = await etherna.get(`/chunks/${stored.get(f)}`);
       if (!r.ok) die(`${L.line}: Etherna could not serve the root chunk of ${f}: HTTP ${r.status}`);
-      const span = rootChunkSpan(new Uint8Array(await r.arrayBuffer()));
-      if (!span.coded || span.length !== fs.statSync(path.join(L.dist, f)).size) uncoded.push(f);
+      const problem = storedFileProblem(rootChunkSpan(new Uint8Array(await r.arrayBuffer())), sizeOf(f), Number(REDUNDANCY_LEVEL));
+      if (problem) badlyStored.push(`${f}: ${problem}`);
     });
-    if (uncoded.length) die(`${L.line}: ${uncoded.length} file(s) were not stored erasure-coded at their full length (${uncoded.slice(0, 3).join(', ')})`);
+    if (badlyStored.length) die(`${L.line}: ${badlyStored.length} file(s) were not stored as asked (${badlyStored.slice(0, 3).join('; ')})`);
 
     const rootNode = await etherna.bytes(root.root);
     if (mantaray.mantarayNodeAddress(rootNode) !== root.root) die(`${L.line}: the root node does not match its address`);
     const entry = await mantaray.resolveMantarayPath(rootNode, index, (a) => etherna.bytes(a));
     await whitelist([root.root]);
-    const viaGateway = async (p) => {
+    const read = async (get) => {
       for (let attempt = 0; ; attempt++) {
-        const r = await fetch(`${GATEWAY}${p}`).catch(() => null);
-        if (r?.ok) return Buffer.from(await r.arrayBuffer());
+        const r = await get().catch(() => null);
+        if (r?.ok) return { body: Buffer.from(await r.arrayBuffer()), type: r.headers.get('content-type') };
         if (attempt === 3) return null;
         await sleep(3000);
       }
     };
+    const viaGateway = (p) => read(() => fetch(`${GATEWAY}${p}`));
+    const viaEtherna = (p) => read(() => etherna.get(p));
     const nodeBack = await viaGateway(`/bytes/${root.root}`);
-    if (!nodeBack || Buffer.compare(nodeBack, Buffer.from(rootNode)) !== 0) die(`${L.line}: our bee does not serve the root node Etherna holds`);
+    if (!nodeBack || Buffer.compare(nodeBack.body, Buffer.from(rootNode)) !== 0) die(`${L.line}: our bee does not serve the root node Etherna holds`);
     const template = await viaGateway(`/bzz/${root.root}/${index}`);
-    if (!template || bytesTreeRoot(new Uint8Array(template)) !== entry) die(`${L.line}: the template our bee serves does not match its entry in the manifest`);
+    if (!template || bytesTreeRoot(new Uint8Array(template.body)) !== entry) die(`${L.line}: the template our bee serves does not match its entry in the manifest`);
+
+    try {
+      trialPage(L, root, rootNode, template.body);
+    } catch (e) {
+      die(`${L.line}: no page can be built on this release (${e?.message ?? e})`);
+    }
 
     const unread = [];
     await pool(local, 6, async (f) => {
-      const back = await viaGateway(`/bzz/${root.root}/${f.split('/').map(encodeURIComponent).join('/')}`);
-      if (!back || sha256(back) !== sha256(fs.readFileSync(path.join(L.dist, f)))) unread.push(f);
+      const want = sha256(fs.readFileSync(path.join(L.dist, f)));
+      const p = `/bzz/${root.root}/${f.split('/').map(encodeURIComponent).join('/')}`;
+      for (const [where, get] of [['our gateway', viaGateway], ["Etherna's gateway", viaEtherna]]) {
+        const back = await get(p);
+        const problem = !back ? 'not served' : sha256(back.body) !== want ? 'not the bytes built' : servedTypeProblem(f, back.type);
+        if (problem) unread.push(`${f} through ${where}: ${problem}`);
+      }
     });
-    if (unread.length) die(`${L.line}: ${unread.length} of ${local.length} files do not read back through our gateway as built (${unread.slice(0, 3).join(', ')})`);
-    console.log(`  ${L.line}: ${local.length} files read back as built, ${large.length} checked erasure-coded`);
+    if (unread.length) die(`${L.line}: ${unread.length} read(s) of ${local.length} files did not come back as built (${unread.slice(0, 3).join('; ')})`);
+    console.log(`  ${L.line}: ${local.length} files read back as built through both gateways, ${large.length} checked erasure-coded, a page builds on it`);
   }
 
   const runtimes = {};
   for (const L of LINES) {
+    const index = shared.SITE_RUNTIME_INDEX_DOCUMENT[L.line];
+    let up = null;
     let root;
     if (held) {
-      root = held.runtimes[L.line].root;
+      // The held file names the root; what the root holds is read again, never taken from the file.
+      root = await describe(held.runtimes[L.line].root.root, index);
+      if (!sameRootDescription(root, held.runtimes[L.line].root)) die(`${L.line}: the held release file does not describe what is stored at its root - run --hold again`);
     } else {
       console.log(`Uploading the ${L.line} runtime to Etherna (releases batch ${releaseBatch.slice(0, 8)})...`);
-      root = await describe(await upload(L), shared.SITE_RUNTIME_INDEX_DOCUMENT[L.line]);
+      up = await upload(L);
+      root = await describe(up.ref, index);
     }
     console.log(`Checking the ${L.line} runtime at ${root.root}...`);
     await verify(L, root);
+    if (up) archive(L, up);
     runtimes[L.line] = { dist: built[L.line].dist, roots: { woco: root, etherna: root } };
   }
 
   if (HOLD) {
     const builtAt = new Date().toISOString();
-    fs.writeFileSync(HELD, JSON.stringify({
-      commit, builtAt, releaseBatch,
+    writeFileWhole(HELD, JSON.stringify({
+      commit, dirty, builtAt, releaseBatch,
       runtimes: Object.fromEntries(LINES.map((L) => [L.line, { dist: built[L.line].dist, root: runtimes[L.line].roots.woco }])),
     }, null, 2) + '\n');
     console.log('\nHeld: uploaded and checked, not published. Nothing builds on it yet.');
@@ -485,8 +567,9 @@ async function main() {
   }
   if (!back || Buffer.compare(back, payload) !== 0) die(`wrote v${version} at index ${nextIndex} but it does not read back as written - check before publishing again`);
 
-  fs.writeFileSync(STATE, JSON.stringify({ ...descriptor, releaseBatch, feedIndex: String(nextIndex) }, null, 2) + '\n');
-  if (held) fs.unlinkSync(HELD);
+  writeFileWhole(STATE, JSON.stringify({ ...descriptor, releaseBatch, feedIndex: String(nextIndex) }, null, 2) + '\n');
+  // A held release this publish did not use is now behind the latest: it is not kept to be released later.
+  fs.rmSync(HELD, { force: true });
   console.log(`\nPublished site runtime v${version}`);
   for (const L of LINES) {
     const r = runtimes[L.line].roots.woco;

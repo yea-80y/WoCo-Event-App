@@ -86,18 +86,21 @@ function manifestStateProblem(state, ownerHex, topicHex) {
 
 /**
  * RELEASE_BATCH_ID - RELEASES: site runtime releases, nothing else, on Etherna
- * (`publish-site-runtime.cjs`). Fixed depth; when it fills, buy a new one, upload
- * the releases live sites still link to it again (same files, same addresses) and
- * let the old one lapse. Pages link a release for as long as they stay published
- * on it, so unlike the builds batch it must not lapse while one is in use.
+ * (`publish-site-runtime.cjs`). Fixed depth; when it fills, buy a new one and
+ * publish a release onto it. Pages link a release for as long as they stay
+ * published on it, so unlike the builds batch the old one must be kept alive
+ * (topped up) until those pages have been republished, or its releases have been
+ * stored again on the new batch from the archive the publish script keeps.
  */
 const RELEASE_BATCH_MIN_TTL_SECONDS = 1 * 86_400;
 
 /**
  * Why a release must not be uploaded to this batch, from Etherna's own `/stamps/{id}`
  * answer (null when Etherna does not know the batch). Empty when it may.
+ * `uploading: false` is a run that stores nothing there (`--release-held`): how full
+ * the batch is - which the held upload itself changed - is then no reason to refuse.
  */
-function releaseBatchProblems(stamp, { release, core, build, platform }) {
+function releaseBatchProblems(stamp, { release, core, build, platform }, { uploading = true } = {}) {
   const id = String(release || '').toLowerCase();
   if (!HEX64.test(id)) return ['RELEASE_BATCH_ID is not a batch id in scripts/.env - a release never falls back to another batch'];
   const others = { 'the core batch (POSTAGE_BATCH_ID)': core, 'the builds batch (BUILD_BATCH_ID)': build, 'the Etherna platform batch (ETHERNA_PLATFORM_BATCH)': platform };
@@ -115,7 +118,7 @@ function releaseBatchProblems(stamp, { release, core, build, platform }) {
   // A mutable batch overwrites the oldest chunk in a full bucket without an error,
   // and that chunk would belong to a release pages still link: stop at three quarters.
   const cap = 2 ** (stamp.depth - stamp.bucketDepth);
-  if (!(cap >= 1) || !(stamp.utilization < (cap * 3) / 4)) {
+  if (uploading && (!(cap >= 1) || !(stamp.utilization < (cap * 3) / 4))) {
     problems.push(`releases batch ${short(id)}'s fullest bucket is ${stamp.utilization}/${cap} - buy a new releases batch, set RELEASE_BATCH_ID and upload the releases still in use to it`);
   }
   return problems;

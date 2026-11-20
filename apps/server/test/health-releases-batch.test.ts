@@ -11,7 +11,7 @@ import { alarmGate } from "../src/lib/health/alarm-gate.js";
 
 // `config/swarm.ts` captures POSTAGE_BATCH_ID at module load.
 const CORE = "7dad2b8c0f1a" + "b".repeat(52);
-const RELEASES = "2dcf6394" + "a".repeat(56);
+const RELEASES = "0badc0de" + "a".repeat(56);
 process.env.POSTAGE_BATCH_ID = CORE;
 delete process.env.ETHERNA_PLATFORM_BATCH;
 delete process.env.ETHERNA_API_KEY;
@@ -68,7 +68,7 @@ test("the configured batch is read from our bee's batch store, and over two days
   assert.ok(asked.includes(RELEASES));
   assert.equal(section.releases.ok, true);
   assert.equal(section.releases.configured, true);
-  assert.equal(section.releases.batch, "2dcf6394aaaa…");
+  assert.equal(section.releases.batch, "0badc0deaaaa…");
   assert.equal(section.releases.batchTTLDays, 5);
   assert.equal(section.releases.minTtlSeconds, 2 * DAY);
   assert.equal(section.ok, true);
@@ -121,6 +121,57 @@ test("a read that fails (not a 404), or an answer with no TTL, is unknown and le
   assert.equal(blank.section.releases.ok, null);
 });
 
+// A batch runs out by passing through the red zone. The read after it has gone is the
+// one our bee can least vouch for, so the alarm must not clear on it.
+const low = { releases: async () => ({ batchTTL: DAY / 2 }) };
+async function next(o: Over) {
+  const { readers: r } = readers(o);
+  await probes.refreshPostage(r, silent, false);
+  return probes.postageHealth();
+}
+
+test("red, then a read that fails: still red, and the alarm gate still pages", async () => {
+  assert.equal((await releases(low)).section.releases.ok, false);
+  const section = await next({ releases: async () => { throw Object.assign(new Error("x"), { status: 503 }); } });
+  assert.equal(section.releases.ok, false);
+  assert.match(section.releases.reason ?? "", /had 0\.5 days left when our bee last read it - top it up/);
+  assert.equal(section.releases.batchTTL, null, "no TTL is shown that was not read this pass");
+  assert.equal(alarmGate({ postage: section }, "postage.releases").status, 503);
+});
+
+test("red, then a 404 our bee cannot vouch for (the batch has just run out, our bee is behind): still red", async () => {
+  await releases(low);
+  const behind = await next({
+    releases: async () => { throw notFound(); },
+    chainstate: async () => ({ block: 41_000_000 - 40, chainTip: 41_000_000 }),
+  });
+  assert.equal(behind.releases.ok, false);
+  assert.match(behind.releases.reason ?? "", /cannot say .* had 0\.5 days left/);
+  const blank = await next({ releases: async () => ({ depth: 19 }) });
+  assert.equal(blank.releases.ok, false);
+});
+
+test("red, then topped up and read: green again, and a later failed read is unknown, not red", async () => {
+  await releases(low);
+  assert.equal((await next({ releases: async () => ({ batchTTL: 9 * DAY }) })).releases.ok, true);
+  const failed = await next({ releases: async () => { throw Object.assign(new Error("x"), { status: 503 }); } });
+  assert.equal(failed.releases.ok, null);
+});
+
+test("a low reading for one batch does not turn another batch red", async () => {
+  await releases(low);
+  const other = "f".repeat(64);
+  process.env.RELEASE_BATCH_ID = other;
+  const { readers: r } = readers();
+  const reader = r as unknown as { beeBatch: (id: string) => Promise<Record<string, unknown>> };
+  reader.beeBatch = async (id: string) => {
+    if (id === other) throw Object.assign(new Error("x"), { status: 503 });
+    return { batchID: CORE, depth: 19, batchTTL: 14 * DAY };
+  };
+  await probes.refreshPostage(r, silent, false);
+  assert.equal(probes.postageHealth().releases.ok, null);
+});
+
 test("not configured: unknown, not asked, not in the roll-up", async () => {
   const { section, asked } = await releases({}, null);
   assert.equal(section.releases.configured, false);
@@ -130,7 +181,7 @@ test("not configured: unknown, not asked, not in the roll-up", async () => {
 });
 
 test("a value that is not a batch id is red: a typo must not pass for an alarm", async () => {
-  const { section } = await releases({}, "2dcf6394");
+  const { section } = await releases({}, "0badc0de");
   assert.equal(section.releases.ok, false);
   assert.match(section.releases.reason ?? "", /not a batch id/);
 });
