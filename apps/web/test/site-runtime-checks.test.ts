@@ -262,6 +262,29 @@ test("an upload that never reaches our bee is a miss once its time is up, not be
   assert.ok(clock >= 20 * MIN && clock < 20 * MIN + 15_000, "gave up at the deadline");
 });
 
+test("a refusal or an error is not waited for, even on a fresh upload: four reads, then a miss", async () => {
+  const n = network(Infinity);
+  let asked = 0;
+  const refused = async () => { asked++; throw new Error("HTTP 403"); };
+  assert.equal(await checks.readServed(refused, n.opts(20 * MIN)), null);
+  assert.equal(asked, 4);
+  assert.deepEqual(n.seen().sleeps, [3000, 3000, 3000]);
+  assert.equal(n.seen().waits, 0, "never called a wait");
+});
+
+test("errors in the middle of a wait are forgiven while 'not here yet' answers keep coming", async () => {
+  // Not here, then two errors, then not here, ... : the run of errors never reaches four.
+  const n = network(6 * MIN);
+  let asked = 0;
+  const flaky = async () => {
+    const i = asked++;
+    if (i % 3 !== 0 && n.seen().clock < 6 * MIN) throw new Error("socket hang up");
+    return n.get();
+  };
+  assert.deepEqual(await checks.readServed(flaky, n.opts(20 * MIN)), { body: "bytes" });
+  assert.ok(n.seen().clock >= 6 * MIN);
+});
+
 test("a read that throws was not served, and is asked again", async () => {
   let rejected = 0;
   const rejects = async () => { if (rejected++ < 2) throw new Error("socket hang up"); return { body: "bytes" }; };
@@ -332,7 +355,12 @@ test("the publish script hands each check the real thing to judge", () => {
   has("const viaEtherna = (p) => read(() => etherna.get(p), 0);");
   has("}, { until, sleep, onWait });");
   // A root node our bee does not serve, and one it serves wrongly, each stop the run.
-  has("if (!nodeBack) die(");
+  has("if (nodeBack.missed) die(");
+  has("if (template.missed) die(");
+  // Only "not here" (404) is waited for; every other answer is a failure, named in the refusal.
+  has("if (r.status === 404) return null;");
+  has("return got ?? { missed: last };");
+  has("const problem = back.missed ? `not served (${back.missed})` : ");
   has("if (Buffer.compare(nodeBack.body, Buffer.from(rootNode)) !== 0) die(");
   has("return collection.buildSiteCollection({ ...on, site,");
   has("return collection.buildEventPageCollection({");

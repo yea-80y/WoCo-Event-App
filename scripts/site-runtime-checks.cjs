@@ -83,14 +83,31 @@ function servedTypeProblem(file, contentType) {
  * check that gave up after ten seconds refused two sound uploads. `until` of 0 is
  * a release uploaded earlier: nothing to wait for, a miss is a miss.
  *
- * `get` resolves to the thing read, or to nothing when it was not served; a `get`
- * that throws was not served. Null when it never came.
+ * `get` resolves to the thing read, or to nothing when the answer was "not here"
+ * (a 404): only that is waited for. A `get` that throws is any other failure - a
+ * refusal, a server error, no answer at all. Waiting does not mend those, so `quick`
+ * of them in a row are forgiven and the next ends the read, whatever `until` says.
+ * Null when it never came.
  */
-async function readServed(get, { until = 0, quick = 3, quickMs = 3000, slowMs = 15_000, now = Date.now, sleep, onWait } = {}) {
+const realSleep = (ms) => new Promise((res) => setTimeout(res, ms));
+async function readServed(get, { until = 0, quick = 3, quickMs = 3000, slowMs = 15_000, now = Date.now, sleep = realSleep, onWait } = {}) {
   let waiting = false;
+  let failures = 0;
   for (let attempt = 0; ; attempt++) {
-    const got = await Promise.resolve().then(get).catch(() => null);
+    let got = null;
+    let failed = false;
+    try {
+      got = await get();
+    } catch {
+      failed = true;
+    }
     if (got) return got;
+    if (failed) {
+      if (++failures > quick) return null;
+      await sleep(quickMs);
+      continue;
+    }
+    failures = 0;
     if (attempt < quick) {
       await sleep(quickMs);
       continue;
