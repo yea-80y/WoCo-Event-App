@@ -242,7 +242,8 @@ SWARM
 - Site runtime releases go ONCE, erasure-coded, on a releases batch of their own on Etherna (`RELEASE_BATCH_ID`,
   replaced when full: the releases live pages still link are uploaded again from the tars in `RELEASE_ARCHIVE_DIR`,
   same addresses). Only the one-chunk descriptor update goes on core. `publish-site-runtime.cjs --hold` uploads and
-  checks without publishing; `--release-held` makes that release the latest.
+  checks without publishing; `--release-held` makes that release the latest. The server env takes the same
+  `RELEASE_BATCH_ID` only to watch it: `/api/health` `postage.releases` is red under 2 days or off the chain.
 - Feed private key: `FEED_PRIVATE_KEY` (server-only). Owns PLATFORM feeds — directory pointer,
   site events index, creator site directory, issuer-log relay, recovery status, marketing pointer,
   shop config, passport collection — PLUS any event/site feed whose client sent no feed signer.
