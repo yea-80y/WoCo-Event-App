@@ -18,6 +18,7 @@ const checks = req("../../../scripts/site-runtime-checks.cjs") as {
   manifestDifference: (local: string[], stored: string[]) => { missing: string[]; extra: string[] };
   storedFileProblem: (span: { length: number; coded: boolean; level: number }, size: number, level: number) => string | null;
   servedTypeProblem: (file: string, contentType: string | null) => string | null;
+  notHereYet: (status: number) => boolean;
   readServed: <T>(get: () => Promise<T | null> | T | null, opts: {
     until?: number; quick?: number; quickMs?: number; slowMs?: number;
     now?: () => number; sleep: (ms: number) => Promise<void>; onWait?: () => void;
@@ -285,6 +286,21 @@ test("errors in the middle of a wait are forgiven while 'not here yet' answers k
   assert.ok(n.seen().clock >= 6 * MIN);
 });
 
+test("with nothing to wait for, no mix of answers is read more than seven times", async () => {
+  // The longest: three "not here yet", then errors until the fourth in a row ends it.
+  const n = network(Infinity);
+  let asked = 0;
+  const mixed = async () => { if (asked++ < 3) return null; throw new Error("HTTP 403"); };
+  assert.equal(await checks.readServed(mixed, n.opts(0)), null);
+  assert.equal(asked, 7);
+  assert.equal(n.seen().waits, 0);
+});
+
+test("only answers a bee gives while an upload is still arriving are waited for", () => {
+  for (const status of [404, 429, 500, 502, 503, 504, 524]) assert.equal(checks.notHereYet(status), true, `HTTP ${status}`);
+  for (const status of [200, 301, 400, 401, 402, 403, 409, 416]) assert.equal(checks.notHereYet(status), false, `HTTP ${status}`);
+});
+
 test("a read that throws was not served, and is asked again", async () => {
   let rejected = 0;
   const rejects = async () => { if (rejected++ < 2) throw new Error("socket hang up"); return { body: "bytes" }; };
@@ -353,12 +369,16 @@ test("the publish script hands each check the real thing to judge", () => {
   // Our bee is given time to fetch a fresh upload; Etherna, which holds what it took, is not.
   has("const viaGateway = (p) => read(() => fetch(`${GATEWAY}${p}`), networkBy);");
   has("const viaEtherna = (p) => read(() => etherna.get(p), 0);");
-  has("}, { until, sleep, onWait });");
   // A root node our bee does not serve, and one it serves wrongly, each stop the run.
   has("if (nodeBack.missed) die(");
   has("if (template.missed) die(");
-  // Only "not here" (404) is waited for; every other answer is a failure, named in the refusal.
-  has("if (r.status === 404) return null;");
+  // Only "not here yet" is waited for: the answers notHereYet names, and a body that stops.
+  // A refusal, or no answer, is a failure. The miss names the last answer either way.
+  has("if (notHereYet(r.status)) return null;");
+  assert.match(src, /if \(!r\.ok\) \{\s*if \(notHereYet\(r\.status\)\) return null;\s*throw new Error\(last\);\s*\}/);
+  assert.match(src, /\} catch \(e\) \{\s*last = `HTTP \$\{r\.status\}, then the body stopped[^\n]*\n\s*return null;\s*\}/);
+  assert.match(src, /\} catch \(e\) \{\s*last = e\?\.message \|\| 'no answer';\s*throw new Error\(last\);\s*\}/);
+  has("}, { until, sleep, onWait: () => onWait(last) });");
   has("return got ?? { missed: last };");
   has("const problem = back.missed ? `not served (${back.missed})` : ");
   has("if (Buffer.compare(nodeBack.body, Buffer.from(rootNode)) !== 0) die(");

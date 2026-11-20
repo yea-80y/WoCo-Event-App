@@ -53,7 +53,7 @@ const https = require('https');
 const path = require('path');
 const { releaseBatchProblems, rootChunkSpan, RELEASE_BATCH_MIN_TTL_SECONDS } = require('./swarm-batches.cjs');
 const {
-  heldReleaseProblems, sameRootDescription, manifestDifference, storedFileProblem, servedTypeProblem, readServed, releaseWatchProblems,
+  heldReleaseProblems, sameRootDescription, manifestDifference, storedFileProblem, servedTypeProblem, notHereYet, readServed, releaseWatchProblems,
 } = require('./site-runtime-checks.cjs');
 
 const flags = new Set(process.argv.slice(2));
@@ -482,25 +482,35 @@ async function main() {
     const entry = await mantaray.resolveMantarayPath(rootNode, index, (a) => etherna.bytes(a));
     await whitelist([root.root]);
     let saidWaiting = false;
-    const onWait = () => {
+    const onWait = (answer) => {
       if (saidWaiting) return;
       saidWaiting = true;
-      console.log(`  ${L.line}: our bee does not serve this upload yet - asking again for up to ${Math.ceil((networkBy - Date.now()) / 60_000)} more minutes...`);
+      console.log(`  ${L.line}: our bee does not serve this upload yet (${answer}) - asking again for up to ${Math.ceil((networkBy - Date.now()) / 60_000)} more minutes...`);
     };
-    // What was read, or `{ missed }` naming the last answer. Only a 404 is "not here yet".
+    // What was read, or `{ missed }` naming the last answer. A file whose first chunk has
+    // arrived and whose later ones have not is served as a body that stops: not here yet.
     const read = async (get, until) => {
       let last = 'no answer';
       const got = await readServed(async () => {
+        let r;
         try {
-          const r = await get();
-          last = `HTTP ${r.status}`;
-          if (r.ok) return { body: Buffer.from(await r.arrayBuffer()), type: r.headers.get('content-type') };
-          if (r.status === 404) return null;
+          r = await get();
         } catch (e) {
-          last = e?.message ?? String(e);
+          last = e?.message || 'no answer';
+          throw new Error(last);
         }
-        throw new Error(last);
-      }, { until, sleep, onWait });
+        last = `HTTP ${r.status}`;
+        if (!r.ok) {
+          if (notHereYet(r.status)) return null;
+          throw new Error(last);
+        }
+        try {
+          return { body: Buffer.from(await r.arrayBuffer()), type: r.headers.get('content-type') };
+        } catch (e) {
+          last = `HTTP ${r.status}, then the body stopped (${e?.message || 'no reason given'})`;
+          return null;
+        }
+      }, { until, sleep, onWait: () => onWait(last) });
       return got ?? { missed: last };
     };
     const viaGateway = (p) => read(() => fetch(`${GATEWAY}${p}`), networkBy);
