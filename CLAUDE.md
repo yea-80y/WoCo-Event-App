@@ -20,6 +20,7 @@ WHERE THE DEPTH LIVES
   docs/TICKETING.md               # issuance -> sale -> mint -> door
   docs/SITE_BUILDER.md            # sites: publish/deploy, feeds, quota
   docs/CONTRIBUTING.md            # setup, tests, CI gates, conventions
+  docs/LICENSING.md               # packages/shared + contracts MIT, rest FSL-1.1-MIT; licensor WoCo Network Ltd
   docs/DEVLOG.md                  # running history of completed work + roadmap
   docs/NEXT.md                    # current working order
   docs/PAYMENTS_INTEGRATION.md    # Stripe mechanics, crypto rail (off), reservations, ticket card

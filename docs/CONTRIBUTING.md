@@ -172,6 +172,8 @@ way the PR *is* the revert unit. Two unrelated fixes in one PR cannot be undone 
   sessions and terminals may share a checkout; `git add -A` has picked up someone else's work
   more than once, and a stash round-trip has silently dropped staged deletions.
 - `contracts/` is a **separate repository** (see below). Commit there separately.
+- You license each contribution to WoCo Network Ltd under MIT, and it ships under the licence of
+  the directory it lands in ([LICENSING.md](./LICENSING.md#contributions)).
 
 ### Commit and PR style
 

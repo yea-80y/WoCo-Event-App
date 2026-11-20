@@ -275,3 +275,14 @@ key changed curve, signed data once called "PODs" is now called **objects**
 smart accounts moved to Arbitrum One. Older design records are kept for provenance and labelled
 as historical - see [docs/README.md](docs/README.md#historical). The running history is
 [docs/DEVLOG.md](docs/DEVLOG.md).
+
+---
+
+## Licence
+
+WoCo's ticket formats (`packages/shared`) and contracts are open source under MIT, so anyone can
+build wallets, scanners and frontends on them. The rest of this repository is source-available
+under the [Functional Source License](LICENSE) (FSL-1.1-MIT): read it, run it, learn from it and
+contribute, and every version becomes MIT two years after release. Want to do something the
+licence does not cover? [Ask us](docs/LICENSING.md#ask-us) - we would rather collaborate than say
+no. Full guide: [docs/LICENSING.md](docs/LICENSING.md).
