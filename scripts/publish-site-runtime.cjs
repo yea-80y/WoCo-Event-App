@@ -487,8 +487,9 @@ async function main() {
       saidWaiting = true;
       console.log(`  ${L.line}: our bee does not serve this upload yet (${answer}) - asking again for up to ${Math.ceil((networkBy - Date.now()) / 60_000)} more minutes...`);
     };
-    // What was read, or `{ missed }` naming the last answer. A file whose first chunk has
-    // arrived and whose later ones have not is served as a body that stops: not here yet.
+    // What was read, or `{ missed }` naming the last answer. A body that stops part way is
+    // taken as not here yet: expected of a file whose first chunk has arrived and whose
+    // later ones have not, though only the 404 has been seen (2026-11-20).
     const read = async (get, until) => {
       let last = 'no answer';
       const got = await readServed(async () => {
