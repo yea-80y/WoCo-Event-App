@@ -247,4 +247,15 @@ test("the publish script hands each check the real thing to judge", () => {
   assert.match(src, /if \(unread\.length\) die\(/);
   // The published descriptor carries the root as described from storage, for a held release too.
   assert.match(src, /root = await describe\(held\.runtimes\[L\.line\]\.root\.root, index\);/);
+  // A check that finds something stops the run.
+  const has = (text: string) => assert.ok(src.includes(text), `the script has: ${text}`);
+  has("if (heldProblems.length) die(heldProblems.join('; '));");
+  has("if (!sameRootDescription(root, held.runtimes[L.line].root)) die(");
+  has("releaseWatchProblems((await healthRes.json().catch(() => null))?.postage?.releases, releaseBatch, RELEASE_BATCH_MIN_TTL_SECONDS);");
+  has("if (watch.length) die(watch.join('; '));");
+  // The two reads go to two different places, and the trial is the shared builders, not a stand-in.
+  has("const viaGateway = (p) => read(() => fetch(`${GATEWAY}${p}`));");
+  has("const viaEtherna = (p) => read(() => etherna.get(p));");
+  has("return collection.buildSiteCollection({ ...on, site,");
+  has("return collection.buildEventPageCollection({");
 });
