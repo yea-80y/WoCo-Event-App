@@ -12,7 +12,7 @@
 
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SnapshotCard } from "@woco/shared";
@@ -31,6 +31,10 @@ let fullFails: Error | null = null;
 
 before(async () => {
   process.chdir(mkdtempSync(join(tmpdir(), "woco-ops-directory-")));
+  // A server whose listing file loaded. The rebuild is replaced below, so nothing
+  // here would ever restore a missing one, and changes would wait beside it.
+  mkdirSync(join(process.cwd(), ".data"));
+  writeFileSync(join(process.cwd(), ".data", "event-listing-state.json"), "{}");
   ops = await import("../src/routes/ops.js");
   ls = await import("../src/lib/event/listing-state.js");
   ops._setDirectoryRebuildForTest({
@@ -102,8 +106,8 @@ describe("POST /events/:id/unlist", () => {
     assert.equal(res.status, 200);
     assert.deepEqual((await res.json()).data, { eventId: "evt-out", wasListed: true });
     assert.equal(ls.isListedForSnapshot("evt-out"), false);
-    // The row stays, so an overlay of unlisted rows is never "empty" and never re-seeded.
-    assert.equal(ls.hasAnyRows(), true);
+    // The row stays: an unlist is a row the snapshot restore never writes over.
+    assert.ok(ls.listingStateHealth().rows > 0);
     assert.equal(ls.getListingSeed("evt-out")?.title, "Test night");
     assert.equal((rowOnDisk("evt-out") as { listed: boolean }).listed, false);
     assert.deepEqual(scheduled, ["evt-out"]);
@@ -125,6 +129,29 @@ describe("POST /events/:id/unlist", () => {
     assert.deepEqual((await res.json()).data, { eventId: "evt-tomb", wasListed: false });
     assert.deepEqual(scheduled, []);
   });
+
+  test("while the listing is incomplete, a takedown is recorded for an event with no row, and the restore does not undo it", async () => {
+    // A restart with the listing file gone: the event is in the public directory and has no row yet.
+    const file = join(process.cwd(), ".data", "event-listing-state.json");
+    const whole = readFileSync(file, "utf-8");
+    rmSync(file);
+    ls.__resetListingStateForTest();
+    try {
+      assert.equal((await (await authed("/directory")).json()).data.complete, false, "what is listed cannot be told yet");
+      const res = await post("/events/evt-public/unlist", { by: "test" });
+      assert.equal(res.status, 200);
+      assert.deepEqual((await res.json()).data, { eventId: "evt-public", wasListed: false, recorded: true });
+      assert.deepEqual(scheduled, ["evt-public"]);
+      // The builder's restore, from a last snapshot that lists it.
+      assert.equal(ls.restoreFromSnapshot([card("evt-public"), card("evt-other")]), 1);
+      assert.equal(ls.isListedForSnapshot("evt-public"), false, "the takedown holds");
+      assert.equal(ls.isListedForSnapshot("evt-other"), true);
+    } finally {
+      rmSync(join(process.cwd(), ".data", "event-listing-state.pending.json"), { force: true });
+      writeFileSync(file, whole);
+      ls.__resetListingStateForTest();
+    }
+  });
 });
 
 describe("GET /directory", () => {
@@ -137,6 +164,7 @@ describe("GET /directory", () => {
     assert.ok(ids.includes("evt-shown"));
     assert.ok(!ids.includes("evt-hidden"));
     assert.equal(data.count, data.listed.length);
+    assert.equal(data.complete, true);
     assert.equal(data.listed.find((e: { eventId: string }) => e.eventId === "evt-shown").title, "Shown night");
   });
 });
@@ -160,5 +188,17 @@ describe("POST /directory/rebuild", () => {
     const res = await post("/directory/rebuild", {});
     assert.equal(res.status, 400);
     assert.equal(fullRuns, 0);
+  });
+
+  test("a server that does not rebuild the directory says so, never \"rebuilt\"", async () => {
+    process.env.DIRECTORY_PUBLISH = "off";
+    try {
+      const res = await post("/directory/rebuild", { by: "test" });
+      assert.equal(res.status, 409);
+      assert.match((await res.json()).error, /DIRECTORY_PUBLISH=off/);
+      assert.equal(fullRuns, 0);
+    } finally {
+      delete process.env.DIRECTORY_PUBLISH;
+    }
   });
 });

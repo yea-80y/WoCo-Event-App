@@ -1,4 +1,4 @@
-import { issuerRegistryTopicName } from "@woco/shared";
+import { eventsSnapshotTopicName, issuerRegistryTopicName } from "@woco/shared";
 import { Topic } from "@ethersphere/bee-js";
 
 /**
@@ -66,9 +66,9 @@ export const topicEvent = (eventId: string) =>
 /**
  * Platform-signed pointer feed → the current immutable directory-snapshot blob
  * (#37). Single O(1) page; the ONLY centralised piece of the chain-log directory.
+ * Its name, and the generation in it, live in `@woco/shared`.
  */
-export const topicEventsSnapshot = () =>
-  Topic.fromString(`${EVENT_NS}/directory/snapshot`);
+export const topicEventsSnapshot = () => Topic.fromString(eventsSnapshotTopicName());
 
 // The v1 per-series claim feeds (woco/object/editions|claims|claimers|
 // pending-claims/{seriesId}) were retired with the v1 claim rail — the

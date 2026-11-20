@@ -95,7 +95,28 @@ export interface EventsSnapshot {
 }
 
 /**
- * Payload of the platform-signed pointer feed at `woco/event/directory/snapshot`.
+ * Which feed the directory pointer is written to. Bee finds a feed's latest
+ * update by reading index 0 and probing forward from it (`pkg/feeds/sequence`),
+ * so a feed is only as alive as its first update, and each lookup takes longer
+ * the more updates it holds. Raising this starts a new feed at index 0 on the
+ * current batch. Nothing is carried over: the builder makes the first snapshot
+ * from its own registrations and listing decisions, and the previous feed is
+ * never read again.
+ *
+ * Generation 1 was `woco/event/directory/snapshot`, with no suffix.
+ */
+export const EVENTS_SNAPSHOT_GENERATION = 2;
+
+/**
+ * Topic of the pointer feed. Here, not in the server, so that anything can find
+ * the directory on Swarm from the platform signer's address and this name alone.
+ */
+export function eventsSnapshotTopicName(): string {
+  return `woco/event/directory/snapshot/${EVENTS_SNAPSHOT_GENERATION}`;
+}
+
+/**
+ * Payload of the platform-signed pointer feed (`eventsSnapshotTopicName`).
  * The ONLY centralised piece of the directory — deliberately swappable (multi-writer
  * Swarm chunk updates / community moderation later) without touching truth or content.
  */

@@ -532,7 +532,8 @@ export interface RegistryResolutionEntry {
  * persisted `${eventId}|${seriesId}` → registration map). The directory-snapshot
  * full-rebuild uses this: the platform sponsor registers ALL events, so this map is
  * a complete enumerator of onChainEventId → {wocoEventId, seriesId}. `creatorFeedSigner`
- * is filled by the builder from the resolved feed (this cache doesn't carry it).
+ * is added by the builder from the record pinned at create (`registrationsWithSigners`);
+ * this cache doesn't carry it.
  */
 export function getAllResolutionEntries(): RegistryResolutionEntry[] {
   ensureLoaded();

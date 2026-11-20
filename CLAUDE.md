@@ -98,7 +98,9 @@ DEV COMMANDS:
   frontend = Swarm feed behind gateway.woco-net.com and woco.eth.limo; API =
   events-api.woco-net.com. Deploys are manual (rsync + compose rebuild).
 - IMPORTANT for dev: `npm run dev:server` tunnels to the PRODUCTION bee — anything you
-  publish locally lands in the real platform feeds. Be careful.
+  publish locally lands in the real platform feeds. Be careful. The one thing a dev
+  server never does is rebuild the public events directory: the dev scripts set
+  `DIRECTORY_PUBLISH=off` (a rebuild would publish the laptop's own listing).
 - Required server env (names only; see `apps/server/.env.example`): EMAIL_HASH_SECRET,
   PAYMENT_QUOTE_SECRET, STRIPE_WEBHOOK_SECRET + STRIPE_WEBHOOK_SECRET_PLATFORM,
   SHOP_SPENDER_SECRET, ZERODEV_RPC, POSTAGE_BATCH_ID, FEED_PRIVATE_KEY, ALLOWED_HOSTS,
@@ -250,7 +252,7 @@ PATTERNS:
 - Retry with exponential backoff for feed propagation delays
 
 FEED TOPICS:
-  woco/event/directory                    # Global event listing
+  woco/event/directory/snapshot/{gen}     # Global event listing: pointer to the snapshot blob (docs/EVENTS_DIRECTORY.md)
   woco/event/{eventId}                    # Event details + ticket series
   woco/event/creator/{ethAddress}         # Per-organiser event index (never deleted from)
   woco/object/collection/{ethAddress}     # User's collection
@@ -605,9 +607,18 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   email-failures.json (the undelivered-ticket ledger — the /api/health alarm reads it)
   broadcast-jobs/*.json (hash-only send accounting — losing it loses the "resume the
     broadcast that died" path AND the /api/health alarm that says one did)
-  event-listing-state.json (#37 global-directory overlay) — if lost, the builder self-heals by
-  reseeding from the last snapshot (directory-snapshot.ts) rather than publishing an empty
-  directory, but that only recovers events already in a snapshot
+  event-listing-state.json (#37 global-directory overlay) — if lost or unreadable the listing is
+  incomplete, and the builder restores a row for each event of the last snapshot that has none
+  (directory-snapshot.ts) rather than publishing a directory without them; that only recovers
+  events already in a snapshot (an empty `{}` file is whole: nothing listed). Present-but-unreadable
+  is never overwritten, and a missing one is written only by that restore (never a partial file):
+  changes made meanwhile go to event-listing-state.pending.json. Repair = remove the broken file,
+  KEEP the pending file, restart (restored from the last snapshot, changes on top). Never put a
+  backup back instead, and after a whole-`.data` restore remove this file before the first start:
+  an older copy wins over the snapshot wherever they disagree (docs/EVENTS_DIRECTORY.md).
+  `listingState` alarms.
+  ROLLBACK: an older build ignores the pending file and overwrites an unreadable listing: repair first. `directory` alarms when the public list is not being rebuilt
+  (`DIRECTORY_PUBLISH=off` outside dev), is serving nothing, or 3 rebuilds failed
   ticket-sales.json (#645 part C — sessionId → payment intent + minted slots + what we
     refunded ourselves. Refunds and chargebacks void tickets THROUGH it. Losing it fails OPEN:
     every refunded ticket reads valid at the door again. The money side does not depend on

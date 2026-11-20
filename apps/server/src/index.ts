@@ -68,10 +68,10 @@ import { firstWriteRetryHealth } from "./lib/swarm/first-write-retry.js";
 import { apiBodyLimit } from "./lib/http/body-limit.js";
 import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
-import { listEvents } from "./lib/event/service.js";
 import { onchainRegistryHealth } from "./lib/event/onchain-registry.js";
 import { issuerBindingHealth } from "./lib/issuer/binding.js";
-import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
+import { directoryHealth, startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
+import { listingStateHealth } from "./lib/event/listing-state.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
@@ -498,6 +498,19 @@ function healthReport() {
     // series that cannot sell until an operator repairs it. `fileUnreadable`
     // is the whole file: nothing sells or registers, and it is never written.
     onchainRegistry: onchainRegistryHealth(),
+    // The public events directory. `publishing` false is an alarm here: only a
+    // dev server runs with DIRECTORY_PUBLISH=off, and a production one that does
+    // has stopped updating the directory. `failedRebuilds` at 3 or more in a row
+    // is one too: new and edited events are not reaching it. So is `cards` null
+    // once boot is over: nothing is being served.
+    directory: directoryHealth(),
+    // The listing overlay (event-listing-state.json): which events WoCo lists.
+    // `unreadable` is an alarm: the file is left as it is for repair, and what
+    // people change meanwhile (`pending`) waits in a side file. `pending` above 0
+    // with no alarm: the file is missing, or was put back, and its changes wait
+    // the same way until the builder's next rebuild has restored it (which a
+    // server that never rebuilds, or cannot read the last snapshot, never does).
+    listingState: listingStateHealth(),
     // Each event's feed signer + verified creator, pinned at create (#670): the
     // money path's only carrier for an UNLISTED event. `unreadable` true, or
     // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no
@@ -1112,16 +1125,12 @@ startDomainPoller();
 assertEventContractConfig();
 
 void logSponsorReadiness();
-// Prime the directory-snapshot read cache (#37: 1 pointer + 1 blob) so the first
-// GET /api/events after a restart serves from memory instead of a cold read.
-void listEvents().then(
-  (d) => console.log(`[startup] event directory primed (${d.length} entries)`),
-  (err) => console.warn("[startup] event directory prime failed:", err),
-);
-// Periodic full reconcile — heals snapshot drift (edits, expired events, a lost
-// incremental trigger) from the chain-log registrations. Does NOT force an initial
-// rebuild: a fresh deploy leaves the snapshot as-is until a publish/list or the
-// ops rebuild endpoint runs the cutover, so the switch-over is deliberate.
+// The directory. Now: one strict read of its pointer feed, which the display
+// then serves from, and the first snapshot of a feed generation nobody has
+// written. Every 30 minutes: a full reconcile, which heals snapshot drift (edits,
+// expired events, a lost incremental trigger) from the server's registrations
+// and, after this process's first one, writes only when something changed. Under DIRECTORY_PUBLISH=off (dev)
+// neither runs: the process reads the directory and never rebuilds it.
 startSnapshotMaintenance();
 // Organiser takings sit on a manual payout schedule and are released after each
 // event by this sweep. If it stops running, no organiser gets paid — and funds

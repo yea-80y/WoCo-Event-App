@@ -20,13 +20,14 @@
  * builder-only events into the public directory. `createEventV2` seeds the row.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { SnapshotCard } from "@woco/shared";
 import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const FILE = join(DATA_DIR, "event-listing-state.json");
+const PENDING_FILE = join(DATA_DIR, "event-listing-state.pending.json");
 
 export interface ListingRow {
   /** In the WoCo global directory. */
@@ -52,22 +53,203 @@ export interface ListingRow {
 }
 
 const rows = new Map<string, ListingRow>();
+/** Changes made on purpose while FILE could not take them (broken, or not there and not yet restored): what PENDING_FILE holds. */
+const pending = new Map<string, ListingRow>();
 let loaded = false;
+/** Why the file on disk could not be understood, or null. While set, nothing is written to it. */
+let unreadable: string | null = null;
+/** PENDING_FILE is there and cannot be understood: it is not applied and not written either. */
+let pendingUnreadable = false;
+/** PENDING_FILE is on disk and understood: FILE, as it is on disk, is not known to hold the whole listing. */
+let sideFile = false;
+/** Memory may lack rows of listed events: FILE did not load, or it loaded beside PENDING_FILE. */
+let incomplete = false;
 
+function isRow(v: unknown): v is ListingRow {
+  return !!v && typeof v === "object" && !Array.isArray(v) && typeof (v as ListingRow).listed === "boolean";
+}
+
+/** A file's rows, "missing", or why it cannot be used. One wrong row refuses the
+ *  whole file: a row that is not a row is a file something else wrote into. */
+function readRows(file: string): Map<string, ListingRow> | "missing" | { why: string } {
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    return code === "ENOENT" ? "missing" : { why: `exists but could not be read (${code ?? "unknown error"})` };
+  }
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return { why: "is not valid JSON" };
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return { why: "is not a JSON object" };
+  const out = new Map<string, ListingRow>();
+  for (const [k, v] of Object.entries(obj)) {
+    if (!isRow(v)) return { why: "holds an entry that is not a listing row" };
+    out.set(k, v);
+  }
+  return out;
+}
+
+/**
+ * A file that is there and cannot be understood is not an empty overlay. Read
+ * as one, the first listing change (or the builder's reseed) wrote a new file
+ * over it, and with it went every unlisted and deleted event's row, which no
+ * snapshot holds. So FILE is left exactly as it is for repair, and the server
+ * carries on from memory.
+ *
+ * Memory is then INCOMPLETE, as it is when the file is simply not there: rows
+ * that were listed may be missing, and default-exclude would drop those events
+ * from the next directory. The builder asks (`needsRestoreFromSnapshot`) and
+ * gives every card of the last snapshot a row where there is none
+ * (`restoreFromSnapshot`). It used to ask "are there no rows at all?", which one
+ * change made before the first rebuild answered "no" to, and the rebuild then
+ * published a directory of that one event.
+ *
+ * FILE is only ever written from memory that is whole. Written before the
+ * restore, it would hold a few rows and load at the next start as the whole
+ * listing: a restart before the first rebuild, and that rebuild published a
+ * directory of those rows alone. So until the restore, what people change goes
+ * to PENDING_FILE, whether FILE is broken or simply not there, and a FILE that
+ * was not there is written by the restore, once memory is whole.
+ *
+ * What people change while FILE is unreadable must outlive the repair, or a
+ * cancelled, taken down or deleted event comes back with the repaired file's
+ * older rows. Those changes stay in PENDING_FILE. It is read at every start, so
+ * they survive a restart while FILE is still broken. Restored rows are not
+ * changes and are not kept there: the repaired file knows better.
+ *
+ * A repaired FILE is somebody's older copy. Events listed after that copy was
+ * taken have no row in it, and only the last snapshot knows them: read as the
+ * whole listing, it dropped them from the next directory. So a broken FILE
+ * always leaves PENDING_FILE behind, empty when nothing was changed, and a FILE
+ * that loads beside PENDING_FILE is incomplete like any other: memory is FILE,
+ * then those changes on top, and nothing is written until the builder has
+ * restored the rows it lacks. Then FILE is written whole and PENDING_FILE goes.
+ * Removing PENDING_FILE by hand says "take FILE exactly as it is".
+ */
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
-  try {
-    const obj = JSON.parse(readFileSync(FILE, "utf-8")) as Record<string, ListingRow>;
-    for (const [k, v] of Object.entries(obj)) rows.set(k, v);
+
+  const main = readRows(FILE);
+  if (main instanceof Map) {
+    for (const [k, v] of main) rows.set(k, v);
     console.log(`[listing-state] Loaded ${rows.size} event listing rows`);
-  } catch {
-    // No file yet — default-exclude means an empty overlay is a valid cold start.
+  } else if (main !== "missing") {
+    unreadable = main.why;
+    console.error(
+      `[listing-state] ALARM: event-listing-state.json ${main.why} - left as it is for repair. Listing changes go ` +
+        "to event-listing-state.pending.json until it is repaired and the server restarted (/api/health listingState)",
+    );
   }
+
+  const kept = readRows(PENDING_FILE);
+  if (kept instanceof Map) {
+    sideFile = true;
+    for (const [k, v] of kept) {
+      rows.set(k, v);
+      pending.set(k, v);
+    }
+    if (main instanceof Map) {
+      console.warn(
+        `[listing-state] event-listing-state.json loaded beside its side file (${kept.size} change(s) applied over it): ` +
+          "the builder restores what it lacks from the last snapshot before it is written again",
+      );
+    }
+  } else if (kept !== "missing") {
+    pendingUnreadable = true;
+    console.error(
+      `[listing-state] ALARM: event-listing-state.pending.json ${kept.why} - the changes it holds are NOT applied ` +
+        "and it is left as it is (/api/health listingState)",
+    );
+  } else if (unreadable) {
+    writeSideFile();
+  }
+  incomplete = !(main instanceof Map) || sideFile;
 }
 
-function persist(): void {
-  writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state");
+function writeSideFile(): void {
+  if (writeJsonAtomic(PENDING_FILE, Object.fromEntries(pending), "listing-state-pending")) sideFile = true;
+}
+
+/** FILE has just been written from memory that is whole: PENDING_FILE has nothing left to say. */
+function dropSideFile(): void {
+  if (!sideFile) return;
+  rmSync(PENDING_FILE, { force: true });
+  pending.clear();
+  sideFile = false;
+}
+
+/** Save a change someone made to `eventId`'s row: in FILE once it can hold the whole listing, beside it until then. */
+function persist(eventId: string): void {
+  if (!unreadable && !incomplete) {
+    // The side file is still there when the restore's own write failed. Applied
+    // again at the next start, it would undo changes made since.
+    if (writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state")) dropSideFile();
+    return;
+  }
+  if (pendingUnreadable) return;
+  pending.set(eventId, rows.get(eventId)!);
+  writeSideFile();
+}
+
+/**
+ * Whether memory may lack rows of listed events: FILE did not load, or it was
+ * put back beside its side file. Until the builder has restored from the last
+ * snapshot, "no row" does not mean "not listed".
+ */
+export function needsRestoreFromSnapshot(): boolean {
+  ensureLoaded();
+  return incomplete;
+}
+
+/**
+ * Give each card of the last snapshot a row where there is none (each card WAS
+ * a listed event), and count memory as complete again. Never over a row that is
+ * there: that is a file row, or an unlist, cancel or delete made since, and the
+ * snapshot is older than all of them. Restored rows never go to PENDING_FILE.
+ */
+export function restoreFromSnapshot(cards: SnapshotCard[]): number {
+  ensureLoaded();
+  let restored = 0;
+  for (const card of cards) {
+    if (rows.has(card.eventId)) continue;
+    rows.set(card.eventId, { listed: true, explicitlyListed: true, updatedAt: new Date().toISOString(), seed: card });
+    restored++;
+  }
+  incomplete = false;
+  // Memory is whole now, so FILE is written: the restored rows and the changes
+  // kept beside it meanwhile. A broken FILE stays as it is, and its side file
+  // with it, for the copy an operator puts back.
+  if (unreadable || rows.size === 0) return restored;
+  if (writeJsonAtomic(FILE, Object.fromEntries(rows), "listing-state")) dropSideFile();
+  return restored;
+}
+
+/** `/api/health` section. Counts only: this endpoint is public. */
+export function listingStateHealth(): { ok: boolean; unreadable: boolean; rows: number; pending: number } {
+  ensureLoaded();
+  return {
+    ok: unreadable === null && !pendingUnreadable,
+    unreadable: unreadable !== null,
+    rows: rows.size,
+    pending: pending.size,
+  };
+}
+
+/** Tests only: forget memory so the next call reloads from disk. */
+export function __resetListingStateForTest(): void {
+  rows.clear();
+  pending.clear();
+  loaded = false;
+  unreadable = null;
+  pendingUnreadable = false;
+  sideFile = false;
+  incomplete = false;
 }
 
 /** Set the global-directory listing flag. `seed` (when given) refreshes the card
@@ -89,7 +271,7 @@ export function setListed(
     ...(seed ? { seed } : {}),
     ...(opts?.explicitlyListed !== undefined ? { explicitlyListed: opts.explicitlyListed } : {}),
   });
-  persist();
+  persist(eventId);
 }
 
 /** Tombstone an event — removes it from the directory permanently. */
@@ -102,7 +284,7 @@ export function setTombstoned(eventId: string): void {
     tombstoned: true,
     updatedAt: new Date().toISOString(),
   });
-  persist();
+  persist(eventId);
 }
 
 /** THE SEAM. Snapshot inclusion predicate — default-exclude. */
@@ -118,13 +300,6 @@ export function isExplicitlyListed(eventId: string): boolean {
   ensureLoaded();
   const row = rows.get(eventId);
   return !!row && row.listed && !row.tombstoned && !!row.explicitlyListed;
-}
-
-/** True if the overlay holds any rows — used to detect a lost/empty overlay file
- *  so the builder can reseed from the last snapshot instead of publishing empty. */
-export function hasAnyRows(): boolean {
-  ensureLoaded();
-  return rows.size > 0;
 }
 
 /** Card-seed fallback for an event the builder can't resolve locally. */

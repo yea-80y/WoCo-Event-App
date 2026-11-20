@@ -113,6 +113,11 @@ const devEnv = { ...process.env };
 // and evict live orders network-wide. An empty value wins over `.env` (dotenv
 // never overrides a set variable), and checkout then refuses locally with 503.
 devEnv.ATTENDEE_STAMPER_PRIVATE_KEY = "";
+// Dev never rebuilds the public events directory. A rebuild publishes what THIS
+// machine's `.data` says is listed, under the production platform key, so it
+// would replace the live directory with a laptop's view of it every 30 minutes.
+// Dev still reads the directory (`directoryPublishingEnabled`).
+devEnv.DIRECTORY_PUBLISH = "off";
 if (tunnel && tunnelledProxy && !process.env.PROXY_URL_EXPLICIT) {
   devEnv.PROXY_URL = `http://localhost:${PROXY_LOCAL_PORT}`;
   console.log(`[dev-tunnel] PROXY_URL -> ${devEnv.PROXY_URL} (rate-limit exempt; set PROXY_URL_EXPLICIT=1 to keep .env's value)`);
