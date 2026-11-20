@@ -77,21 +77,25 @@ function servedTypeProblem(file, contentType) {
  * `/api/health` `postage.releases` section. Etherna holds the batch and has taken
  * saves onto a batch that had already expired (2026-10-16), so its word alone is
  * not enough: the server's section is read from OUR bee's record of the chain. It
- * also proves the alarm is watching the same batch the release is about to go on.
+ * also proves the alarm is watching the batch the release is about to go on. The
+ * server may watch several (a replaced batch stays watched while pages still load
+ * from it); each is reported by a label, the id's first characters.
  */
 function releaseWatchProblems(section, releaseBatch, minTtlSeconds) {
-  if (!section || typeof section !== 'object' || section.configured !== true) {
+  if (!section || typeof section !== 'object' || section.configured !== true || !Array.isArray(section.batches)) {
     return ['the server is not watching a releases batch: set RELEASE_BATCH_ID in the server env and deploy it before publishing a release'];
   }
-  const label = String(section.batch ?? '').replace(/[^0-9a-f]/gi, '').toLowerCase();
-  if (label.length < 8 || !releaseBatch.startsWith(label)) {
-    return [`the server watches releases batch ${short(label)}, and this run would upload to ${short(releaseBatch)} - they must be the same batch`];
+  const labelOf = (b) => String(b?.batch ?? '').replace(/[^0-9a-f]/gi, '').toLowerCase();
+  const mine = section.batches.find((b) => labelOf(b).length >= 8 && releaseBatch.startsWith(labelOf(b)));
+  if (!mine) {
+    const watched = section.batches.map((b) => short(labelOf(b))).join(', ') || 'none';
+    return [`the server watches releases batch ${watched}, and this run would upload to ${short(releaseBatch)} - add it to the server's RELEASE_BATCH_ID first`];
   }
-  if (!(typeof section.batchTTL === 'number' && Number.isFinite(section.batchTTL))) {
-    return [`our bee has no chain record of releases batch ${short(releaseBatch)} (${section.reason || 'not read yet'}) - never upload to a batch the chain does not confirm`];
+  if (!(typeof mine.batchTTL === 'number' && Number.isFinite(mine.batchTTL))) {
+    return [`our bee has no chain record of releases batch ${short(releaseBatch)} (${mine.reason || 'not read yet'}) - never upload to a batch the chain does not confirm`];
   }
-  if (section.batchTTL < minTtlSeconds) {
-    return [`releases batch ${short(releaseBatch)} has ${(section.batchTTL / 86_400).toFixed(1)} days left on chain - top it up before publishing a release onto it`];
+  if (mine.batchTTL < minTtlSeconds) {
+    return [`releases batch ${short(releaseBatch)} has ${(mine.batchTTL / 86_400).toFixed(1)} days left on chain - top it up before publishing a release onto it`];
   }
   return [];
 }

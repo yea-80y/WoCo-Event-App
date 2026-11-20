@@ -230,9 +230,12 @@ release (`node scripts/publish-site-runtime.cjs`, real repo, clean main): one up
 to the releases batch on Etherna (`RELEASE_BATCH_ID` in `scripts/.env`, a batch of its own, and the
 one the server's `postage.releases` alarm watches - the script refuses any other). When it fills, a
 new one is bought and the next release goes there; the old batch is kept alive until the pages on its
-releases have been republished, or those releases have been stored again on the new batch. For that
-the script keeps each release under `RELEASE_ARCHIVE_DIR`: the tar as uploaded and the settings it
-was uploaded with, which together decide its addresses. No tool does that second upload yet.
+releases have been republished, or those releases have been stored again on the new batch. Until
+then the old batch stays in the server's `RELEASE_BATCH_ID`, which takes a comma-separated list, so
+the alarm keeps watching it. The script keeps each release under `RELEASE_ARCHIVE_DIR`: the tar as
+uploaded and the settings it was uploaded with. The same tar uploaded to Etherna again with the same
+settings landed at the same addresses (measured 2026-11-20; the storing node's file-type table is
+part of that, and is not ours). No tool does that second upload yet.
 
 Before anything builds on a release the script checks the stored manifest against the build, that
 every file larger than one chunk is erasure-coded at the level asked for, that a website and an event

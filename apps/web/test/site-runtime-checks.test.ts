@@ -135,25 +135,39 @@ test("scripts and stylesheets must be served as types a browser will run", () =>
 // The batch is the one the server watches, and the chain has it
 // ---------------------------------------------------------------------------
 
-const watched = (extra: Record<string, unknown> = {}) => ({
-  ok: true, configured: true, batch: `${BATCH.slice(0, 12)}…`, batchTTL: 5 * DAY, batchTTLDays: 5, minTtlSeconds: 2 * DAY, checkedAt: "2026-11-20T00:00:00.000Z", ...extra,
+const OLD_BATCH = "d".repeat(64);
+const reading = (id: string, extra: Record<string, unknown> = {}) => ({
+  ok: true, batch: `${id.slice(0, 12)}…`, batchTTL: 5 * DAY, batchTTLDays: 5, checkedAt: "2026-11-20T00:00:00.000Z", ...extra,
+});
+const watched = (extra: Record<string, unknown> = {}, section: Record<string, unknown> = {}) => ({
+  ok: true, configured: true, minTtlSeconds: 2 * DAY, batches: [reading(BATCH, extra)], ...section,
 });
 
-test("a release may go on the batch the server watches, when the chain has it for a day or more", () => {
+test("a release may go on a batch the server watches, when the chain has it for a day or more", () => {
   assert.deepEqual(checks.releaseWatchProblems(watched(), BATCH, DAY), []);
   assert.deepEqual(checks.releaseWatchProblems(watched({ batchTTL: DAY, ok: false }), BATCH, DAY), []);
 });
 
 test("a server watching no releases batch refuses the release", () => {
-  for (const section of [undefined, null, {}, watched({ configured: false })]) {
+  for (const section of [undefined, null, {}, watched({}, { configured: false }), watched({}, { batches: undefined })]) {
     assert.match(checks.releaseWatchProblems(section, BATCH, DAY).join(), /not watching a releases batch/);
   }
 });
 
-test("a server watching another batch refuses the release", () => {
-  assert.match(checks.releaseWatchProblems(watched({ batch: `${"f".repeat(12)}…` }), BATCH, DAY).join(), /must be the same batch/);
-  assert.match(checks.releaseWatchProblems(watched({ batch: null }), BATCH, DAY).join(), /must be the same batch/);
-  assert.match(checks.releaseWatchProblems(watched({ batch: "…" }), BATCH, DAY).join(), /must be the same batch/);
+test("a server watching only other batches refuses the release, and says which it watches", () => {
+  const other = watched({}, { batches: [reading(OLD_BATCH)] });
+  assert.match(checks.releaseWatchProblems(other, BATCH, DAY).join(), /watches releases batch dddddddd, and this run would upload to eeeeeeee - add it/);
+  assert.match(checks.releaseWatchProblems(watched({ batch: null }), BATCH, DAY).join(), /add it to the server's RELEASE_BATCH_ID/);
+  assert.match(checks.releaseWatchProblems(watched({ batch: "…" }), BATCH, DAY).join(), /add it to the server's RELEASE_BATCH_ID/);
+  assert.match(checks.releaseWatchProblems(watched({}, { batches: [] }), BATCH, DAY).join(), /watches releases batch none/);
+});
+
+test("with a replaced batch still watched, the release is judged on its own batch's reading", () => {
+  const both = (mine: Record<string, unknown>, old: Record<string, unknown>) => watched({}, { batches: [reading(OLD_BATCH, old), reading(BATCH, mine)] });
+  // The old batch running low is the alarm's business, not a reason to refuse a release onto the new one.
+  assert.deepEqual(checks.releaseWatchProblems(both({}, { ok: false, batchTTL: 3600 }), BATCH, DAY), []);
+  assert.match(checks.releaseWatchProblems(both({ batchTTL: 3600 }, {}), BATCH, DAY).join(), /eeeeeeee has 0\.0 days left on chain/);
+  assert.match(checks.releaseWatchProblems(both({ batchTTL: null, reason: "x" }, {}), BATCH, DAY).join(), /no chain record of releases batch eeeeeeee \(x\)/);
 });
 
 test("no chain record of the batch, or under a day on chain, refuses the release", () => {
@@ -168,7 +182,7 @@ test("the label the server reports for a batch is one this check can match", () 
   // The server's own label (apps/server/src/lib/health/probes.ts): the id's first 12 characters and an ellipsis.
   const probes = readFileSync(new URL("../../server/src/lib/health/probes.ts", import.meta.url), "utf8");
   assert.match(probes, /function batchLabel\(batchId: string\): string \{\s*return `\$\{batchId\.slice\(0, 12\)\}…`;/);
-  assert.match(probes, /batch: batchLabel\(configured\)/);
+  assert.match(probes, /const label = batchLabel\(batchId\);\s*const read = \{ batch: label,/);
 });
 
 // ---------------------------------------------------------------------------
@@ -214,6 +228,23 @@ test("the publish script runs every check before the first thing it stores, and 
   assert.ok(verify < archive && archive < holdStop && holdStop < feedWrite, "checks, then the archive, then --hold stops, then the feed write");
   // --release-held uploads nothing, so the batch's fullness is not asked of it.
   assert.match(src, /\}, \{ uploading: !held \}\);/);
-  // A held release records whether it was built clean.
+});
+
+test("the publish script hands each check the real thing to judge", () => {
+  const src = readFileSync(new URL("../../../scripts/publish-site-runtime.cjs", import.meta.url), "utf8");
+  // Whether the build is the commit it names is worked out from git, recorded with a hold, and asked again at release.
+  assert.match(src, /const dirty = Boolean\(git\('status', '--porcelain'\)\) \|\| commit !== git\('rev-parse', 'origin\/main'\);/);
   assert.match(src, /commit, dirty, builtAt, releaseBatch,/);
+  assert.match(src, /heldReleaseProblems\(held, \{ commit, releaseBatch, allowDirty: ALLOW_DIRTY, lines: LINES\.map\(\(L\) => L\.line\) \}\)/);
+  // A file is judged against the level the upload asked for, never the one it happens to have.
+  assert.match(src, /storedFileProblem\(rootChunkSpan\(new Uint8Array\(await r\.arrayBuffer\(\)\)\), sizeOf\(f\), Number\(REDUNDANCY_LEVEL\)\)/);
+  // A page that cannot be built stops the run.
+  assert.match(src, /try \{\s*trialPage\(L, root, rootNode, template\.body\);\s*\} catch \(e\) \{\s*die\(/);
+  // Every file is read through both gateways, bytes and type.
+  assert.match(src, /for \(const \[where, get\] of \[\['our gateway', viaGateway\], \["Etherna's gateway", viaEtherna\]\]\) \{/);
+  assert.match(src, /sha256\(back\.body\) !== want \? 'not the bytes built' : servedTypeProblem\(f, back\.type\)/);
+  assert.match(src, /if \(problem\) unread\.push\(/);
+  assert.match(src, /if \(unread\.length\) die\(/);
+  // The published descriptor carries the root as described from storage, for a held release too.
+  assert.match(src, /root = await describe\(held\.runtimes\[L\.line\]\.root\.root, index\);/);
 });

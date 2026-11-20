@@ -243,9 +243,10 @@ SWARM
   When it fills, the next release goes on a new one; the old batch stays topped up until the pages on its releases
   are republished (each release is kept as uploaded in `RELEASE_ARCHIVE_DIR`; no tool stores one again yet). Only
   the one-chunk descriptor update goes on core. `publish-site-runtime.cjs --hold` uploads and checks without
-  publishing; `--release-held` makes that release the latest. The server env takes the same `RELEASE_BATCH_ID`
-  only to watch it (`/api/health` `postage.releases`, red under 2 days or off the chain), and the script refuses
-  a batch the live server is not watching: set the server's first.
+  publishing; `--release-held` makes that release the latest. The server env takes `RELEASE_BATCH_ID` only to
+  watch it (`/api/health` `postage.releases`, red under 2 days or off the chain), and the script refuses a batch
+  the live server is not watching: set the server's first. On the server it may be a comma-separated list: a
+  replaced batch STAYS on it until the pages on its releases are republished - nothing else watches it.
 - Feed private key: `FEED_PRIVATE_KEY` (server-only). Owns PLATFORM feeds — directory pointer,
   site events index, creator site directory, issuer-log relay, recovery status, marketing pointer,
   shop config, passport collection — PLUS any event/site feed whose client sent no feed signer.
