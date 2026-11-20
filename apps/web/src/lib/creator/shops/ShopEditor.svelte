@@ -20,6 +20,7 @@
   import { feedRouteFor } from "../../swarm/gateways.js";
   import { CANONICAL_APP_ORIGIN } from "../../sub-ens/host-label.js";
   import { newSiteFromShop, siteConfigTopic } from "@woco/shared";
+  import { siteIdForSave } from "../builder/owned-site-id.js";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import ShopCatalogEditor from "./ShopCatalogEditor.svelte";
   import ShopLoyaltyEditor from "./ShopLoyaltyEditor.svelte";
@@ -178,11 +179,13 @@
     if (!(await ensureAuthed())) return;
     deploying = true; deployErr = "";
     try {
-      let siteId = uid();
+      // The saved id while it is this account's own; otherwise a new one (owned-site-id.ts).
+      let saved = "";
       try {
-        const saved = localStorage.getItem(storefrontKey);
-        if (saved) siteId = (JSON.parse(saved) as { siteId?: string }).siteId ?? siteId;
+        const raw = localStorage.getItem(storefrontKey);
+        if (raw) saved = (JSON.parse(raw) as { siteId?: string }).siteId ?? "";
       } catch { /* ignore */ }
+      const siteId = siteIdForSave(saved, auth.parent as string, false);
 
       const site = newSiteFromShop({
         siteId,

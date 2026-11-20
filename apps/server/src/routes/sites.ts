@@ -6,6 +6,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { cancellationGate } from "../lib/event/cancellations.js";
 import { getEvent, getCreatorEvents } from "../lib/event/service.js";
 import { getCreatorSites, upsertCreatorSite, resolveSiteConfig, resolveSiteConfigOrNull } from "../lib/site/service.js";
+import { siteOwnerRefusal } from "../lib/site/site-owner-rule.js";
 import { siteRuntimeReleases } from "../lib/site/runtime-release.js";
 import {
   escapeHtmlAttribute as escHtml,
@@ -126,13 +127,16 @@ function storageBusy(c: Context) {
 const EVENTS_INDEX_UNREADABLE = "Could not read this site's events right now - please try again";
 
 /**
- * Event add/remove: only the owner of an EXISTING site may change its index. A
- * read that cannot decide is a retryable 503, not "Site not found" (#217).
+ * Event add/remove: only the owner of an EXISTING site may change its index. Whose
+ * the site is comes from its id (site-owner-rule.ts); the read says whether it
+ * exists. A read that cannot decide is a retryable 503, not "Site not found" (#217).
  */
 async function eventIndexOwnerRefusal(
   siteId: string,
   parentAddress: string,
-): Promise<{ status: 403 | 404 | 503; error: string } | null> {
+): Promise<{ status: 403 | 404 | 409 | 503; error: string; code?: string } | null> {
+  const byId = siteOwnerRefusal(siteId, parentAddress);
+  if (byId) return byId;
   const read = await resolveSiteConfig(siteId);
   if (read.status === "unavailable") {
     console.warn(`[sites/events] ownership undecidable for ${siteId}: ${read.reason}`);
@@ -382,6 +386,9 @@ sitesRouter.post("/", requireAuth, async (c) => {
     if (!isSafeIdParam(body.site.siteId)) {
       return c.json({ ok: false, error: "siteId is malformed" }, 400);
     }
+    // Whose site this is, from the id alone and before any read (site-owner-rule.ts).
+    const notOwner = siteOwnerRefusal(body.site.siteId, parentAddress);
+    if (notOwner) return c.json({ ok: false, error: notOwner.error, ...(notOwner.code ? { code: notOwner.code } : {}) }, notOwner.status);
     if (body.gatewayUrl !== undefined && typeof body.gatewayUrl !== "string") {
       return c.json({ ok: false, error: "Invalid gatewayUrl" }, 400);
     }
@@ -411,13 +418,13 @@ sitesRouter.post("/", requireAuth, async (c) => {
       }
     }
 
-    // If an existing site is published, only the owner may overwrite it.
+    // The caller owns this id (above), so "absent" is a first save or a pointer
+    // that was lost, and the owner writes it again. This read no longer decides
+    // whose the site is: before the id did, "absent" stamped any caller owner.
     //
-    // Three answers, and only ONE of them permits the write (#181). "absent" means
-    // the network found no site (the best answer a read can give: see service.ts).
-    // "unavailable" means we could not find out
-    // — and proceeding on that is what let a caller be stamped owner of somebody
-    // else's site by retrying until a Swarm read failed.
+    // "unavailable" still refuses (#181): the write would be built on a state we
+    // could not read. A pointer naming another owner cannot happen for an id the
+    // caller owns; it is refused if it ever does.
     const existing = await resolveSiteConfig(site.siteId);
     if (existing.status === "unavailable") {
       console.warn(`[sites/publish] ownership undecidable for ${site.siteId}: ${existing.reason}`);
@@ -718,7 +725,7 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
 
   try {
     const refused = await eventIndexOwnerRefusal(siteId, parentAddress);
-    if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
+    if (refused) return c.json({ ok: false, error: refused.error, ...(refused.code ? { code: refused.code } : {}) }, refused.status);
 
     const body = await c.req.json() as { eventId?: string; featured?: boolean };
     if (!body.eventId) return c.json({ ok: false, error: "eventId required" }, 400);
@@ -783,7 +790,7 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
 
   try {
     const refused = await eventIndexOwnerRefusal(siteId, parentAddress);
-    if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
+    if (refused) return c.json({ ok: false, error: refused.error, ...(refused.code ? { code: refused.code } : {}) }, refused.status);
 
     const written = await withEventsIndexLock(siteId, async () => {
       const read = await readEventsIndexForWrite(siteId);
@@ -880,6 +887,9 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
   if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
   const refusal = await websiteStorageRefusal(parentAddress);
   if (refusal) return c.json(refusal, 403);
+  // Whose site this is, from the id alone and before any read (site-owner-rule.ts).
+  const notOwner = siteOwnerRefusal(siteId, parentAddress);
+  if (notOwner) return c.json({ ok: false, error: notOwner.error, ...(notOwner.code ? { code: notOwner.code } : {}) }, notOwner.status);
 
   let endDeploy: ((holdMs?: number) => void) | null = null;
   let holdAfterMs = 0;
@@ -901,14 +911,12 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     const { apiUrl, gatewayUrl, wocoAppUrl } = resolvedUrls.urls;
 
     // The site is the one the client rendered (`body.site`, below; #1032 the
-    // browser builds it), owner stamped server-side. An EXISTING siteId may only
-    // be deployed by its owner — without this gate the body.site path would let
-    // any authenticated user overwrite another site's woco-multisite feed and
-    // re-point its custom domains.
-    // As on publish: "unavailable" is not "unclaimed" (#181). This gate is the
-    // only thing standing between the body.site fast path and a caller taking over
-    // another site's woco-multisite feed, which is what the custom domains resolve
-    // through — so an undecidable read must refuse rather than fall through.
+    // browser builds it), owner stamped server-side. Only its owner deploys a
+    // siteId, and the id itself said the caller is that owner (above): a pointer
+    // that reads "absent" can no longer hand another site's woco-multisite feed,
+    // and the custom domains that resolve through it, to whoever asks.
+    // As on publish, "unavailable" still refuses (#181), and so does a pointer
+    // naming another owner, which an id the caller owns should never have.
     const published = await resolveSiteConfig(siteId);
     if (published.status === "unavailable") {
       console.warn(`[sites/deploy] ownership undecidable for ${siteId}: ${published.reason}`);

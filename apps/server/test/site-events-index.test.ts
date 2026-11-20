@@ -113,7 +113,7 @@ const sha256Hex = (text: string) => createHash("sha256").update(text, "utf-8").d
 
 /** A published site owned by `owner`; its events index answers `events`. */
 function site(owner: Wallet, events: "absent" | "error" | "lookup-failed"): string {
-  const siteId = `site-${randomUUID().slice(0, 12)}`;
+  const siteId = shared.newOwnedSiteId(owner.address);
   feeds.set(hex(shared.siteConfigTopic(siteId)), { json: { siteId, ownerAddress: owner.address.toLowerCase(), pages: [] } });
   if (events !== "absent") feeds.set(hex(shared.siteEventsIndexTopic(siteId)), events);
   return siteId;
