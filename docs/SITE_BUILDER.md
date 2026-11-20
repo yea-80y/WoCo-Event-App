@@ -226,8 +226,13 @@ see SEO_PLAN.md.
 ### Runtime releases (#1032)
 
 A site does not carry the runtime (~9 MB); it links a release. The runtime is published ONCE per
-release (`node scripts/publish-site-runtime.cjs`, real repo, clean main) to our
-bee on the core batch and to the Etherna platform batch, and a signed descriptor
+release (`node scripts/publish-site-runtime.cjs`, real repo, clean main): one upload, erasure-coded,
+to the releases batch on Etherna (`RELEASE_BATCH_ID` in `scripts/.env`, a batch of its own: when it
+fills, a new one is bought, the releases live pages still link are uploaded to it again from the
+tars kept under `RELEASE_ARCHIVE_DIR` - same files, same addresses - and the old one lapses). Before
+anything builds on it the script reads every file back through our own gateway and checks it against
+the build, and that each is erasure-coded. `--hold` stops there, so a page can be tried on the
+release first; `--release-held` then makes it the latest. A signed descriptor
 (`packages/shared/src/site/runtime-release.ts`) is written to the `woco-site-runtime-v1` feed under
 the frontend deploy key. The server reads the latest descriptor (`GET /api/sites/runtime`,
 `/api/health` `siteRuntime`), checks the update's signature itself, and never accepts a lower

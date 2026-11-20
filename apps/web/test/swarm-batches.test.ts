@@ -19,6 +19,9 @@ const batches = createRequire(import.meta.url)("../../../scripts/swarm-batches.c
   batchProblems: (stamps: unknown, ids: { build: string; core: string }) => string[];
   manifestStateProblem: (state: unknown, ownerHex: string, topicHex: string) => string | null;
   BUILD_BATCH_MIN_TTL_SECONDS: number;
+  releaseBatchProblems: (stamp: unknown, ids: { release: string; core: string; build: string; platform: string }) => string[];
+  rootChunkSpan: (chunk: Uint8Array) => { length: number; coded: boolean; level: number };
+  RELEASE_BATCH_MIN_TTL_SECONDS: number;
 };
 
 const source = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
@@ -156,6 +159,80 @@ for (const [name, rel, firstUpload] of [
     assert.match(src, /uploadReference\(\s*POSTAGE_BATCH_ID,/);
   });
 }
+
+// ---------------------------------------------------------------------------
+// The releases batch (publish-site-runtime.cjs)
+// ---------------------------------------------------------------------------
+
+const RELEASE = "e".repeat(64);
+const PLATFORM = "a".repeat(64);
+const ids = { release: RELEASE, core: CORE, build: BUILD, platform: PLATFORM };
+
+test("a healthy releases batch of its own may take a release", () => {
+  assert.deepEqual(batches.releaseBatchProblems(stamp(RELEASE), ids), []);
+  assert.deepEqual(batches.releaseBatchProblems(stamp(RELEASE.toUpperCase()), { ...ids, release: RELEASE.toUpperCase() }), []);
+});
+
+test("no releases batch configured is a refusal, never a fall back", () => {
+  assert.match(batches.releaseBatchProblems(stamp(CORE), { ...ids, release: "" }).join(), /RELEASE_BATCH_ID is not a batch id/);
+});
+
+test("the releases batch may not be the core, builds or Etherna platform batch", () => {
+  assert.match(batches.releaseBatchProblems(stamp(CORE), { ...ids, release: CORE }).join(), /is the core batch/);
+  assert.match(batches.releaseBatchProblems(stamp(BUILD), { ...ids, release: BUILD }).join(), /is the builds batch/);
+  assert.match(batches.releaseBatchProblems(stamp(PLATFORM), { ...ids, release: PLATFORM.toUpperCase() }).join(), /is the Etherna platform batch/);
+});
+
+test("a releases batch Etherna does not hold, or cannot use yet, refuses", () => {
+  assert.match(batches.releaseBatchProblems(null, ids).join(), /releases batch eeeeeeee is not a batch Etherna holds/);
+  assert.match(batches.releaseBatchProblems(stamp(BUILD), ids).join(), /is not a batch Etherna holds/);
+  assert.match(batches.releaseBatchProblems(stamp(RELEASE, { usable: false }), ids).join(), /is not usable yet/);
+});
+
+test("a releases batch under one day refuses; exactly one day does not", () => {
+  const min = batches.RELEASE_BATCH_MIN_TTL_SECONDS;
+  assert.equal(min, 1 * DAY);
+  assert.deepEqual(batches.releaseBatchProblems(stamp(RELEASE, { batchTTL: min }), ids), []);
+  assert.match(batches.releaseBatchProblems(stamp(RELEASE, { batchTTL: min - 1 }), ids).join(), /expires in 1\.0 days/);
+  assert.match(batches.releaseBatchProblems(stamp(RELEASE, { batchTTL: undefined }), ids).join(), /expires in/);
+});
+
+test("a releases batch refuses at three quarters of its fullest bucket", () => {
+  assert.deepEqual(batches.releaseBatchProblems(stamp(RELEASE, { utilization: 5 }), ids), []);
+  assert.match(batches.releaseBatchProblems(stamp(RELEASE, { utilization: 6 }), ids).join(), /fullest bucket is 6\/8/);
+  assert.deepEqual(batches.releaseBatchProblems(stamp(RELEASE, { depth: 20, utilization: 11 }), ids), []);
+  assert.match(batches.releaseBatchProblems(stamp(RELEASE, { depth: 20, utilization: 12 }), ids).join(), /fullest bucket is 12\/16/);
+  assert.match(batches.releaseBatchProblems(stamp(RELEASE, { utilization: undefined }), ids).join(), /fullest bucket/);
+});
+
+test("a root chunk's span gives the file's length and whether it is erasure-coded", () => {
+  // Read from Etherna on 2026-11-20: the same 40,002-byte file stored plain and at level 1.
+  const span = (hexSpan: string) => batches.rootChunkSpan(Uint8Array.from(Buffer.from(hexSpan + "00".repeat(32), "hex")));
+  assert.deepEqual(span("429c000000000000"), { length: 40002, coded: false, level: 0 });
+  assert.deepEqual(span("429c000000000081"), { length: 40002, coded: true, level: 1 });
+  assert.deepEqual(span("0090010000000082"), { length: 102400, coded: true, level: 2 });
+  assert.throws(() => batches.rootChunkSpan(new Uint8Array(7)), /8-byte span/);
+});
+
+test("a release is uploaded once, erasure-coded, to the releases batch, after the checks and before any feed write", () => {
+  const src = source("../../../scripts/publish-site-runtime.cjs");
+  const batchCheck = src.indexOf("releaseBatchProblems(");
+  const upload = src.indexOf("await postBuffer(`${ETHERNA_FETCH_BASE}/bzz`");
+  const verify = src.indexOf("await verify(L, root);");
+  const holdStop = src.indexOf("if (HOLD) {");
+  const feedWrite = src.indexOf(".uploadPayload(coreBatch, payload");
+  assert.ok(batchCheck > 0 && upload > batchCheck, "the batch is checked before the upload");
+  assert.ok(verify > upload && holdStop > verify && feedWrite > holdStop, "upload, then the checks, then --hold stops, then the feed write");
+  // One store, one upload call, on the releases batch, with a level named.
+  assert.equal(src.split("/bzz`, {").length - 1, 1);
+  assert.match(src, /'Swarm-Postage-Batch-Id': releaseBatch,/);
+  assert.match(src, /'Swarm-Redundancy-Level': REDUNDANCY_LEVEL,/);
+  assert.match(src, /const REDUNDANCY_LEVEL = '1';/);
+  // The core batch takes the descriptor update and nothing else.
+  assert.equal(src.split("coreBatch,").length - 1, 2, "coreBatch: the distinctness check and the feed write");
+  // Both store entries name the one root.
+  assert.match(src, /roots: \{ woco: root, etherna: root \}/);
+});
 
 test("the app feed is woco-app-v1", () => {
   assert.match(source("../../../scripts/upload-to-swarm-feed.cjs"), /const FEED_TOPIC = 'woco-app-v1';/);
