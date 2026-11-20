@@ -25,6 +25,6 @@
     "svelte": "^5.57.3",
     "svelte-check": "^4.7.7",
     "tsx": "^4.23.15",
-    "typescript": "~5.9.3"
+    "typescript": "~7.0.2"
   }
 }
