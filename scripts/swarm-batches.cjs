@@ -1,5 +1,6 @@
 /**
- * The two postage batches a frontend deploy writes to (split at launch, 2026-10-23).
+ * The two postage batches a frontend deploy writes to (split at launch, 2026-10-23),
+ * and the releases batch a site runtime release goes on (end of this file).
  *
  *   POSTAGE_BATCH_ID - CORE: feed updates, feed manifests and the sign-in window
  *     (and, on the server, every platform write). Never replaced, only topped up:
@@ -83,4 +84,63 @@ function manifestStateProblem(state, ownerHex, topicHex) {
   return null;
 }
 
-module.exports = { batchProblems, manifestStateProblem, BUILD_BATCH_MIN_TTL_SECONDS };
+/**
+ * RELEASE_BATCH_ID - RELEASES: site runtime releases, nothing else, on Etherna
+ * (`publish-site-runtime.cjs`). Fixed depth; when it fills, buy a new one and
+ * publish a release onto it. Pages link a release for as long as they stay
+ * published on it, so unlike the builds batch the old one must be kept alive
+ * (topped up) until those pages have been republished, or its releases have been
+ * stored again on the new batch from the archive the publish script keeps.
+ */
+const RELEASE_BATCH_MIN_TTL_SECONDS = 1 * 86_400;
+
+/**
+ * Why a release must not be uploaded to this batch, from Etherna's own `/stamps/{id}`
+ * answer (null when Etherna does not know the batch). Empty when it may.
+ * `uploading: false` is a run that stores nothing there (`--release-held`): how full
+ * the batch is - which the held upload itself changed - is then no reason to refuse.
+ */
+function releaseBatchProblems(stamp, { release, core, build, platform }, { uploading = true } = {}) {
+  const id = String(release || '').toLowerCase();
+  if (!HEX64.test(id)) return ['RELEASE_BATCH_ID is not a batch id in scripts/.env - a release never falls back to another batch'];
+  const others = { 'the core batch (POSTAGE_BATCH_ID)': core, 'the builds batch (BUILD_BATCH_ID)': build, 'the Etherna platform batch (ETHERNA_PLATFORM_BATCH)': platform };
+  for (const [name, other] of Object.entries(others)) {
+    if (id === String(other || '').toLowerCase()) return [`RELEASE_BATCH_ID is ${name} - releases go on a batch of their own`];
+  }
+  if (!stamp || String(stamp.batchID || '').toLowerCase() !== id) {
+    return [`releases batch ${short(id)} is not a batch Etherna holds for us - it may have expired`];
+  }
+  if (!stamp.usable) return [`releases batch ${short(id)} is not usable yet`];
+  const problems = [];
+  if (!(stamp.batchTTL >= RELEASE_BATCH_MIN_TTL_SECONDS)) {
+    problems.push(`releases batch ${short(id)} expires in ${(Number(stamp.batchTTL) / 86_400).toFixed(1)} days - top it up before publishing a release onto it`);
+  }
+  // A mutable batch overwrites the oldest chunk in a full bucket without an error,
+  // and that chunk would belong to a release pages still link: stop at three quarters.
+  const cap = 2 ** (stamp.depth - stamp.bucketDepth);
+  if (uploading && (!(cap >= 1) || !(stamp.utilization < (cap * 3) / 4))) {
+    problems.push(`releases batch ${short(id)}'s fullest bucket is ${stamp.utilization}/${cap} - buy a new releases batch, set RELEASE_BATCH_ID and upload the releases still in use to it`);
+  }
+  return problems;
+}
+
+/**
+ * What a file's root chunk says about how it was stored: its length, and whether
+ * it is erasure-coded. Bee keeps the length in the span's low seven bytes and marks
+ * a coded tree in the top one (0x80 | level); a plain tree leaves it zero.
+ */
+function rootChunkSpan(chunk) {
+  if (!chunk || chunk.length < 8) throw new Error('a chunk is at least its 8-byte span');
+  let length = 0n;
+  for (let i = 6; i >= 0; i--) length = (length << 8n) | BigInt(chunk[i]);
+  return { length: Number(length), coded: (chunk[7] & 0x80) !== 0, level: chunk[7] & 0x7f };
+}
+
+module.exports = {
+  batchProblems,
+  manifestStateProblem,
+  releaseBatchProblems,
+  rootChunkSpan,
+  BUILD_BATCH_MIN_TTL_SECONDS,
+  RELEASE_BATCH_MIN_TTL_SECONDS,
+};

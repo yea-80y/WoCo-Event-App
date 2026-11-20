@@ -12,11 +12,15 @@
  * root it linked, and the signature on the feed update is what makes the
  * descriptor ours. Never derive anything a site depends on from "latest" alone.
  *
- * The same build gets a different root on our bee and on Etherna (each node
- * encodes the manifest its own way; measured 2026-11-02), so a release carries
- * one entry per store. `edges` are the root's top-level fork prefixes (e.g.
- * "assets/") and the address of the node each leads to: a site links those
- * nodes, loading each one first so its fork type bits are right.
+ * A release carries one entry per store a page can be deployed to. At first each
+ * store held its own upload, and the same build got a different root on each (our
+ * bee erasure-codes by default, Etherna does not; measured 2026-11-02). Since
+ * 2026-11 a release is stored ONCE, erasure-coded, on its own batch on Etherna
+ * (`scripts/publish-site-runtime.cjs`), and both entries name that one root: a
+ * page links it by address wherever the page's own files are stored. `edges` are
+ * the root's top-level fork prefixes (e.g. "assets/") and the address of the node
+ * each leads to: a site links those nodes, loading each one first so its fork
+ * type bits are right.
  */
 
 export const SITE_RUNTIME_FORMAT = "woco.site-runtime.v2" as const;

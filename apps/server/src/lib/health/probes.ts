@@ -728,6 +728,141 @@ function buildsSection(): BuildsSection {
   };
 }
 
+/** Under this the releases batch is red: two days, as for the builds batch. */
+export const RELEASE_BATCH_ALARM_SECONDS = 2 * 86_400;
+
+/**
+ * The releases batch (`RELEASE_BATCH_ID`): the one copy of every site runtime
+ * release published pages link (scripts/publish-site-runtime.cjs). The server
+ * never writes to it, so nothing else here would notice it lapsing - and pages
+ * built on its releases would go blank while the release held in memory still
+ * read as fine. Read from our own bee's chain-wide batch store, so the answer
+ * does not depend on Etherna, whose node holds the batch.
+ *
+ * `RELEASE_BATCH_ID` may name several, comma-separated: the batch releases go on
+ * now, and any earlier one that published pages still load their code from. A
+ * replaced batch stays on the list until those pages have been republished - it is
+ * the only thing watching it.
+ *
+ * `lastTTL` is the last TTL our bee gave for a batch. A batch runs out by passing
+ * through the red zone, and the read after it has gone is the one our bee is least
+ * able to vouch for (a 404 it cannot witness, or no answer): a batch last seen
+ * under the alarm line therefore stays red until a read says otherwise, so the
+ * alarm cannot clear at the moment the batch dies.
+ */
+interface ReleaseBatchState {
+  at: number;
+  batchTTL: number | null;
+  lastTTL: number | null;
+  gone: boolean;
+  error: string | null;
+  detail: string | null;
+}
+let releasesState = new Map<string, ReleaseBatchState>();
+
+/** The configured releases batches, lowercase and in order; "invalid" when any entry is not a batch id; null when unset. */
+function releaseBatchIds(): string[] | "invalid" | null {
+  const raw = (process.env.RELEASE_BATCH_ID ?? "").trim().toLowerCase();
+  if (!raw) return null;
+  const ids = raw.split(",").map((s) => s.trim());
+  return ids.every((id) => /^[0-9a-f]{64}$/.test(id)) ? [...new Set(ids)] : "invalid";
+}
+
+async function readReleaseBatch(batchId: string, lastTTL: number | null, readers: HealthReaders): Promise<ReleaseBatchState> {
+  const at = Date.now();
+  try {
+    const batchTTL = num((await readers.beeBatch(batchId)).batchTTL);
+    return batchTTL === null
+      ? { at, batchTTL: null, lastTTL, gone: false, error: "batch response was missing fields", detail: null }
+      : { at, batchTTL, lastTTL: batchTTL, gone: false, error: null, detail: null };
+  } catch (err) {
+    if (!isNotFound(err)) return { at, batchTTL: null, lastTTL, gone: false, error: publicReason(err), detail: msg(err) };
+    // A 404 is "gone" only with the witness `batchOnChain` asks for; else our bee cannot tell.
+    const gone = (await batchOnChain(batchId, readers)) === "gone";
+    return {
+      at, batchTTL: null, lastTTL, gone,
+      error: gone ? "not on chain: the releases batch has expired" : "our bee's batch store cannot say whether the releases batch is on chain",
+      detail: msg(err),
+    };
+  }
+}
+
+async function refreshReleases(readers: HealthReaders): Promise<void> {
+  const ids = releaseBatchIds();
+  const next = new Map<string, ReleaseBatchState>();
+  // A batch no longer configured drops out with its last reading: it is not carried to another.
+  for (const id of ids === null || ids === "invalid" ? [] : ids) {
+    next.set(id, await readReleaseBatch(id, releasesState.get(id)?.lastTTL ?? null, readers));
+  }
+  releasesState = next;
+}
+
+export interface ReleaseBatchReading {
+  ok: Verdict;
+  /** Short label of the batch. */
+  batch: string;
+  /** The chain's TTL for it as read this pass, seconds; null when this pass did not read one. */
+  batchTTL: number | null;
+  batchTTLDays: number | null;
+  checkedAt: string | null;
+  reason?: string;
+}
+
+export interface ReleasesSection {
+  /** Red when any watched batch is; unknown when none is red and one could not be read. */
+  ok: Verdict;
+  configured: boolean;
+  minTtlSeconds: number;
+  /** One reading per configured batch, in the order configured. */
+  batches: ReleaseBatchReading[];
+  reason?: string;
+}
+
+function releaseBatchReading(batchId: string, s: ReleaseBatchState | undefined): ReleaseBatchReading {
+  const label = batchLabel(batchId);
+  const read = { batch: label, batchTTL: null, batchTTLDays: null, checkedAt: s ? new Date(s.at).toISOString() : null };
+  if (!s || s.batchTTL === null) {
+    if (s && !s.gone && s.lastTTL !== null && s.lastTTL < RELEASE_BATCH_ALARM_SECONDS) {
+      const last = Math.round((s.lastTTL / 86_400) * 100) / 100;
+      return {
+        ...read,
+        ok: false,
+        reason: `${s.error ?? "not read"}; releases batch ${label} had ${last} days left when our bee last read it - top it up: published pages load their code from it`,
+      };
+    }
+    return { ...read, ok: s?.gone ? false : null, reason: s?.error ?? "not read yet" };
+  }
+  const days = Math.round((s.batchTTL / 86_400) * 100) / 100;
+  const ok = s.batchTTL >= RELEASE_BATCH_ALARM_SECONDS;
+  return {
+    ...read,
+    batchTTL: s.batchTTL,
+    batchTTLDays: days,
+    ok,
+    ...(ok ? {} : { reason: `releases batch ${label} expires in ${days} days - top it up: published pages load their code from it` }),
+  };
+}
+
+function releasesSection(): ReleasesSection {
+  const configured = releaseBatchIds();
+  const base = { minTtlSeconds: RELEASE_BATCH_ALARM_SECONDS, batches: [] };
+  if (configured === null) return { ...base, ok: null, configured: false, reason: "RELEASE_BATCH_ID not set" };
+  // A value that names no batch watches nothing: red, so a typo cannot pass for an alarm.
+  if (configured === "invalid") return { ...base, ok: false, configured: true, reason: "RELEASE_BATCH_ID holds something that is not a batch id" };
+  const batches = configured.map((id) => releaseBatchReading(id, releasesState.get(id)));
+  const red = batches.filter((b) => b.ok === false);
+  const unknown = batches.filter((b) => b.ok === null);
+  const ok = red.length ? false : unknown.length ? null : true;
+  const reasons = (red.length ? red : unknown).map((b) => b.reason).filter(Boolean);
+  return { ...base, ok, configured: true, batches, ...(reasons.length ? { reason: reasons.join("; ") } : {}) };
+}
+
+/** What the log line for a red releases section carries: the first unhealthy batch's own error text. */
+function releasesDetail(): string | null {
+  for (const s of releasesState.values()) if (s.detail) return s.detail;
+  return null;
+}
+
 export async function refreshPostage(
   readers: HealthReaders = liveReaders,
   log: Logger = console.warn,
@@ -790,9 +925,11 @@ export async function refreshPostage(
   }
 
   await refreshBuilds(readers);
+  await refreshReleases(readers);
 
   const section = postageHealth();
   noteVerdict("postage.builds", section.builds, log, buildsState.reading.detail);
+  if (section.releases.configured) noteVerdict("postage.releases", section.releases, log, releasesDetail());
   noteVerdict("postage.bee.ttl", section.bee.checks.ttl, log, beeReading.detail);
   noteVerdict("postage.bee.utilization", section.bee.checks.utilization, log, beeReading.detail);
   noteVerdict("postage.bee.usable", section.bee.checks.usable, log, beeReading.detail);
@@ -985,6 +1122,8 @@ export interface PostageSection {
   bee: StampSection;
   /** The builds batch the live app is stamped on - see `buildsState`. */
   builds: BuildsSection;
+  /** The batch site runtime releases are stored on - see `releasesState`. */
+  releases: ReleasesSection;
   chain: Check & { block: number | null; chainTip: number | null; lag: number | null };
   etherna: StampSection & { configured: boolean; checkedAt: string | null; stale: boolean; chain: ChainCheck };
   configError?: string;
@@ -1085,8 +1224,16 @@ export function postageHealth(now: number = Date.now()): PostageSection {
   // The builds check joins the roll-up only once it has a verdict: before the
   // first deploy that names its batch it is unknown, and must not pin
   // `postage.ok` to null. Its own `ok: false` pages either way (alarm-gate walks).
+  // The releases check likewise: unset, or not answered yet, is not a verdict.
   const builds = buildsSection();
-  const checks: Array<{ ok: Verdict }> = [bee, chain, ...(configured ? [etherna] : []), ...(builds.ok === null ? [] : [builds])];
+  const releases = releasesSection();
+  const checks: Array<{ ok: Verdict }> = [
+    bee,
+    chain,
+    ...(configured ? [etherna] : []),
+    ...(builds.ok === null ? [] : [builds]),
+    ...(releases.ok === null ? [] : [releases]),
+  ];
 
   return {
     ok: combine(checks),
@@ -1095,6 +1242,7 @@ export function postageHealth(now: number = Date.now()): PostageSection {
     thresholds,
     bee,
     builds,
+    releases,
     chain,
     etherna,
     ...(cfg.configError ? { configError: cfg.configError } : {}),
@@ -1415,6 +1563,7 @@ export function __resetHealthProbes(): void {
   chainstateReading = empty<{ block: number; chainTip: number }>();
   ethernaReading = empty<StampReading & { immutable: boolean | null }>();
   buildsState = { batchId: null, reason: null, reading: empty() };
+  releasesState = new Map();
   ethernaVerdict = null;
   chainAbsence = null;
   platformBatchOnChain = { at: null, listed: null, confirmed: false, batchTTL: null, reason: null };

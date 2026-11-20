@@ -226,8 +226,23 @@ see SEO_PLAN.md.
 ### Runtime releases (#1032)
 
 A site does not carry the runtime (~9 MB); it links a release. The runtime is published ONCE per
-release (`node scripts/publish-site-runtime.cjs`, real repo, clean main) to our
-bee on the core batch and to the Etherna platform batch, and a signed descriptor
+release (`node scripts/publish-site-runtime.cjs`, real repo, clean main): one upload, erasure-coded,
+to the releases batch on Etherna (`RELEASE_BATCH_ID` in `scripts/.env`, a batch of its own, and the
+one the server's `postage.releases` alarm watches - the script refuses any other). When it fills, a
+new one is bought and the next release goes there; the old batch is kept alive until the pages on its
+releases have been republished, or those releases have been stored again on the new batch. Until
+then the old batch stays in the server's `RELEASE_BATCH_ID`, which takes a comma-separated list, so
+the alarm keeps watching it. The script keeps each release under `RELEASE_ARCHIVE_DIR`: the tar as
+uploaded and the settings it was uploaded with. The same tar uploaded to Etherna again with the same
+settings landed at the same addresses (measured 2026-11-20; the storing node's file-type table is
+part of that, and is not ours). No tool does that second upload yet.
+
+Before anything builds on a release the script checks the stored manifest against the build, that
+every file larger than one chunk is erasure-coded at the level asked for, that a website and an event
+page build on it with the shared builders, and that every file reads back as built through our own
+gateway and through Etherna's. `--hold` stops there: the release is stored and checked, and the app
+and the server still build on the previous one. `--release-held` checks it again and makes it the
+latest. A signed descriptor
 (`packages/shared/src/site/runtime-release.ts`) is written to the `woco-site-runtime-v1` feed under
 the frontend deploy key. The server reads the latest descriptor (`GET /api/sites/runtime`,
 `/api/health` `siteRuntime`), checks the update's signature itself, and never accepts a lower
