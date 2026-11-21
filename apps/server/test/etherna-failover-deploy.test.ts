@@ -157,8 +157,28 @@ test("expected: our bee storing another root fails the save and lists nothing", 
   process.env.ETHERNA_FAILOVER = "force";
   beeBytes = () => ({ root: "ee".repeat(32) });
   const [o] = objects(1);
-  await assert.rejects(bytesMod.saveForEtherna(o!.data, ETHERNA, { failover: { parent: PARENT }, expected: o!.address }), /level-0 root/);
+  await assert.rejects(bytesMod.saveForEtherna(o!.data, ETHERNA, { failover: { parent: PARENT }, expected: o!.address }), /plain root/);
   assert.equal(listed(), 0);
+});
+
+test("a deploy part of one chunk goes at level 1 (same address, with replicas), a larger one at level 0 - on Etherna, in a failover, and on a WoCo deploy", async () => {
+  const small = new Uint8Array(3900).fill(1);
+  const large = new Uint8Array(4097).fill(2);
+  const parts = [small, large].map((data) => ({ data, address: plainRoot(data) }));
+  const levels = (base: string) => posts(base).map((c) => c.headers["swarm-redundancy-level"]);
+
+  await publish.uploadSiteObjects(publish.deployStore(ETHERNA, { parent: PARENT }), collectionOf(parts));
+  assert.deepEqual(levels(ETH), ["1", "0"]);
+
+  process.env.ETHERNA_FAILOVER = "force";
+  await publish.uploadSiteObjects(publish.deployStore(ETHERNA, { parent: PARENT }), collectionOf(parts));
+  assert.deepEqual(levels(BEE), ["1", "0"]);
+  assert.equal((ledger.getRelayEntry(parts[0]!.address) as { level?: number }).level, 1);
+  assert.equal("level" in ledger.getRelayEntry(parts[1]!.address)!, false);
+
+  calls.length = 0;
+  await publish.uploadSiteObjects(publish.deployStore({ target: "wocoBee", batchId: WOCO_BATCH }), collectionOf(parts));
+  assert.deepEqual(levels(BEE), ["1", "0"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -178,7 +198,7 @@ test("Etherna down: the first part tries Etherna, every later part goes straight
   assert.equal(onBee.length, 6);
   assert.deepEqual(onBee.map((c) => c.body!.length), objs.map((o) => o.data.length), "in order, root last");
   for (const c of onBee) {
-    assert.equal(c.headers["swarm-redundancy-level"], "0");
+    assert.equal(c.headers["swarm-redundancy-level"], "1", "one-chunk parts");
     assert.equal(c.headers["swarm-postage-batch-id"], WOCO_BATCH);
   }
   for (const o of objs) assert.equal(ledger.getRelayEntry(o.address)?.parent, PARENT.toLowerCase());

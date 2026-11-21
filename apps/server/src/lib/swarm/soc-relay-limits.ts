@@ -152,8 +152,10 @@ export const SOC_RELAY_LIMITS: RelayLimits = {
   global: [{ limit: 1500, windowMs: MIN }],
 };
 
-/** `POST /api/swarm/bytes` — up to 16 chunks per call (64 KB), so tighter. No
- *  in-repo client calls it today; any traffic is already unusual. */
+/** `POST /api/swarm/bytes` — up to 24 chunks per call (64 KB with its repair
+ *  data, `saveLevel`), so tighter: an account's hour is 150 calls, 3,600 chunks at
+ *  most, against 500 for the SOC relay. No in-repo client calls it today; any
+ *  traffic is already unusual. */
 export const BYTES_RELAY_LIMITS: RelayLimits = {
   parent: [{ limit: 20, windowMs: MIN }, { limit: 150, windowMs: HOUR }],
   statement: [{ limit: 20, windowMs: MIN }, { limit: 150, windowMs: HOUR }], // unused: /bytes is not classified

@@ -52,6 +52,7 @@ import { ethernaRoutes } from "./routes/etherna.js";
 import { ethernaFetchBaseNotice } from "./lib/etherna/gateway.js";
 import { ethernaReadsHealth } from "./lib/swarm/soc-read.js";
 import { ethernaFailoverHealth, startRelayLedgerSweep } from "./lib/etherna/failover.js";
+import { startLevel1Canary } from "./lib/etherna/level1-canary.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
@@ -1175,6 +1176,8 @@ onStripeVerified((address) => void confirmArmedReferral(address));
 // The Etherna relay ledger (#912): loaded now so its warm-up runs from boot and an
 // unreadable file alarms at once; the sweep settles and moves entries in every mode.
 startRelayLedgerSweep();
+// Does Etherna still build the level-1 trees our bee builds? Asked once, a minute in.
+startLevel1Canary();
 {
   const f = ethernaFailoverHealth();
   console.log(`[startup] etherna failover: ${f.mode}${f.ok ? "" : " - ALARM, see /api/health ethernaFailover"}`);

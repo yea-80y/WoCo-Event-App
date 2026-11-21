@@ -173,12 +173,13 @@ swarmRoutes.post("/bytes", jsonBodyLimit(BYTES_RELAY_MAX_BODY_BYTES), requireAut
   }
 
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  // Up to 16 chunks per call, so its own (tighter) gate (#301).
+  // Up to 24 chunks per call, so its own (tighter) gate (#301).
   const gate = bytesRelayGate.decide({ parent: parentAddress, ip: clientIp(c), kind: "other" });
   if (!gate.allowed) return c.json({ ok: false, error: gate.reason }, gate.status);
 
-  // Raw bytes stamp platform storage, up to 16 chunks a call; no screen uses
-  // this route. Same unlock as a name (owner decision 2026-10-02).
+  // Raw bytes stamp platform storage, up to 24 chunks a call (64 KB at level 1:
+  // 16 data, 5 parity, the root and its 2 replicas); no screen uses this route.
+  // Same unlock as a name (owner decision 2026-10-02).
   const unlock = await checkAttendeeGate(parentAddress.toLowerCase());
   if (!unlock.gated) return c.json({ ok: false, error: "ticket_required" }, 403);
   try {

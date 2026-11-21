@@ -171,7 +171,7 @@ test("the template must be the one the signed root names, read through hash-chec
   await assert.rejects(kitWith(templateBytes, forged), /does not match its address/);
 });
 
-test("objects are stored with /bytes at redundancy 0 on the deploy's batch, root last, each at its computed address", async () => {
+test("objects are stored with /bytes on the deploy's batch at the level their size allows, root last, each at its computed address", async () => {
   const c = clientBuild();
   uploads.length = 0;
   answer = "correct";
@@ -180,8 +180,10 @@ test("objects are stored with /bytes at redundancy 0 on the deploy's batch, root
   assert.equal(bytes, c.objects.reduce((n, o) => n + o.data.length, 0));
   assert.equal(rootLanded, "woco");
   assert.deepEqual(uploads.map((u) => u.size), c.objects.map((o) => o.data.length), "in order, root last");
+  // One chunk: level 1 keeps the computed address and adds replicas. Larger: level 0, or parity moves it.
+  assert.ok(uploads.some((u) => u.size <= 4096), "a real build has one-chunk parts");
   for (const u of uploads) {
-    assert.equal(u.headers["swarm-redundancy-level"], "0");
+    assert.equal(u.headers["swarm-redundancy-level"], u.size > 4096 ? "0" : "1");
     assert.equal(u.headers["swarm-postage-batch-id"], "aa".repeat(32));
     assert.equal(u.headers["swarm-deferred-upload"], "false");
   }

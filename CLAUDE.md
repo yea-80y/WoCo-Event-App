@@ -696,13 +696,18 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     refusing that chunk). An Etherna-wide refusal HOLDS an entry 5 min and never backs it off, so it moves
     within ~5 min of Etherna taking writes again, however long the outage. Slice 2a: also one file per `/bytes`
     root stamped on WoCo (`kind: "bytes"` - event image/manifest/order key, avatar, site image, seat plan),
-    moved back by re-uploading the same bytes at level 0 and cleared ONLY when Etherna returns the same root.
+    moved back by re-uploading the same bytes at the entry's level and cleared ONLY when Etherna returns the same
+    root. A bytes file holds `level: 1` when the save was stored with repair data (every new save but a multi-chunk
+    deploy part; none = 0). A build from before the field moves such a root back at level 0: a one-chunk root still
+    moves, a larger one stays on WoCo (`away` red) until rolling forward - leave its file in place.
     Slice 2b: website and event-page DEPLOYS too (each part, and the feed manifest - built here, never Etherna's
     POST /feeds - as `bytes` roots) and the server-signed SOCs (site pointer, site events index/config, legacy
     event feeds, server content feeds) as ordinary SOC entries; no new file kind, so no new rollback hazard.
     ROLLBACK to a pre-2a build refuses the WHOLE ledger on the first such file (fail closed): move the
     `"kind":"bytes"` files out before rolling back, back in after. `ethernaFailover.plainTree` red = Etherna
-    stored a small save at a root that is not the level-0 tree: `/bytes` saves can no longer move back)
+    or our bee built another tree than the level asked for makes (`last.what` says which; also the boot canary,
+    four fixed files saved to Etherna at level 1 and compared with the roots our bee gave; not on a dev server): `/bytes` saves stamped
+    on WoCo may no longer move back. Re-measure the canary roots when our bee is upgraded (`level1-canary.ts`))
   ticket-holds/ (#983 — per sale, each emailed ticket's QR sealed to the organiser's order key: the ONLY copy
     a bounced ticket can be resent from (the signing key is discarded at mint). Losing it leaves those
     tickets reissue-only. Unreadable = never overwritten, `/api/health` `email.ticketHolds` alarm)
