@@ -69,8 +69,13 @@ const plainTree = () => (failover.ethernaFailoverHealth() as { plainTree: { ok: 
 const sha256 = (d: Uint8Array) => createHash("sha256").update(d).digest("hex");
 
 test("the canary files are the bytes that were measured: one chunk, one tree level, two tree levels", () => {
+  // FROZEN: the roots our bee (2.8.3) and Etherna both gave on 2026-11-21. A change here is a new measurement.
+  assert.deepEqual(canary.LEVEL1_CANARY, [
+    { size: 3000, root: "ce7f28b2b1a2692a54e9c1a4d697ad9ee488711b2a2e8fa5c7f6082cd80d8a83" },
+    { size: 102_400, root: "59ee33e100ce68cf97870353e5efb9bae91eaffa737721f2663b0a0c4cf5c33d" },
+    { size: 614_400, root: "0babb408ae76193dddd716fb65c9809e04482adf0dfac71270fbe55126ed1149" },
+  ]);
   const [one, mid, deep] = canary.LEVEL1_CANARY;
-  assert.deepEqual([one!.size, mid!.size, deep!.size], [3000, 102_400, 614_400]);
   // A one-chunk file has its plain root at any level: the pinned root is computable here.
   assert.equal(plainRoot(canary.canaryBytes(one!.size)), one!.root);
   // The live test printed this file's PLAIN root beside its level-1 one (2026-11-21).

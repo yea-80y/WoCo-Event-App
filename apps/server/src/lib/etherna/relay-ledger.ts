@@ -192,7 +192,7 @@ function parseEntry(v: unknown): RelayEntry | null {
     if (e.level !== undefined && e.level !== 1) return null;
     return { kind: "bytes", ...(e.level === 1 ? { level: 1 as const } : {}), status: "failover", ...common };
   }
-  if (e.kind !== undefined || e.level !== undefined) return null;
+  if (e.kind !== undefined) return null;
   if (typeof e.owner !== "string" || !OWNER.test(e.owner)) return null;
   if (typeof e.identifier !== "string" || !ADDR.test(e.identifier)) return null;
   if (e.status !== "pending" && e.status !== "failover") return null;

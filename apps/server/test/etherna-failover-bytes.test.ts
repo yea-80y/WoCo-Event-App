@@ -649,6 +649,11 @@ test("every /bytes upload this server makes by hand goes through postPlainBytes,
   assert.deepEqual([...layer.matchAll(/postPlainBytes\("(etherna|wocoBee)", [^\n]*\{ level, timeoutMs/g)].map((m) => m[1]), ["etherna", "wocoBee"]);
   assert.equal([...layer.matchAll(/postPlainBytes\(/g)].length, 2, "no third sender in the save layer");
   assert.match(readFileSync(join(SRC, "lib/site/collection-publish.ts"), "utf-8"), /postPlainBytes\("wocoBee", selection\.batchId, data, \{ level: saveLevel\(data\.length, true\),/);
+  // The move back hands the entry's level to the same sender.
+  assert.match(
+    readFileSync(join(SRC, "lib/etherna/failover.ts"), "utf-8"),
+    /postBytes: \(data, batchId, timeoutMs, level\) => postPlainBytes\("etherna", batchId, data, \{ level, timeoutMs, deferred: true \}\),/,
+  );
 });
 
 test("every save meant for Etherna asks for the failover", () => {
