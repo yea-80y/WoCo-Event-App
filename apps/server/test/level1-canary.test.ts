@@ -152,7 +152,10 @@ test("at boot: asked a minute in, again every five minutes until one run complet
   await settle();
   assert.equal(calls.length, 1, "the first file failed: the run ends there");
   answer = () => null;
-  t.mock.timers.tick(canary.CANARY_RETRY_MS);
+  t.mock.timers.tick(canary.CANARY_RETRY_MS - 1);
+  await settle();
+  assert.equal(calls.length, 1, "five minutes, not one: an outage is not hammered");
+  t.mock.timers.tick(1);
   await settle();
   assert.equal(calls.length, 5);
   assert.equal(plainTree().canary, "ok");
@@ -166,11 +169,14 @@ test("it starts only where this server saves to Etherna, and never on a dev serv
   const settle = async () => {
     for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
   };
+  // A run that starts either reaches Etherna or says why it could not: silence is "never started".
+  const warned = t.mock.method(console, "warn", () => {});
   const started = async (env: Record<string, string | undefined>) => {
     const saved = { ...process.env };
     Object.assign(process.env, env);
     for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
     calls.length = 0;
+    warned.mock.resetCalls();
     canary.startLevel1Canary();
     t.mock.timers.tick(canary.CANARY_FIRST_DELAY_MS);
     await settle();
@@ -178,7 +184,7 @@ test("it starts only where this server saves to Etherna, and never on a dev serv
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
-    return calls.length > 0;
+    return calls.length > 0 || warned.mock.callCount() > 0;
   };
   assert.equal(await started({ ETHERNA_ENABLED: "false" }), false);
   assert.equal(await started({ ETHERNA_PLATFORM_BATCH: undefined }), false);
