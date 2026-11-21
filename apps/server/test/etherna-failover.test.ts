@@ -772,7 +772,7 @@ test("sweep: roots past the pass's byte budget wait; a signed chunk behind them 
   const big = new Uint8Array(5000).fill(1);
   const big2 = new Uint8Array(5000).fill(2);
   const roots = [bytesTreeRoot(big), bytesTreeRoot(big2)];
-  for (const r of roots) ledger.noteBytesFailover(r, PARENT);
+  for (const r of roots) ledger.noteBytesFailover(r, PARENT, 0);
   const s = signedSoc(42);
   ledger.noteFailover(s.address, s.owner, s.identifier, PARENT);
   now += ledger.SETTLE_MIN_AGE_MS;

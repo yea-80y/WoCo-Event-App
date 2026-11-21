@@ -29,7 +29,7 @@ import { siteRuntimeReleases } from "./runtime-release.js";
 import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { readCapped } from "../http/read-capped.js";
-import { postPlainBytes } from "../swarm/plain-bytes.js";
+import { postPlainBytes, saveLevel } from "../swarm/plain-bytes.js";
 import { saveForEtherna } from "../swarm/bytes.js";
 import { ethernaPaused } from "../etherna/breaker.js";
 import type { BatchSelection } from "../etherna/batch-router.js";
@@ -263,9 +263,12 @@ export interface DeployStore {
 }
 
 /**
- * One deploy's store. Each part goes with `/bytes` at redundancy 0 (bee would
- * erasure-code by default and change every address), and the store must answer the
- * address we computed. Not deferred on Etherna: bee's default returns once the node
+ * One deploy's store. Each part goes with `/bytes` at the level `saveLevel` gives a
+ * part whose address is already computed: 1 for a part of one chunk (the same
+ * address, plus two replicas - every part of a page today), 0 for a larger one (parity
+ * would change its address). The store must answer the address we computed. Six
+ * one-chunk parts took 2.3 s at level 0 and 2.5 s at level 1 on Etherna (2026-11-21).
+ * Not deferred on Etherna: bee's default returns once the node
  * holds the chunks and pushes them in the background, so every other reader waits -
  * measured 2026-09-21 on 5 MB collections, 326 s deferred vs 171 s without until the
  * page opened from our bee (#613).
@@ -282,7 +285,7 @@ export function deployStore(selection: BatchSelection, failover?: { parent?: str
   return {
     async put(data, address) {
       if (selection.target !== "etherna") {
-        const reference = await postPlainBytes("wocoBee", selection.batchId, data, { timeoutMs: READ_TIMEOUT_MS * 3, deferred: false });
+        const reference = await postPlainBytes("wocoBee", selection.batchId, data, { level: saveLevel(data.length, true), timeoutMs: READ_TIMEOUT_MS * 3, deferred: false });
         if (reference !== address) throw new Error(`site object stored at ${reference.slice(0, 12)}, expected ${address.slice(0, 12)}`);
         return "woco";
       }

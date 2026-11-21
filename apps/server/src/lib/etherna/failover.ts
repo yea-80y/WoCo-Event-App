@@ -21,7 +21,7 @@ import { ETHERNA_GATEWAY_URL, splitStoredSoc } from "@woco/shared";
 import { ethernaPaused } from "./breaker.js";
 import { batchForDeploy, PlatformBatchUnavailable, platformEthernaBatch, type BatchSelection } from "./batch-router.js";
 import { postSocToEtherna, registerEthernaOffer } from "./upload.js";
-import { plainBytesTimeoutMs, postPlainBytes, readPlainBytesFromBee, type PlainBytesRead } from "../swarm/plain-bytes.js";
+import { plainBytesTimeoutMs, postPlainBytes, readPlainBytesFromBee, type PlainBytesRead, type SaveLevel } from "../swarm/plain-bytes.js";
 import {
   dueEntries,
   FAILOVER_ALARM_MS,
@@ -89,9 +89,16 @@ export function routeSave(choose: () => BatchSelection): BatchSelection {
 const stats = { failedOver: 0, settled: 0, migrated: 0 };
 let lastSweepAt: string | null = null;
 let lastMigrationError: { at: string; error: string } | null = null;
-/** Small Etherna saves whose root was not the level-0 one (`notePlainTreeMismatch`). */
+/** Saves a store put at a root other than the one its level makes (`noteTreeMismatch`). */
 let plainTreeMismatches = 0;
-let lastPlainTreeMismatch: { at: string; size: number } | null = null;
+let lastPlainTreeMismatch: { at: string; size: number; what: string } | null = null;
+
+let canary: "not run" | "ok" | "mismatch" = "not run";
+
+/** The boot canary ran to the end (`level1-canary.ts`); each mismatch was also noted above. */
+export function noteCanaryRun(ok: boolean): void {
+  canary = ok ? "ok" : "mismatch";
+}
 
 /** A save was stamped on WoCo in place of Etherna. */
 export function noteFailedOver(): void {
@@ -99,16 +106,16 @@ export function noteFailedOver(): void {
 }
 
 /**
- * Etherna stored a small save (one-level tree) under a root other than the
- * level-0 one we computed: it has stopped honouring `Swarm-Redundancy-Level: 0`,
- * and from now on no `/bytes` save stamped on WoCo can move back under its own
- * root. Nothing fails today - so it is an alarm now, not a surprise at the next
- * outage.
+ * A store built a different tree than the level it was asked for makes (`what`
+ * says which store and how: `saveForEtherna`, `level1-canary.ts`). Etherna and
+ * our bee then no longer agree on a file's address, and from now on a `/bytes`
+ * save stamped on WoCo may never move back under its own root. Nothing fails
+ * today - so it is an alarm now, not a surprise at the next outage.
  */
-export function notePlainTreeMismatch(size: number): void {
+export function noteTreeMismatch(size: number, what: string): void {
   plainTreeMismatches++;
-  lastPlainTreeMismatch = { at: new Date().toISOString(), size };
-  console.error(`[etherna-failover] ALARM: Etherna stored ${size} bytes at a root that is not the level-0 tree`);
+  lastPlainTreeMismatch = { at: new Date().toISOString(), size, what };
+  console.error(`[etherna-failover] ALARM: ${what} (${size} bytes)`);
 }
 
 export interface SweepIo {
@@ -119,8 +126,8 @@ export interface SweepIo {
   post: typeof postSocToEtherna;
   /** A `/bytes` root's content, from our bee. */
   readBytes: (root: string) => Promise<PlainBytesRead>;
-  /** Re-upload to Etherna at level 0; resolves to the root Etherna gave. */
-  postBytes: (data: Uint8Array, batchId: string, timeoutMs: number) => Promise<string>;
+  /** Re-upload to Etherna at `level`; resolves to the root Etherna gave. */
+  postBytes: (data: Uint8Array, batchId: string, timeoutMs: number, level: SaveLevel) => Promise<string>;
   offer: (address: string) => Promise<void>;
 }
 
@@ -137,7 +144,7 @@ const liveIo: SweepIo = {
       : platformEthernaBatch(),
   post: postSocToEtherna,
   readBytes: readPlainBytesFromBee,
-  postBytes: (data, batchId, timeoutMs) => postPlainBytes("etherna", batchId, data, { timeoutMs, deferred: true }),
+  postBytes: (data, batchId, timeoutMs, level) => postPlainBytes("etherna", batchId, data, { level, timeoutMs, deferred: true }),
   offer: registerEthernaOffer,
 };
 
@@ -175,7 +182,8 @@ function notAbsent(e: { address: string; updatedAt: string }): void {
 
 /**
  * Move one `/bytes` root back: read it from our bee, upload the same bytes to
- * Etherna at level 0, and count it moved ONLY when Etherna answers the same
+ * Etherna at the level the entry was stored at (none recorded: 0, every entry
+ * from before levels), and count it moved ONLY when Etherna answers the same
  * root - an Etherna that built a different tree has stored something nobody
  * refers to, and the copy everybody refers to is still ours. `posted`: bytes
  * sent to Etherna, for the pass's budget.
@@ -186,7 +194,7 @@ function notAbsent(e: { address: string; updatedAt: string }): void {
  */
 async function moveBytesBack(
   io: SweepIo,
-  e: { address: string; parent?: string; updatedAt: string },
+  e: { address: string; parent?: string; level?: 1; updatedAt: string },
 ): Promise<{ outcome: "moved" | "resolved" | "kept" | "held"; posted: number }> {
   const read = await io.readBytes(e.address);
   if (read.status === "absent") {
@@ -200,7 +208,7 @@ async function moveBytesBack(
   let root: string;
   try {
     const dest = io.route(e.parent);
-    root = (await io.postBytes(read.data, dest.batchId, plainBytesTimeoutMs(posted))).toLowerCase().replace(/^0x/, "");
+    root = (await io.postBytes(read.data, dest.batchId, plainBytesTimeoutMs(posted), e.level ?? 0)).toLowerCase().replace(/^0x/, "");
   } catch (err) {
     lastMigrationError = { at: new Date().toISOString(), error: ((err as Error)?.message ?? String(err)).slice(0, 200) };
     // As for a chunk: Etherna as a whole cannot write - held; this root refused - backed off.
@@ -378,9 +386,14 @@ export function startRelayLedgerSweep(): void {
  * move back: Etherna down that long, or the move back stuck (no batch to move to,
  * or Etherna refusing that chunk). Clears when the sweep moves it.
  *
- * `plainTree` is RED once, since boot, Etherna stored a small save at a root that
- * is not the level-0 tree (`notePlainTreeMismatch`): `/bytes` saves can then no
- * longer move back. Clears on restart; the next save tells again.
+ * `plainTree` is RED once, since boot, a store built another tree than the level
+ * asked for makes (`noteTreeMismatch`; `last.what` says which): a one-chunk or
+ * deploy save not at its plain root, a larger save stored without its repair
+ * data, or Etherna answering a boot canary file with another root than the one
+ * pinned from our bee (`level1-canary.ts`). `/bytes` saves stamped on WoCo may
+ * then never move back. Clears on restart; the next save, or the canary, tells
+ * again. `canary`: "ok", "mismatch", or "not run" (Etherna off, or not yet
+ * reachable since boot - retried, never red by itself).
  */
 export function ethernaFailoverHealth(): Record<string, unknown> {
   const { mode, configError } = failoverMode();
@@ -395,6 +408,7 @@ export function ethernaFailoverHealth(): Record<string, unknown> {
       ok: plainTreeMismatches === 0,
       mismatches: plainTreeMismatches,
       ...(lastPlainTreeMismatch ? { last: lastPlainTreeMismatch } : {}),
+      canary,
     },
     ledger,
     sinceBoot: { ...stats },
@@ -413,4 +427,5 @@ export function __resetFailoverStatsForTest(): void {
   lastMigrationError = null;
   plainTreeMismatches = 0;
   lastPlainTreeMismatch = null;
+  canary = "not run";
 }

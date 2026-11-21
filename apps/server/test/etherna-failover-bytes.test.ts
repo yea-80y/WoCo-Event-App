@@ -6,6 +6,7 @@
  */
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,12 +32,16 @@ delete process.env.ETHERNA_FAILOVER;
 
 type Call = { url: string; method: string; headers: Record<string, string>; size: number };
 const calls: Call[] = [];
-/** Etherna's answer to a /bytes POST: a status, or a root to claim (default: the plain tree). */
+/** Etherna's answer to a /bytes POST: a status, or a root to claim (default: `storeRoot`). */
 let ethernaBytes: () => { status: number } | { root: string } | null = () => null;
 let beeBytes: () => { status: number } | { root: string } | null = () => null;
 /** Our bee's answer to GET /bytes/<root>; absent = 404. */
 const beeReads: Record<string, () => Response> = {};
 let plainRoot: (d: Uint8Array) => string;
+/** A stand-in for a level-1 root: not the plain one, and the same from both stores. */
+const codedRoot = (d: Uint8Array) => createHash("sha256").update("level 1").update(d).digest("hex");
+/** What a store that honours the level answers: parity moves a file of more than one chunk, nothing else. */
+const storeRoot = (d: Uint8Array, level: number | string | undefined) => (String(level) === "1" && d.length > 4096 ? codedRoot(d) : plainRoot(d));
 
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -55,7 +60,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const store = url === `${ETH}/bytes` ? ethernaBytes() : url === `${BEE}/bytes` ? beeBytes() : undefined;
   if (store !== undefined && method === "POST") {
     if (store && "status" in store) return new Response("no", { status: store.status });
-    const reference = store?.root ?? plainRoot(body!);
+    const reference = store?.root ?? storeRoot(body!, headers["swarm-redundancy-level"]);
     return new Response(JSON.stringify({ reference }), { status: 201 });
   }
   throw new Error(`unexpected fetch ${method} ${url}`);
@@ -120,21 +125,41 @@ const health = () => failover.ethernaFailoverHealth() as Record<string, any>;
 // The save
 // ---------------------------------------------------------------------------
 
-test("an Etherna save is level 0 and deferred, on the routed batch, and returns Etherna's root", async () => {
+test("an Etherna save is level 1 and deferred, on the routed batch, and returns Etherna's root", async () => {
   const d = data(10_000);
   const ref = await bytesMod.uploadToBytes(d, ETHERNA);
-  assert.equal(ref, plainRoot(d));
+  assert.equal(ref, codedRoot(d));
   const [p] = posts(ETH);
-  assert.equal(p.headers["swarm-redundancy-level"], "0");
+  assert.equal(p.headers["swarm-redundancy-level"], "1");
   assert.equal(p.headers["swarm-deferred-upload"], "true");
   assert.equal(p.headers["swarm-postage-batch-id"], ETH_BATCH);
   assert.equal(p.headers["authorization"], "Bearer t");
   assert.equal(posts(BEE).length, 0);
   assert.equal(ledger.relayLedgerState().failover, 0);
+  assert.equal(health().plainTree.ok, true, "a level-1 root is not a mismatch");
 });
 
-test("an Etherna save never takes another redundancy level", async () => {
-  await assert.rejects(bytesMod.uploadToBytes(data(10), ETHERNA, { redundancyLevel: 2 as never }), /level 0/);
+test("the level rule: 1, except a file of more than one chunk whose address the caller fixed", () => {
+  assert.equal(plain.saveLevel(1, false), 1);
+  assert.equal(plain.saveLevel(8 * 1024 * 1024, false), 1);
+  assert.equal(plain.saveLevel(4096, true), 1, "one chunk: the same address at both levels");
+  assert.equal(plain.saveLevel(4097, true), 0, "parity would move it off the address computed");
+});
+
+test("the rule on the wire: a one-chunk save at level 1 under its plain root; a fixed multi-chunk address at level 0", async () => {
+  const one = data(3000);
+  assert.equal(await bytesMod.uploadToBytes(one, ETHERNA), plainRoot(one));
+  const big = data(9000, 3);
+  await bytesMod.saveForEtherna(big, ETHERNA, { expected: plainRoot(big) });
+  const small = data(200, 4);
+  await bytesMod.saveForEtherna(small, ETHERNA, { expected: plainRoot(small) });
+  assert.deepEqual(posts(ETH).map((p) => p.headers["swarm-redundancy-level"]), ["1", "0", "1"]);
+  assert.equal(health().plainTree.ok, true);
+});
+
+test("an Etherna save's level is the save layer's: a caller naming one, even 0, is refused", async () => {
+  await assert.rejects(bytesMod.uploadToBytes(data(10), ETHERNA, { redundancyLevel: 2 as never }), /save layer/);
+  await assert.rejects(bytesMod.uploadToBytes(data(10), ETHERNA, { redundancyLevel: 0 as never }), /save layer/);
   assert.equal(calls.length, 0);
 });
 
@@ -163,20 +188,35 @@ test("one classifier for store faults: 429, 423 (bee's stamp lock), 5xx and netw
   assert.equal(isTransientSwarmError(new Error("bad input")), false);
 });
 
-test("auto: Etherna cannot write - two short tries, then stamped on WoCo at level 0, listed and whitelisted", async () => {
+test("auto: Etherna cannot write - two short tries, then stamped on WoCo at the same level, listed with it and whitelisted", async () => {
   process.env.ETHERNA_FAILOVER = "auto";
   ethernaBytes = () => ({ status: 503 });
   const d = data(10_000);
   const ref = await bytesMod.uploadToBytes(d, ETHERNA, { failover: { parent: PARENT } });
-  assert.equal(ref, plainRoot(d), "the address it would have had on Etherna");
+  assert.equal(ref, codedRoot(d), "the address it would have had on Etherna");
   assert.equal(posts(ETH).length, failover.FAILOVER_ETHERNA_ATTEMPTS);
   const [w] = posts(BEE);
-  assert.equal(w.headers["swarm-redundancy-level"], "0");
+  assert.equal(w.headers["swarm-redundancy-level"], "1");
+  assert.equal(posts(ETH)[0].headers["swarm-redundancy-level"], "1", "one level on both legs");
   assert.equal(w.headers["swarm-postage-batch-id"], WOCO_BATCH);
-  assert.deepEqual(ledger.getRelayEntry(ref), { kind: "bytes", parent: PARENT, status: "failover", at: new Date(now).toISOString(), updatedAt: new Date(now).toISOString() });
+  assert.deepEqual(ledger.getRelayEntry(ref), { kind: "bytes", level: 1, parent: PARENT, status: "failover", at: new Date(now).toISOString(), updatedAt: new Date(now).toISOString() });
   assert.ok(calls.some((c) => c.url === `${PROXY}/admin/whitelist`), "readers falling back to our gateway find it");
   assert.equal(health().sinceBoot.failedOver, 1);
   assert.equal(ledger.relayLedgerState().failoverBytes, 1);
+  assert.equal(health().plainTree.ok, true);
+});
+
+test("what is listed is the level stored: 1 for a one-chunk save, none for a fixed multi-chunk address", async () => {
+  process.env.ETHERNA_FAILOVER = "force";
+  const one = data(3000);
+  const big = data(9000, 3);
+  const a = await bytesMod.uploadToBytes(one, ETHERNA, { failover: { parent: PARENT } });
+  const { ref: b } = await bytesMod.saveForEtherna(big, ETHERNA, { failover: { parent: PARENT }, expected: plainRoot(big) });
+  assert.equal(a, plainRoot(one));
+  assert.equal(b, plainRoot(big));
+  assert.deepEqual(posts(BEE).map((p) => p.headers["swarm-redundancy-level"]), ["1", "0"]);
+  assert.equal((ledger.getRelayEntry(a) as { level?: number }).level, 1);
+  assert.equal("level" in ledger.getRelayEntry(b)!, false, "absent is level 0, as every entry from before levels");
 });
 
 test("auto: a slow Etherna failure pauses Etherna, and the save goes to WoCo without a second wait", async () => {
@@ -197,15 +237,16 @@ test("the same bytes saved by a different account move back to the platform batc
   process.env.ETHERNA_FAILOVER = "auto";
   const root = "37".repeat(32);
   const other = "0x" + "bb".repeat(20);
-  ledger.noteBytesFailover(root, PARENT);
-  ledger.noteBytesFailover(root, PARENT.toUpperCase().replace(/^0X/, "0x"));
+  ledger.noteBytesFailover(root, PARENT, 1);
+  ledger.noteBytesFailover(root, PARENT.toUpperCase().replace(/^0X/, "0x"), 1);
   assert.equal(ledger.getRelayEntry(root)?.parent, PARENT, "the same account again: its own");
-  ledger.noteBytesFailover(root, other);
+  ledger.noteBytesFailover(root, other, 1);
   assert.equal(ledger.getRelayEntry(root)?.parent, undefined);
-  ledger.noteBytesFailover(root, PARENT);
+  ledger.noteBytesFailover(root, PARENT, 1);
   assert.equal(ledger.getRelayEntry(root)?.parent, undefined, "once neutral, stays neutral");
   restart();
   assert.equal(ledger.getRelayEntry(root)?.parent, undefined);
+  assert.equal((ledger.getRelayEntry(root) as { level?: number }).level, 1, "the level survives every rewrite and the restart");
 });
 
 test("reading a root back from our bee: its bytes, 404 absent, anything else unavailable", async () => {
@@ -252,38 +293,60 @@ test("a save that cannot be listed after its WoCo stamp fails: no root is handed
 test("a full ledger is the rail off: Etherna or an error, never an unlisted WoCo copy", async () => {
   freshLedger({ maxEntries: 1 });
   process.env.ETHERNA_FAILOVER = "auto";
-  assert.equal(ledger.noteBytesFailover("11".repeat(32), PARENT), true);
-  assert.equal(ledger.noteBytesFailover("22".repeat(32), PARENT), false, "full");
+  assert.equal(ledger.noteBytesFailover("11".repeat(32), PARENT, 1), true);
+  assert.equal(ledger.noteBytesFailover("22".repeat(32), PARENT, 1), false, "full");
   ethernaBytes = () => ({ status: 402 });
   await assert.rejects(bytesMod.uploadToBytes(data(10), ETHERNA, { failover: { parent: PARENT } }));
   assert.equal(posts(BEE).length, 0);
 });
 
-test("our bee storing a small save at a root other than the plain tree fails it, nothing listed", async () => {
+test("our bee storing a one-chunk save at a root other than its plain root fails it, nothing listed", async () => {
   process.env.ETHERNA_FAILOVER = "force";
   beeBytes = () => ({ root: "ee".repeat(32) });
-  await assert.rejects(bytesMod.uploadToBytes(data(5000), ETHERNA, { failover: { parent: PARENT } }), /level-0 root/);
+  await assert.rejects(bytesMod.uploadToBytes(data(3000), ETHERNA, { failover: { parent: PARENT } }), /plain root/);
   assert.equal(ledger.relayLedgerState().failover, 0);
 });
 
-test("a save deeper than one tree level is listed under the root our bee gave", async () => {
+test("our bee storing a larger save WITHOUT repair data: the save is kept, listed at level 0, and plainTree is red", async () => {
+  process.env.ETHERNA_FAILOVER = "force";
+  const d = data(10_000);
+  beeBytes = () => ({ root: plainRoot(d) });
+  const ref = await bytesMod.uploadToBytes(d, ETHERNA, { failover: { parent: PARENT } });
+  assert.equal(ref, plainRoot(d), "never a failed save during an outage");
+  assert.equal("level" in ledger.getRelayEntry(ref)!, false, "it moves back as the plain tree it is");
+  assert.equal(health().plainTree.ok, false);
+  assert.match(health().plainTree.last.what, /our bee .* without the repair data/);
+});
+
+test("a save deeper than one tree level is listed under the root our bee gave, at level 1", async () => {
   process.env.ETHERNA_FAILOVER = "force";
   beeBytes = () => ({ root: "ef".repeat(32) });
   const ref = await bytesMod.uploadToBytes(data(600 * 1024), ETHERNA, { failover: { parent: PARENT } });
   assert.equal(ref, "ef".repeat(32));
-  assert.ok(ledger.getRelayEntry(ref));
+  assert.equal((ledger.getRelayEntry(ref) as { level?: number }).level, 1);
+  assert.equal(health().plainTree.ok, true, "nothing here can compute a deeper tree, so nothing is judged");
 });
 
-test("Etherna storing a small save at a non-plain root keeps the save, and turns plainTree red", async () => {
+test("Etherna storing a one-chunk save at a non-plain root keeps the save, and turns plainTree red", async () => {
   ethernaBytes = () => ({ root: "dd".repeat(32) });
   assert.equal(health().plainTree.ok, true);
-  assert.equal(await bytesMod.uploadToBytes(data(5000), ETHERNA), "dd".repeat(32));
+  assert.equal(await bytesMod.uploadToBytes(data(3000), ETHERNA), "dd".repeat(32));
   assert.equal(health().plainTree.ok, false);
   assert.equal(health().plainTree.mismatches, 1);
-  // Over one level nothing is computed here, so nothing is judged.
+  assert.match(health().plainTree.last.what, /Etherna .* other than its plain tree/);
+});
+
+test("Etherna storing a larger save WITHOUT repair data keeps the save, and turns plainTree red; any other root is not judged", async () => {
+  const d = data(10_000);
+  ethernaBytes = () => ({ root: plainRoot(d) });
+  assert.equal(await bytesMod.uploadToBytes(d, ETHERNA), plainRoot(d));
+  assert.equal(health().plainTree.mismatches, 1);
+  assert.match(health().plainTree.last.what, /Etherna .* without the repair data/);
   failover.__resetFailoverStatsForTest();
+  ethernaBytes = () => ({ root: "dd".repeat(32) });
+  await bytesMod.uploadToBytes(d, ETHERNA);
   await bytesMod.uploadToBytes(data(600 * 1024), ETHERNA);
-  assert.equal(health().plainTree.ok, true);
+  assert.equal(health().plainTree.ok, true, "the canary, not the save, checks a level-1 root");
 });
 
 test("a slow Etherna /bytes failure pauses Etherna, as a SOC write's does", async () => {
@@ -323,7 +386,7 @@ test("routeSave: a refused batch goes ahead, marked, only when the failover can 
 test("a root entry survives a restart, counts toward the cap, and pages `away` after an hour", () => {
   process.env.ETHERNA_FAILOVER = "auto";
   const root = "12".repeat(32);
-  assert.equal(ledger.noteBytesFailover(root, PARENT), true);
+  assert.equal(ledger.noteBytesFailover(root, PARENT, 1), true);
   restart();
   assert.equal(ledger.getRelayEntry(root)?.kind, "bytes");
   assert.equal(ledger.relayLedgerState().readable, true);
@@ -345,10 +408,29 @@ test("a malformed root entry refuses the whole ledger, never dropped", () => {
   assert.equal(ledger.relayLedgerState().readable, false);
 });
 
+test("a root entry from before levels loads as level 0; a level this build cannot ask for refuses the ledger", () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const d = join(dir, ".data", "etherna-relay-ledger");
+  mkdirSync(d, { recursive: true });
+  const t = new Date(now).toISOString();
+  const old = "38".repeat(32);
+  writeFileSync(join(d, `${old}.json`), JSON.stringify({ kind: "bytes", parent: PARENT, status: "failover", at: t, updatedAt: t }));
+  restart();
+  assert.equal(ledger.relayLedgerState().readable, true);
+  assert.equal("level" in ledger.getRelayEntry(old)!, false);
+  for (const level of [2, 0, "1"]) {
+    freshLedger();
+    mkdirSync(join(dir, ".data", "etherna-relay-ledger"), { recursive: true });
+    writeFileSync(join(dir, ".data", "etherna-relay-ledger", `${"39".repeat(32)}.json`), JSON.stringify({ kind: "bytes", level, status: "failover", at: t, updatedAt: t }));
+    restart();
+    assert.equal(ledger.relayLedgerState().readable, false, `level ${JSON.stringify(level)}`);
+  }
+});
+
 test("a root is never made pending", () => {
   process.env.ETHERNA_FAILOVER = "auto";
   const root = "36".repeat(32);
-  ledger.noteBytesFailover(root, PARENT);
+  ledger.noteBytesFailover(root, PARENT, 1);
   const e = ledger.getRelayEntry(root)!;
   ledger.markPending({ address: root, updatedAt: e.updatedAt });
   assert.equal(ledger.getRelayEntry(root)?.status, "failover");
@@ -363,7 +445,7 @@ type BytesRead = import("../src/lib/swarm/plain-bytes.js").PlainBytesRead;
 const ABSENT = { status: "absent" as const };
 
 function fakeIo(bee: Record<string, BytesRead>, etherna: Record<string, "found" | "absent"> = {}) {
-  const posted: Array<{ size: number; batchId: string; timeoutMs: number }> = [];
+  const posted: Array<{ size: number; batchId: string; timeoutMs: number; level: number }> = [];
   const offered: string[] = [];
   const io: Io & { posted: typeof posted; offered: string[]; answer?: (d: Uint8Array) => string | { status?: number } ; routeFails?: boolean } = {
     posted,
@@ -380,9 +462,9 @@ function fakeIo(bee: Record<string, BytesRead>, etherna: Record<string, "found" 
       throw new Error("a root is never posted as a SOC");
     },
     readBytes: async (r) => bee[r] ?? ABSENT,
-    postBytes: async (d, batchId, timeoutMs) => {
-      posted.push({ size: d.length, batchId, timeoutMs });
-      const a = io.answer ? io.answer(d) : plainRoot(d);
+    postBytes: async (d, batchId, timeoutMs, level) => {
+      posted.push({ size: d.length, batchId, timeoutMs, level });
+      const a = io.answer ? io.answer(d) : storeRoot(d, level);
       if (typeof a !== "string") throw Object.assign(new Error("Etherna /bytes upload failed"), a);
       return a;
     },
@@ -393,10 +475,10 @@ function fakeIo(bee: Record<string, BytesRead>, etherna: Record<string, "found" 
   return io;
 }
 
-/** A root listed now and old enough for the sweep to judge. */
-function listed(d: Uint8Array): string {
-  const root = plainRoot(d);
-  assert.equal(ledger.noteBytesFailover(root, PARENT), true);
+/** A root listed now, as our bee stored it at `level`, and old enough for the sweep to judge. */
+function listed(d: Uint8Array, level: 0 | 1 = 1): string {
+  const root = storeRoot(d, level);
+  assert.equal(ledger.noteBytesFailover(root, PARENT, level), true);
   return root;
 }
 const settle = () => {
@@ -412,9 +494,44 @@ test("sweep: the same bytes re-uploaded, Etherna answers the same root - offered
   const io = fakeIo({ [root]: found(d) });
   const r = await failover.sweepRelayLedger(io);
   assert.equal(r.migrated, 1);
-  assert.deepEqual(io.posted, [{ size: d.length, batchId: ETH_BATCH, timeoutMs: plain.plainBytesTimeoutMs(d.length) }]);
+  assert.deepEqual(io.posted, [{ size: d.length, batchId: ETH_BATCH, timeoutMs: plain.plainBytesTimeoutMs(d.length), level: 1 }]);
   assert.deepEqual(io.offered, [root]);
   assert.equal(ledger.getRelayEntry(root), undefined);
+});
+
+test("sweep: each root moves back at the level it was stored at, and an entry from before levels at 0", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const coded = data(10_000, 1);
+  const fixed = data(10_000, 2);
+  const one = data(3000, 3);
+  const old = data(10_000, 4);
+  const roots = [listed(coded, 1), listed(fixed, 0), listed(one, 1)];
+  // Written by a build from before the field, straight to disk.
+  const t = new Date(now).toISOString();
+  writeFileSync(join(dir, ".data", "etherna-relay-ledger", `${plainRoot(old)}.json`), JSON.stringify({ kind: "bytes", parent: PARENT, status: "failover", at: t, updatedAt: t }));
+  restart();
+  roots.push(plainRoot(old));
+  settle();
+  const io = fakeIo({ [roots[0]]: found(coded), [roots[1]]: found(fixed), [roots[2]]: found(one), [roots[3]]: found(old) });
+  const r = await failover.sweepRelayLedger(io);
+  // A restart reloads in directory order. Etherna answers a larger file's root for
+  // the level it is sent at, so all four moving proves each went at its own.
+  assert.deepEqual(io.posted.map((p) => p.level).sort(), [0, 0, 1, 1]);
+  assert.equal(r.migrated, 4, "each answered its own root");
+  assert.equal(ledger.relayLedgerState().failover, 0);
+});
+
+test("sweep: the wrong level would be another root - a level-1 file re-uploaded at 0 stays on WoCo", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const d = data(10_000);
+  // What a build from before levels does with this entry: it reads no level.
+  const root = codedRoot(d);
+  assert.equal(ledger.noteBytesFailover(root, PARENT, 0), true);
+  settle();
+  const io = fakeIo({ [root]: found(d) });
+  await failover.sweepRelayLedger(io);
+  assert.ok(ledger.getRelayEntry(root), "kept");
+  assert.match(String(health().lastMigrationError?.error), /not the same tree/);
 });
 
 test("sweep: Etherna answering any other root keeps the entry - never cleared on a 2xx alone", async () => {
@@ -444,7 +561,7 @@ test("sweep: Etherna as a whole refusing holds the root and ends the pass; a ref
   // Held to the back: the next due pass tries the other first.
   now += ledger.SETTLE_MIN_AGE_MS;
   io.posted.length = 0;
-  io.answer = (d) => (d[0] === 1 ? { status: 402 } : plainRoot(d));
+  io.answer = (d) => (d[0] === 1 ? { status: 402 } : storeRoot(d, 1));
   await failover.sweepRelayLedger(io);
   assert.equal(ledger.getRelayEntry(rb), undefined, "moved");
   assert.ok(ledger.getRelayEntry(ra), "this root refused: kept");
@@ -513,7 +630,7 @@ function sourceFiles(d: string): string[] {
   });
 }
 
-test("every /bytes upload this server makes by hand goes through postPlainBytes, which always sends level 0", () => {
+test("every /bytes upload this server makes by hand goes through postPlainBytes, which always names a level", () => {
   const hits: string[] = [];
   for (const p of sourceFiles(SRC)) {
     // A POST endpoint is `<base>/bytes` with nothing after it; reads are `/bytes/<ref>`.
@@ -523,7 +640,15 @@ test("every /bytes upload this server makes by hand goes through postPlainBytes,
   assert.match(hits[0], /^lib\/swarm\/plain-bytes\.ts@/);
   const src = readFileSync(join(SRC, "lib/swarm/plain-bytes.ts"), "utf-8");
   const fn = src.slice(src.indexOf("export async function postPlainBytes("));
-  assert.match(fn.slice(0, fn.indexOf("\n}\n")), /"Swarm-Redundancy-Level": "0",\n/, "unconditionally");
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  assert.match(body, /"Swarm-Redundancy-Level": String\(opts\.level\),\n/, "unconditionally");
+  assert.match(body, /opts: \{ level: SaveLevel; timeoutMs: number; deferred: boolean \}/, "required: no caller can leave it to the store's default");
+  // The legs of one save, and a deploy part on either store, take it from the one rule.
+  const layer = readFileSync(join(SRC, "lib/swarm/bytes.ts"), "utf-8");
+  assert.match(layer, /const level = saveLevel\(bytes\.length, opts\.expected !== undefined\);/);
+  assert.deepEqual([...layer.matchAll(/postPlainBytes\("(etherna|wocoBee)", [^\n]*\{ level, timeoutMs/g)].map((m) => m[1]), ["etherna", "wocoBee"]);
+  assert.equal([...layer.matchAll(/postPlainBytes\(/g)].length, 2, "no third sender in the save layer");
+  assert.match(readFileSync(join(SRC, "lib/site/collection-publish.ts"), "utf-8"), /postPlainBytes\("wocoBee", selection\.batchId, data, \{ level: saveLevel\(data\.length, true\),/);
 });
 
 test("every save meant for Etherna asks for the failover", () => {

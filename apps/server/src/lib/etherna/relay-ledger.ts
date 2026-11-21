@@ -113,9 +113,18 @@ export interface SocEntry {
  * (slice 2a). Only ever `failover`: content-addressed chunks cannot fork, so the
  * read rule has nothing to guard and an Etherna send is never listed `pending`.
  * One entry per root, however many chunks sit under it.
+ *
+ * `level`: the redundancy level our bee STORED it at, which the move back must
+ * name for Etherna to answer this same root. Absent = 0: every entry written
+ * before levels, and a multi-chunk deploy part. A build from before the field
+ * reads the entry without it and moves it back at level 0: a one-chunk root still
+ * moves (same address, no replicas); a larger level-1 root is answered another
+ * root and stays on WoCo, `away` red, until rolling forward - the file keeps its
+ * level meanwhile, nothing rewrites it.
  */
 export interface BytesEntry {
   kind: "bytes";
+  level?: 1;
   parent?: string;
   status: "failover";
   at: string;
@@ -171,7 +180,7 @@ function norm(hex: string): string {
 }
 
 function parseEntry(v: unknown): RelayEntry | null {
-  const e = v as { kind?: unknown; owner?: unknown; identifier?: unknown; parent?: unknown; status?: unknown; at?: unknown; updatedAt?: unknown } | null;
+  const e = v as { kind?: unknown; level?: unknown; owner?: unknown; identifier?: unknown; parent?: unknown; status?: unknown; at?: unknown; updatedAt?: unknown } | null;
   if (!e || typeof e !== "object") return null;
   if (e.parent !== undefined && (typeof e.parent !== "string" || !PARENT.test(e.parent))) return null;
   if (typeof e.at !== "string" || Number.isNaN(Date.parse(e.at))) return null;
@@ -179,9 +188,11 @@ function parseEntry(v: unknown): RelayEntry | null {
   const common = { ...(e.parent ? { parent: e.parent as string } : {}), at: e.at, updatedAt: e.updatedAt };
   if (e.kind === "bytes") {
     if (e.status !== "failover" || e.owner !== undefined || e.identifier !== undefined) return null;
-    return { kind: "bytes", status: "failover", ...common };
+    // A level this build cannot ask for would be moved back as another tree.
+    if (e.level !== undefined && e.level !== 1) return null;
+    return { kind: "bytes", ...(e.level === 1 ? { level: 1 as const } : {}), status: "failover", ...common };
   }
-  if (e.kind !== undefined) return null;
+  if (e.kind !== undefined || e.level !== undefined) return null;
   if (typeof e.owner !== "string" || !OWNER.test(e.owner)) return null;
   if (typeof e.identifier !== "string" || !ADDR.test(e.identifier)) return null;
   if (e.status !== "pending" && e.status !== "failover") return null;
@@ -397,10 +408,12 @@ function movesTo(first: string | undefined, next: string | undefined): string | 
  * until the caller is handed it and writes it somewhere, so a crash before this
  * leaves only an unreferenced copy on WoCo, and the same bytes saved again list
  * it. A root saved again keeps its first `at`, and its account only if the same
- * one saved it (`movesTo`). False when it could not be listed:
+ * one saved it (`movesTo`). `level`: what our bee stored it at (`BytesEntry.level`);
+ * a root saved again takes the newer save's - one root is one tree, and a one-chunk
+ * root is the same tree at both. False when it could not be listed:
  * the caller must then fail the save, as with the rail off.
  */
-export function noteBytesFailover(root: string, parent?: string): boolean {
+export function noteBytesFailover(root: string, parent: string | undefined, level: 0 | 1): boolean {
   ensureLoaded();
   if (unreadable) return false;
   const a = norm(root);
@@ -416,6 +429,7 @@ export function noteBytesFailover(root: string, parent?: string): boolean {
   const to = prev ? movesTo(prev.parent, parent) : parent?.toLowerCase();
   writeEntry(a, {
     kind: "bytes",
+    ...(level === 1 ? { level } : {}),
     ...(to ? { parent: to } : {}),
     status: "failover",
     at: prev?.at ?? t,

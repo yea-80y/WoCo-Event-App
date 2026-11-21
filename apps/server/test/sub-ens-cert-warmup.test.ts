@@ -538,11 +538,11 @@ test("Etherna site uploads are non-deferred", () => {
   assert.ok(start > 0, "deployStore not found");
   const next = src.indexOf("\nexport ", start + 10);
   const body = src.slice(start, next > 0 ? next : undefined);
-  assert.match(body, /postPlainBytes\("wocoBee"[^)]*deferred: false/);
+  assert.match(body, /postPlainBytes\("wocoBee"[^\n]*deferred: false/);
   assert.match(body, /saveForEtherna\(data, selection, \{[^}]*deferred: false/);
   // The save layer hands the flag to the Etherna leg (its WoCo leg stays deferred).
   const layer = sourceOf("../src/lib/swarm/bytes.ts");
-  assert.match(layer, /postPlainBytes\("etherna", selection\.batchId, bytes, \{ timeoutMs, deferred: opts\.deferred \?\? true \}\)/);
+  assert.match(layer, /postPlainBytes\("etherna", selection\.batchId, bytes, \{ level, timeoutMs, deferred: opts\.deferred \?\? true \}\)/);
   const sender = sourceOf("../src/lib/swarm/plain-bytes.ts");
   assert.match(sender, /"Swarm-Deferred-Upload": opts\.deferred \? "true" : "false"/);
 });
