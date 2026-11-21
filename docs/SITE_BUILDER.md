@@ -263,8 +263,8 @@ release root node + template), renders the site with the shared render, and lays
 that copies the release's `/`, `assets/`, `icons/` and `logo.png` fork records and adds its own
 `multi-site.html` + `manifest.json` (`@woco/shared/site/collection`, loaded only on publish): six
 objects, ~3 KB, encoded exactly as bee encodes a `/bzz` upload. It sends them with the deploy; the
-server rebuilds from its own copy of the release and stores them (`/bytes`, redundancy 0, each at the
-computed address) only if byte-identical, else 409 `COLLECTION_MISMATCH` (shown as an error) or
+server rebuilds from its own copy of the release and stores them (`/bytes`, each at the computed address: redundancy 1
+for a part of one chunk, which keeps its address and gains two replicas, 0 for a larger one) only if byte-identical, else 409 `COLLECTION_MISMATCH` (shown as an error) or
 `RUNTIME_RELEASE_CHANGED` (the builder rebuilds once on the new release). A deploy with no build
 (an app from before) is refused 400 `CLIENT_BUILD_REQUIRED`; the server keeps no runtime copy. The
 response says `runtimeVersion`, which the creator directory entry also carries; My Sites shows

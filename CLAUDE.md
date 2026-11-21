@@ -706,7 +706,7 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     ROLLBACK to a pre-2a build refuses the WHOLE ledger on the first such file (fail closed): move the
     `"kind":"bytes"` files out before rolling back, back in after. `ethernaFailover.plainTree` red = Etherna
     or our bee built another tree than the level asked for makes (`last.what` says which; also the boot canary,
-    three fixed files saved to Etherna at level 1 and compared with the roots our bee gave): `/bytes` saves stamped
+    four fixed files saved to Etherna at level 1 and compared with the roots our bee gave; not on a dev server): `/bytes` saves stamped
     on WoCo may no longer move back. Re-measure the canary roots when our bee is upgraded (`level1-canary.ts`))
   ticket-holds/ (#983 — per sale, each emailed ticket's QR sealed to the organiser's order key: the ONLY copy
     a bounced ticket can be resent from (the signing key is discarded at mint). Losing it leaves those

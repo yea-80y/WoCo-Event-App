@@ -108,6 +108,7 @@ export async function saveForEtherna(bytes: Uint8Array, selection: BatchSelectio
   );
   // Our bee built something other than the address asked for: it could never move back.
   if (want !== null && want !== ref) {
+    noteTreeMismatch(bytes.length, "our bee stored a save at a root other than its plain tree");
     throw new Error(`our bee stored ${bytes.length} bytes at ${ref.slice(0, 12)}…, not the plain root ${want.slice(0, 12)}…`);
   }
   // The level it is listed at is the one it was STORED at: that is the tree the

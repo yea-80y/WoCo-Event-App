@@ -303,8 +303,11 @@ test("a full ledger is the rail off: Etherna or an error, never an unlisted WoCo
 test("our bee storing a one-chunk save at a root other than its plain root fails it, nothing listed", async () => {
   process.env.ETHERNA_FAILOVER = "force";
   beeBytes = () => ({ root: "ee".repeat(32) });
-  await assert.rejects(bytesMod.uploadToBytes(data(3000), ETHERNA, { failover: { parent: PARENT } }), /plain root/);
+  // 4096 bytes is still one chunk: its root is known here.
+  await assert.rejects(bytesMod.uploadToBytes(data(4096), ETHERNA, { failover: { parent: PARENT } }), /plain root/);
   assert.equal(ledger.relayLedgerState().failover, 0);
+  assert.equal(health().plainTree.ok, false, "refused AND told: our bee has changed");
+  assert.match(health().plainTree.last.what, /our bee .* other than its plain tree/);
 });
 
 test("our bee storing a larger save WITHOUT repair data: the save is kept, listed at level 0, and plainTree is red", async () => {
@@ -330,14 +333,15 @@ test("a save deeper than one tree level is listed under the root our bee gave, a
 test("Etherna storing a one-chunk save at a non-plain root keeps the save, and turns plainTree red", async () => {
   ethernaBytes = () => ({ root: "dd".repeat(32) });
   assert.equal(health().plainTree.ok, true);
-  assert.equal(await bytesMod.uploadToBytes(data(3000), ETHERNA), "dd".repeat(32));
+  assert.equal(await bytesMod.uploadToBytes(data(4096), ETHERNA), "dd".repeat(32));
   assert.equal(health().plainTree.ok, false);
   assert.equal(health().plainTree.mismatches, 1);
   assert.match(health().plainTree.last.what, /Etherna .* other than its plain tree/);
 });
 
 test("Etherna storing a larger save WITHOUT repair data keeps the save, and turns plainTree red; any other root is not judged", async () => {
-  const d = data(10_000);
+  // One byte past a chunk: parity applies from here.
+  const d = data(4097);
   ethernaBytes = () => ({ root: plainRoot(d) });
   assert.equal(await bytesMod.uploadToBytes(d, ETHERNA), plainRoot(d));
   assert.equal(health().plainTree.mismatches, 1);
@@ -418,7 +422,12 @@ test("a root entry from before levels loads as level 0; a level this build canno
   restart();
   assert.equal(ledger.relayLedgerState().readable, true);
   assert.equal("level" in ledger.getRelayEntry(old)!, false);
-  for (const level of [2, 0, "1"]) {
+  // A hand-made entry may spell absent as 0.
+  writeFileSync(join(d, `${"3a".repeat(32)}.json`), JSON.stringify({ kind: "bytes", level: 0, status: "failover", at: t, updatedAt: t }));
+  restart();
+  assert.equal(ledger.relayLedgerState().readable, true);
+  assert.equal("level" in ledger.getRelayEntry("3a".repeat(32))!, false);
+  for (const level of [2, -1, "1", null]) {
     freshLedger();
     mkdirSync(join(dir, ".data", "etherna-relay-ledger"), { recursive: true });
     writeFileSync(join(dir, ".data", "etherna-relay-ledger", `${"39".repeat(32)}.json`), JSON.stringify({ kind: "bytes", level, status: "failover", at: t, updatedAt: t }));

@@ -38,7 +38,7 @@ const MANIFEST_TYPE = "application/json";
 /** One intermediate chunk: the most a `/bytes` tree here may span (bytes-tree.ts). */
 export const SITE_HTML_MAX_BYTES = 128 * 4096;
 
-/** One stored object, written with `/bytes` (redundancy 0) and addressed by its tree root. */
+/** One stored object, written with `/bytes` and addressed by its plain (redundancy 0) tree root. */
 export interface SiteCollectionObject {
   address: string;
   data: Uint8Array;

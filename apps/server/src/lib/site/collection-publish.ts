@@ -265,8 +265,8 @@ export interface DeployStore {
 /**
  * One deploy's store. Each part goes with `/bytes` at the level `saveLevel` gives a
  * part whose address is already computed: 1 for a part of one chunk (the same
- * address, plus two replicas - every part of a page today), 0 for a larger one (parity
- * would change its address). The store must answer the address we computed. Six
+ * address, plus two replicas), 0 for a larger one (parity would change its address:
+ * an index document past 4,096 bytes). The store must answer the address we computed. Six
  * one-chunk parts took 2.3 s at level 0 and 2.5 s at level 1 on Etherna (2026-11-21).
  * Not deferred on Etherna: bee's default returns once the node
  * holds the chunks and pushes them in the background, so every other reader waits -

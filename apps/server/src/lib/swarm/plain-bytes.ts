@@ -8,8 +8,9 @@
  * both stores build the same tree for the same bytes. Left to themselves they do
  * not: bee's own default is MEDIUM erasure coding (`redundancy.DefaultUploadLevel`,
  * pkg/file/redundancy/level.go), Etherna's is none (probes, 2026-11-06 and 11-20).
- * Named, they agree: level 0 and level 1 each gave one root on both stores for
- * one chunk, 100 KB and 600 KB (two tree levels; 2026-11-21, bee 2.8.3). bee-js
+ * Named, they agree: level 0 at 10,000 and 15,390 bytes (11-06, 11-20); level 1
+ * at one chunk, 100 KB, 480 KB (a full parent and one carried chunk) and 600 KB
+ * (two parents) - `level1-canary.ts`, 2026-11-21, bee 2.8.3. bee-js
  * drops a falsy level, so this is raw `fetch` with the header written out -
  * `test/etherna-failover-bytes.test.ts` fails if any other code POSTs to `/bytes`,
  * or if this one stops sending it.

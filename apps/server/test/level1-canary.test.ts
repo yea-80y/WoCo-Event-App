@@ -73,9 +73,13 @@ test("the canary files are the bytes that were measured: one chunk, one tree lev
   assert.deepEqual(canary.LEVEL1_CANARY, [
     { size: 3000, root: "ce7f28b2b1a2692a54e9c1a4d697ad9ee488711b2a2e8fa5c7f6082cd80d8a83" },
     { size: 102_400, root: "59ee33e100ce68cf97870353e5efb9bae91eaffa737721f2663b0a0c4cf5c33d" },
+    { size: 491_520, root: "b84a6d2b9339d649c01753682d1de64da115db902f40cff8ae4a97eb11c2a4e1" },
     { size: 614_400, root: "0babb408ae76193dddd716fb65c9809e04482adf0dfac71270fbe55126ed1149" },
   ]);
-  const [one, mid, deep] = canary.LEVEL1_CANARY;
+  const [one, mid, carried, deep] = canary.LEVEL1_CANARY;
+  // 120 chunks: a full parent of 119 and one chunk carried beside it. Its plain root, as the live test printed it.
+  assert.equal(carried!.size, 120 * 4096);
+  assert.equal(plainRoot(canary.canaryBytes(carried!.size)), "8469e34be75ede6a9d6b58ccf58401f633b4c017b5d197e624e46d24de95cddf");
   // A one-chunk file has its plain root at any level: the pinned root is computable here.
   assert.equal(plainRoot(canary.canaryBytes(one!.size)), one!.root);
   // The live test printed this file's PLAIN root beside its level-1 one (2026-11-21).
@@ -89,7 +93,7 @@ test("the canary files are the bytes that were measured: one chunk, one tree lev
 test("a run saves each file to the platform batch at level 1, deferred, and reports ok", async () => {
   assert.equal(plainTree().canary, "not run");
   assert.equal(await canary.runLevel1Canary(), true);
-  assert.deepEqual(calls.map((c) => c.size), [3000, 102_400, 614_400]);
+  assert.deepEqual(calls.map((c) => c.size), [3000, 102_400, 491_520, 614_400]);
   for (const c of calls) {
     assert.equal(c.headers["swarm-redundancy-level"], "1");
     assert.equal(c.headers["swarm-postage-batch-id"], PLATFORM);
@@ -100,9 +104,10 @@ test("a run saves each file to the platform batch at level 1, deferred, and repo
 });
 
 test("Etherna answering any file with another root turns plainTree red and names the canary", async () => {
-  for (const wrong of [0, 1, 2]) {
+  for (const wrong of [0, 1, 2, 3]) {
     failover.__resetFailoverStatsForTest();
-    answer = (n) => (n % 3 === wrong ? "ee".repeat(32) : null);
+    calls.length = 0;
+    answer = (n) => (n === wrong ? "ee".repeat(32) : null);
     assert.equal(await canary.runLevel1Canary(), true, "it ran: the verdict stands, no retry");
     assert.equal(plainTree().canary, "mismatch");
     assert.equal(plainTree().ok, false);
@@ -132,10 +137,53 @@ test("a run that could not be made concludes nothing: Etherna failing, paused, o
   assert.equal(plainTree().canary, "not run");
 });
 
-test("it starts only where this server saves to Etherna", async () => {
+test("at boot: asked a minute in, again every five minutes until one run completes, then never", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // Lets the run's promise chain (token, four posts) finish between ticks.
+  const settle = async () => {
+    for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+  };
+  answer = () => ({ status: 402 });
+  canary.startLevel1Canary();
+  t.mock.timers.tick(canary.CANARY_FIRST_DELAY_MS - 1);
+  await settle();
+  assert.equal(calls.length, 0, "not at once: the boot has other work");
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(calls.length, 1, "the first file failed: the run ends there");
+  answer = () => null;
+  t.mock.timers.tick(canary.CANARY_RETRY_MS);
+  await settle();
+  assert.equal(calls.length, 5);
+  assert.equal(plainTree().canary, "ok");
+  t.mock.timers.tick(10 * canary.CANARY_RETRY_MS);
+  await settle();
+  assert.equal(calls.length, 5, "one completed run a boot");
+});
+
+test("it starts only where this server saves to Etherna, and never on a dev server", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const settle = async () => {
+    for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+  };
+  const started = async (env: Record<string, string | undefined>) => {
+    const saved = { ...process.env };
+    Object.assign(process.env, env);
+    for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
+    calls.length = 0;
+    canary.startLevel1Canary();
+    t.mock.timers.tick(canary.CANARY_FIRST_DELAY_MS);
+    await settle();
+    for (const k of Object.keys(env)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    return calls.length > 0;
+  };
+  assert.equal(await started({ ETHERNA_ENABLED: "false" }), false);
+  assert.equal(await started({ ETHERNA_PLATFORM_BATCH: undefined }), false);
+  assert.equal(await started({ DIRECTORY_PUBLISH: "off" }), false, "the dev scripts' mark");
+  assert.equal(await started({}), true);
   const { readFileSync } = await import("node:fs");
-  const src = readFileSync(new URL("../src/lib/etherna/level1-canary.ts", import.meta.url), "utf-8");
-  assert.match(src, /if \(process\.env\.ETHERNA_ENABLED !== "true" \|\| !process\.env\.ETHERNA_PLATFORM_BATCH\) return;/);
-  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf-8");
-  assert.match(index, /\nstartLevel1Canary\(\);\n/);
+  assert.match(readFileSync(new URL("../src/index.ts", import.meta.url), "utf-8"), /\nstartLevel1Canary\(\);\n/);
 });

@@ -29,8 +29,8 @@
  * neither store has it), failover once Etherna has taken the same bytes.
  *
  * ADDRESSES ONLY (owner decision, 2026-10-16): the SOC owner and identifier that
- * make the address (a root is its own address), and the relaying account (for
- * the batch a save moves back to). Never the bytes: a failover save is re-read
+ * make the address (a root is its own address, with the level it was stored at),
+ * and the relaying account (for the batch a save moves back to). Never the bytes: a failover save is re-read
  * from our bee to be moved.
  *
  * ONE FILE PER ENTRY, AND A CEILING. Any account can sign SOCs for keys it
@@ -116,11 +116,12 @@ export interface SocEntry {
  *
  * `level`: the redundancy level our bee STORED it at, which the move back must
  * name for Etherna to answer this same root. Absent = 0: every entry written
- * before levels, and a multi-chunk deploy part. A build from before the field
- * reads the entry without it and moves it back at level 0: a one-chunk root still
- * moves (same address, no replicas); a larger level-1 root is answered another
- * root and stays on WoCo, `away` red, until rolling forward - the file keeps its
- * level meanwhile, nothing rewrites it.
+ * before levels, a multi-chunk deploy part, and a larger save our bee stored
+ * without the repair data asked for. A build from before the field reads the
+ * entry without it and moves it back at level 0: a one-chunk root still moves
+ * (same address, no replicas); a larger level-1 root is answered another root and
+ * stays on WoCo, `away` red, until rolling forward. That build cannot make such a
+ * root itself, so nothing rewrites the file and its level is still there.
  */
 export interface BytesEntry {
   kind: "bytes";
@@ -188,8 +189,9 @@ function parseEntry(v: unknown): RelayEntry | null {
   const common = { ...(e.parent ? { parent: e.parent as string } : {}), at: e.at, updatedAt: e.updatedAt };
   if (e.kind === "bytes") {
     if (e.status !== "failover" || e.owner !== undefined || e.identifier !== undefined) return null;
-    // A level this build cannot ask for would be moved back as another tree.
-    if (e.level !== undefined && e.level !== 1) return null;
+    // A level this build cannot ask for would be moved back as another tree. 0 is
+    // never written, but it means what absent means, so a hand-made entry may say it.
+    if (e.level !== undefined && e.level !== 0 && e.level !== 1) return null;
     return { kind: "bytes", ...(e.level === 1 ? { level: 1 as const } : {}), status: "failover", ...common };
   }
   if (e.kind !== undefined) return null;
