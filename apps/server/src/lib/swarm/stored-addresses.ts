@@ -63,7 +63,7 @@
  * everything it can find instead of only what is live.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { SealContext } from "@woco/shared/crypto/sealed-box";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
@@ -75,6 +75,8 @@ export const MAX_ROWS_PER_FILE = 500;
 export const MAX_UNSAVED_FILES = 50;
 /** An X-Wing public key, as hex. */
 const SEAL_KEY_HEX_CHARS = 1216 * 2;
+/** How long one seal may take before its write counts as failed. */
+export const SEAL_TIMEOUT_MS = 30_000;
 
 export const STORED_ADDRESSES_VERSION = 1 as const;
 /** FROZEN with the files it sealed: a file is opened under the same info and its own day. */
@@ -134,6 +136,7 @@ let closed: ListFile[] = [];
 let chain: Promise<void> = Promise.resolve();
 let stats = { lostFiles: 0, droppedRows: 0 };
 let dropReason = "";
+let sealTimeoutMs = SEAL_TIMEOUT_MS;
 let timer: ReturnType<typeof setInterval> | undefined;
 
 /** Random, so a file name says nothing about when the server started. */
@@ -157,6 +160,17 @@ function sealKey(): string | undefined {
   return k.length === SEAL_KEY_HEX_CHARS && /^[0-9a-f]+$/.test(k) ? k : undefined;
 }
 
+/**
+ * Which key the list is being sealed to: the first 16 hex of SHA-256 of the
+ * public key. A real key that is not the one whose private half was kept seals
+ * without complaint and can never be opened, so the key in use is shown (it is
+ * public) to be checked against the one on file.
+ */
+function sealKeyFingerprint(): string | undefined {
+  const k = sealKey();
+  return k ? createHash("sha256").update(Buffer.from(k, "hex")).digest("hex").slice(0, 16) : undefined;
+}
+
 function dir(): string {
   return join(process.cwd(), ".data", "stored-addresses");
 }
@@ -167,6 +181,27 @@ function schedule(f: ListFile): void {
   if (f.queued) return;
   f.queued = true;
   chain = chain.then(() => flush(f));
+}
+
+type Sealer = (key: string, body: StoredAddressesBody, ctx: SealContext) => Promise<SealedBoxV2>;
+const sealBody: Sealer = async (key, body, ctx) => {
+  const { sealBoxJsonCompressed } = await import("@woco/shared/crypto/sealed-box");
+  return sealBoxJsonCompressed(key, body, ctx);
+};
+let seal: Sealer = sealBody;
+
+/**
+ * A seal is local work of a few milliseconds. One that never settles would hold
+ * every later write behind it with nothing failed and so nothing red: past the
+ * limit it counts as a failed write, and the queue moves on.
+ */
+function withinSealTime<T>(work: Promise<T>): Promise<T> {
+  let t: ReturnType<typeof setTimeout>;
+  const late = new Promise<never>((_, reject) => {
+    t = setTimeout(() => reject(new Error(`the seal did not finish in ${sealTimeoutMs} ms`)), sealTimeoutMs);
+    t.unref();
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(t));
 }
 
 /** Seal `f` as it stands now and write it. Rows that arrive meanwhile queue the next write. */
@@ -183,8 +218,7 @@ async function flush(f: ListFile): Promise<void> {
       b.bytes.sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : x[1] - y[1]));
     }
     const plain: StoredAddressesBody = JSON.parse(JSON.stringify(f.body));
-    const { sealBoxJsonCompressed } = await import("@woco/shared/crypto/sealed-box");
-    const box = await sealBoxJsonCompressed(key, plain, storedAddressesSealContext(f.day));
+    const box = await withinSealTime(seal(key, plain, storedAddressesSealContext(f.day)));
     const file: StoredAddressesFile = { v: STORED_ADDRESSES_VERSION, day: f.day, box };
     f.failed = !writeJsonAtomic(f.path, file, "stored-addresses");
     if (!f.failed) f.saved = rows;
@@ -198,7 +232,7 @@ async function flush(f: ListFile): Promise<void> {
 
 /** Only files whose write FAILED count: one merely waiting its turn is about to be written. */
 function giveUpPastCeiling(): void {
-  const failed = closed.filter((c) => c.failed);
+  const failed = closed.filter((c) => c.failed && !c.queued);
   while (failed.length > maxUnsaved) {
     const oldest = failed.shift()!;
     closed = closed.filter((c) => c !== oldest);
@@ -302,9 +336,11 @@ export function startStoredAddresses(): void {
  */
 export function storedAddressesHealth(): Record<string, unknown> {
   const reason = fault();
+  const sealedTo = sealKeyFingerprint();
   return {
     ok: reason === undefined,
     recording: platformBatch() !== undefined && sealKey() !== undefined,
+    ...(sealedTo ? { sealedTo } : {}),
     unsavedFiles: unsavedFiles(),
     ...(stats.lostFiles ? { lostFiles: stats.lostFiles } : {}),
     ...(stats.droppedRows ? { droppedRows: stats.droppedRows } : {}),
@@ -318,10 +354,14 @@ export function __storedAddressesHeldForTest(): number {
 }
 
 /** A new run, as after a restart: nothing of the previous one is held or reopened. */
-export function __resetStoredAddressesForTest(opts: { now?: () => number; maxRows?: number; maxUnsaved?: number } = {}): void {
+export function __resetStoredAddressesForTest(
+  opts: { now?: () => number; maxRows?: number; maxUnsaved?: number; seal?: Sealer; sealTimeoutMs?: number } = {},
+): void {
   now = opts.now ?? Date.now;
   maxRows = opts.maxRows ?? MAX_ROWS_PER_FILE;
   maxUnsaved = opts.maxUnsaved ?? MAX_UNSAVED_FILES;
+  seal = opts.seal ?? sealBody;
+  sealTimeoutMs = opts.sealTimeoutMs ?? SEAL_TIMEOUT_MS;
   runTag = newRunTag();
   part = 0;
   open = undefined;

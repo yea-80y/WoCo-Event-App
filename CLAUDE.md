@@ -715,7 +715,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     account, IP or time of day. Each file is SEALED to `STORED_ADDRESSES_SEAL_KEY`, a public key whose
     private half is NOT on the server: it is needed only to plan a batch change, and losing it costs
     what losing the list costs. No key (or not one) = nothing is listed and `storedAddresses` is red;
-    an unsealed file is never written. Written by the two functions that send anything to Etherna
+    an unsealed file is never written. `storedAddresses.sealedTo` is the fingerprint of the key in
+    use: check it against the key on file after every env change - a real key that is not the kept
+    one seals without complaint and its files can never be opened. Written by the two functions that send anything to Etherna
     (`postSocToEtherna`, `postPlainBytes`), never read back: each run writes its own files, so an old or
     damaged file is never overwritten. It is what a replacement of that batch carries the live content
     from; an address can only be listed when it is sent. It errs towards too much: a signed chunk

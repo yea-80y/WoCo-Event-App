@@ -7,7 +7,7 @@
  */
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +54,9 @@ let list: typeof import("../src/lib/swarm/stored-addresses.js");
 let box: typeof import("@woco/shared/crypto/sealed-box");
 /** The reader's keypair: the public half is all the server is ever given. */
 let PUBLIC = "";
+/** What health shows of the key in use: enough to tell it from another, nothing to seal with. */
+let FINGERPRINT = "";
+const green = () => ({ ok: true, recording: true, sealedTo: FINGERPRINT, unsavedFiles: 0 });
 let SECRET: Uint8Array;
 let OTHER_SECRET: Uint8Array;
 let dir: string;
@@ -68,6 +71,7 @@ before(async () => {
   const { xwing } = await import("@woco/shared/crypto/xwing");
   const pair = xwing.keygen(randomBytes(32));
   PUBLIC = Buffer.from(pair.publicKey).toString("hex");
+  FINGERPRINT = createHash("sha256").update(pair.publicKey).digest("hex").slice(0, 16);
   SECRET = pair.secretKey;
   OTHER_SECRET = xwing.keygen(randomBytes(32)).secretKey;
 });
@@ -154,6 +158,61 @@ test("a file opens with the private key alone, and only as the day it says", asy
   assert.deepEqual((await box.openBoxJson<Body>(SECRET, f.box, list.storedAddressesSealContext(f.day))).batches[PLATFORM]!.soc, [addr(1)]);
 });
 
+test("FROZEN: a file written on 2026-11-22 still opens, under the same info and its own day", async () => {
+  const vector = JSON.parse(readFileSync(fileURLToPath(new URL("./stored-addresses.vector.json", import.meta.url)), "utf-8"));
+  // The two strings every file on disk was sealed under. Change either and none of them opens.
+  assert.equal(list.STORED_ADDRESSES_SEAL_INFO, "woco/stored-addresses/v1");
+  assert.deepEqual(list.storedAddressesSealContext("2026-11-22"), {
+    info: "woco/stored-addresses/v1",
+    aad: "woco/stored-addresses/v1:2026-11-22",
+  });
+  assert.equal(list.STORED_ADDRESSES_VERSION, 1);
+  assert.deepEqual(Object.keys(vector.file).sort(), ["box", "day", "v"]);
+  const body = await box.openBoxJson(vector.secretKey, vector.file.box, list.storedAddressesSealContext(vector.file.day));
+  assert.deepEqual(body, vector.opensTo);
+});
+
+test("health shows which key the list is sealed to, so a wrong one is seen before it matters", async () => {
+  assert.equal(list.storedAddressesHealth().sealedTo, FINGERPRINT);
+  assert.match(FINGERPRINT, /^[0-9a-f]{16}$/);
+  const { xwing } = await import("@woco/shared/crypto/xwing");
+  const other = xwing.keygen(randomBytes(32)).publicKey;
+  process.env.STORED_ADDRESSES_SEAL_KEY = `0x${Buffer.from(other).toString("hex").toUpperCase()}`;
+  assert.equal(list.storedAddressesHealth().sealedTo, createHash("sha256").update(other).digest("hex").slice(0, 16));
+  assert.notEqual(list.storedAddressesHealth().sealedTo, FINGERPRINT);
+  // The fingerprint is not the key: nothing can be sealed, or opened, with it.
+  assert.ok(!JSON.stringify(list.storedAddressesHealth()).includes(Buffer.from(other).toString("hex").slice(0, 32)));
+});
+
+test("a seal that never finishes counts as a failed write, and the queue moves on", async () => {
+  let hang = true;
+  const real = (await import("@woco/shared/crypto/sealed-box")).sealBoxJsonCompressed;
+  list.__resetStoredAddressesForTest({
+    now: () => now,
+    sealTimeoutMs: 30,
+    seal: (key, body, ctx) => (hang ? new Promise(() => {}) : real(key, body, ctx)),
+  });
+  soc(1);
+  // Bounded here, so a queue that IS stuck fails this test instead of hanging the run.
+  let giveUp: ReturnType<typeof setTimeout>;
+  const stuck = new Promise<never>((_, reject) => {
+    giveUp = setTimeout(() => reject(new Error("the write queue is stuck behind a seal that never finished")), 3000);
+  });
+  await Promise.race([settle(), stuck]).finally(() => clearTimeout(giveUp));
+  assert.deepEqual(files(), []);
+  let h = list.storedAddressesHealth();
+  assert.equal(h.ok, false);
+  assert.equal(h.unsavedFiles, 1);
+  assert.equal(h.reason, "a file of the list could not be sealed or written");
+
+  // Nothing is stuck behind it: the next row's write runs, and takes the first row with it.
+  hang = false;
+  soc(2);
+  await settle();
+  assert.deepEqual(await allSocs(), [addr(1), addr(2)]);
+  assert.deepEqual(list.storedAddressesHealth(), green());
+});
+
 test("each write is sealed afresh: the same rows never give the same bytes", async () => {
   soc(1);
   await settle();
@@ -210,9 +269,9 @@ test("the key is accepted with 0x and in capitals", async () => {
 test("health is public: a verdict and no count of what was listed", async () => {
   soc(1);
   bytes(2);
-  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: true, unsavedFiles: 0 }, "a write in flight is not an alarm");
+  assert.deepEqual(list.storedAddressesHealth(), green(), "a write in flight is not an alarm");
   await settle();
-  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: true, unsavedFiles: 0 });
+  assert.deepEqual(list.storedAddressesHealth(), green());
 });
 
 test("the file name carries the day and a random tag: no time of day, no start time", async () => {
@@ -246,14 +305,14 @@ test("a closed file that reached the disk is let go: only the open file stays in
   await settle();
   assert.equal(list.__storedAddressesHeldForTest(), 1);
   assert.deepEqual(await allSocs(), [1, 2, 3, 4].map(addr));
-  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: true, unsavedFiles: 0 });
+  assert.deepEqual(list.storedAddressesHealth(), green());
 });
 
 test("files only waiting their turn are never given up, however many", async () => {
   list.__resetStoredAddressesForTest({ now: () => now, maxRows: 1, maxUnsaved: 2 });
   for (let i = 1; i <= 8; i++) soc(i);
   await settle();
-  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: true, unsavedFiles: 0 });
+  assert.deepEqual(list.storedAddressesHealth(), green());
   assert.deepEqual(await allSocs(), [1, 2, 3, 4, 5, 6, 7, 8].map(addr));
 });
 
@@ -285,7 +344,7 @@ test("no platform batch configured: nothing is listed, and that is not an alarm"
   soc(1);
   await settle();
   assert.deepEqual(files(), []);
-  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: false, unsavedFiles: 0 });
+  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: false, sealedTo: FINGERPRINT, unsavedFiles: 0 });
   // Not even with the key missing as well: there is nothing it would have sealed.
   delete process.env.STORED_ADDRESSES_SEAL_KEY;
   assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: false, unsavedFiles: 0 });
@@ -427,7 +486,7 @@ test("a write that does not land keeps its rows, turns health red, and lands on 
   list.retryStoredAddresses();
   await settle();
   h = list.storedAddressesHealth();
-  assert.deepEqual(h, { ok: true, recording: true, unsavedFiles: 0 });
+  assert.deepEqual(h, green());
   assert.deepEqual((await read(files()[0]!)).batches[PLATFORM]!.soc, [addr(1), addr(2)]);
 });
 
@@ -659,7 +718,8 @@ test("the list never writes a file itself: every byte on disk went through the s
   assert.equal([...src.matchAll(/writeJsonAtomic\(/g)].length, 1);
   const flush = src.slice(src.indexOf("async function flush("));
   const body = flush.slice(0, flush.indexOf("\n}\n"));
-  assert.ok(body.indexOf("sealBoxJsonCompressed(") > 0 && body.indexOf("sealBoxJsonCompressed(") < body.indexOf("writeJsonAtomic("));
+  assert.ok(body.indexOf("await withinSealTime(seal(") > 0 && body.indexOf("await withinSealTime(seal(") < body.indexOf("writeJsonAtomic("));
+  assert.match(src, /const sealBody: Sealer = async \(key, body, ctx\) => \{\n\s+const \{ sealBoxJsonCompressed \} = await import\("@woco\/shared\/crypto\/sealed-box"\);\n\s+return sealBoxJsonCompressed\(key, body, ctx\);\n\};\nlet seal: Sealer = sealBody;/);
   assert.match(body, /const file: StoredAddressesFile = \{ v: STORED_ADDRESSES_VERSION, day: f\.day, box \};/);
 });
 
