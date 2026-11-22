@@ -35,6 +35,7 @@ import {
   readCappedJson,
 } from "../http/read-capped.js";
 import { BEE_CALL_TIMEOUT_MS } from "./upload-queue.js";
+import { noteStored } from "./stored-addresses.js";
 
 export type PlainBytesTarget = "etherna" | "wocoBee";
 
@@ -100,7 +101,12 @@ export async function postPlainBytes(
     if (typeof reference !== "string" || !/^(0x)?[0-9a-fA-F]{64}$/.test(reference)) {
       throw new Error(`${target} /bytes upload answered without a reference`);
     }
-    return reference.toLowerCase().replace(/^0x/, "");
+    const root = reference.toLowerCase().replace(/^0x/, "");
+    // THE ONLY WAY THIS SERVER PUTS A FILE ON ETHERNA, so what its batch holds is
+    // listed here and nowhere else (stored-addresses.ts; `test/stored-addresses.test.ts`
+    // fails on a second sender).
+    if (toEtherna) noteStored({ kind: "bytes", address: root, batchId, level: opts.level, size: data.length });
+    return root;
   } catch (err) {
     if (toEtherna) noteEthernaFailure(`etherna bytes write: ${(err as Error)?.message ?? String(err)}`, started);
     throw err;

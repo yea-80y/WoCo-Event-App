@@ -52,6 +52,7 @@ import { ethernaRoutes } from "./routes/etherna.js";
 import { ethernaFetchBaseNotice } from "./lib/etherna/gateway.js";
 import { ethernaReadsHealth } from "./lib/swarm/soc-read.js";
 import { ethernaFailoverHealth, startRelayLedgerSweep } from "./lib/etherna/failover.js";
+import { startStoredAddresses, storedAddressesHealth } from "./lib/swarm/stored-addresses.js";
 import { startLevel1Canary } from "./lib/etherna/level1-canary.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
@@ -427,6 +428,10 @@ function healthReport() {
     // back to Etherna; `ledger.pending` counts sends not yet seen on our bee.
     // `push` RED: a send still not on our bee 15 min on - Etherna is not pushing.
     ethernaFailover: ethernaFailoverHealth(),
+    // The list of addresses stored on the Etherna platform batch (addresses only,
+    // no accounts). RED while a file of it has not reached the disk: the next batch
+    // change could not trust the list to be complete.
+    storedAddresses: storedAddressesHealth(),
     // The latest site runtime release (#1032): version, commit and when it was
     // read. RED when none is held after a read: every website publish builds on it.
     siteRuntime: siteRuntimeReleases.health(),
@@ -1176,6 +1181,8 @@ onStripeVerified((address) => void confirmArmedReferral(address));
 // The Etherna relay ledger (#912): loaded now so its warm-up runs from boot and an
 // unreadable file alarms at once; the sweep settles and moves entries in every mode.
 startRelayLedgerSweep();
+// The stored-address list retries any file that did not reach the disk.
+startStoredAddresses();
 // Does Etherna still build the level-1 trees our bee builds? Asked once, a minute in.
 startLevel1Canary();
 {

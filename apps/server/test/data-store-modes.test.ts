@@ -415,6 +415,21 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
       m.recordUpload(OWNER, { ref: "ab".repeat(32), bytes: 1, kind: "test", batchId: "batch-1", target: "wocoBee" });
     },
   },
+  {
+    store: "swarm/stored-addresses",
+    drive: async () => {
+      const m = await import("../src/lib/swarm/stored-addresses.js");
+      const before = process.env.ETHERNA_PLATFORM_BATCH;
+      process.env.ETHERNA_PLATFORM_BATCH = "cd".repeat(32);
+      try {
+        m.noteStored({ kind: "soc", address: "ab".repeat(32), batchId: "cd".repeat(32) });
+      } finally {
+        if (before === undefined) delete process.env.ETHERNA_PLATFORM_BATCH;
+        else process.env.ETHERNA_PLATFORM_BATCH = before;
+      }
+      assert.equal(readdirSync(join(dataDir, "stored-addresses")).length, 1, "the case wrote its file");
+    },
+  },
 ];
 
 /** Already-blamed paths, so one loose store fails one test and not every test after it. */

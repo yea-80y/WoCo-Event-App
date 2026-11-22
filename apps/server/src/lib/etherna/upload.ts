@@ -15,6 +15,7 @@ import { errorSnippet } from "../http/read-capped.js";
 import { BEE_CALL_TIMEOUT_MS } from "../swarm/upload-queue.js";
 import { noteEthernaFailure } from "./breaker.js";
 import { noteEthernaSend } from "./relay-ledger.js";
+import { noteStored } from "../swarm/stored-addresses.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
@@ -50,6 +51,8 @@ export async function registerEthernaOffer(ref: string): Promise<void> {
  * 404 decide during an Etherna outage is exact only because nothing reaches
  * Etherna's store unlisted (`test/etherna-failover.test.ts` fails on a second
  * sender). A slow failure pauses Etherna for reads and the relay alike.
+ * One it took is then noted on the stored-address list, which is complete for
+ * signed chunks for the same reason.
  *
  * Throws `Error & { status }` on a non-2xx (the HTTP status), plain on a timeout
  * or network fault.
@@ -89,6 +92,8 @@ export async function postSocToEtherna(opts: {
       err.status = res.status;
       throw err;
     }
+    // Etherna took it: on the list of what its batch holds (stored-addresses.ts).
+    noteStored({ kind: "soc", address, batchId: opts.batchId });
   } catch (err) {
     noteEthernaFailure(`etherna write: ${(err as Error)?.message ?? String(err)}`, started);
     throw err;
