@@ -714,7 +714,11 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     damaged file is never overwritten. It is what a replacement of that batch carries the live content
     from; an address can only be listed when it is stored. Losing it loses nothing stored: the next
     batch change must then carry everything it can find. Never a gate on a save. `/api/health`
-    `storedAddresses` red = a file not yet on disk, retried each minute)
+    `storedAddresses` red with `unsavedFiles` = a file not yet on disk, retried each minute: do NOT
+    restart until it clears, its rows are only in memory. Red with `lostFiles` or `droppedRows` (until
+    restart) = rows that never reached the list. NOT on the list, with no alarm: anything stored before
+    it existed, by a build without it (a rollback), or by a dev server holding the production Etherna
+    key (it lists into its own `.data`). A batch change must not take the list as complete on its own)
   ticket-holds/ (#983 — per sale, each emailed ticket's QR sealed to the organiser's order key: the ONLY copy
     a bounced ticket can be resent from (the signing key is discarded at mint). Losing it leaves those
     tickets reissue-only. Unreadable = never overwritten, `/api/health` `email.ticketHolds` alarm)

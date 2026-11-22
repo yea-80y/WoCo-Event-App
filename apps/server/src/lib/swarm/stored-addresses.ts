@@ -9,15 +9,26 @@
  * old batch lapses with everything else. That needs the list of what is ON the
  * batch, and an address can only be listed at the moment it is stored.
  *
- * ADDRESSES ONLY (owner, 2026-11-22). No account, no IP, no time of day. A signed
- * chunk's owner and identifier are in the chunk itself, so they are not repeated
- * here. What is LIVE is not recorded either: it is read from the users' own
- * signed feeds when a batch change is planned (`stored-plan.ts`). The honest
- * limit: a signed chunk names its signer to anyone who reads it, so this list
- * can be tied to signers through public data. It is no index of its own.
+ * ADDRESSES ONLY (owner, 2026-11-22). No account, no IP, no order of arrival
+ * (rows are sorted), no time finer than the UTC day - except that a file's own
+ * modification time is that of its last row. A signed chunk's owner and
+ * identifier are in the chunk itself, so they are not repeated here. What is
+ * LIVE is not recorded either: a batch change reads that from the users' own
+ * signed feeds. The honest limit: a signed chunk names its signer to anyone who
+ * reads it, so this list can be tied to signers through public data. It is no
+ * index of its own.
  *
  * THE PLATFORM BATCH ONLY. An account's own Etherna batch is theirs to replace,
  * and its id would mark every row with its owner.
+ *
+ * LISTED = ETHERNA TOOK IT, OR WAS ASKED AND DID NOT ANSWER. A signed chunk whose
+ * send timed out may be in Etherna's store, and it may be a feed's newest
+ * version, so it is listed: the list errs towards too much. A file is listed
+ * only on an answer, because its address IS the answer: one nobody was given
+ * has nothing pointing to it, and the same bytes saved again are listed then.
+ * A bytes row holds the level ASKED for; a store found to have built the plain
+ * tree instead gets a second row at level 0 (`saveForEtherna`). Whoever stamps
+ * a file again must check the root it is answered, whatever the row says.
  *
  * WRITTEN, NEVER READ BACK. Each run of the server writes its own files and
  * opens no earlier one, so a file from an older build or a damaged one is never
@@ -25,31 +36,34 @@
  * the reader's to fold. A file is rewritten whole on each new row, so it is
  * closed at `MAX_ROWS_PER_FILE` and at midnight UTC to keep that write small.
  *
- * NEVER A GATE ON A SAVE. A row is noted after the store took the bytes: failing
- * the save then would leave a chunk the user was told had failed. A write that
- * does not land stays in memory and is retried each minute; `/api/health`
- * `storedAddresses` is red until it lands. A crash in between loses those rows:
- * a signed chunk is still in the gateway whitelist, and a file is still named by
- * the feed that points to it, which is what the plan reads.
+ * NEVER A GATE ON A SAVE. Failing a save over the list would leave a chunk the
+ * user was told had failed. A write that does not land stays in memory and is
+ * retried each minute; `/api/health` `storedAddresses` is red until it lands,
+ * and stays red until restart once a row could not be noted at all.
+ *
+ * WHAT IT DOES NOT HOLD, silently: anything stored before this list existed,
+ * by a build without it (a rollback), or by another process with the same
+ * Etherna account (a dev server lists into its own `.data`); and rows still in
+ * memory when the server is restarted while red. A batch change that needs
+ * those finds them from the gateway whitelist and from what the feeds point to.
  *
  * MUST SURVIVE RESTARTS (`.data/stored-addresses/`). Losing it loses nothing
  * that is stored. The next batch change then has to carry everything it can
  * find instead of only what is live.
  */
 
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
 
-/** Rows per file before the next one is opened: the size of the rewrite a save pays for. */
-export const MAX_ROWS_PER_FILE = 2000;
-/** Past this the repeat check starts again. It only saves rows, it guards nothing. */
-const MAX_SEEN = 200_000;
-/** Closed files that could not be written, kept for the retry. Past this the oldest go. */
-const MAX_UNSAVED_FILES = 50;
+/** Rows per file before the next one is opened: the size of the rewrite a save pays for (about 35 KB). */
+export const MAX_ROWS_PER_FILE = 500;
+/** Closed files that could not be written, kept for the retry. Past this the oldest go, and health stays red. */
+export const MAX_UNSAVED_FILES = 50;
 
 export const STORED_ADDRESSES_VERSION = 1 as const;
 
-/** `[root, level asked for, size in bytes]`. The level is the one ASKED: the root says what was built. */
+/** `[root, level asked for, size in bytes]`. */
 export type StoredBytesRow = [address: string, level: 0 | 1, size: number];
 
 /** One file. No field names an account or a time of day. */
@@ -69,24 +83,26 @@ interface OpenFile {
   body: StoredAddressesFile;
   rows: number;
   dirty: boolean;
+  /** Rows already in THIS file. A repeat in another file is the reader's to fold. */
+  seen: Set<string>;
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
 let now: () => number = Date.now;
 let maxRows = MAX_ROWS_PER_FILE;
-let dirOverride: string | undefined;
+let maxUnsaved = MAX_UNSAVED_FILES;
 let runTag = newRunTag();
 let part = 0;
 let open: OpenFile | undefined;
 let closedUnsaved: OpenFile[] = [];
-let seen = new Set<string>();
-let stats = { rows: 0, files: 0, lostFiles: 0 };
-let lastError: string | undefined;
+let stats = { lostFiles: 0, droppedRows: 0 };
+let dropReason = "";
 let timer: ReturnType<typeof setInterval> | undefined;
 
+/** Random, so a file name says nothing about when the server started. */
 function newRunTag(): string {
-  return `${Date.now().toString(36)}${Math.floor(Math.random() * 0x10000).toString(16).padStart(4, "0")}`;
+  return randomBytes(6).toString("hex");
 }
 
 function norm(hex: string): string {
@@ -100,20 +116,24 @@ function platformBatch(): string | undefined {
 }
 
 function dir(): string {
-  return dirOverride ?? join(process.cwd(), ".data", "stored-addresses");
+  return join(process.cwd(), ".data", "stored-addresses");
 }
 
 function write(f: OpenFile): boolean {
+  // Sorted, so the order rows arrived in is not on disk.
+  for (const rows of Object.values(f.body.batches)) {
+    rows.soc.sort();
+    rows.bytes.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]));
+  }
   const ok = writeJsonAtomic(f.path, f.body, "stored-addresses");
   f.dirty = !ok;
-  if (!ok) lastError = `could not write ${f.path.slice(dir().length + 1)}`;
   return ok;
 }
 
 function close(f: OpenFile): void {
   if (!f.dirty) return;
   closedUnsaved.push(f);
-  while (closedUnsaved.length > MAX_UNSAVED_FILES) {
+  while (closedUnsaved.length > maxUnsaved) {
     closedUnsaved.shift();
     stats.lostFiles++;
   }
@@ -124,44 +144,41 @@ function fileFor(day: string): OpenFile {
     close(open);
     open = undefined;
   }
-  if (!open) {
-    open = {
-      path: join(dir(), `${day}.${runTag}.${part++}.json`),
-      body: { v: STORED_ADDRESSES_VERSION, day, batches: {} },
-      rows: 0,
-      dirty: false,
-    };
-    stats.files++;
-  }
+  open ??= {
+    path: join(dir(), `${day}.${runTag}.${part++}.json`),
+    body: { v: STORED_ADDRESSES_VERSION, day, batches: {} },
+    rows: 0,
+    dirty: false,
+    seen: new Set(),
+  };
   return open;
 }
 
 /**
- * Note one item a store has just taken. Only the Etherna platform batch is
- * listed; anything else returns at once. Never throws: the list is never the
- * reason a save fails.
+ * Note one item on the list. Only the Etherna platform batch is listed; anything
+ * else returns at once. Never throws: the list is never the reason a save fails.
+ * A row that cannot be noted at all turns health red until restart.
  */
 export function noteStored(item: StoredItem): void {
   try {
     const batchId = norm(item.batchId);
     if (batchId !== platformBatch()) return;
     const address = norm(item.address);
-    if (!HEX64.test(address)) return;
-    const key = item.kind === "soc" ? `s:${address}` : `b:${address}:${item.level}`;
-    if (seen.has(key)) return;
-    if (seen.size >= MAX_SEEN) seen.clear();
-    seen.add(key);
+    if (!HEX64.test(address)) throw new Error("not a 32-byte address");
 
     const f = fileFor(new Date(now()).toISOString().slice(0, 10));
+    const key = item.kind === "soc" ? `s:${address}` : `b:${address}:${item.level}`;
+    if (f.seen.has(key)) return;
+    f.seen.add(key);
     const rows = (f.body.batches[batchId] ??= { soc: [], bytes: [] });
     if (item.kind === "soc") rows.soc.push(address);
     else rows.bytes.push([address, item.level, item.size]);
     f.rows++;
-    stats.rows++;
     write(f);
   } catch (err) {
-    lastError = `note failed: ${(err as Error)?.message ?? String(err)}`;
-    console.error("[stored-addresses] could not note a stored address:", err);
+    stats.droppedRows++;
+    dropReason = (err as Error)?.message ?? String(err);
+    console.error("[stored-addresses] ALARM: a stored address could not be noted:", err);
   }
 }
 
@@ -169,11 +186,18 @@ export function noteStored(item: StoredItem): void {
 export function retryStoredAddresses(): void {
   closedUnsaved = closedUnsaved.filter((f) => !write(f));
   if (open?.dirty) write(open);
-  if (unsavedFiles() === 0 && stats.lostFiles === 0) lastError = undefined;
 }
 
 function unsavedFiles(): number {
   return closedUnsaved.length + (open?.dirty ? 1 : 0);
+}
+
+/** Why the list cannot be taken as complete, worst first; undefined when it can. */
+function fault(): string | undefined {
+  if (stats.lostFiles) return "unwritten files of the list were given up";
+  if (stats.droppedRows) return `a stored address could not be noted: ${dropReason}`;
+  if (unsavedFiles()) return "a file of the list could not be written";
+  return undefined;
 }
 
 export function startStoredAddresses(): void {
@@ -183,34 +207,33 @@ export function startStoredAddresses(): void {
 }
 
 /**
- * For `/api/health`. RED while a file has not reached the disk, or after closed
- * files had to be given up (`lostFiles`, until restart): rows in those are not on
- * the list, so the next batch change must not trust it to be complete.
- * `recording` false = no platform batch configured, nothing to list.
+ * For `/api/health`, which is public: no counts of what was listed. RED while a
+ * file has not reached the disk (do not restart: its rows are only in memory),
+ * and until restart after files were given up (`lostFiles`) or a row could not
+ * be noted (`droppedRows`): the next batch change must not take the list as
+ * complete. `recording` false = no platform batch configured, nothing to list.
  */
 export function storedAddressesHealth(): Record<string, unknown> {
-  const unsaved = unsavedFiles();
+  const reason = fault();
   return {
-    ok: unsaved === 0 && stats.lostFiles === 0,
+    ok: reason === undefined,
     recording: platformBatch() !== undefined,
-    rowsThisRun: stats.rows,
-    filesThisRun: stats.files,
-    unsavedFiles: unsaved,
+    unsavedFiles: unsavedFiles(),
     ...(stats.lostFiles ? { lostFiles: stats.lostFiles } : {}),
-    ...(lastError ? { lastError } : {}),
+    ...(stats.droppedRows ? { droppedRows: stats.droppedRows } : {}),
+    ...(reason ? { reason } : {}),
   };
 }
 
 /** A new run, as after a restart: nothing of the previous one is held or reopened. */
-export function __resetStoredAddressesForTest(opts: { now?: () => number; maxRows?: number; dir?: string } = {}): void {
+export function __resetStoredAddressesForTest(opts: { now?: () => number; maxRows?: number; maxUnsaved?: number } = {}): void {
   now = opts.now ?? Date.now;
   maxRows = opts.maxRows ?? MAX_ROWS_PER_FILE;
-  dirOverride = opts.dir;
+  maxUnsaved = opts.maxUnsaved ?? MAX_UNSAVED_FILES;
   runTag = newRunTag();
   part = 0;
   open = undefined;
   closedUnsaved = [];
-  seen = new Set();
-  stats = { rows: 0, files: 0, lostFiles: 0 };
-  lastError = undefined;
+  stats = { lostFiles: 0, droppedRows: 0 };
+  dropReason = "";
 }

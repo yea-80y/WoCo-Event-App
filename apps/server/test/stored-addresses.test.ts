@@ -27,17 +27,21 @@ process.env.ETHERNA_API_KEY = "id.secret";
 process.env.POSTAGE_BATCH_ID = "ab".repeat(32);
 delete process.env.ETHERNA_FAILOVER;
 
-/** What the stores answer to the next write: a status, or success. */
+/** What Etherna answers to the next write: an HTTP status, or 0 for no answer at all. */
 let ethernaStatus = 201;
-const ROOT = "12".repeat(32);
+/** The root a store claims for a `/bytes` upload. */
+let storeRoot = "12".repeat(32);
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = String(input);
   const method = init?.method ?? "GET";
   if (url === `${ETH}/token`) return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+  if (url.startsWith(`${ETH}/api/v0.3/resources/`)) return new Response(null, { status: 200 });
+  const toEtherna = url === `${ETH}/bytes` || url.startsWith(`${ETH}/soc/`);
+  if (method === "POST" && toEtherna && ethernaStatus === 0) throw new TypeError("fetch failed");
   if (method === "POST" && (url === `${ETH}/bytes` || url === `${BEE}/bytes`)) {
     if (url === `${ETH}/bytes` && ethernaStatus >= 300) return new Response("no", { status: ethernaStatus });
-    return new Response(JSON.stringify({ reference: ROOT }), { status: 201 });
+    return new Response(JSON.stringify({ reference: storeRoot }), { status: 201 });
   }
   if (method === "POST" && url.startsWith(`${ETH}/soc/`)) return new Response(ethernaStatus < 300 ? "{}" : "no", { status: ethernaStatus });
   throw new Error(`unexpected fetch ${method} ${url}`);
@@ -66,14 +70,21 @@ beforeEach(() => {
   process.env.ETHERNA_PLATFORM_BATCH = PLATFORM;
   now = T0;
   ethernaStatus = 201;
+  storeRoot = "12".repeat(32);
   list.__resetStoredAddressesForTest({ now: () => now });
 });
 
 const files = (): string[] => (existsSync(listDir) ? readdirSync(listDir).sort() : []);
 const read = (name: string) => JSON.parse(readFileSync(join(listDir, name), "utf-8"));
+/** Every row on disk, whichever file holds it. */
+const allSocs = (): string[] => files().flatMap((n) => read(n).batches[PLATFORM]?.soc ?? []).sort();
 const soc = (n: number, batchId = PLATFORM) => list.noteStored({ kind: "soc", address: addr(n), batchId });
 const bytes = (n: number, level: 0 | 1 = 1, size = 5000, batchId = PLATFORM) =>
   list.noteStored({ kind: "bytes", address: addr(n), batchId, level, size });
+const blockTheDirectory = () => {
+  mkdirSync(join(dir, ".data"), { recursive: true });
+  writeFileSync(listDir, "in the way");
+};
 
 test("a signed chunk and a file on the platform batch are listed, and the file holds nothing else", () => {
   soc(1);
@@ -85,27 +96,50 @@ test("a signed chunk and a file on the platform batch are listed, and the file h
     batches: { [PLATFORM]: { soc: [addr(1)], bytes: [[addr(2), 1, 9000]] } },
   });
   assert.equal(statSync(join(listDir, files()[0]!)).mode & 0o777, 0o600);
-  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: true, rowsThisRun: 2, filesThisRun: 1, unsavedFiles: 0 });
 });
 
-test("the file name carries the day and no time of day", () => {
+test("health is public: a verdict and no count of what was listed", () => {
   soc(1);
-  assert.match(files()[0]!, /^2026-11-22\.[0-9a-z]+\.0\.json$/);
+  bytes(2);
+  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: true, unsavedFiles: 0 });
+});
+
+test("the file name carries the day and a random tag: no time of day, no start time", () => {
+  soc(1);
+  const first = files()[0]!;
+  assert.match(first, /^2026-11-22\.[0-9a-f]{12}\.0\.json$/);
+  list.__resetStoredAddressesForTest({ now: () => now });
+  soc(1);
+  const tags = files().map((n) => n.split(".")[1]);
+  assert.equal(new Set(tags).size, 2, "a new run, a new tag");
+  for (const t of tags) assert.ok(!t!.includes(now.toString(36)) && !t!.includes(Date.now().toString(36).slice(0, 6)));
+});
+
+test("rows are sorted on disk, so the order they arrived in is not kept", () => {
+  for (const n of [9, 3, 7, 1]) soc(n);
+  bytes(8);
+  bytes(2);
+  bytes(2, 0);
+  assert.deepEqual(read(files()[0]!).batches[PLATFORM], {
+    soc: [addr(1), addr(3), addr(7), addr(9)],
+    bytes: [[addr(2), 0, 5000], [addr(2), 1, 5000], [addr(8), 1, 5000]],
+  });
 });
 
 test("another batch is not listed: an account's own batch would mark its rows with its owner", () => {
   soc(1, OTHER);
   bytes(2, 1, 5000, OTHER);
   assert.deepEqual(files(), []);
-  assert.equal(list.storedAddressesHealth().rowsThisRun, 0);
+  // Nor does it hide the same address when the platform batch takes it later.
+  soc(1);
+  assert.deepEqual(allSocs(), [addr(1)]);
 });
 
 test("no platform batch configured: nothing is listed and health says so", () => {
   delete process.env.ETHERNA_PLATFORM_BATCH;
   soc(1);
   assert.deepEqual(files(), []);
-  assert.equal(list.storedAddressesHealth().recording, false);
-  assert.equal(list.storedAddressesHealth().ok, true);
+  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: false, unsavedFiles: 0 });
 });
 
 test("the batch and the address are compared without case or 0x", () => {
@@ -117,20 +151,19 @@ test("the batch and the address are compared without case or 0x", () => {
   assert.deepEqual(read(files()[0]!).batches, { [PLATFORM]: { soc: [addr(0xabc), addr(0xdef)], bytes: [] } });
 });
 
-test("a signed chunk and a file are told apart: one never hides the other as a repeat", () => {
-  bytes(7, 1);
-  soc(7);
-  assert.deepEqual(read(files()[0]!).batches[PLATFORM], { soc: [addr(7)], bytes: [[addr(7), 1, 5000]] });
-});
-
 test("an address sent again is listed once; a file stored at the other level is listed again", () => {
   soc(1);
   soc(1);
   bytes(2, 1);
   bytes(2, 1);
   bytes(2, 0);
-  assert.deepEqual(read(files()[0]!).batches[PLATFORM], { soc: [addr(1)], bytes: [[addr(2), 1, 5000], [addr(2), 0, 5000]] });
-  assert.equal(list.storedAddressesHealth().rowsThisRun, 3);
+  assert.deepEqual(read(files()[0]!).batches[PLATFORM], { soc: [addr(1)], bytes: [[addr(2), 0, 5000], [addr(2), 1, 5000]] });
+});
+
+test("a signed chunk and a file are told apart: one never hides the other as a repeat", () => {
+  bytes(7, 1);
+  soc(7);
+  assert.deepEqual(read(files()[0]!).batches[PLATFORM], { soc: [addr(7)], bytes: [[addr(7), 1, 5000]] });
 });
 
 test("a full file is closed and the next row opens a new one", () => {
@@ -138,7 +171,17 @@ test("a full file is closed and the next row opens a new one", () => {
   for (let i = 1; i <= 5; i++) soc(i);
   const names = files();
   assert.equal(names.length, 3);
-  assert.deepEqual(names.map((n) => read(n).batches[PLATFORM].soc), [[addr(1), addr(2)], [addr(3), addr(4)], [addr(5)]]);
+  assert.deepEqual(names.map((n) => read(n).batches[PLATFORM].soc.length).sort(), [1, 2, 2]);
+  assert.deepEqual(allSocs(), [1, 2, 3, 4, 5].map(addr));
+});
+
+test("the repeat check is the open file's alone: a closed file holds nothing in memory", () => {
+  list.__resetStoredAddressesForTest({ now: () => now, maxRows: 2 });
+  soc(1);
+  soc(2);
+  soc(3);
+  soc(1);
+  assert.deepEqual(allSocs(), [addr(1), addr(1), addr(2), addr(3)]);
 });
 
 test("midnight UTC opens a new file under the new day", () => {
@@ -147,6 +190,17 @@ test("midnight UTC opens a new file under the new day", () => {
   soc(2);
   const byDay = Object.fromEntries(files().map((n) => [read(n).day, read(n).batches[PLATFORM].soc]));
   assert.deepEqual(byDay, { "2026-11-22": [addr(1)], "2026-11-23": [addr(2)] });
+  assert.ok(files().some((n) => n.startsWith("2026-11-23.")));
+});
+
+test("a clock that steps back opens another file, never an earlier one", () => {
+  soc(1);
+  now = T0 + DAY_MS;
+  soc(2);
+  now = T0;
+  soc(3);
+  assert.equal(files().length, 3);
+  assert.deepEqual(allSocs(), [addr(1), addr(2), addr(3)]);
 });
 
 test("a new run never opens or changes a file an earlier run wrote", () => {
@@ -174,16 +228,13 @@ test("an unreadable file from an earlier run is left exactly as it is", () => {
 });
 
 test("a write that does not land keeps its rows, turns health red, and lands on the retry", () => {
-  // The list's directory cannot be made: a file sits where it belongs.
-  mkdirSync(join(dir, ".data"), { recursive: true });
-  writeFileSync(listDir, "in the way");
+  blockTheDirectory();
   assert.doesNotThrow(() => soc(1));
   soc(2);
   let h = list.storedAddressesHealth();
   assert.equal(h.ok, false);
   assert.equal(h.unsavedFiles, 1);
-  assert.equal(h.rowsThisRun, 2);
-  assert.match(String(h.lastError), /could not write/);
+  assert.equal(h.reason, "a file of the list could not be written");
 
   list.retryStoredAddresses();
   assert.equal(list.storedAddressesHealth().ok, false, "still blocked: still red");
@@ -191,16 +242,13 @@ test("a write that does not land keeps its rows, turns health red, and lands on 
   unlinkSync(listDir);
   list.retryStoredAddresses();
   h = list.storedAddressesHealth();
-  assert.equal(h.ok, true);
-  assert.equal(h.unsavedFiles, 0);
-  assert.equal(h.lastError, undefined);
+  assert.deepEqual(h, { ok: true, recording: true, unsavedFiles: 0 });
   assert.deepEqual(read(files()[0]!).batches[PLATFORM].soc, [addr(1), addr(2)]);
 });
 
 test("closed files that did not land are kept and written by the retry too", () => {
   list.__resetStoredAddressesForTest({ now: () => now, maxRows: 1 });
-  mkdirSync(join(dir, ".data"), { recursive: true });
-  writeFileSync(listDir, "in the way");
+  blockTheDirectory();
   soc(1);
   soc(2);
   soc(3);
@@ -208,13 +256,44 @@ test("closed files that did not land are kept and written by the retry too", () 
   unlinkSync(listDir);
   list.retryStoredAddresses();
   assert.equal(list.storedAddressesHealth().ok, true);
-  assert.deepEqual(files().map((n) => read(n).batches[PLATFORM].soc[0]).sort(), [addr(1), addr(2), addr(3)]);
+  assert.deepEqual(allSocs(), [addr(1), addr(2), addr(3)]);
 });
 
-test("a malformed address is not listed and nothing throws", () => {
+test("unwritten files past the ceiling are given up, and health stays red after the disk is back", () => {
+  list.__resetStoredAddressesForTest({ now: () => now, maxRows: 1, maxUnsaved: 2 });
+  blockTheDirectory();
+  for (let i = 1; i <= 5; i++) soc(i);
+  // Files 1 to 4 are closed (the 5th is open): two are kept, two given up.
+  let h = list.storedAddressesHealth();
+  assert.equal(h.lostFiles, 2);
+  assert.equal(h.unsavedFiles, 3);
+  unlinkSync(listDir);
+  list.retryStoredAddresses();
+  h = list.storedAddressesHealth();
+  assert.equal(h.unsavedFiles, 0);
+  assert.equal(h.ok, false, "rows were lost: the list is not complete, whatever the disk does now");
+  assert.equal(h.lostFiles, 2);
+  assert.equal(h.reason, "unwritten files of the list were given up");
+  assert.deepEqual(allSocs(), [addr(3), addr(4), addr(5)]);
+});
+
+test("a row that cannot be noted turns health red until restart, and nothing throws", () => {
   assert.doesNotThrow(() => list.noteStored({ kind: "soc", address: "not hex", batchId: PLATFORM }));
-  assert.doesNotThrow(() => list.noteStored({ kind: "soc", address: undefined as unknown as string, batchId: PLATFORM }));
   assert.deepEqual(files(), []);
+  let h = list.storedAddressesHealth();
+  assert.equal(h.ok, false);
+  assert.equal(h.droppedRows, 1);
+  assert.match(String(h.reason), /could not be noted/);
+
+  // A sender that names no batch: nothing says the row was not the platform batch's.
+  assert.doesNotThrow(() => list.noteStored({ kind: "soc", address: addr(1), batchId: undefined as unknown as string }));
+  assert.equal(list.storedAddressesHealth().droppedRows, 2);
+
+  soc(2);
+  list.retryStoredAddresses();
+  h = list.storedAddressesHealth();
+  assert.equal(h.ok, false, "a later good write does not clear it");
+  assert.match(String(h.reason), /could not be noted/);
 });
 
 // ---------------------------------------------------------------------------
@@ -222,19 +301,49 @@ test("a malformed address is not listed and nothing throws", () => {
 // ---------------------------------------------------------------------------
 
 const SOC = { ownerHex: "aa".repeat(20), identifierHex: "bb".repeat(32), sigHex: "cc".repeat(65), body: new Uint8Array(40) };
-
-test("a signed chunk Etherna took is listed under its own address; one it refused is not", async () => {
-  const { postSocToEtherna } = await import("../src/lib/etherna/upload.js");
+async function socAddress(): Promise<string> {
   const { calculateSocAddress } = await import("@woco/shared");
-  const address = Buffer.from(calculateSocAddress(Buffer.from(SOC.identifierHex, "hex"), Buffer.from(SOC.ownerHex, "hex"))).toString("hex");
+  return Buffer.from(calculateSocAddress(Buffer.from(SOC.identifierHex, "hex"), Buffer.from(SOC.ownerHex, "hex"))).toString("hex");
+}
 
-  ethernaStatus = 500;
-  await assert.rejects(postSocToEtherna({ ...SOC, batchId: PLATFORM }));
-  assert.deepEqual(files(), []);
-
-  ethernaStatus = 201;
+test("a signed chunk Etherna took is listed under its own address", async () => {
+  const { postSocToEtherna } = await import("../src/lib/etherna/upload.js");
   await postSocToEtherna({ ...SOC, batchId: PLATFORM });
-  assert.deepEqual(read(files()[0]!).batches, { [PLATFORM]: { soc: [address], bytes: [] } });
+  assert.deepEqual(read(files()[0]!).batches, { [PLATFORM]: { soc: [await socAddress()], bytes: [] } });
+});
+
+test("a signed chunk Etherna refused is not listed", async () => {
+  const { postSocToEtherna } = await import("../src/lib/etherna/upload.js");
+  for (const status of [400, 402, 404, 499]) {
+    ethernaStatus = status;
+    await assert.rejects(postSocToEtherna({ ...SOC, batchId: PLATFORM }));
+  }
+  assert.deepEqual(files(), []);
+});
+
+test("a signed chunk whose send got no answer, or a 5xx, is listed: Etherna may hold it", async () => {
+  const { postSocToEtherna } = await import("../src/lib/etherna/upload.js");
+  ethernaStatus = 0;
+  await assert.rejects(postSocToEtherna({ ...SOC, batchId: PLATFORM }));
+  assert.deepEqual(allSocs(), [await socAddress()]);
+
+  list.__resetStoredAddressesForTest({ now: () => now });
+  for (const status of [500, 504]) {
+    ethernaStatus = status;
+    await assert.rejects(postSocToEtherna({ ...SOC, identifierHex: status === 500 ? "b1".repeat(32) : "b2".repeat(32), batchId: PLATFORM }));
+  }
+  assert.equal(allSocs().length, 3);
+});
+
+test("a signed chunk never sent (no Etherna token) is not listed", async () => {
+  const { postSocToEtherna } = await import("../src/lib/etherna/upload.js");
+  process.env.ETHERNA_ENABLED = "false";
+  try {
+    await assert.rejects(postSocToEtherna({ ...SOC, batchId: PLATFORM }), /token unavailable/);
+    assert.deepEqual(files(), []);
+  } finally {
+    process.env.ETHERNA_ENABLED = "true";
+  }
 });
 
 test("a file Etherna took is listed with the level asked and its size; one sent to our bee is not", async () => {
@@ -244,13 +353,27 @@ test("a file Etherna took is listed with the level asked and its size; one sent 
   await postPlainBytes("wocoBee", PLATFORM, data, { level: 1, timeoutMs: 1000, deferred: true });
   assert.deepEqual(files(), []);
 
-  ethernaStatus = 503;
-  await assert.rejects(postPlainBytes("etherna", PLATFORM, data, { level: 1, timeoutMs: 1000, deferred: true }));
-  assert.deepEqual(files(), []);
+  for (const status of [503, 0]) {
+    ethernaStatus = status;
+    await assert.rejects(postPlainBytes("etherna", PLATFORM, data, { level: 1, timeoutMs: 1000, deferred: true }));
+  }
+  assert.deepEqual(files(), [], "no answer, no address to list");
 
   ethernaStatus = 201;
   await postPlainBytes("etherna", PLATFORM, data, { level: 1, timeoutMs: 1000, deferred: true });
-  assert.deepEqual(read(files()[0]!).batches, { [PLATFORM]: { soc: [], bytes: [[ROOT, 1, 7000]] } });
+  storeRoot = "34".repeat(32);
+  await postPlainBytes("etherna", PLATFORM, new Uint8Array(100), { level: 0, timeoutMs: 1000, deferred: true });
+  assert.deepEqual(read(files()[0]!).batches, { [PLATFORM]: { soc: [], bytes: [["12".repeat(32), 1, 7000], ["34".repeat(32), 0, 100]] } });
+});
+
+test("a save Etherna stored without the repair data asked for is listed at both levels", async () => {
+  const { saveForEtherna } = await import("../src/lib/swarm/bytes.js");
+  const { plainTreeRoot } = await import("../src/lib/swarm/plain-bytes.js");
+  const data = new Uint8Array(9000).fill(7);
+  storeRoot = plainTreeRoot(data)!;
+  const saved = await saveForEtherna(data, { target: "etherna", batchId: PLATFORM });
+  assert.equal(saved.ref, storeRoot);
+  assert.deepEqual(read(files()[0]!).batches[PLATFORM].bytes, [[storeRoot, 0, 9000], [storeRoot, 1, 9000]]);
 });
 
 // ---------------------------------------------------------------------------
@@ -266,16 +389,50 @@ function sourceFiles(d: string): string[] {
 }
 const code = (p: string) => readFileSync(p, "utf-8").split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
 
-test("one function puts a file on Etherna, and it lists what Etherna took", () => {
-  // An upload goes to the bare `/bytes`, `/bzz` or `/chunks` of an Etherna base; a read names an address after it.
-  const hits: string[] = [];
+test("only the files known to talk to Etherna's gateway hold its address, each for a known reason", () => {
+  // The server's Etherna base has one definition (gateway.ts). A new file using it,
+  // or a known one using it once more, is a possible way into Etherna's store that
+  // the list does not see: this fails until someone has looked.
+  const uses: Record<string, number> = {};
   for (const p of sourceFiles(SRC)) {
-    for (const m of code(p).matchAll(/`[^`\n]*ETHERNA_[A-Z_]+[^`\n]*\/(bytes|bzz|chunks)`/g)) hits.push(`${p.slice(SRC.length)}: ${m[0]}`);
+    const n = [...code(p).matchAll(/\bETHERNA_FETCH_BASE\b/g)].length;
+    if (n) uses[p.slice(SRC.length)] = n;
   }
-  assert.equal(hits.length, 1, `Etherna upload senders: ${hits.join(" | ")}`);
-  assert.match(hits[0]!, /^lib\/swarm\/plain-bytes\.ts: /);
+  assert.deepEqual(uses, {
+    "lib/etherna/batches.ts": 2,           // import + alias: the stamps and credit API, stores no content
+    "lib/etherna/gateway.ts": 2,           // the definition and its boot notice
+    "lib/etherna/upload.ts": 2,            // import + alias: postSocToEtherna (lists) and the offers call
+    "lib/site/collection-publish.ts": 2,   // import + a READ of a manifest node
+    "lib/swarm/bytes.ts": 2,               // import + alias: a READ of /bytes/{ref}
+    "lib/swarm/plain-bytes.ts": 2,         // import + postPlainBytes (lists)
+    "lib/swarm/soc-read.ts": 2,            // import + alias: a READ of /chunks/{address}
+  });
+  // Nothing else builds the base from its env name or spells the host out.
+  const elsewhere = sourceFiles(SRC).filter((p) => !p.endsWith("lib/etherna/gateway.ts") && /process\.env\.ETHERNA_GATEWAY_URL|["'`]https?:\/\/gateway\.etherna\.io/.test(code(p)));
+  assert.deepEqual(elsewhere.map((p) => p.slice(SRC.length)), []);
+});
 
-  const src = readFileSync(join(SRC, "lib/swarm/plain-bytes.ts"), "utf-8");
+test("every request to Etherna's gateway is one of the known ones", () => {
+  // Each template that starts at an Etherna base, by the path that follows it.
+  const paths: string[] = [];
+  for (const p of sourceFiles(SRC)) {
+    for (const m of code(p).matchAll(/\$\{(?:toEtherna \? )?ETHERNA_(?:GW|FETCH_BASE)[^}]*\}([^`\s]*)/g)) paths.push(`${p.slice(SRC.length)} ${m[1]}`);
+  }
+  assert.deepEqual(paths.sort(), [
+    "lib/etherna/batches.ts ${path}",
+    "lib/etherna/batches.ts ${path}",
+    "lib/etherna/batches.ts /stamps/${batchId}",
+    "lib/etherna/upload.ts /api/v0.3/resources/${ref}/offers",
+    "lib/etherna/upload.ts /soc/${owner}/${opts.identifierHex}?sig=${opts.sigHex}",
+    "lib/site/collection-publish.ts /bytes/${address}",
+    "lib/swarm/bytes.ts /bytes/${ref}",
+    "lib/swarm/plain-bytes.ts /bytes",
+    "lib/swarm/soc-read.ts /chunks/${address}",
+  ]);
+});
+
+test("the file sender lists what Etherna answered, and only for Etherna", () => {
+  const src = code(join(SRC, "lib/swarm/plain-bytes.ts"));
   const fn = src.slice(src.indexOf("export async function postPlainBytes("));
   const body = fn.slice(0, fn.indexOf("\n}\n"));
   const noted = body.indexOf('if (toEtherna) noteStored({ kind: "bytes"');
@@ -283,12 +440,8 @@ test("one function puts a file on Etherna, and it lists what Etherna took", () =
   assert.ok(noted < body.indexOf("return root;"), "noted before the root is handed back");
 });
 
-test("the one function that sends a signed chunk to Etherna lists it once Etherna took it", () => {
-  const src = readFileSync(join(SRC, "lib/etherna/upload.ts"), "utf-8");
-  const fn = src.slice(src.indexOf("export async function postSocToEtherna("));
-  const body = fn.slice(0, fn.indexOf("\n}\n"));
-  const noted = body.indexOf('noteStored({ kind: "soc"');
-  assert.ok(noted > body.indexOf("if (!res.ok)"), "noted after the refusal check");
-  assert.ok(noted < body.indexOf("} catch (err)"), "noted inside the send, not on its failure");
-  // Its being the only sender is pinned in test/etherna-failover.test.ts.
+test("the server starts the retry and reports the list on health", () => {
+  const index = code(join(SRC, "index.ts"));
+  assert.match(index, /^startStoredAddresses\(\);$/m);
+  assert.match(index, /^\s*storedAddresses: storedAddressesHealth\(\),$/m);
 });
