@@ -15,6 +15,7 @@ import { errorSnippet } from "../http/read-capped.js";
 import { BEE_CALL_TIMEOUT_MS } from "../swarm/upload-queue.js";
 import { noteEthernaFailure } from "./breaker.js";
 import { noteEthernaSend } from "./relay-ledger.js";
+import { noteStored } from "../swarm/stored-addresses.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
@@ -50,6 +51,8 @@ export async function registerEthernaOffer(ref: string): Promise<void> {
  * 404 decide during an Etherna outage is exact only because nothing reaches
  * Etherna's store unlisted (`test/etherna-failover.test.ts` fails on a second
  * sender). A slow failure pauses Etherna for reads and the relay alike.
+ * One Etherna took, or was asked for and did not refuse, is noted on the
+ * stored-address list, which is complete for signed chunks for the same reason.
  *
  * Throws `Error & { status }` on a non-2xx (the HTTP status), plain on a timeout
  * or network fault.
@@ -68,10 +71,13 @@ export async function postSocToEtherna(opts: {
   );
   noteEthernaSend(address, owner, opts.identifierHex);
   const started = performance.now();
+  let asked = false;
+  let refused = false;
   try {
     await ensureEthernaToken();
     const token = getCachedEthernaToken();
     if (!token) throw new Error("Etherna token unavailable");
+    asked = true;
     const res = await fetch(`${ETHERNA_GW}/soc/${owner}/${opts.identifierHex}?sig=${opts.sigHex}`, {
       method: "POST",
       headers: {
@@ -85,6 +91,7 @@ export async function postSocToEtherna(opts: {
       signal: AbortSignal.timeout(opts.timeoutMs ?? BEE_CALL_TIMEOUT_MS),
     });
     if (!res.ok) {
+      refused = res.status >= 400 && res.status < 500;
       const err = new Error(`Etherna SOC write ${res.status}: ${await errorSnippet(res, 200)}`) as Error & { status?: number };
       err.status = res.status;
       throw err;
@@ -92,5 +99,10 @@ export async function postSocToEtherna(opts: {
   } catch (err) {
     noteEthernaFailure(`etherna write: ${(err as Error)?.message ?? String(err)}`, started);
     throw err;
+  } finally {
+    // On the list of what Etherna's batch holds (stored-addresses.ts) unless Etherna
+    // said no: a send that timed out or met a 5xx may be in its store all the same,
+    // and may be a feed's newest version.
+    if (asked && !refused) noteStored({ kind: "soc", address, batchId: opts.batchId });
   }
 }

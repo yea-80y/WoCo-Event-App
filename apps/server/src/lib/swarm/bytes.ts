@@ -10,6 +10,7 @@ import { BEE_CALL_TIMEOUT_MS, beeUploadSem, FULL_UPLOAD_BUDGET as FULL_BUDGET, i
 import { plainBytesTimeoutMs, plainTreeRoot, postPlainBytes, saveLevel, type SaveLevel } from "./plain-bytes.js";
 import { SOC_MAX_PAYLOAD_SIZE } from "@woco/shared/swarm/soc";
 import { whitelistHashes } from "./whitelist.js";
+import { noteStored } from "./stored-addresses.js";
 import type { Hex64 } from "@woco/shared";
 import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
 import { ResponseTooLargeError, SWARM_READ_MAX_BYTES, readCappedText } from "../http/read-capped.js";
@@ -89,6 +90,8 @@ export async function saveForEtherna(bytes: Uint8Array, selection: BatchSelectio
         }
       } else if (withoutRepairData(ref)) {
         noteTreeMismatch(bytes.length, "Etherna stored a save without the repair data asked for");
+        // The sender listed it at the level asked: also at the one it was stored at.
+        noteStored({ kind: "bytes", address: ref, batchId: selection.batchId, level: 0, size: bytes.length });
       }
       // Fire-and-forget the offer: it only enables ANONYMOUS gateway reads (e.g.
       // the event image); the server's own reads are bearer-authed. A missed offer
