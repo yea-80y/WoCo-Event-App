@@ -1,11 +1,13 @@
 /**
  * The stored-address list (`lib/swarm/stored-addresses.ts`): what it holds, what
- * it must never hold, and that the two functions that put anything on Etherna
+ * it must never hold, that nothing of it is readable on disk without a key the
+ * server does not have, and that the two functions that put anything on Etherna
  * are the ones that write it. Etherna and bee are a stubbed `fetch`; the list
  * lives in a temp cwd.
  */
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,7 +49,16 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   throw new Error(`unexpected fetch ${method} ${url}`);
 }) as typeof fetch;
 
+type Body = { batches: Record<string, { soc: string[]; bytes: Array<[string, number, number]> }> };
 let list: typeof import("../src/lib/swarm/stored-addresses.js");
+let box: typeof import("@woco/shared/crypto/sealed-box");
+/** The reader's keypair: the public half is all the server is ever given. */
+let PUBLIC = "";
+/** What health shows of the key in use: enough to tell it from another, nothing to seal with. */
+let FINGERPRINT = "";
+const green = () => ({ ok: true, recording: true, sealedTo: FINGERPRINT, unsavedFiles: 0 });
+let SECRET: Uint8Array;
+let OTHER_SECRET: Uint8Array;
 let dir: string;
 let listDir: string;
 let originalCwd: string;
@@ -56,6 +67,13 @@ let now = T0;
 before(async () => {
   originalCwd = process.cwd();
   list = await import("../src/lib/swarm/stored-addresses.js");
+  box = await import("@woco/shared/crypto/sealed-box");
+  const { xwing } = await import("@woco/shared/crypto/xwing");
+  const pair = xwing.keygen(randomBytes(32));
+  PUBLIC = Buffer.from(pair.publicKey).toString("hex");
+  FINGERPRINT = createHash("sha256").update(pair.publicKey).digest("hex").slice(0, 16);
+  SECRET = pair.secretKey;
+  OTHER_SECRET = xwing.keygen(randomBytes(32)).secretKey;
 });
 
 after(() => {
@@ -68,6 +86,7 @@ beforeEach(() => {
   listDir = join(dir, ".data", "stored-addresses");
   process.chdir(dir);
   process.env.ETHERNA_PLATFORM_BATCH = PLATFORM;
+  process.env.STORED_ADDRESSES_SEAL_KEY = PUBLIC;
   now = T0;
   ethernaStatus = 201;
   storeRoot = "12".repeat(32);
@@ -75,9 +94,21 @@ beforeEach(() => {
 });
 
 const files = (): string[] => (existsSync(listDir) ? readdirSync(listDir).sort() : []);
-const read = (name: string) => JSON.parse(readFileSync(join(listDir, name), "utf-8"));
+const raw = (name: string) => readFileSync(join(listDir, name), "utf-8");
+/** Open one file as the holder of the private key would. */
+async function read(name: string): Promise<{ v: number; day: string; batches: Body["batches"] }> {
+  const f = JSON.parse(raw(name));
+  const body = await box.openBoxJson<Body>(SECRET, f.box, list.storedAddressesSealContext(f.day));
+  return { v: f.v, day: f.day, batches: body.batches };
+}
+/** Every write asked for so far has been tried. */
+const settle = () => list.flushStoredAddresses();
 /** Every row on disk, whichever file holds it. */
-const allSocs = (): string[] => files().flatMap((n) => read(n).batches[PLATFORM]?.soc ?? []).sort();
+async function allSocs(): Promise<string[]> {
+  const out: string[] = [];
+  for (const n of files()) out.push(...((await read(n)).batches[PLATFORM]?.soc ?? []));
+  return out.sort();
+}
 const soc = (n: number, batchId = PLATFORM) => list.noteStored({ kind: "soc", address: addr(n), batchId });
 const bytes = (n: number, level: 0 | 1 = 1, size = 5000, batchId = PLATFORM) =>
   list.noteStored({ kind: "bytes", address: addr(n), batchId, level, size });
@@ -86,11 +117,12 @@ const blockTheDirectory = () => {
   writeFileSync(listDir, "in the way");
 };
 
-test("a signed chunk and a file on the platform batch are listed, and the file holds nothing else", () => {
+test("a signed chunk and a file on the platform batch are listed, and the list holds nothing else", async () => {
   soc(1);
   bytes(2, 1, 9000);
+  await settle();
   assert.equal(files().length, 1);
-  assert.deepEqual(read(files()[0]!), {
+  assert.deepEqual(await read(files()[0]!), {
     v: 1,
     day: "2026-11-22",
     batches: { [PLATFORM]: { soc: [addr(1)], bytes: [[addr(2), 1, 9000]] } },
@@ -98,187 +130,415 @@ test("a signed chunk and a file on the platform batch are listed, and the file h
   assert.equal(statSync(join(listDir, files()[0]!)).mode & 0o777, 0o600);
 });
 
-test("health is public: a verdict and no count of what was listed", () => {
-  soc(1);
-  bytes(2);
-  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: true, unsavedFiles: 0 });
+// ---------------------------------------------------------------------------
+// Sealed: nothing of the list is readable where the server keeps it
+// ---------------------------------------------------------------------------
+
+test("a file on disk is a sealed box: no address, no batch, nothing but the day in clear", async () => {
+  soc(0xabcdef);
+  bytes(0x123456, 1, 4242);
+  await settle();
+  const text = raw(files()[0]!);
+  const onDisk = JSON.parse(text);
+  assert.deepEqual(Object.keys(onDisk).sort(), ["box", "day", "v"]);
+  assert.deepEqual(Object.keys(onDisk.box).sort(), ["ct", "enc", "v"]);
+  assert.equal(onDisk.day, "2026-11-22");
+  for (const secret of [addr(0xabcdef), addr(0x123456), PLATFORM, "4242", "soc", "bytes", "batches"]) {
+    assert.ok(!text.includes(secret), `"${secret.slice(0, 12)}" is readable in the file`);
+  }
 });
 
-test("the file name carries the day and a random tag: no time of day, no start time", () => {
+test("a file opens with the private key alone, and only as the day it says", async () => {
   soc(1);
-  const first = files()[0]!;
-  assert.match(first, /^2026-11-22\.[0-9a-f]{12}\.0\.json$/);
+  await settle();
+  const f = JSON.parse(raw(files()[0]!));
+  await assert.rejects(box.openBoxJson(OTHER_SECRET, f.box, list.storedAddressesSealContext(f.day)));
+  await assert.rejects(box.openBoxJson(SECRET, f.box, list.storedAddressesSealContext("2026-11-23")));
+  await assert.rejects(box.openBoxJson(SECRET, f.box, { info: "woco/order/v2", aad: `woco/order/v2:${f.day}` }));
+  assert.deepEqual((await box.openBoxJson<Body>(SECRET, f.box, list.storedAddressesSealContext(f.day))).batches[PLATFORM]!.soc, [addr(1)]);
+});
+
+test("FROZEN: a file written on 2026-11-22 still opens, under the same info and its own day", async () => {
+  const vector = JSON.parse(readFileSync(fileURLToPath(new URL("./stored-addresses.vector.json", import.meta.url)), "utf-8"));
+  // The two strings every file on disk was sealed under. Change either and none of them opens.
+  assert.equal(list.STORED_ADDRESSES_SEAL_INFO, "woco/stored-addresses/v1");
+  assert.deepEqual(list.storedAddressesSealContext("2026-11-22"), {
+    info: "woco/stored-addresses/v1",
+    aad: "woco/stored-addresses/v1:2026-11-22",
+  });
+  assert.equal(list.STORED_ADDRESSES_VERSION, 1);
+  assert.deepEqual(Object.keys(vector.file).sort(), ["box", "day", "v"]);
+  const body = await box.openBoxJson(vector.secretKey, vector.file.box, list.storedAddressesSealContext(vector.file.day));
+  assert.deepEqual(body, vector.opensTo);
+});
+
+test("health shows which key the list is sealed to, so a wrong one is seen before it matters", async () => {
+  assert.equal(list.storedAddressesHealth().sealedTo, FINGERPRINT);
+  assert.match(FINGERPRINT, /^[0-9a-f]{16}$/);
+  const { xwing } = await import("@woco/shared/crypto/xwing");
+  const other = xwing.keygen(randomBytes(32)).publicKey;
+  process.env.STORED_ADDRESSES_SEAL_KEY = `0x${Buffer.from(other).toString("hex").toUpperCase()}`;
+  assert.equal(list.storedAddressesHealth().sealedTo, createHash("sha256").update(other).digest("hex").slice(0, 16));
+  assert.notEqual(list.storedAddressesHealth().sealedTo, FINGERPRINT);
+  // The fingerprint is not the key: nothing can be sealed, or opened, with it.
+  assert.ok(!JSON.stringify(list.storedAddressesHealth()).includes(Buffer.from(other).toString("hex").slice(0, 32)));
+});
+
+test("a seal that never finishes counts as a failed write, and the queue moves on", async () => {
+  let hang = true;
+  const real = (await import("@woco/shared/crypto/sealed-box")).sealBoxJsonCompressed;
+  list.__resetStoredAddressesForTest({
+    now: () => now,
+    sealTimeoutMs: 30,
+    seal: (key, body, ctx) => (hang ? new Promise(() => {}) : real(key, body, ctx)),
+  });
+  soc(1);
+  // Bounded here, so a queue that IS stuck fails this test instead of hanging the run.
+  let giveUp: ReturnType<typeof setTimeout>;
+  const stuck = new Promise<never>((_, reject) => {
+    giveUp = setTimeout(() => reject(new Error("the write queue is stuck behind a seal that never finished")), 3000);
+  });
+  await Promise.race([settle(), stuck]).finally(() => clearTimeout(giveUp));
+  assert.deepEqual(files(), []);
+  let h = list.storedAddressesHealth();
+  assert.equal(h.ok, false);
+  assert.equal(h.unsavedFiles, 1);
+  assert.equal(h.reason, "a file of the list could not be sealed or written");
+
+  // Nothing is stuck behind it: the next row's write runs, and takes the first row with it.
+  hang = false;
+  soc(2);
+  await settle();
+  assert.deepEqual(await allSocs(), [addr(1), addr(2)]);
+  assert.deepEqual(list.storedAddressesHealth(), green());
+});
+
+test("each write is sealed afresh: the same rows never give the same bytes", async () => {
+  soc(1);
+  await settle();
+  const first = JSON.parse(raw(files()[0]!)).box;
   list.__resetStoredAddressesForTest({ now: () => now });
   soc(1);
-  const tags = files().map((n) => n.split(".")[1]);
-  assert.equal(new Set(tags).size, 2, "a new run, a new tag");
-  for (const t of tags) assert.ok(!t!.includes(now.toString(36)) && !t!.includes(Date.now().toString(36).slice(0, 6)));
+  await settle();
+  const second = JSON.parse(raw(files().find((n) => JSON.parse(raw(n)).box.enc !== first.enc)!)).box;
+  assert.notEqual(second.enc, first.enc);
+  assert.notEqual(second.ct, first.ct);
 });
 
-test("rows are sorted on disk, so the order they arrived in is not kept", () => {
+test("no key to seal to: nothing is kept, readable or not, and health is red", async () => {
+  for (const key of [undefined, "", "abc", "zz".repeat(1216), "ab".repeat(1215), "ab".repeat(1217)]) {
+    if (key === undefined) delete process.env.STORED_ADDRESSES_SEAL_KEY;
+    else process.env.STORED_ADDRESSES_SEAL_KEY = key;
+    list.__resetStoredAddressesForTest({ now: () => now });
+    soc(1);
+    bytes(2);
+    await settle();
+    assert.deepEqual(files(), [], `key ${String(key).slice(0, 8)}`);
+    assert.deepEqual(list.storedAddressesHealth(), {
+      ok: false,
+      recording: false,
+      unsavedFiles: 0,
+      reason: "no seal key configured: nothing is being listed",
+    });
+  }
+});
+
+test("a key of the right length that is not a key: nothing reaches the disk and health is red", async () => {
+  process.env.STORED_ADDRESSES_SEAL_KEY = "ff".repeat(1216);
+  soc(1);
+  await settle();
+  assert.deepEqual(files(), []);
+  const h = list.storedAddressesHealth();
+  assert.equal(h.ok, false);
+  assert.equal(h.unsavedFiles, 1);
+  assert.equal(h.reason, "a file of the list could not be sealed or written");
+});
+
+test("the key is accepted with 0x and in capitals", async () => {
+  process.env.STORED_ADDRESSES_SEAL_KEY = `0x${PUBLIC.toUpperCase()}`;
+  soc(1);
+  await settle();
+  assert.deepEqual(await allSocs(), [addr(1)]);
+  assert.equal(list.storedAddressesHealth().ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// What is listed
+// ---------------------------------------------------------------------------
+
+test("health is public: a verdict and no count of what was listed", async () => {
+  soc(1);
+  bytes(2);
+  assert.deepEqual(list.storedAddressesHealth(), green(), "a write in flight is not an alarm");
+  await settle();
+  assert.deepEqual(list.storedAddressesHealth(), green());
+});
+
+test("the file name carries the day and a random tag: no time of day, no start time", async () => {
+  soc(1);
+  await settle();
+  const first = files()[0]!;
+  assert.match(first, /^2026-11-22\.[0-9a-f]{12}\.0\.json$/);
+  // Two runs started in the same millisecond still get different tags: the tag is
+  // random, not a clock reading.
+  const realNow = Date.now;
+  Date.now = () => 1_800_000_000_000;
+  try {
+    list.__resetStoredAddressesForTest({ now: () => now });
+    soc(1);
+    list.__resetStoredAddressesForTest({ now: () => now });
+    soc(1);
+  } finally {
+    Date.now = realNow;
+  }
+  await settle();
+  const tags = files().map((n) => n.split(".")[1]);
+  assert.equal(tags.length, 3);
+  assert.equal(new Set(tags).size, 3, "a new run, a new tag");
+});
+
+test("a closed file that reached the disk is let go: only the open file stays in memory", async () => {
+  list.__resetStoredAddressesForTest({ now: () => now, maxRows: 1 });
+  // Closed while their writes were still waiting, so each was held at first.
+  for (let i = 1; i <= 4; i++) soc(i);
+  assert.equal(list.__storedAddressesHeldForTest(), 4);
+  await settle();
+  assert.equal(list.__storedAddressesHeldForTest(), 1);
+  assert.deepEqual(await allSocs(), [1, 2, 3, 4].map(addr));
+  assert.deepEqual(list.storedAddressesHealth(), green());
+});
+
+test("files only waiting their turn are never given up, however many", async () => {
+  list.__resetStoredAddressesForTest({ now: () => now, maxRows: 1, maxUnsaved: 2 });
+  for (let i = 1; i <= 8; i++) soc(i);
+  await settle();
+  assert.deepEqual(list.storedAddressesHealth(), green());
+  assert.deepEqual(await allSocs(), [1, 2, 3, 4, 5, 6, 7, 8].map(addr));
+});
+
+test("rows are sorted, so the order they arrived in is not kept", async () => {
   for (const n of [9, 3, 7, 1]) soc(n);
   bytes(8);
   bytes(2);
   bytes(2, 0);
-  assert.deepEqual(read(files()[0]!).batches[PLATFORM], {
+  await settle();
+  assert.deepEqual((await read(files()[0]!)).batches[PLATFORM], {
     soc: [addr(1), addr(3), addr(7), addr(9)],
     bytes: [[addr(2), 0, 5000], [addr(2), 1, 5000], [addr(8), 1, 5000]],
   });
 });
 
-test("another batch is not listed: an account's own batch would mark its rows with its owner", () => {
+test("another batch is not listed: an account's own batch would mark its rows with its owner", async () => {
   soc(1, OTHER);
   bytes(2, 1, 5000, OTHER);
+  await settle();
   assert.deepEqual(files(), []);
   // Nor does it hide the same address when the platform batch takes it later.
   soc(1);
-  assert.deepEqual(allSocs(), [addr(1)]);
+  await settle();
+  assert.deepEqual(await allSocs(), [addr(1)]);
 });
 
-test("no platform batch configured: nothing is listed and health says so", () => {
+test("no platform batch configured: nothing is listed, and that is not an alarm", async () => {
   delete process.env.ETHERNA_PLATFORM_BATCH;
   soc(1);
+  await settle();
   assert.deepEqual(files(), []);
+  assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: false, sealedTo: FINGERPRINT, unsavedFiles: 0 });
+  // Not even with the key missing as well: there is nothing it would have sealed.
+  delete process.env.STORED_ADDRESSES_SEAL_KEY;
   assert.deepEqual(list.storedAddressesHealth(), { ok: true, recording: false, unsavedFiles: 0 });
 });
 
-test("the batch and the address are compared without case or 0x", () => {
+test("the batch and the address are compared without case or 0x", async () => {
   process.env.ETHERNA_PLATFORM_BATCH = `0x${PLATFORM.toUpperCase()}`;
   list.noteStored({ kind: "soc", address: `0x${addr(0xabc).toUpperCase()}`, batchId: PLATFORM });
   // The sender's spelling of the batch too: a stamp header is not always lowercase.
   process.env.ETHERNA_PLATFORM_BATCH = PLATFORM;
   list.noteStored({ kind: "soc", address: addr(0xdef), batchId: `0x${PLATFORM.toUpperCase()}` });
-  assert.deepEqual(read(files()[0]!).batches, { [PLATFORM]: { soc: [addr(0xabc), addr(0xdef)], bytes: [] } });
+  await settle();
+  assert.deepEqual((await read(files()[0]!)).batches, { [PLATFORM]: { soc: [addr(0xabc), addr(0xdef)], bytes: [] } });
 });
 
-test("an address sent again is listed once; a file stored at the other level is listed again", () => {
+test("an address sent again is listed once; a file stored at the other level is listed again", async () => {
   soc(1);
   soc(1);
   bytes(2, 1);
   bytes(2, 1);
   bytes(2, 0);
-  assert.deepEqual(read(files()[0]!).batches[PLATFORM], { soc: [addr(1)], bytes: [[addr(2), 0, 5000], [addr(2), 1, 5000]] });
+  await settle();
+  assert.deepEqual((await read(files()[0]!)).batches[PLATFORM], { soc: [addr(1)], bytes: [[addr(2), 0, 5000], [addr(2), 1, 5000]] });
 });
 
-test("a signed chunk and a file are told apart: one never hides the other as a repeat", () => {
+test("a signed chunk and a file are told apart: one never hides the other as a repeat", async () => {
   bytes(7, 1);
   soc(7);
-  assert.deepEqual(read(files()[0]!).batches[PLATFORM], { soc: [addr(7)], bytes: [[addr(7), 1, 5000]] });
+  await settle();
+  assert.deepEqual((await read(files()[0]!)).batches[PLATFORM], { soc: [addr(7)], bytes: [[addr(7), 1, 5000]] });
 });
 
-test("a full file is closed and the next row opens a new one", () => {
+test("rows noted while a write is in flight are in the next one: none is lost between writes", async () => {
+  soc(1);
+  await Promise.resolve();
+  soc(2);
+  soc(3);
+  await settle();
+  assert.deepEqual(await allSocs(), [addr(1), addr(2), addr(3)]);
+  soc(4);
+  await settle();
+  assert.equal(files().length, 1);
+  assert.deepEqual(await allSocs(), [addr(1), addr(2), addr(3), addr(4)]);
+});
+
+test("a full file is closed and the next row opens a new one", async () => {
   list.__resetStoredAddressesForTest({ now: () => now, maxRows: 2 });
   for (let i = 1; i <= 5; i++) soc(i);
+  await settle();
   const names = files();
   assert.equal(names.length, 3);
-  assert.deepEqual(names.map((n) => read(n).batches[PLATFORM].soc.length).sort(), [1, 2, 2]);
-  assert.deepEqual(allSocs(), [1, 2, 3, 4, 5].map(addr));
+  const sizes: number[] = [];
+  for (const n of names) sizes.push((await read(n)).batches[PLATFORM]!.soc.length);
+  assert.deepEqual(sizes.sort(), [1, 2, 2]);
+  assert.deepEqual(await allSocs(), [1, 2, 3, 4, 5].map(addr));
 });
 
-test("the repeat check is the open file's alone: a closed file holds nothing in memory", () => {
+test("the repeat check is the open file's alone: a closed file holds nothing in memory", async () => {
   list.__resetStoredAddressesForTest({ now: () => now, maxRows: 2 });
   soc(1);
   soc(2);
   soc(3);
   soc(1);
-  assert.deepEqual(allSocs(), [addr(1), addr(1), addr(2), addr(3)]);
+  await settle();
+  assert.deepEqual(await allSocs(), [addr(1), addr(1), addr(2), addr(3)]);
 });
 
-test("midnight UTC opens a new file under the new day", () => {
+test("midnight UTC opens a new file under the new day", async () => {
   soc(1);
   now = T0 + DAY_MS;
   soc(2);
-  const byDay = Object.fromEntries(files().map((n) => [read(n).day, read(n).batches[PLATFORM].soc]));
+  await settle();
+  const byDay: Record<string, string[]> = {};
+  for (const n of files()) {
+    const f = await read(n);
+    byDay[f.day] = f.batches[PLATFORM]!.soc;
+  }
   assert.deepEqual(byDay, { "2026-11-22": [addr(1)], "2026-11-23": [addr(2)] });
   assert.ok(files().some((n) => n.startsWith("2026-11-23.")));
 });
 
-test("a clock that steps back opens another file, never an earlier one", () => {
+test("a clock that steps back opens another file, never an earlier one", async () => {
   soc(1);
   now = T0 + DAY_MS;
   soc(2);
   now = T0;
   soc(3);
+  await settle();
   assert.equal(files().length, 3);
-  assert.deepEqual(allSocs(), [addr(1), addr(2), addr(3)]);
+  assert.deepEqual(await allSocs(), [addr(1), addr(2), addr(3)]);
 });
 
-test("a new run never opens or changes a file an earlier run wrote", () => {
+test("a new run never opens or changes a file an earlier run wrote", async () => {
   soc(1);
+  await settle();
   const first = files()[0]!;
-  const before = readFileSync(join(listDir, first), "utf-8");
+  const before = raw(first);
   list.__resetStoredAddressesForTest({ now: () => now });
   soc(1);
   soc(2);
+  await settle();
   assert.equal(files().length, 2);
-  assert.equal(readFileSync(join(listDir, first), "utf-8"), before);
+  assert.equal(raw(first), before);
   const second = files().find((n) => n !== first)!;
   // A restart forgets what was listed: the repeat is the reader's to fold.
-  assert.deepEqual(read(second).batches[PLATFORM].soc, [addr(1), addr(2)]);
+  assert.deepEqual((await read(second)).batches[PLATFORM]!.soc, [addr(1), addr(2)]);
 });
 
-test("an unreadable file from an earlier run is left exactly as it is", () => {
+test("an unreadable file from an earlier run is left exactly as it is", async () => {
   mkdirSync(listDir, { recursive: true });
   const damaged = join(listDir, "2026-11-22.old.0.json");
   writeFileSync(damaged, "{ not json");
   soc(1);
+  await settle();
   assert.equal(readFileSync(damaged, "utf-8"), "{ not json");
   assert.equal(files().length, 2);
   assert.equal(list.storedAddressesHealth().ok, true);
 });
 
-test("a write that does not land keeps its rows, turns health red, and lands on the retry", () => {
+// ---------------------------------------------------------------------------
+// When a write does not land
+// ---------------------------------------------------------------------------
+
+test("a write that does not land keeps its rows, turns health red, and lands on the retry", async () => {
   blockTheDirectory();
   assert.doesNotThrow(() => soc(1));
   soc(2);
+  await settle();
   let h = list.storedAddressesHealth();
   assert.equal(h.ok, false);
   assert.equal(h.unsavedFiles, 1);
-  assert.equal(h.reason, "a file of the list could not be written");
+  assert.equal(h.reason, "a file of the list could not be sealed or written");
 
   list.retryStoredAddresses();
+  await settle();
   assert.equal(list.storedAddressesHealth().ok, false, "still blocked: still red");
 
   unlinkSync(listDir);
   list.retryStoredAddresses();
+  await settle();
   h = list.storedAddressesHealth();
-  assert.deepEqual(h, { ok: true, recording: true, unsavedFiles: 0 });
-  assert.deepEqual(read(files()[0]!).batches[PLATFORM].soc, [addr(1), addr(2)]);
+  assert.deepEqual(h, green());
+  assert.deepEqual((await read(files()[0]!)).batches[PLATFORM]!.soc, [addr(1), addr(2)]);
 });
 
-test("closed files that did not land are kept and written by the retry too", () => {
+test("a retry with nothing failed writes nothing", async () => {
+  soc(1);
+  await settle();
+  const before = raw(files()[0]!);
+  list.retryStoredAddresses();
+  await settle();
+  assert.equal(raw(files()[0]!), before, "sealing again would change the bytes");
+});
+
+test("closed files that did not land are kept and written by the retry too", async () => {
   list.__resetStoredAddressesForTest({ now: () => now, maxRows: 1 });
   blockTheDirectory();
   soc(1);
   soc(2);
   soc(3);
+  await settle();
   assert.equal(list.storedAddressesHealth().unsavedFiles, 3);
   unlinkSync(listDir);
   list.retryStoredAddresses();
+  await settle();
   assert.equal(list.storedAddressesHealth().ok, true);
-  assert.deepEqual(allSocs(), [addr(1), addr(2), addr(3)]);
+  assert.deepEqual(await allSocs(), [addr(1), addr(2), addr(3)]);
 });
 
-test("unwritten files past the ceiling are given up, and health stays red after the disk is back", () => {
+test("unwritten files past the ceiling are given up, and health stays red after the disk is back", async () => {
   list.__resetStoredAddressesForTest({ now: () => now, maxRows: 1, maxUnsaved: 2 });
   blockTheDirectory();
-  for (let i = 1; i <= 5; i++) soc(i);
+  for (let i = 1; i <= 5; i++) {
+    soc(i);
+    await settle();
+  }
   // Files 1 to 4 are closed (the 5th is open): two are kept, two given up.
   let h = list.storedAddressesHealth();
   assert.equal(h.lostFiles, 2);
   assert.equal(h.unsavedFiles, 3);
   unlinkSync(listDir);
   list.retryStoredAddresses();
+  await settle();
   h = list.storedAddressesHealth();
   assert.equal(h.unsavedFiles, 0);
   assert.equal(h.ok, false, "rows were lost: the list is not complete, whatever the disk does now");
   assert.equal(h.lostFiles, 2);
   assert.equal(h.reason, "unwritten files of the list were given up");
-  assert.deepEqual(allSocs(), [addr(3), addr(4), addr(5)]);
+  assert.deepEqual(await allSocs(), [addr(3), addr(4), addr(5)]);
 });
 
-test("a row that cannot be noted turns health red until restart, and nothing throws", () => {
+test("a row that cannot be noted turns health red until restart, and nothing throws", async () => {
   assert.doesNotThrow(() => list.noteStored({ kind: "soc", address: "not hex", batchId: PLATFORM }));
+  await settle();
   assert.deepEqual(files(), []);
   let h = list.storedAddressesHealth();
   assert.equal(h.ok, false);
@@ -291,6 +551,7 @@ test("a row that cannot be noted turns health red until restart, and nothing thr
 
   soc(2);
   list.retryStoredAddresses();
+  await settle();
   h = list.storedAddressesHealth();
   assert.equal(h.ok, false, "a later good write does not clear it");
   assert.match(String(h.reason), /could not be noted/);
@@ -309,7 +570,8 @@ async function socAddress(): Promise<string> {
 test("a signed chunk Etherna took is listed under its own address", async () => {
   const { postSocToEtherna } = await import("../src/lib/etherna/upload.js");
   await postSocToEtherna({ ...SOC, batchId: PLATFORM });
-  assert.deepEqual(read(files()[0]!).batches, { [PLATFORM]: { soc: [await socAddress()], bytes: [] } });
+  await settle();
+  assert.deepEqual((await read(files()[0]!)).batches, { [PLATFORM]: { soc: [await socAddress()], bytes: [] } });
 });
 
 test("a signed chunk Etherna refused is not listed", async () => {
@@ -318,21 +580,26 @@ test("a signed chunk Etherna refused is not listed", async () => {
     ethernaStatus = status;
     await assert.rejects(postSocToEtherna({ ...SOC, batchId: PLATFORM }));
   }
+  await settle();
   assert.deepEqual(files(), []);
 });
 
 test("a signed chunk whose send got no answer, or a 5xx, is listed: Etherna may hold it", async () => {
   const { postSocToEtherna } = await import("../src/lib/etherna/upload.js");
   ethernaStatus = 0;
-  await assert.rejects(postSocToEtherna({ ...SOC, batchId: PLATFORM }));
-  assert.deepEqual(allSocs(), [await socAddress()]);
+  await assert.rejects(postSocToEtherna({ ...SOC, batchId: PLATFORM }), /fetch failed/);
+  await settle();
+  assert.deepEqual(await allSocs(), [await socAddress()]);
 
   list.__resetStoredAddressesForTest({ now: () => now });
   for (const status of [500, 504]) {
     ethernaStatus = status;
-    await assert.rejects(postSocToEtherna({ ...SOC, identifierHex: status === 500 ? "b1".repeat(32) : "b2".repeat(32), batchId: PLATFORM }));
+    const refusal = postSocToEtherna({ ...SOC, identifierHex: status === 500 ? "b1".repeat(32) : "b2".repeat(32), batchId: PLATFORM });
+    // The sender's own error still reaches the caller, with Etherna's status on it.
+    await assert.rejects(refusal, (e: Error & { status?: number }) => e.status === status);
   }
-  assert.equal(allSocs().length, 3);
+  await settle();
+  assert.equal((await allSocs()).length, 3);
 });
 
 test("a signed chunk never sent (no Etherna token) is not listed", async () => {
@@ -340,6 +607,7 @@ test("a signed chunk never sent (no Etherna token) is not listed", async () => {
   process.env.ETHERNA_ENABLED = "false";
   try {
     await assert.rejects(postSocToEtherna({ ...SOC, batchId: PLATFORM }), /token unavailable/);
+    await settle();
     assert.deepEqual(files(), []);
   } finally {
     process.env.ETHERNA_ENABLED = "true";
@@ -351,19 +619,19 @@ test("a file Etherna took is listed with the level asked and its size; one sent 
   const data = new Uint8Array(7000);
 
   await postPlainBytes("wocoBee", PLATFORM, data, { level: 1, timeoutMs: 1000, deferred: true });
-  assert.deepEqual(files(), []);
-
   for (const status of [503, 0]) {
     ethernaStatus = status;
     await assert.rejects(postPlainBytes("etherna", PLATFORM, data, { level: 1, timeoutMs: 1000, deferred: true }));
   }
-  assert.deepEqual(files(), [], "no answer, no address to list");
+  await settle();
+  assert.deepEqual(files(), [], "our bee is not listed; no answer, no address to list");
 
   ethernaStatus = 201;
   await postPlainBytes("etherna", PLATFORM, data, { level: 1, timeoutMs: 1000, deferred: true });
   storeRoot = "34".repeat(32);
   await postPlainBytes("etherna", PLATFORM, new Uint8Array(100), { level: 0, timeoutMs: 1000, deferred: true });
-  assert.deepEqual(read(files()[0]!).batches, { [PLATFORM]: { soc: [], bytes: [["12".repeat(32), 1, 7000], ["34".repeat(32), 0, 100]] } });
+  await settle();
+  assert.deepEqual((await read(files()[0]!)).batches, { [PLATFORM]: { soc: [], bytes: [["12".repeat(32), 1, 7000], ["34".repeat(32), 0, 100]] } });
 });
 
 test("a save Etherna stored without the repair data asked for is listed at both levels", async () => {
@@ -373,7 +641,8 @@ test("a save Etherna stored without the repair data asked for is listed at both 
   storeRoot = plainTreeRoot(data)!;
   const saved = await saveForEtherna(data, { target: "etherna", batchId: PLATFORM });
   assert.equal(saved.ref, storeRoot);
-  assert.deepEqual(read(files()[0]!).batches[PLATFORM].bytes, [[storeRoot, 0, 9000], [storeRoot, 1, 9000]]);
+  await settle();
+  assert.deepEqual((await read(files()[0]!)).batches[PLATFORM]!.bytes, [[storeRoot, 0, 9000], [storeRoot, 1, 9000]]);
 });
 
 // ---------------------------------------------------------------------------
@@ -444,8 +713,19 @@ test("the file sender lists what Etherna answered, and only for Etherna", () => 
   assert.ok(noted < body.indexOf("return root;"), "noted before the root is handed back");
 });
 
-test("the server starts the retry and reports the list on health", () => {
+test("the list never writes a file itself: every byte on disk went through the seal", () => {
+  const src = code(join(SRC, "lib/swarm/stored-addresses.ts"));
+  assert.equal([...src.matchAll(/writeJsonAtomic\(/g)].length, 1);
+  const flush = src.slice(src.indexOf("async function flush("));
+  const body = flush.slice(0, flush.indexOf("\n}\n"));
+  assert.ok(body.indexOf("await withinSealTime(seal(") > 0 && body.indexOf("await withinSealTime(seal(") < body.indexOf("writeJsonAtomic("));
+  assert.match(src, /const sealBody: Sealer = async \(key, body, ctx\) => \{\n\s+const \{ sealBoxJsonCompressed \} = await import\("@woco\/shared\/crypto\/sealed-box"\);\n\s+return sealBoxJsonCompressed\(key, body, ctx\);\n\};\nlet seal: Sealer = sealBody;/);
+  assert.match(body, /const file: StoredAddressesFile = \{ v: STORED_ADDRESSES_VERSION, day: f\.day, box \};/);
+});
+
+test("the server starts the retry, reports the list on health, and waits for its last write at shutdown", () => {
   const index = code(join(SRC, "index.ts"));
   assert.match(index, /^startStoredAddresses\(\);$/m);
   assert.match(index, /^\s*storedAddresses: storedAddressesHealth\(\),$/m);
+  assert.match(index, /server\.close\(\(\) => void flushStoredAddresses\(\)\.finally\(\(\) => process\.exit\(0\)\)\);/);
 });
