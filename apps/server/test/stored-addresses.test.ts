@@ -407,6 +407,10 @@ test("only the files known to talk to Etherna's gateway hold its address, each f
     "lib/swarm/plain-bytes.ts": 2,         // import + postPlainBytes (lists)
     "lib/swarm/soc-read.ts": 2,            // import + alias: a READ of /chunks/{address}
   });
+  // The canonical gateway constant (and its alias) is a routing value: recorded on
+  // feeds and compared, never the start of a request. Only gateway.ts prints it.
+  const asRequest = sourceFiles(SRC).filter((p) => /\$\{ETHERNA_(GATEWAY_)?URL\}|fetch\(\s*ETHERNA_(GATEWAY_)?URL\b/.test(code(p)));
+  assert.deepEqual(asRequest.map((p) => p.slice(SRC.length)), ["lib/etherna/gateway.ts"]);
   // Nothing else builds the base from its env name or spells the host out.
   const elsewhere = sourceFiles(SRC).filter((p) => !p.endsWith("lib/etherna/gateway.ts") && /process\.env\.ETHERNA_GATEWAY_URL|["'`]https?:\/\/gateway\.etherna\.io/.test(code(p)));
   assert.deepEqual(elsewhere.map((p) => p.slice(SRC.length)), []);

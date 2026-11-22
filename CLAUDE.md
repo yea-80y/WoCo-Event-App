@@ -712,7 +712,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     account, IP or time of day. Written by the two functions that send anything to Etherna
     (`postSocToEtherna`, `postPlainBytes`), never read back: each run writes its own files, so an old or
     damaged file is never overwritten. It is what a replacement of that batch carries the live content
-    from; an address can only be listed when it is stored. Losing it loses nothing stored: the next
+    from; an address can only be listed when it is sent. It errs towards too much: a signed chunk
+    whose send got no answer is listed too, so a listed address that reads absent was never stored and
+    is skipped, not alarmed as lost. Losing the list loses nothing stored: the next
     batch change must then carry everything it can find. Never a gate on a save. `/api/health`
     `storedAddresses` red with `unsavedFiles` = a file not yet on disk, retried each minute: do NOT
     restart until it clears, its rows are only in memory. Red with `lostFiles` or `droppedRows` (until
