@@ -419,13 +419,18 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     store: "swarm/stored-addresses",
     drive: async () => {
       const m = await import("../src/lib/swarm/stored-addresses.js");
-      const before = process.env.ETHERNA_PLATFORM_BATCH;
+      const { xwing } = await import("@woco/shared/crypto/xwing");
+      const before = { batch: process.env.ETHERNA_PLATFORM_BATCH, key: process.env.STORED_ADDRESSES_SEAL_KEY };
       process.env.ETHERNA_PLATFORM_BATCH = "cd".repeat(32);
+      process.env.STORED_ADDRESSES_SEAL_KEY = Buffer.from(xwing.keygen(new Uint8Array(32).fill(7)).publicKey).toString("hex");
       try {
         m.noteStored({ kind: "soc", address: "ab".repeat(32), batchId: "cd".repeat(32) });
+        await m.flushStoredAddresses();
       } finally {
-        if (before === undefined) delete process.env.ETHERNA_PLATFORM_BATCH;
-        else process.env.ETHERNA_PLATFORM_BATCH = before;
+        if (before.batch === undefined) delete process.env.ETHERNA_PLATFORM_BATCH;
+        else process.env.ETHERNA_PLATFORM_BATCH = before.batch;
+        if (before.key === undefined) delete process.env.STORED_ADDRESSES_SEAL_KEY;
+        else process.env.STORED_ADDRESSES_SEAL_KEY = before.key;
       }
       assert.equal(readdirSync(join(dataDir, "stored-addresses")).length, 1, "the case wrote its file");
     },

@@ -52,7 +52,7 @@ import { ethernaRoutes } from "./routes/etherna.js";
 import { ethernaFetchBaseNotice } from "./lib/etherna/gateway.js";
 import { ethernaReadsHealth } from "./lib/swarm/soc-read.js";
 import { ethernaFailoverHealth, startRelayLedgerSweep } from "./lib/etherna/failover.js";
-import { startStoredAddresses, storedAddressesHealth } from "./lib/swarm/stored-addresses.js";
+import { flushStoredAddresses, startStoredAddresses, storedAddressesHealth } from "./lib/swarm/stored-addresses.js";
 import { startLevel1Canary } from "./lib/etherna/level1-canary.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
@@ -429,8 +429,9 @@ function healthReport() {
     // `push` RED: a send still not on our bee 15 min on - Etherna is not pushing.
     ethernaFailover: ethernaFailoverHealth(),
     // The list of addresses stored on the Etherna platform batch (addresses only,
-    // no accounts). RED while a file of it has not reached the disk: the next batch
-    // change could not trust the list to be complete.
+    // no accounts, sealed to a key this server does not hold). RED while a file of
+    // it has not reached the disk, or with no key to seal it to (nothing listed):
+    // the next batch change could not trust the list to be complete.
     storedAddresses: storedAddressesHealth(),
     // The latest site runtime release (#1032): version, commit and when it was
     // read. RED when none is held after a read: every website publish builds on it.
@@ -1112,7 +1113,9 @@ function shutdown(signal: string): void {
   stopDrainWorker();
   for (const job of recordShutdown()) settleReservation(job);
   flushPacing();
-  server.close(() => process.exit(0));
+  // The requests still in flight note what they stored as they finish; the list's
+  // last write is sealed after them, so the exit waits for it (the backstop bounds it).
+  server.close(() => void flushStoredAddresses().finally(() => process.exit(0)));
   // Backstop: never hang past the container's grace period holding open a
   // keep-alive connection. The records above are already on disk by here.
   setTimeout(() => process.exit(0), 5_000).unref();

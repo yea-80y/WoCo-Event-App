@@ -121,6 +121,9 @@ DEV COMMANDS:
   Sponsorship (#758): `ZERODEV_POLICY_SECRET` + `ZERODEV_PROJECT_ID` — the ZeroDev custom gas policy
   webhook (`/api/zerodev/policy/:secret`); unset = every sponsored userOp refused, `zerodevPolicy` red.
   Optional `ZERODEV_POLICY_MAX_OP_COST_WEI` (per-op ceiling, default 5e14).
+  `STORED_ADDRESSES_SEAL_KEY`: the PUBLIC key (X-Wing, 2432 hex) the stored-address list is sealed to. Needed
+  wherever `ETHERNA_PLATFORM_BATCH` is set: unset = nothing is listed and `storedAddresses` is red. The private
+  half never goes in any server env.
   Optional: `CAMPAIGN_ISSUER_PRIVATE_KEY` — signs referral confirmations + badges
   (#476), address must match `CAMPAIGN_ISSUER_ADDRESS`; unset = confirm 503s.
   Also optional, all with defaults baked in (#421/#522/#420/#598/#662 health alarms; a bad value is
@@ -709,14 +712,17 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     four fixed files saved to Etherna at level 1 and compared with the roots our bee gave; not on a dev server): `/bytes` saves stamped
     on WoCo may no longer move back. Re-measure the canary roots when our bee is upgraded (`level1-canary.ts`))
   stored-addresses/ (every address this server put on the Etherna PLATFORM batch: addresses only, no
-    account, IP or time of day. Written by the two functions that send anything to Etherna
+    account, IP or time of day. Each file is SEALED to `STORED_ADDRESSES_SEAL_KEY`, a public key whose
+    private half is NOT on the server: it is needed only to plan a batch change, and losing it costs
+    what losing the list costs. No key (or not one) = nothing is listed and `storedAddresses` is red;
+    an unsealed file is never written. Written by the two functions that send anything to Etherna
     (`postSocToEtherna`, `postPlainBytes`), never read back: each run writes its own files, so an old or
     damaged file is never overwritten. It is what a replacement of that batch carries the live content
     from; an address can only be listed when it is sent. It errs towards too much: a signed chunk
     whose send got no answer is listed too, so a listed address that reads absent was never stored and
     is skipped, not alarmed as lost. Losing the list loses nothing stored: the next
     batch change must then carry everything it can find. Never a gate on a save. `/api/health`
-    `storedAddresses` red with `unsavedFiles` = a file not yet on disk, retried each minute: do NOT
+    `storedAddresses` red with `unsavedFiles` = a file whose write failed, retried each minute: do NOT
     restart until it clears, its rows are only in memory. Red with `lostFiles` or `droppedRows` (until
     restart) = rows that never reached the list. NOT on the list, with no alarm: anything stored before
     it existed, by a build without it (a rollback), or by a dev server holding the production Etherna
