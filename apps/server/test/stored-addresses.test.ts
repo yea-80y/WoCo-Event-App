@@ -111,7 +111,16 @@ test("no platform batch configured: nothing is listed and health says so", () =>
 test("the batch and the address are compared without case or 0x", () => {
   process.env.ETHERNA_PLATFORM_BATCH = `0x${PLATFORM.toUpperCase()}`;
   list.noteStored({ kind: "soc", address: `0x${addr(0xabc).toUpperCase()}`, batchId: PLATFORM });
-  assert.deepEqual(read(files()[0]!).batches, { [PLATFORM]: { soc: [addr(0xabc)], bytes: [] } });
+  // The sender's spelling of the batch too: a stamp header is not always lowercase.
+  process.env.ETHERNA_PLATFORM_BATCH = PLATFORM;
+  list.noteStored({ kind: "soc", address: addr(0xdef), batchId: `0x${PLATFORM.toUpperCase()}` });
+  assert.deepEqual(read(files()[0]!).batches, { [PLATFORM]: { soc: [addr(0xabc), addr(0xdef)], bytes: [] } });
+});
+
+test("a signed chunk and a file are told apart: one never hides the other as a repeat", () => {
+  bytes(7, 1);
+  soc(7);
+  assert.deepEqual(read(files()[0]!).batches[PLATFORM], { soc: [addr(7)], bytes: [[addr(7), 1, 5000]] });
 });
 
 test("an address sent again is listed once; a file stored at the other level is listed again", () => {
