@@ -226,12 +226,15 @@ export interface FulfilmentDeps {
    * `newHoldingSecret`: a guest order's secret (option A), made after payment.
    * `keepHoldingReceipts`: seal, record, store; never rejects in production.
    * `recordSaleReceipts`: each slot's receipt digest on the sale record, for the void list.
+   * `noteHoldingMissed`: a sale owed receipts that minted tickets got none for some of
+   * them (`/api/health` `holdingReceipts`). Must not throw; fenced anyway.
    */
   holdingReceiptsOn(): boolean;
   holdingRequest(sessionId: string): HoldingRequestView | null;
   newHoldingSecret(): Uint8Array;
   keepHoldingReceipts(input: KeepHoldingInput): Promise<{ boxRoot: string; keepUrl?: string } | null>;
   recordSaleReceipts(sessionId: string, receipts: Array<{ slot: number; digest: string }>): void;
+  noteHoldingMissed(sessionId: string, why: string): void;
 
   /** Gate binding. THROWS when it cannot persist — fenced here, correct at /redeem. */
   bindTicket(binding: Omit<GateBinding, "boundAt" | "parentAddress"> & { parentAddress: string }): boolean;
@@ -900,11 +903,13 @@ export async function fulfilPaidSession(
 
   // ── 3d. Ticket receipts: which, if any (an accessory; a fault means none) ──
   let holdingPlan: HoldingPlan | null = null;
+  let holdingPlanFailed = false;
   const holdingReceipts: SignedReceipt[] = [];
   if (!stoppedReason && isV2 && mintContract) {
     try {
       holdingPlan = planHolding(deps, session.id, quantity, !!accountClaim, claimerEmail || undefined, mintContract);
     } catch (err) {
+      holdingPlanFailed = true;
       console.error(`[fulfilment] ${session.id}: no receipts for this sale (the sale stands): ${errMessage(err)}`);
     }
   }
@@ -1182,6 +1187,11 @@ export async function fulfilPaidSession(
   // Before the email, so a guest's link can name the box. Only a guest's link goes in
   // the email, and only to the purchase address the sale was made with.
   let holdingKeepUrl: string | undefined;
+  // Counted, never acted on: a ticket issued without the receipt it was owed.
+  let holdingMissed: string | null = holdingPlanFailed && claimedResults.length > 0 ? "the sale's receipt request could not be read" : null;
+  if (holdingPlan && holdingReceipts.length < claimedResults.length) {
+    holdingMissed = `${claimedResults.length - holdingReceipts.length} of ${claimedResults.length} receipts not signed`;
+  }
   if (holdingPlan && holdingReceipts.length > 0) {
     const plan = holdingPlan;
     try {
@@ -1215,8 +1225,17 @@ export async function fulfilPaidSession(
           : {}),
       });
       if (kept?.keepUrl && claimerEmail) holdingKeepUrl = kept.keepUrl;
+      if (!kept) holdingMissed = "receipts signed but not kept";
     } catch (err) {
+      holdingMissed = "receipts signed but not kept";
       console.error(`[fulfilment] ${session.id}: receipts not kept (the sale stands): ${errMessage(err)}`);
+    }
+  }
+  if (holdingMissed) {
+    try {
+      deps.noteHoldingMissed(session.id, holdingMissed);
+    } catch (err) {
+      console.error(`[fulfilment] ${session.id}: missed receipt not counted: ${errMessage(err)}`);
     }
   }
 

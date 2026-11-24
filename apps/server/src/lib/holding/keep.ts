@@ -20,10 +20,10 @@ import { holdingKeepFragment } from "@woco/shared/holding/pickup";
 import type { HoldingTarget, TicketHolding } from "@woco/shared/holding/receipt";
 import { HOLDING_RETENTION_MONTHS } from "@woco/shared/holding/request";
 import { orderRefOf, storeAttendeePayload } from "../attendee-batch/writer.js";
-import { isOrderErased } from "../attendee-batch/ledger.js";
+import { erasureStarted } from "../attendee-batch/order-gateway.js";
 import { errorClass } from "../http/error-class.js";
 import { APP_BASE } from "../../routes/tickets.js";
-import { markHoldingStored, recordHoldingIssued, unstoredHoldings } from "./store.js";
+import { getHolding, markHoldingStored, recordHoldingIssued, setHoldingBoxStoring, unstoredHoldings } from "./store.js";
 
 export interface SignedReceipt {
   holding: TicketHolding;
@@ -84,6 +84,7 @@ function boxOf(input: KeepHoldingInput): HoldingBoxV1 {
 
 async function storeBox(sessionId: string, box: SealedBoxV2, meta: { eventId: string; seriesId: string; emailHash?: string }, boxRoot: string, deps: KeepHoldingDeps): Promise<boolean> {
   storing.add(sessionId);
+  setHoldingBoxStoring(boxRoot, true);
   try {
     const json = JSON.stringify(box);
     // Before any upload: a box that does not hash to the root its record (and a guest's
@@ -100,6 +101,7 @@ async function storeBox(sessionId: string, box: SealedBoxV2, meta: { eventId: st
     return markHoldingStored(sessionId, deps.now());
   } finally {
     storing.delete(sessionId);
+    setHoldingBoxStoring(boxRoot, false);
   }
 }
 
@@ -177,7 +179,9 @@ export async function keepHoldingReceipts(
 /**
  * Store boxes whose first upload failed. Run on an interval; never throws. One pass at
  * a time (a long bee outage must not stack a pass a minute), never a box already being
- * stored, and never one the attendee batch has erased (the sweep drops those).
+ * stored, and never one whose erasure has started (the sweep drops those). Each box is
+ * read again just before its store: an erasure may have reached it while the previous
+ * one uploaded.
  */
 export async function retryUnstoredHoldings(limit = 20, deps: KeepHoldingDeps = liveDeps): Promise<{ stored: number; failed: number }> {
   let stored = 0;
@@ -185,10 +189,12 @@ export async function retryUnstoredHoldings(limit = 20, deps: KeepHoldingDeps = 
   if (retrying) return { stored, failed };
   retrying = true;
   try {
-    const due = unstoredHoldings().filter((r) => !storing.has(r.sessionId) && !isOrderErased(r.issued!.boxRoot));
-    for (const r of due.slice(0, limit)) {
+    const due = unstoredHoldings().filter((r) => !storing.has(r.sessionId) && !erasureStarted(r.issued!.boxRoot));
+    for (const listed of due.slice(0, limit)) {
+      const r = getHolding(listed.sessionId);
+      if (!r?.issued?.box || r.issued.storedAt || r.erasedAt || storing.has(r.sessionId) || erasureStarted(r.issued.boxRoot)) continue;
       try {
-        if (await storeBox(r.sessionId, r.issued!.box!, { eventId: r.eventId, seriesId: r.seriesId, emailHash: r.issued!.emailHash }, r.issued!.boxRoot, deps)) stored++;
+        if (await storeBox(r.sessionId, r.issued.box, { eventId: r.eventId, seriesId: r.seriesId, emailHash: r.issued.emailHash }, r.issued.boxRoot, deps)) stored++;
         else failed++;
       } catch (err) {
         failed++;
