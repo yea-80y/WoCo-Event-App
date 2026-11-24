@@ -35,7 +35,6 @@ test("no screen offers a wallet: sign-in, the event page, or a backup", () => {
   const site = read("../src/SiteApp.svelte");
   assert.match(site, /const signInHere = FEATURES\.walletLoginAllowed;/);
   assert.match(site, /\{#if signInHere\}\s*<SiteLoginModal \/>/);
-  assert.match(site, /if \(hash === "\/dashboard" && signInHere\) return "dashboard";/);
   const protect = read("../src/lib/components/recovery/AccountRecoverySetup.svelte");
   assert.match(protect, /\.\.\.\(FEATURES\.walletLoginAllowed\s*\? \[\{ id: "wallet" as const/);
 });

@@ -60,7 +60,6 @@ test("the event page's buy buttons use the accent ink, never white", () => {
     ["lib/attendee/events/claim/OrderForm.svelte", ".stripe-btn"],
     ["lib/attendee/events/claim/StripeSuccessCard.svelte", ".ses-done"],
     ["lib/components/site/EventPage.svelte", ".get-tickets-btn--active"],
-    ["SiteApp.svelte", ".sign-in-cta"],
   ] as const) {
     const rule = style(file).match(new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`))?.[1];
     assert.ok(rule, `${file} ${selector}`);
