@@ -1016,7 +1016,7 @@ async function resolveCreatorFeedSigner(eventId: string): Promise<string | null>
  * claim/payment path, so `signerHint` MUST be a TRUSTED, server-resolved carrier
  * (the global directory, or a server-written `SiteEventsIndex` entry) — NEVER a
  * signer supplied in a client request. A client-supplied address must go through
- * {@link getEventForDisplay} instead, which never writes the cache. Passing an
+ * {@link getEventForDisplayMemo} instead, which never writes this cache. Passing an
  * untrusted hint here would let an attacker sign a fake event SOC under their own
  * key, prime this cache via the hint, and have a no-hint claim read serve the
  * forged price/recipient.
@@ -1031,7 +1031,9 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
  * {@link getEvent}, and whether its answer came from a clean read. `cacheable:
  * false` means the SOC's version scan could not ask every question: the feed is
  * served but was NOT cached, and a caller must not prime the cache with anything
- * built on it either (#657).
+ * built on it either (#657). `settled: false` adds the answers that leaned on a
+ * fallback - the organiser's keys unreadable, or their feed unreadable so the
+ * platform feed answered - for a display memo that must not keep them.
  */
 async function getEventRead(
   eventId: string,
@@ -1043,7 +1045,7 @@ async function getEventRead(
    * server authored itself is used, and the SOC read skips the version cache.
    */
   opts: { fresh?: boolean } = {},
-): Promise<{ feed: EventFeed | null; cacheable: boolean }> {
+): Promise<{ feed: EventFeed | null; cacheable: boolean; settled: boolean }> {
   const now = Date.now();
   const cached = _eventCache.get(eventId);
   const keys = await eventKeys(eventId);
@@ -1053,12 +1055,16 @@ async function getEventRead(
   // receipt when the signed feed lacks it (client SOC not re-signed). Applied on the
   // cache hit too so a feed cached BEFORE registration still flips to v2.
   if (cached && sameKeys && cached.expiresAt > now && (!opts.fresh || cached.authored)) {
-    return { feed: await applyOnChainEventIds(withAuthoritativeOrderKey(eventId, cached.feed, keys)), cacheable: true };
+    return {
+      feed: await applyOnChainEventIds(withAuthoritativeOrderKey(eventId, cached.feed, keys)),
+      cacheable: true,
+      settled: keys.kind !== "unavailable",
+    };
   }
   // Not the platform feed either: a Phase B event has none, and its keys are unknown.
   if (keys.kind === "unavailable") {
     console.warn(`[event] ${eventId}: organiser keys unreadable (${keys.reason}) - not served`);
-    return { feed: null, cacheable: false };
+    return { feed: null, cacheable: false, settled: false };
   }
 
   // Phase B: if the event has a known content-feed signer (hint or directory
@@ -1067,6 +1073,7 @@ async function getEventRead(
   const signer = signerHint ?? (await resolveCreatorFeedSigner(eventId)) ?? undefined;
   let feed: EventFeed | null = null;
   let cacheable = true;
+  let socUnavailable = false;
   if (signer) {
     const soc = await readEventFeedSocResult(eventId, signer, { fresh: opts.fresh });
     if (soc.status === "found") {
@@ -1077,7 +1084,7 @@ async function getEventRead(
       // sale for the length of an Etherna outage - but not to keep for the
       // cache's ten minutes.
       cacheable = soc.scanClean;
-    }
+    } else if (soc.status === "unavailable") socUnavailable = true;
   }
   if (!feed) {
     const page = await readFeedPageWithRetry(topicEvent(eventId));
@@ -1087,7 +1094,7 @@ async function getEventRead(
   // feed's creator is who gets paid, and the organiser signs the feed.
   feed = acceptEventFeed(eventId, feed);
   // Tombstoned (deleted) events read as not-found on every path — money included.
-  if (feed?.deleted) return { feed: null, cacheable };
+  if (feed?.deleted) return { feed: null, cacheable, settled: cacheable && !socUnavailable };
   if (feed) {
     if (cacheable) {
       _eventCache.set(eventId, {
@@ -1103,13 +1110,14 @@ async function getEventRead(
       console.log(`[event] Read series "${s.name}" payment:`, s.payment ? JSON.stringify(s.payment) : "FREE");
     }
   }
-  return { feed, cacheable };
+  return { feed, cacheable, settled: cacheable && !socUnavailable };
 }
 
 /** Max time to wait for the (slow, cold) global-directory carrier lookup before
  *  falling back to the client hint. Bounds latency for unlisted/cold reads while
  *  keeping the trusted carrier authoritative whenever the directory is responsive. */
 const TRUSTED_CARRIER_TIMEOUT_MS = 4000;
+const CARRIER_TIMED_OUT = Symbol("carrier timed out");
 
 /**
  * Display-only event read that MAY use an UNTRUSTED, client-supplied signer.
@@ -1124,22 +1132,11 @@ const TRUSTED_CARRIER_TIMEOUT_MS = 4000;
  * so a forged hint can never reach the money path — every money read uses the
  * trusted {@link getEvent}, never this. Its own display memo is keyed by the hint
  * ({@link getEventForDisplayMemo}).
- */
-export async function getEventForDisplay(
-  eventId: string,
-  untrustedSigner?: string,
-): Promise<EventFeed | null> {
-  return (await readEventForDisplay(eventId, untrustedSigner)).event;
-}
-
-const CARRIER_TIMED_OUT = Symbol("carrier timed out");
-
-/**
- * {@link getEventForDisplay} saying whether the answer leaned on a fallback
- * (`degraded`): the hint used because the trusted carrier lookup timed out or threw,
- * or the directory read because the organiser's keys could not be read. A degraded
- * answer is shown, never memoized: it is what the read could do this time, not what
- * the event is.
+ *
+ * `degraded`: the answer leaned on a fallback - the hint used because the trusted
+ * carrier lookup timed out or threw, a version scan that could not ask everywhere,
+ * or the organiser's keys or feed unreadable. A degraded answer is shown, never
+ * memoized: it is what the read could do this time, not what the event is.
  */
 async function readEventForDisplay(
   eventId: string,
@@ -1162,10 +1159,11 @@ async function readEventForDisplay(
     // creator check too, so the page and the checkout give one answer (#670).
     const res = await readEventFeedSocResult(eventId, trustedCarrier ?? untrustedSigner);
     const soc = acceptEventFeed(eventId, res.status === "found" ? res.feed : null);
-    if (soc) return { event: soc.deleted ? null : soc, degraded: carrierFailed };
-    if (res.status === "unavailable") return { event: await getEvent(eventId), degraded: true };
+    if (soc) return { event: soc.deleted ? null : soc, degraded: carrierFailed || (res.status === "found" && !res.scanClean) };
+    if (res.status === "unavailable") return { event: (await getEventRead(eventId)).feed, degraded: true };
   }
-  return { event: await getEvent(eventId), degraded: false };
+  const read = await getEventRead(eventId);
+  return { event: read.feed, degraded: !read.settled };
 }
 
 // The public event page reads this on every visit, and its two inputs (the key ring
@@ -1173,7 +1171,9 @@ async function readEventForDisplay(
 // few times an hour paid a chain read and a feed scan each time: 2-3 s before its title
 // showed (measured 2026-11-24). Display only - the money path never reads it.
 // Keyed by event AND the caller's signer hint: a hint is client input, and a key of the
-// event alone would let one caller's hint decide what every visitor sees.
+// event alone would let one caller's hint decide what every visitor sees. An event with a
+// signer recorded at create is read under that record whatever the hint says, so its hinted
+// callers share one key - cycling hints cannot push real pages out of the memo.
 // A found event is answered for 30 s, then answered stale for up to an hour while one
 // read refreshes it behind; "not found" for 5 s and never stale (a new event would hide).
 // invalidateEventCache clears every key of an event, so a server-side edit shows at once.
@@ -1191,6 +1191,8 @@ const eventDisplayMemo = createDisplayReadMemo<EventFeed | null>({
   maxKeys: 2048,
 });
 
+// invalidateWhere detaches every read in flight too, including the one whose ring read
+// found the new generation: that answer is not memoized, one extra cold read per generation.
 onKeyRingGeneration((account) =>
   eventDisplayMemo.invalidateWhere((event) => event?.creatorAddress?.toLowerCase() === account),
 );
@@ -1198,13 +1200,19 @@ onKeyRingGeneration((account) =>
 const eventDisplayKeyPrefix = (eventId: string) => `${eventId}|`;
 
 /**
- * {@link getEventForDisplay} through the display memo. `error` = the read threw (the
- * route's 500); null = not found (404), as from the uncached read.
+ * The public event read ({@link readEventForDisplay}) through the display memo.
+ * `error` = the read threw (the route's 500); null = not found (404).
  */
 export async function getEventForDisplayMemo(eventId: string, untrustedSigner?: string): Promise<DisplayRead<EventFeed | null>> {
-  return eventDisplayMemo.read(`${eventDisplayKeyPrefix(eventId)}${untrustedSigner ?? ""}`, async () => {
-    const r = await readEventForDisplay(eventId, untrustedSigner);
-    return r.degraded ? { status: "ok", data: r.event, keep: false } : { status: "ok", data: r.event };
+  const hintKey = untrustedSigner && getRecordedFeedSigner(eventId) ? "recorded" : (untrustedSigner ?? "");
+  return eventDisplayMemo.read(`${eventDisplayKeyPrefix(eventId)}${hintKey}`, async () => {
+    try {
+      const r = await readEventForDisplay(eventId, untrustedSigner);
+      return r.degraded ? { status: "ok", data: r.event, keep: false } : { status: "ok", data: r.event };
+    } catch (err) {
+      console.error(`[event] ${eventId}: display read failed:`, err);
+      return { status: "error" };
+    }
   });
 }
 
@@ -1287,7 +1295,7 @@ async function resolveOwnEventLocallyRead(
  * Read a client-signed event SOC by a signer the SERVER resolved and vouches for
  * (creator index, directory carrier, or a value it stamped into its own
  * HMAC-authenticated door-pass record). NEVER pass a signer taken from a client
- * request — that is {@link getEventForDisplay}'s job.
+ * request — that is {@link getEventForDisplayMemo}'s job.
  *
  * `applyOnChainEventIds` is not optional here: `/pack` and the dashboard branch
  * v2-vs-v1 on `series.onChainEventId`, which a raw SOC read does not carry when the
@@ -1352,6 +1360,9 @@ export function primeEventCache(eventId: string, feed: EventFeed): void {
     authored: true,
     ...(feed.creatorFeedSigner ? { signer: feed.creatorFeedSigner.toLowerCase() } : {}),
   });
+  // Create and chain-confirm come here, not through invalidateEventCache: a display entry
+  // from before them would lack the series' onChainEventId.
+  eventDisplayMemo.invalidatePrefix(eventDisplayKeyPrefix(eventId));
 }
 
 export async function listEvents(): Promise<EventDirectoryEntry[]> {

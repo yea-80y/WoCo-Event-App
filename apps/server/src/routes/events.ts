@@ -160,7 +160,7 @@ events.get("/:id", async (c) => {
     // Client-supplied signer ⇒ display-only read, never the money-path cache. Trusted
     // resolution (directory) still takes precedence. Memoized per (event, hint).
     const read = await getEventForDisplayMemo(eventId, validHint);
-    if (read.status === "error") throw new Error("event display read failed");
+    if (read.status === "error") return c.json({ ok: false, error: "Failed to get event" }, 500);
     const event = read.data;
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
     // #644: the server's record of a cancellation wins over the feed's field.

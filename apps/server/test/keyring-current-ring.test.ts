@@ -221,10 +221,10 @@ test("bytes that verify but are no ring are not fetched again; a ring not found 
 
 test("listeners hear each higher generation once, as it is first seen, and a throwing one stops nothing", async () => {
   const heard: string[] = [];
-  onKeyRingGeneration(() => {
+  const offThrowing = onKeyRingGeneration(() => {
     throw new Error("a listener that fails");
   });
-  onKeyRingGeneration((a) => heard.push(a));
+  const off = onKeyRingGeneration((a) => heard.push(a));
   const g1 = await ringFor(ACCOUNT, 1);
   const g2 = await ringFor(ACCOUNT, 2);
   anchor.set(ACCOUNT, `0x${g1.ref}`);
@@ -234,6 +234,12 @@ test("listeners hear each higher generation once, as it is first seen, and a thr
   anchor.set(ACCOUNT, `0x${g2.ref}`);
   assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "ring");
   assert.deepEqual(heard, [ACCOUNT, ACCOUNT], "a passkey removed: generation 2 is heard");
+  off();
+  offThrowing();
+  const g3 = await ringFor(ACCOUNT, 3);
+  anchor.set(ACCOUNT, `0x${g3.ref}`);
+  await currentRing(ACCOUNT, { fresh: true });
+  assert.equal(heard.length, 2, "an unsubscribed listener hears nothing more");
 });
 
 test("the highest generation seen survives a restart: a lagging read after it is not taken", async () => {

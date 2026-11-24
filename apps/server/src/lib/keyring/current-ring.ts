@@ -131,10 +131,13 @@ const generationListeners = new Set<(account: string) => void>();
  * `fn(account)` each time this server first sees a higher key-ring generation for an
  * account (its first sighting too): for anything held under the account's older keys
  * that must go at once, such as the event display memo. It decides nothing here, and
- * a listener that throws is ignored.
+ * a listener that throws is ignored. Returns the unsubscribe.
  */
-export function onKeyRingGeneration(fn: (account: string) => void): void {
+export function onKeyRingGeneration(fn: (account: string) => void): () => void {
   generationListeners.add(fn);
+  return () => {
+    generationListeners.delete(fn);
+  };
 }
 /** Behind for longer than this is no lagging replica: an alarm. */
 const BEHIND_ALARM_MS = 10 * 60_000;
