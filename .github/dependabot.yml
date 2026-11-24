@@ -33,6 +33,11 @@ updates:
       # newer types offer APIs the runtime lacks. Move the major with the runtime.
       - dependency-name: "@types/node"
         update-types: [version-update:semver-major]
+      # TypeScript 7 (the native compiler): svelte-check runs it only beside TS 6 with an
+      # experimental --tsgo flag, and shared/embed/seatmap fail to type-check on it
+      # (measured 2026-11-24, #1028). 7.x only - remove when svelte-check supports it.
+      - dependency-name: typescript
+        versions: ["7.x"]
 
   # The Docker base image. This is the watcher that would have caught
   # node:20-alpine going end-of-life on 2026-04-30.
