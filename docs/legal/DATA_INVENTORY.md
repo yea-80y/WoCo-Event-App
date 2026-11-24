@@ -169,9 +169,10 @@ portability envelope is written.
 Private ticket receipts opened from a ticket email's Keep link (`woco:holding:device:*`, behind
 `FEATURES.holdingReceiptsAllowed`): the order's secret from the link, and once shown the checked
 receipts and the event's name, under the device key, for anyone using that browser (a guest has no
-account). Deleted when someone signs out on that browser; the browser's notes of where the account's
-saved receipt copies are (`woco:cfv:*:woco/holding/v1/*`) go at every sign-out, an expired session's
-included. The secret leaves the address bar as the page opens.
+account). All deleted at every sign-out on that browser, the person's or a forced one (a revoked
+session, a removed device); those already saved to an account, and any that no longer open, also go
+when an expired session is cleared - together with the browser's notes of where the account's saved
+receipt copies are (`woco:cfv:*:woco/holding/v1/*`). The secret leaves the address bar as the page opens.
 
 ### 3.3 IP addresses
 

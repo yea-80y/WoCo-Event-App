@@ -124,6 +124,39 @@ test("a sign-out sweep waits for a step already queued, and a step queued after 
   assert.deepEqual(await device.listDeviceReceipts(), []);
 });
 
+test("a session clear (boot or forced): saved and unopenable entries go, an unsaved link stays (Fable 3b delta)", async () => {
+  await device.forgetAllDeviceReceipts();
+  const unsaved = secret(21);
+  const saved = secret(22);
+  const odd = secret(23);
+  await device.rememberKeepLink(unsaved, ROOT);
+  await device.rememberKeepLink(saved, ROOT);
+  await device.markDeviceReceiptSaved(bytesToHex(saved), ACCOUNT);
+  // An entry this device can no longer open (another device key, a damaged blob).
+  await putKV(keyOf(odd), { iv: "00".repeat(12), ct: "00".repeat(40) });
+  await device.forgetSavedDeviceReceipts();
+  assert.deepEqual((await device.listDeviceReceipts()).map((e) => e.pickupId), [holdingPickupId(unsaved)]);
+  assert.equal(await getKV(keyOf(odd)), null, "the unopenable one is gone too");
+});
+
+test("a session clear never deletes an entry because storage failed to answer", async () => {
+  await device.forgetAllDeviceReceipts();
+  const r = secret(24);
+  await device.rememberKeepLink(r, ROOT);
+  // Listing answers; every single-entry read fails, as a busy or broken store might.
+  const proto = (globalThis as unknown as { IDBObjectStore: { prototype: { get: unknown } } }).IDBObjectStore.prototype;
+  const realGet = proto.get;
+  proto.get = () => {
+    throw new Error("storage busy");
+  };
+  try {
+    await device.forgetSavedDeviceReceipts();
+  } finally {
+    proto.get = realGet;
+  }
+  assert.ok(await device.readDeviceReceipt(holdingPickupId(r)), "untouched");
+});
+
 test("sign-out sweep: every entry goes, nothing else in the store", async () => {
   await device.rememberKeepLink(secret(38), ROOT);
   await putKV("woco:auth:last-way-in", "passkey");

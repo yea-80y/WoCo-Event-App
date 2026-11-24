@@ -110,19 +110,22 @@ test("sign-out: the receipt feed hints go, every other hint stays", () => {
   }
 });
 
-test("sign-out: every clear drops the receipt hints; only the PERSON's sign-out drops the device's receipts", () => {
+test("sign-out: every clear drops the hints and the SAVED device receipts; every sign-out drops them all", () => {
   const auth = read("lib/auth/auth-store.svelte.ts");
   const clear = auth.slice(auth.indexOf("async function clearAllAuth()"), auth.indexOf("// A pending empty-accounts logout"));
   assert.match(clear, /await step\("holding-hints", async \(\) => \{[\s\S]*?forgetVersionHintsUnder\(HOLDING_TOPIC_PREFIX\);/);
+  assert.match(clear, /await step\("holding-device-saved", async \(\) => \(await import\("\.\.\/holding\/device-store\.js"\)\)\.forgetSavedDeviceReceipts\(\)\);/);
   assert.ok(clear.indexOf('step("identity-keys"') < clear.indexOf('step("holding-hints"'), "after the identity keys, as every other sweep step");
-  // Fable 3b condition 2: the boot-time clear of a stale session and every forced sign-out
-  // run `clearAllAuth` too - a Keep link opened seconds earlier must survive them.
+  // Fable 3b condition 2: `clearAllAuth` also runs at boot for a stale session - a Keep
+  // link opened seconds earlier (not saved yet) must survive it.
   assert.doesNotMatch(clear, /forgetAllDeviceReceipts/);
+  // Every sign-out, forced ones included (each is a security decision): all of them go.
   const logout = auth.slice(auth.indexOf("async function logout("), auth.indexOf("async function clearAllAuth()"));
   assert.match(
     logout,
-    /await clearAllAuth\(\);[\s\S]*?if \(!opts\.force\) \{\s*try \{\s*await \(await import\("\.\.\/holding\/device-store\.js"\)\)\.forgetAllDeviceReceipts\(\);/,
+    /await clearAllAuth\(\);[\s\S]*?\n  try \{\s*await \(await import\("\.\.\/holding\/device-store\.js"\)\)\.forgetAllDeviceReceipts\(\);/,
   );
+  assert.doesNotMatch(logout.slice(logout.indexOf("await clearAllAuth();")), /opts\.force/, "not gated on who asked");
   assert.equal(auth.match(/forgetAllDeviceReceipts/g)!.length, 1, "nowhere else");
 });
 

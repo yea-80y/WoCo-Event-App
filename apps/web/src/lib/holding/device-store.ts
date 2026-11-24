@@ -8,16 +8,18 @@
  * server's copy expiring loses nothing for a guest who has not signed up).
  *
  * The rules:
- * - Nothing here ever drops a secret on an error. An entry goes only when someone signs
- *   out on this device by their own choice (`logout`, not a forced or boot-time clear).
+ * - Nothing here ever drops a secret on an error. Entries go only with a session:
+ *   every sign-out (the person's, or a forced one - a revoked session, a removed
+ *   device) deletes them all (`forgetAllDeviceReceipts`); every other clear of a
+ *   session, the boot-time clear of a stale one included, deletes those already saved
+ *   in an account and any that no longer open (`forgetSavedDeviceReceipts`), so a link
+ *   opened seconds before it survives.
  * - Only a Keep link makes an entry; later steps update it or do nothing.
  * - A field once known is never written over with nothing (two tabs, a stale read).
  * - Local only: no network, ever. The Keep page's load uses only this file.
  *
- * Not account data: one device, any person. The person's sign-out deletes every entry
- * (`forgetAllDeviceReceipts`), so a shared device keeps no receipt once someone signs
- * out; one saved to an account is in that account, and our copy of one not saved is
- * still there for the email link.
+ * Not account data: one device, any person. One saved to an account is in that
+ * account, and our copy of one not saved is still there for the email link.
  */
 import type { HoldingBoxV1 } from "@woco/shared/holding/box";
 import { StorageKeys } from "@woco/shared";
@@ -169,9 +171,30 @@ export async function markDeviceReceiptErased(rHex: string, now = Date.now()): P
   return update(rHex, { serverErased: true }, now, false);
 }
 
-/** The person's own sign-out: every receipt kept on this device goes. */
+/** A sign-out, the person's or a forced one: every receipt kept on this device goes. */
 export async function forgetAllDeviceReceipts(): Promise<void> {
   await queued(async () => {
     for (const k of await listKeys(PREFIX)) await delKV(k);
+  });
+}
+
+/**
+ * Every clear of a session, the boot-time clear of a stale one included: the receipts
+ * already saved in an account (redundant here, and the next person on this browser could
+ * otherwise save them into theirs) and any entry that no longer opens. A link opened
+ * seconds earlier is not saved yet, so it stays (Fable 3b delta).
+ */
+export async function forgetSavedDeviceReceipts(): Promise<void> {
+  await queued(async () => {
+    for (const k of await listKeys(PREFIX)) {
+      let got: DeviceReceipt | null;
+      try {
+        got = await readDeviceReceipt(k.slice(PREFIX.length));
+      } catch {
+        // Storage failed to answer: that says nothing about the entry, which stays.
+        continue;
+      }
+      if (!got || got.savedTo) await delKV(k);
+    }
   });
 }
