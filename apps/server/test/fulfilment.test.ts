@@ -1697,6 +1697,13 @@ describe("ticket receipts", () => {
     }
   });
 
+  test("a sale stopped before the mint: no secret made, nothing asked", async () => {
+    const { f, outcome } = await run({}, { sale, holding: ON, cancellation: "cancelled" });
+    assert.equal(outcome.issued, 0);
+    for (const step of RECEIPT_STEPS) assert.ok(!f.calls.includes(step), step);
+    assert.equal(f.secrets.length, 0);
+  });
+
   test("no request and no email: no receipt, the sale untouched", async () => {
     const { f, outcome } = await run({ wallet: BUYER_WALLET, email: null }, { sale, holding: ON });
     assert.equal(outcome.issued, 2);
