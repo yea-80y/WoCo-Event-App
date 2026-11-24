@@ -30,6 +30,27 @@ test("without a hint the order is what it was", () => {
   assert.deepEqual(imageUrlCandidates(H, WOCO), [`${WOCO}/bytes/${H}`, `${ETHERNA}/bytes/${H}`]);
 });
 
+function onPublishedPage<T>(siteConfig: Record<string, unknown>, fn: () => T): T {
+  const g = globalThis as { window?: unknown };
+  const before = g.window;
+  g.window = { SITE_CONFIG: siteConfig };
+  try {
+    return fn();
+  } finally {
+    g.window = before;
+  }
+}
+
+test("a published page tries its own content gateway first, then where the image is stored", () => {
+  const list = onPublishedPage({ contentGatewayUrl: WOCO, gatewayUrl: ETHERNA }, () => imageUrlCandidates(H, WOCO, ETHERNA));
+  assert.deepEqual(list, [`${WOCO}/bytes/${H}`, `${ETHERNA}/bytes/${H}`]);
+});
+
+test("a published page's content gateway goes first only when it is a known gateway", () => {
+  const list = onPublishedPage({ contentGatewayUrl: "https://evil.example", gatewayUrl: ETHERNA }, () => imageUrlCandidates(H, WOCO, ETHERNA));
+  assert.equal(list[0], `${ETHERNA}/bytes/${H}`);
+});
+
 function src(rel: string): string {
   return readFileSync(new URL(rel, import.meta.url), "utf-8");
 }
