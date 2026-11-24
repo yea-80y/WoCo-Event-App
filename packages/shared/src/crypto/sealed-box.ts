@@ -166,6 +166,18 @@ export function holdingCopySealContext(pickupId: string): SealContext {
   return holdingContext(HOLDING_COPY_SEAL_INFO, pickupId);
 }
 
+/**
+ * The buyer's list of their own receipt copies (`holding/copy.ts`), sealed to their
+ * account's order key and bound to the topic it is stored under, so a list lifted to
+ * another account or generation fails its tag. FROZEN.
+ */
+export const HOLDING_INDEX_SEAL_INFO = "woco/holding/v1/index";
+
+export function holdingIndexSealContext(indexTopic: string): SealContext {
+  if (!/^woco\/holding\/v1\/[0-9a-f]{64}$/.test(indexTopic)) throw new Error("holding index seal context: malformed topic");
+  return { info: HOLDING_INDEX_SEAL_INFO, aad: `${HOLDING_INDEX_SEAL_INFO}:${indexTopic}` };
+}
+
 const suite = new CipherSuite({ kem: new XWingKem(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
 
 function toBytes(key: Uint8Array | string): Uint8Array {

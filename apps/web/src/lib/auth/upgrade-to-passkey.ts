@@ -22,7 +22,8 @@
  * Phases, resumable from a device marker that holds no secret:
  *   prepare  - reads; the passkey ceremony; backups removed; the passkey's binding,
  *              locked seed and envelope (read back); profile and referral copied to
- *              the new feed; the marker; likes and follows retracted.
+ *              the new feed, saved ticket receipts re-sealed under the new seed (read
+ *              back); the marker; likes and follows retracted.
  *   switch   - the op (the store). A refusal changes nothing past `prepare`: the
  *              same passkey retries it, or `cancelUpgrade` puts it all back.
  *   finalize - the email key's traces leave the device; the marker says "committed".
@@ -33,6 +34,7 @@
  */
 
 import { bytesToHex0x, deriveFeedSignerKey, type Hex0x, type PasskeyAccountKeys } from "@woco/shared";
+import type { HoldingGenKeys, SavedHoldingCopies } from "../holding/account-copy.js";
 import type { PasskeyCredentialHandle } from "./passkey-account.js";
 import type { PortabilitySecrets } from "./recovery-portability.js";
 import type { MarkerStore, UpgradeMarker } from "./upgrade-marker.js";
@@ -64,6 +66,7 @@ export const ENVELOPE_FAILED_MESSAGE =
 export const BACKUPS_FAILED_MESSAGE =
   "Couldn't remove this account's backups just now - your account hasn't changed. Try again.";
 export const COPY_FAILED_MESSAGE = "Couldn't copy your profile to the new passkey - nothing was changed. Try again.";
+export const RECEIPTS_FAILED_MESSAGE = "Couldn't copy your saved ticket receipts to the new passkey - nothing was changed. Try again.";
 export const RETRACT_FAILED_MESSAGE = "Couldn't move your likes and follows yet - your account hasn't changed. Try again.";
 export const SWITCH_FAILED_MESSAGE = "The upgrade didn't go through - your account hasn't changed. Try again in a moment.";
 
@@ -155,6 +158,14 @@ export interface PrepareDeps {
   readEnvelope(portability: PortabilitySecrets): Promise<{ parent: string; seed: string } | null>;
   writeProfile(signer: FeedKey, copy: ProfileCopy): Promise<void>;
   writeReferral(signer: FeedKey, referrer: Hex0x): Promise<void>;
+  /**
+   * The ticket receipts the account saved under the OLD seed (spec-receipt-note 5.1): null
+   * when none, "unavailable" when any could not be read. Once the switch lands the old
+   * seed leaves the device, so a receipt left behind it could never be opened again.
+   */
+  readReceipts(oldSeed: string): Promise<SavedHoldingCopies | null | "unavailable">;
+  /** Save them under the new seed's keys - handed the keys, never the seed - read back; throws otherwise. */
+  writeReceipts(to: HoldingGenKeys, saved: SavedHoldingCopies): Promise<void>;
 }
 
 /**
@@ -181,13 +192,17 @@ export async function prepareUpgrade(
   const oldSeed = await d.oldSeed();
   if (!oldSeed) throw new Error(READ_FAILED_MESSAGE);
   const oldFeed = deriveFeedSignerKey(oldSeed).address.toLowerCase();
-  const [likes, follows, referrer, profile] = await Promise.all([
+  const [likes, follows, referrer, profile, receipts] = await Promise.all([
     d.social.readLive(oldFeed, "like"),
     d.social.readLive(oldFeed, "follow"),
     d.readReferrer(oldFeed),
     d.readProfile(oldFeed),
+    d.readReceipts(oldSeed),
   ]);
-  if (likes === "unavailable" || follows === "unavailable" || referrer === "unavailable" || profile === "unavailable") {
+  if (
+    likes === "unavailable" || follows === "unavailable" || referrer === "unavailable" || profile === "unavailable" ||
+    receipts === "unavailable"
+  ) {
     throw new Error(READ_FAILED_MESSAGE);
   }
 
@@ -238,6 +253,15 @@ export async function prepareUpgrade(
     if (referrer) await d.writeReferral(newFeed, referrer);
   } catch (e) {
     await undo(COPY_FAILED_MESSAGE, e);
+  }
+  if (receipts && receipts.length > 0) {
+    progress("Copying your ticket receipts…");
+    try {
+      const { holdingGenKeysOf } = await import("../holding/account-copy.js");
+      await d.writeReceipts(await holdingGenKeysOf(seed), receipts);
+    } catch (e) {
+      await undo(RECEIPTS_FAILED_MESSAGE, e);
+    }
   }
 
   const marker: UpgradeMarker = {

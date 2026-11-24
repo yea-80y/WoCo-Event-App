@@ -37,10 +37,11 @@ test("each family is stamped where the table says - a move is a deliberate diff 
   const onEtherna = Object.entries(FEED_ROUTES).filter(([, r]) => r.target === "etherna").map(([k]) => k).sort();
   // Profiles have been Etherna since #617; event and site reads ask Etherna
   // because new ones are stamped there; the manifest, social, the referee's
-  // referral statement and the three recovery rows moved in #689.
+  // referral statement and the three recovery rows moved in #689. Ticket-receipt
+  // copies (`holding`) start there: user content stays on Etherna.
   // Everything else has not moved yet.
   assert.deepEqual(onEtherna, [
-    "event", "guardianIndex", "manifest", "privacyNotice", "profile", "recoveryEnvelope", "recoveryPortability",
+    "event", "guardianIndex", "holding", "manifest", "privacyNotice", "profile", "recoveryEnvelope", "recoveryPortability",
     "referral", "site", "social",
   ]);
   for (const [family, route] of Object.entries(FEED_ROUTES)) {

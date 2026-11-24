@@ -57,9 +57,28 @@ function isEnvelope(x: unknown): x is HoldingReceiptEnvelope {
   );
 }
 
+/** Exactly the known fields, in one order: whatever else an envelope carried is not kept. */
+function envelopeOf(e: HoldingReceiptEnvelope): HoldingReceiptEnvelope {
+  return {
+    eventId: e.eventId,
+    slot: e.slot,
+    holder: e.holder,
+    answerKey: e.answerKey,
+    nkCommit: e.nkCommit,
+    chainId: e.chainId,
+    ledger: e.ledger,
+    wocoEventId: e.wocoEventId,
+    seriesId: e.seriesId,
+    edition: e.edition,
+    sig: e.sig,
+  };
+}
+
 /**
- * A box, or null for anything else. Receipts of one order share chain, ledger, event and
- * nkCommit, and have distinct slots: a box that mixes orders is refused whole.
+ * A box, or null for anything else. Receipts of one order share chain, ledger, event,
+ * nkCommit and WoCo's event and series hints, and have distinct slots: a box that mixes
+ * orders is refused whole. Each envelope comes back REBUILT from its known fields, so
+ * nothing else a box carried reaches a buyer's copy.
  */
 export function parseHoldingBox(x: unknown): HoldingBoxV1 | null {
   const b = x as Partial<HoldingBoxV1> | null;
@@ -70,8 +89,9 @@ export function parseHoldingBox(x: unknown): HoldingBoxV1 | null {
   const slots = new Set<number>();
   for (const e of b.receipts) {
     if (e.chainId !== first.chainId || e.ledger !== first.ledger || e.eventId !== first.eventId || e.nkCommit !== first.nkCommit) return null;
+    if (e.wocoEventId !== first.wocoEventId || e.seriesId !== first.seriesId) return null;
     if (slots.has(e.slot)) return null;
     slots.add(e.slot);
   }
-  return { v: 1, receipts: b.receipts };
+  return { v: 1, receipts: b.receipts.map(envelopeOf) };
 }

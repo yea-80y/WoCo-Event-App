@@ -4,7 +4,7 @@
  * everything else is the app's existing rails, each loaded when the step needs it.
  */
 
-import { profileAvatarContentTopic, profileDataContentTopic } from "@woco/shared";
+import { FEATURES, profileAvatarContentTopic, profileDataContentTopic } from "@woco/shared";
 import { NO_SESSION_MESSAGE, type FeedKey, type PrepareDeps, type ProfileCopy, type SocialDeps, type UpgradeIO, type UpgradeStoreHost } from "./upgrade-to-passkey.js";
 import { localMarkerStore } from "./upgrade-marker.js";
 
@@ -158,6 +158,27 @@ export async function liveUpgradeDeps(
       const { writeReferralStatement } = await import("../campaign/records.js");
       const written = await writeReferralStatement(signer, referrer);
       if (written.status === "superseded") throw new Error("referral statement superseded");
+    },
+
+    readReceipts: async (oldSeed) => {
+      // Dark until receipts are switched on: none can exist before.
+      if (!FEATURES.holdingReceiptsAllowed) return null;
+      const [{ holdingGenKeysOf, readAllHoldingCopies }, { liveHoldingFeedIO }] = await Promise.all([
+        import("../holding/account-copy.js"),
+        import("../holding/holding-io.js"),
+      ]);
+      // An email or Google account has no key ring: its seed is its one generation.
+      const { copies, complete } = await readAllHoldingCopies([await holdingGenKeysOf(oldSeed)], liveHoldingFeedIO);
+      if (!complete) return "unavailable";
+      return copies.length > 0 ? copies : null;
+    },
+
+    writeReceipts: async (to, saved) => {
+      const [{ writeHoldingCopies }, { liveHoldingFeedIO }] = await Promise.all([
+        import("../holding/account-copy.js"),
+        import("../holding/holding-io.js"),
+      ]);
+      await writeHoldingCopies(to, saved, liveHoldingFeedIO);
     },
   };
 }

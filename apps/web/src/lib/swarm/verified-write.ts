@@ -322,7 +322,8 @@ export async function writeAtNextVersion<T, R = unknown>(args: {
   /** For the base read - see `readContentFeedResult`. */
   skipLegacy?: boolean;
   base?: ContentFeedWriteBase<R> | null;
-  build: (read: ContentFeedResult<R>) => T;
+  /** May be async: a sealed document is opened and sealed again per attempt. */
+  build: (read: ContentFeedResult<R>) => T | Promise<T>;
   inconclusive: string;
   /** Test seam - production always posts to our server. */
   transport?: SocTransport;
@@ -348,7 +349,7 @@ export async function writeAtNextVersion<T, R = unknown>(args: {
     }
     if (base.nextVersion === null) throw new InconclusiveReadError(args.inconclusive);
 
-    const data = args.build(base.read);
+    const data = await args.build(base.read);
     const written = await writeContentFeedVerified({
       signerPrivKey: args.signerPrivKey,
       ownerAddress: args.ownerAddress,

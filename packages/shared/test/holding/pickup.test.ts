@@ -132,7 +132,27 @@ test("box: a well-formed order is accepted, a mixed or malformed one refused who
     { v: 1, receipts: [{ ...env, sig: G.receiptSig.slice(0, -2) }] },
     { v: 1, receipts: [{ ...env, wocoEventId: "Event:1" }] },
     { v: 1, receipts: [{ ...env, holder: "0x12" }] },
+    // The unsigned hints must agree across one order too.
+    { v: 1, receipts: [env, { ...second, wocoEventId: "event-2" }] },
+    { v: 1, receipts: [env, { ...second, seriesId: "series-2" }] },
   ]) {
     assert.equal(parseHoldingBox(bad), null);
   }
+});
+
+test("box: each receipt comes back with its known fields only", () => {
+  const env = {
+    ...HOLDING,
+    chainId: TARGET.chainId,
+    ledger: TARGET.ledger,
+    wocoEventId: "event-1",
+    seriesId: "series-1",
+    edition: SLOT + 1,
+    sig: G.receiptSig,
+  };
+  const parsed = parseHoldingBox({ v: 1, receipts: [{ ...env, note: "x".repeat(4000), extra: { a: 1 } }], more: true });
+  assert.ok(parsed);
+  assert.deepEqual(Object.keys(parsed).sort(), ["receipts", "v"]);
+  assert.deepEqual(Object.keys(parsed.receipts[0]!).sort(), Object.keys(env).sort());
+  assert.deepEqual(parsed.receipts[0], env);
 });

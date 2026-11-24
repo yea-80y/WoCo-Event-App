@@ -278,6 +278,7 @@ FEED TOPICS:
   woco/site/{siteId}/events               # SiteEventsIndex
   woco/site/creator/{ethAddress}          # Creator's site directory (page 0 + one overflow blob, #950)
   woco-multisite-{siteId}                 # Per-site feed → latest BZZ content hash (for ENS)
+  woco/holding/v1/{HMAC(salt_g, …)}       # Buyer's own receipt copies + list: own copy signer + salt from the CURRENT account secret (holding/copy.ts)
   woco/registry/verified-frontends        # [planned] content hash registry
 
 ============================================================================
