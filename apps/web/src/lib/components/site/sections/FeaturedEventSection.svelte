@@ -8,6 +8,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { cacheGet, cacheSet, cacheKey, TTL } from '../../../cache/cache.js';
   import { firstImageUrl, useNextImageUrl } from '../image-fallback.js';
+  import { imageHeadStart } from '../image-head-start.js';
   import { buildEventJsonLd, headlinePriceRange } from '@woco/shared';
   import { setJsonLd } from '../../../seo/head.js';
 
@@ -135,6 +136,7 @@
             src={img}
             alt={event.title}
             data-image-gateway-index="0"
+            use:imageHeadStart={{ imageHash: event.imageHash, preferredGateway: gatewayUrl, storedOn: event.gatewayUrl }}
             onerror={(e) => useNextImageUrl(e, event?.imageHash, gatewayUrl, event?.gatewayUrl)}
           />
           <div class="image-overlay" aria-hidden="true"></div>

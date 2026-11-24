@@ -10,6 +10,7 @@
   import { cacheGet, cacheSet, cacheKey, TTL } from '../../../cache/cache.js';
   import { headlinePriceRange } from '@woco/shared';
   import { firstImageUrl, useNextImageUrl } from '../image-fallback.js';
+  import { imageHeadStart } from '../image-head-start.js';
   import { buildEventJsonLd } from '@woco/shared';
   import { setJsonLd } from '../../../seo/head.js';
 
@@ -231,6 +232,7 @@
                   alt={ev.title}
                   loading="lazy"
                   data-image-gateway-index="0"
+                  use:imageHeadStart={{ imageHash: ev.imageHash, storedOn: ev.gatewayUrl }}
                   onerror={(e) => useNextImageUrl(e, ev.imageHash, undefined, ev.gatewayUrl)}
                 />
               {:else}
