@@ -14,7 +14,9 @@
   import { getEvent } from "../../api/events.js";
   import { getCheckoutStatus } from "../../api/stripe.js";
   import type { EventFeed } from "@woco/shared";
+  import { FEATURES } from "@woco/shared";
   import { cacheGet, cacheKey } from "../../cache/cache.js";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
 
   interface Props {
     eventId: string;
@@ -159,6 +161,12 @@
           : "Tap Add to WoCo in the email to keep it in your passport."}</li>
       {/if}
       <li><span class="bullet"></span>Show the QR code in the email at the door.</li>
+      <!-- Private receipts (spec-receipt-note 5.2): a guest's is made at fulfilment and
+           its Keep link goes in the ticket email. Never the secret here. A linked
+           checkout's comes to the account instead (slice 3c). -->
+      {#if FEATURES.holdingReceiptsAllowed && !_stash.linked}
+        <li><span class="bullet"></span>Your private receipt is in your ticket email.</li>
+      {/if}
     </ul>
 
     <!-- No "See my passport" button: the ticket reaches the passport only once
@@ -166,10 +174,16 @@
          moment the passport could still be missing it. Back-to-event only. -->
     <div class="actions">
       <button class="btn-primary" onclick={handleBackToEvent}>Back to event</button>
+      <!-- A guest checkout (what was SENT, not who is signed in now) is offered a profile to keep the receipt in. -->
+      {#if FEATURES.holdingReceiptsAllowed && !_stash.linked}
+        <button class="btn-secondary" onclick={() => void loginRequest.request()}>Create your free WoCo profile</button>
+      {/if}
     </div>
 
     <p class="foot">
-      A receipt has been sent by Stripe. Need help? Contact the organiser.
+      {FEATURES.holdingReceiptsAllowed
+        ? "Stripe has emailed you a payment receipt. Need help? Contact the organiser."
+        : "A receipt has been sent by Stripe. Need help? Contact the organiser."}
     </p>
   </div>
   {/if}
@@ -304,6 +318,19 @@
     border: 1px solid var(--accent);
   }
   .btn-primary:hover { background: var(--accent-hover); }
+  .btn-secondary {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    font-weight: 600;
+    font-size: 0.9375rem;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: border-color 0.15s;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover { border-color: var(--border-hover); }
   .foot {
     margin: 0.25rem 0 0;
     font-size: 0.6875rem;
