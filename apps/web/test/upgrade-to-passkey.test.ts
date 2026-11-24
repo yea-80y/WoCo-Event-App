@@ -37,6 +37,7 @@ import {
   ALREADY_LANDED_MESSAGE,
   NO_SESSION_MESSAGE,
   cancelUpgrade,
+  carriedDigest,
   commitUpgrade,
   finalizeUpgrade,
   runCancel,
@@ -131,6 +132,7 @@ function fakes(over: Partial<PrepareDeps> & { writeOk?: (signer: FeedKey, subjec
     writeProfile: async (signer, copy) => rec("writeProfile")(signer.address, copy),
     writeReferral: async (signer, referrer) => rec("writeReferral")(signer.address, referrer),
     readReceipts: async (seed) => (rec("readReceipts")(seed), SAVED_RECEIPTS),
+    readPending: async (seed) => (rec("readPending")(seed), []),
     writeReceipts: async (to, saved) => rec("writeReceipts")(to, saved),
     ...over,
   };
@@ -246,7 +248,8 @@ test("marker: it holds no secret - no seed, no PRF output, no private key", () =
 test("prepare: reads first, then the passkey, backups off, its hold, the copies, the marker - in that order", async () => {
   const f = fakes();
   const { marker, live } = await prepareUpgrade(f.deps);
-  const order = f.names().filter((n) => n !== "readLive" && n !== "readReferrer" && n !== "readProfile" && n !== "readReceipts");
+  const reads = ["readLive", "readReferrer", "readProfile", "readReceipts", "readPending"];
+  const order = f.names().filter((n) => !reads.includes(n));
   assert.deepEqual(order, [
     "hostsSomething",
     "backupsRemovable",
@@ -261,7 +264,7 @@ test("prepare: reads first, then the passkey, backups off, its hold, the copies,
     "writeReferral",
   ]);
   const mint = f.names().indexOf("mintPasskey");
-  for (const read of ["readLive", "readReferrer", "readProfile", "readReceipts"]) {
+  for (const read of reads) {
     assert.ok(f.names().lastIndexOf(read) < mint, `${read} before the passkey is made`);
   }
   assert.deepEqual(f.marker.map.get(PARENT), marker);
@@ -280,7 +283,7 @@ test("PQ1: the new seed is passkeyIdentitySeed(PRF) - and the email side never s
   assert.notEqual(NEW_SEED, OLD_SEED);
   // The email key's own steps - the backup removal it signs, the reads of its feed -
   // were handed nothing derived from the passkey.
-  for (const c of f.calls.filter((c) => ["removeBackups", "hostsSomething", "backupsRemovable", "oldSeed", "readLive", "readReferrer", "readProfile", "readReceipts"].includes(c.name))) {
+  for (const c of f.calls.filter((c) => ["removeBackups", "hostsSomething", "backupsRemovable", "oldSeed", "readLive", "readReferrer", "readProfile", "readReceipts", "readPending"].includes(c.name))) {
     const args = everyArg([c]);
     assert.ok(!args.includes(NEW_SEED) && !args.includes(KEK), `${c.name} saw the passkey's secret`);
   }
@@ -309,7 +312,7 @@ test("PQ4: the carry saves receipts with keys the NEW seed gives, never the seed
   assert.equal(writes.length, 1, "once per attempt");
   const [to, saved] = writes[0]!.args as [{ signer: { address: string } }, unknown];
   assert.equal(to.signer.address, holdingCopySigner(Buffer.from(NEW_SEED.slice(2), "hex")).address);
-  assert.equal(saved, SAVED_RECEIPTS);
+  assert.deepEqual(saved, SAVED_RECEIPTS);
   assert.ok(!everyArg(writes).includes(NEW_SEED.toLowerCase()), "handed the keys, not the seed");
 });
 
@@ -336,6 +339,8 @@ test("prepare: a read that cannot answer stops before any passkey is made", asyn
     { readReferrer: async () => "unavailable" },
     { readProfile: async () => "unavailable" },
     { readReceipts: async () => "unavailable" },
+    // An uncollected signed-in sale that cannot be read is as much a gate as a saved one.
+    { readPending: async () => "unavailable" },
   ];
   for (const over of cases) {
     const f = fakes(over);
@@ -752,14 +757,19 @@ test("run: a refused switch keeps the prepared state; the retry reuses the SAME 
 function receiptStore(over: Parameters<typeof store>[0] = {}) {
   const s = store(over);
   let saved: SavedHoldingCopies | null | "unavailable" = SAVED_RECEIPTS;
+  let pending: SavedHoldingCopies | "unavailable" = [];
   const written: unknown[] = [];
   s.f.deps.readReceipts = async () => saved;
+  s.f.deps.readPending = async () => pending;
   s.f.deps.writeReceipts = async (to, list) => {
     s.log.push("writeReceipts");
     written.push({ signer: to.signer.address, list });
   };
-  return { ...s, written, setSaved: (x: typeof saved) => (saved = x) };
+  return { ...s, written, setSaved: (x: typeof saved) => (saved = x), setPending: (x: typeof pending) => (pending = x) };
 }
+
+/** A signed-in sale the server still holds, sealed to the old seed: opened as the copy a save would write. */
+const PENDING_RECEIPT = { copy: { v: 1, r: "e6".repeat(32), box: { v: 1, receipts: [] } }, entry: { pickupId: "e7".repeat(32) } } as unknown as SavedHoldingCopies[number];
 
 const LATER_RECEIPT = { copy: { v: 1, r: "d4".repeat(32), box: { v: 1, receipts: [] } }, entry: { pickupId: "d5".repeat(32) } };
 
@@ -811,6 +821,83 @@ test("run: a tab that no longer holds the passkey refuses when there are receipt
   empty.f.marker.write(prepared({ passkey: OTHER }));
   await runUpgrade(empty.host, empty.io);
   assert.ok(empty.log.includes("adoptPasskey"));
+});
+
+// ── Signed-in sales not yet collected (spec-receipt-note 5.1, slice 3c PR 2) ──
+
+test("run: a signed-in sale not yet collected is carried with the saved receipts, each order once", async () => {
+  const s = receiptStore({ landed: () => false });
+  // One sale still on the server, and the saved one again (collected, our copy not yet erased).
+  s.setPending([PENDING_RECEIPT, ...(SAVED_RECEIPTS as unknown[])] as unknown as SavedHoldingCopies);
+  await runUpgrade(s.host, s.io);
+  assert.equal(s.written.length, 1);
+  const list = (s.written[0] as { list: SavedHoldingCopies }).list;
+  assert.deepEqual(list.map((c) => c.entry.pickupId), ["c5".repeat(32), "e7".repeat(32)], "the saved copy wins for an order in both");
+  assert.equal(list[0], SAVED_RECEIPTS[0], "carried from its saved copy");
+  assert.ok(s.log.indexOf("writeReceipts") < s.log.indexOf(`switch:${PASSKEY}`), "before the switch");
+});
+
+test("run: a sale not yet collected is something to carry - a tab without the passkey refuses; an unreadable one stops", async () => {
+  const OTHER = "0x4444444444444444444444444444444444444444";
+  const s = receiptStore({ landed: () => false });
+  s.setSaved(null);
+  s.setPending([PENDING_RECEIPT] as unknown as SavedHoldingCopies);
+  s.f.oldRetracted();
+  s.f.marker.write(prepared({ passkey: OTHER }));
+  await assert.rejects(runUpgrade(s.host, s.io), { message: RECEIPTS_NEED_RESTART_MESSAGE });
+  assert.ok(!s.log.includes("requestIntent") && !s.log.some((x) => x.startsWith("switch:")));
+
+  const unread = receiptStore({ landed: () => false });
+  unread.setPending("unavailable");
+  unread.f.oldRetracted();
+  unread.f.marker.write(prepared());
+  await assert.rejects(runUpgrade(unread.host, unread.io), { message: READ_FAILED_MESSAGE });
+  assert.ok(!unread.log.includes("requestIntent") && !unread.log.some((x) => x.startsWith("switch:")));
+});
+
+test("run: the marker keeps a digest of what was carried; a tab without the passkey finishes only while it still matches (Fable 3c PR 1)", async () => {
+  // The tab holding the passkey carries, then the switch is refused: the digest is in the marker.
+  const first = receiptStore({ landed: () => false, switchFails: () => true });
+  first.setPending([PENDING_RECEIPT] as unknown as SavedHoldingCopies);
+  await assert.rejects(runUpgrade(first.host, first.io), { message: SWITCH_FAILED_MESSAGE });
+  const both = [...(SAVED_RECEIPTS as unknown[]), PENDING_RECEIPT] as unknown as SavedHoldingCopies;
+  const digest = await carriedDigest(both);
+  assert.equal(first.f.marker.map.get(PARENT)?.carried, digest, "kept past the retraction");
+  assert.equal(await carriedDigest([...both].reverse()), digest, "order-free");
+  assert.doesNotMatch(digest, new RegExp("e6".repeat(32)), "no secret in it");
+
+  // Another tab, never holding the passkey: the same receipts - nothing more to carry.
+  const OTHER = "0x4444444444444444444444444444444444444444";
+  const same = receiptStore({ landed: () => false });
+  same.setPending([PENDING_RECEIPT] as unknown as SavedHoldingCopies);
+  same.f.oldRetracted();
+  same.f.marker.write(prepared({ passkey: OTHER, carried: digest }));
+  await runUpgrade(same.host, same.io);
+  assert.equal(same.written.length, 0, "nothing written without the passkey");
+  assert.ok(same.log.includes(`switch:${OTHER}`) && same.log.includes("adoptPasskey"));
+
+  // A receipt saved, or a sale made, since that carry: the digest moves, so it refuses.
+  for (const later of [{ saved: [...(SAVED_RECEIPTS as unknown[]), LATER_RECEIPT], pending: [PENDING_RECEIPT] }, { saved: SAVED_RECEIPTS, pending: [PENDING_RECEIPT, LATER_RECEIPT] }]) {
+    const moved = receiptStore({ landed: () => false });
+    moved.setSaved(later.saved as unknown as SavedHoldingCopies);
+    moved.setPending(later.pending as unknown as SavedHoldingCopies);
+    moved.f.oldRetracted();
+    moved.f.marker.write(prepared({ passkey: OTHER, carried: digest }));
+    await assert.rejects(runUpgrade(moved.host, moved.io), { message: RECEIPTS_NEED_RESTART_MESSAGE });
+    assert.ok(!moved.log.some((x) => x.startsWith("switch:")));
+  }
+
+  // A receipt that changed in place (a re-made box) moves it too.
+  const remade = { ...PENDING_RECEIPT, copy: { ...PENDING_RECEIPT.copy, box: { v: 1, receipts: [{ slot: 9 }] } } };
+  assert.notEqual(await carriedDigest([...(SAVED_RECEIPTS as unknown[]), remade] as unknown as SavedHoldingCopies), digest);
+});
+
+test("marker: a carried digest round-trips; one that is not 32 hex bytes reads as no marker", () => {
+  const m = prepared({ carried: "ab".repeat(32) });
+  assert.deepEqual(parseUpgradeMarker(JSON.stringify(m)), m);
+  for (const bad of ["AB".repeat(32), "ab".repeat(31), 7, ""]) {
+    assert.equal(parseUpgradeMarker(JSON.stringify({ ...m, carried: bad })), null, String(bad));
+  }
 });
 
 test("a chain that does not answer whether the switch landed: neither 'Press Undo' nor an Undo, nothing sent", async () => {

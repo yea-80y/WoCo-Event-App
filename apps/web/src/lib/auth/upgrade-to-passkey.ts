@@ -168,6 +168,13 @@ export interface PrepareDeps {
    * seed leaves the device, so a receipt left behind it could never be opened again.
    */
   readReceipts(oldSeed: string): Promise<SavedHoldingCopies | null | "unavailable">;
+  /**
+   * The account's signed-in sales whose receipts the server still holds, sealed to the
+   * OLD seed's key and not yet collected (spec-receipt-note 5.1): each opened and checked
+   * as the copy a save would write. "unavailable" when any could not be read. Once the
+   * old seed leaves the device nothing could open them, so they are carried with the rest.
+   */
+  readPending(oldSeed: string): Promise<SavedHoldingCopies | "unavailable">;
   /** Save them under the new seed's keys - handed the keys, never the seed - read back; throws otherwise. */
   writeReceipts(to: HoldingGenKeys, saved: SavedHoldingCopies): Promise<void>;
 }
@@ -200,16 +207,17 @@ export async function prepareUpgrade(
   // before any passkey is made. They are carried once, right before the switch
   // (`carryReceipts`): a second pass seconds after a first asks bee again for the version
   // the first just probed, which bee 2.8 stops answering for a minute (#943).
-  const [likes, follows, referrer, profile, receipts] = await Promise.all([
+  const [likes, follows, referrer, profile, receipts, pending] = await Promise.all([
     d.social.readLive(oldFeed, "like"),
     d.social.readLive(oldFeed, "follow"),
     d.readReferrer(oldFeed),
     d.readProfile(oldFeed),
     d.readReceipts(oldSeed),
+    d.readPending(oldSeed),
   ]);
   if (
     likes === "unavailable" || follows === "unavailable" || referrer === "unavailable" || profile === "unavailable" ||
-    receipts === "unavailable"
+    receipts === "unavailable" || pending === "unavailable"
   ) {
     throw new Error(READ_FAILED_MESSAGE);
   }
@@ -311,30 +319,67 @@ export async function retractOld(
  * copy already there is not written again. A failure lands after the marker, so "Try
  * again" reuses the same passkey.
  *
+ * "Receipts" includes the signed-in sales the server still holds, sealed to the old
+ * seed's key and not yet collected (`readPending`): saved under the new seed with the
+ * rest, but the server's copy is NOT erased here - an Undo then leaves the email account
+ * able to collect them as before. Once the passkey opens the account, its own collection
+ * finds them in the account and erases the server's copy (`holding/collect.ts`).
+ *
  * Only the passkey's seed can seal them. A tab that no longer holds it (closed or
- * reloaded since prepare) refuses when there is anything to carry: Undo, and a fresh
- * upgrade carries it all. Throws the words to show; nothing has changed past prepare.
+ * reloaded since prepare) can still finish when the tab that held it carried them and
+ * nothing has changed since: the marker keeps a digest of what was carried (`carried`,
+ * Fable 3c PR 1). Otherwise it refuses: Undo, and a fresh upgrade carries it all. Throws
+ * the words to show; nothing has changed past prepare. Returns the marker as it now is.
  */
 export async function carryReceipts(
-  d: Pick<PrepareDeps, "oldSeed" | "readReceipts" | "writeReceipts">,
+  d: Pick<PrepareDeps, "oldSeed" | "readReceipts" | "readPending" | "writeReceipts" | "marker">,
   marker: UpgradeMarker,
   live: LivePasskey | null,
   progress: (msg: string) => void = () => {},
-): Promise<void> {
+): Promise<UpgradeMarker> {
   const seed = await d.oldSeed();
   if (!seed || deriveFeedSignerKey(seed).address.toLowerCase() !== marker.oldFeedSigner) throw new Error(READ_FAILED_MESSAGE);
-  const receipts = await d.readReceipts(seed);
-  if (receipts === "unavailable") throw new Error(READ_FAILED_MESSAGE);
-  if (!receipts || receipts.length === 0) return;
-  if (!live || live.passkey !== marker.passkey) throw new Error(RECEIPTS_NEED_RESTART_MESSAGE);
+  const [receipts, pending] = await Promise.all([d.readReceipts(seed), d.readPending(seed)]);
+  if (receipts === "unavailable" || pending === "unavailable") throw new Error(READ_FAILED_MESSAGE);
+  const saved = receipts ?? [];
+  // A sale already saved under the old seed is carried from its copy, once.
+  const all = [...saved, ...pending.filter((p) => !saved.some((s) => s.entry.pickupId === p.entry.pickupId))];
+  if (all.length === 0) return marker;
+  const digest = await carriedDigest(all);
+  if (!live || live.passkey !== marker.passkey) {
+    if (marker.carried === digest) return marker;
+    throw new Error(RECEIPTS_NEED_RESTART_MESSAGE);
+  }
   progress("Copying your ticket receipts…");
   try {
     const { holdingGenKeysOf } = await import("../holding/account-copy.js");
-    await d.writeReceipts(await holdingGenKeysOf(live.seed), receipts);
+    await d.writeReceipts(await holdingGenKeysOf(live.seed), all);
   } catch (e) {
     console.warn("[upgrade] receipts not carried:", e);
     throw new Error(RECEIPTS_FAILED_MESSAGE);
   }
+  if (marker.carried === digest) return marker;
+  const next: UpgradeMarker = { ...marker, carried: digest };
+  d.marker.write(next);
+  return next;
+}
+
+/** The receipt fields a digest covers, in a fixed order (key order in a copy never counts). */
+const RECEIPT_FIELDS = [
+  "chainId", "ledger", "eventId", "slot", "holder", "answerKey", "nkCommit", "wocoEventId", "seriesId", "edition", "sig",
+] as const;
+
+/**
+ * One hash of what a carry moved: each order's pickup id and receipts, sorted by pickup
+ * id. Never the secrets themselves - the pickup id is derived from each one - so the
+ * marker, which holds no secret, can keep it.
+ */
+export async function carriedDigest(all: SavedHoldingCopies): Promise<string> {
+  const [{ sha256 }, { bytesToHex, utf8ToBytes }] = await Promise.all([import("@noble/hashes/sha2.js"), import("@noble/hashes/utils.js")]);
+  const rows = [...all]
+    .sort((a, b) => (a.entry.pickupId < b.entry.pickupId ? -1 : a.entry.pickupId > b.entry.pickupId ? 1 : 0))
+    .map(({ entry, copy }) => [entry.pickupId, copy.box.receipts.map((e) => RECEIPT_FIELDS.map((k) => e[k]))]);
+  return bytesToHex(sha256(utf8ToBytes(JSON.stringify(rows))));
 }
 
 async function writeAll(social: SocialDeps, signer: FeedKey, m: UpgradeMarker, value: boolean): Promise<boolean> {
@@ -551,10 +596,14 @@ export async function runUpgrade(h: UpgradeStoreHost, io: UpgradeIO, progress: (
   const landed = await landedOrUnknown(chain, marker);
   if (landed === "unknown") throw new Error(READ_FAILED_MESSAGE);
   if (!landed) {
-    await carryReceipts(deps, marker, live, progress);
+    marker = await carryReceipts(deps, marker, live, progress);
     await io.requestIntent();
   } else if (live) {
-    await carryReceipts(deps, marker, live, progress).catch((e) => console.warn("[upgrade] receipts after a landed switch:", e));
+    const before = marker;
+    marker = await carryReceipts(deps, marker, live, progress).catch((e) => {
+      console.warn("[upgrade] receipts after a landed switch:", e);
+      return before;
+    });
   }
   marker = await retractOld(deps, marker, progress);
   progress("Handing your account to your passkey…");

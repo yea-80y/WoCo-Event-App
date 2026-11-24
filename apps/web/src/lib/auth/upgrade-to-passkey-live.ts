@@ -173,6 +173,23 @@ export async function liveUpgradeDeps(
       return copies.length > 0 ? copies : null;
     },
 
+    readPending: async (oldSeed) => {
+      if (!FEATURES.holdingReceiptsAllowed) return [];
+      const [{ holdingGenKeysOf }, { pendingCopies }, { fetchHoldingBox }, { mineHoldings }] = await Promise.all([
+        import("../holding/account-copy.js"),
+        import("../holding/collect.js"),
+        import("../holding/box-source.js"),
+        import("../api/holdings.js"),
+      ]);
+      // Over the email key's session, which every step of the upgrade signs with.
+      const gen = await holdingGenKeysOf(oldSeed);
+      try {
+        return await pendingCopies({ mine: () => mineHoldings(), gens: [gen], fetchBox: (r, root) => fetchHoldingBox(r, root) });
+      } finally {
+        gen.orderSecretKey.fill(0);
+      }
+    },
+
     writeReceipts: async (to, saved) => {
       const [{ writeHoldingCopies }, { liveHoldingFeedIO }] = await Promise.all([
         import("../holding/account-copy.js"),

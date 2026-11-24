@@ -177,10 +177,16 @@
         problem = "Your account's keys aren't on this device - sign in again and retry.";
         return;
       }
-      const [copy, flow] = await Promise.all([
+      const [copy, flow, pause] = await Promise.all([
         import("../../holding/account-copy.js"),
         import("../../holding/keep-flow.js"),
+        import("../../holding/upgrade-pause.js"),
       ]);
+      // Saved under the email account's keys now, it would miss the upgrade's carry.
+      if (pause.receiptSavesPaused(account, auth.kind)) {
+        problem = pause.RECEIPT_SAVES_PAUSED_MESSAGE;
+        return;
+      }
       try {
         const keys = await copy.holdingGenKeysOf(secrets.current);
         orderSecretKey = keys.orderSecretKey;

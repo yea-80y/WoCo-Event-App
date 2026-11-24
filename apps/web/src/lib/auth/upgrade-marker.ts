@@ -23,11 +23,18 @@ export interface UpgradeMarker {
   follows: Hex0x[];
   /** Every one of them reads `false` under the old feed now. */
   retracted: boolean;
+  /**
+   * A digest of the ticket receipts last carried to the passkey's seed (`carriedDigest`):
+   * a tab without the passkey may finish when the old seed's receipts still hash to it.
+   * Absent until a carry wrote any.
+   */
+  carried?: string;
 }
 
 const MARKER_PREFIX = "woco:passkey-upgrade:";
 const ADDR = /^0x[0-9a-f]{40}$/;
 const SUBJECT = /^0x[0-9a-f]{1,128}$/i;
+const DIGEST = /^[0-9a-f]{64}$/;
 
 export function upgradeMarkerKey(parent: string): string {
   return `${MARKER_PREFIX}${parent.toLowerCase()}`;
@@ -44,6 +51,7 @@ export function parseUpgradeMarker(raw: string | null | undefined): UpgradeMarke
     const c = m.credential;
     if (!c || typeof c.credentialId !== "string" || !c.credentialId || typeof c.rpId !== "string") return null;
     if (!subjects(m.likes) || !subjects(m.follows) || typeof m.retracted !== "boolean") return null;
+    if (m.carried !== undefined && (typeof m.carried !== "string" || !DIGEST.test(m.carried))) return null;
     return m as UpgradeMarker;
   } catch {
     return null;
