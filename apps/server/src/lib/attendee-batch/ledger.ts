@@ -488,7 +488,7 @@ export function markChunkBurned(root: string, address: string, burnTs: string, n
  */
 export function recordErasedBeforeStore(
   root: string,
-  meta: { eventId?: string; seriesId?: string; organiser?: string; emailHash?: string; retainMonths?: number } = {},
+  meta: { kind?: OrderKind; eventId?: string; seriesId?: string; organiser?: string; emailHash?: string; retainMonths?: number } = {},
   nowMs: number = Date.now(),
   erasure?: Erasure,
 ): void {
@@ -501,7 +501,8 @@ export function recordErasedBeforeStore(
   // "yes, erased", the same footing as a suppression mark (#546).
   store.orders[k] = {
     batchId: "",
-    kind: "checkout",
+    // A receipt box keeps its kind, so no reader takes its tombstone for an organiser's order.
+    kind: meta.kind ?? "checkout",
     ...(meta.eventId ? { eventId: meta.eventId } : {}),
     ...(meta.seriesId ? { seriesId: meta.seriesId } : {}),
     ...(meta.organiser ? { organiser: meta.organiser.toLowerCase() } : {}),

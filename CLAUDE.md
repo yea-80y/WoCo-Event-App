@@ -733,7 +733,13 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   holding-receipts/ (ticket receipts, behind FEATURES.holdingReceiptsAllowed - per sale, the order's public
     values and the attendee-batch root of its sealed receipt box; the box itself until stored there. Losing
     it loses the buyer's way to find their receipt. Unreadable = never overwritten, `/api/health`
-    `holdingReceipts` alarm; also red when a box has waited over an hour to be stored)
+    `holdingReceipts` alarm; also red when a box has waited over an hour to be stored, and for a day
+    after a paid sale owed receipts got none. The buyer's erase (`/api/holdings/pickup/erase`) is written
+    BEFORE its burn and leaves only the public values, until the event's onchain end; each file is deleted
+    on its own clock (end + 12 months), never only by the attendee batch. Erasure requests: the ops lookup
+    lists unstored boxes under `receipts`, and `.../orders/:root/burn` deletes the file whole (refused while
+    the attendee ledger is unreadable or has lost a stored box's slots). ROLLBACK: a build before 2b reads
+    an erased signed-in file as unreadable (alarm, fails closed))
   ticket-holds/ (#983 — per sale, each emailed ticket's QR sealed to the organiser's order key: the ONLY copy
     a bounced ticket can be resent from (the signing key is discarded at mint). Losing it leaves those
     tickets reissue-only. Unreadable = never overwritten, `/api/health` `email.ticketHolds` alarm)

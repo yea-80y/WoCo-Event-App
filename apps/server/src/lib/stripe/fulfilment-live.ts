@@ -42,7 +42,7 @@ import { eventKeys } from "../keyring/event-keys.js";
 import { FEATURES } from "@woco/shared";
 import { newHoldingSecret } from "@woco/shared/holding/derive";
 import { signTicketHolding } from "@woco/shared/holding/receipt";
-import { getHolding } from "../holding/store.js";
+import { getHolding, noteHoldingMissed } from "../holding/store.js";
 import { keepHoldingReceipts } from "../holding/keep.js";
 import { recordSaleReceipts } from "./ticket-sales.js";
 import type { Burner, FulfilmentDeps } from "./fulfilment.js";
@@ -109,6 +109,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   recordSaleReceipts: (sessionId, receipts) => {
     recordSaleReceipts(sessionId, receipts);
   },
+  noteHoldingMissed: (sessionId, why) => noteHoldingMissed(sessionId, why),
   batchClaimForOnChain,
   onChainBatchMax: ON_CHAIN_BATCH_MAX,
   registrationSeatingFor,

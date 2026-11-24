@@ -99,14 +99,17 @@ export function ordersStatus(
     };
   });
 
+  // A buyer's receipt box carries this event's id but is never the organiser's order:
+  // listing its erasure would tell the organiser how many buyers erased their receipts.
   const erasedSet = new Set(
     deps
       .orders()
-      .filter(({ root, record }) => record.eventId === event.eventId && deps.erasureStarted(root, record))
+      .filter(({ root, record }) => record.kind !== "holding" && record.eventId === event.eventId && deps.erasureStarted(root, record))
       .map(({ root }) => root),
   );
   for (const root of roots) {
     const record = deps.record(root);
+    if (record?.kind === "holding") continue;
     // Another event's order is not this organiser's to ask about. It could not show
     // here either: a box opens only under its own event and series.
     if (record?.eventId && record.eventId !== event.eventId) continue;

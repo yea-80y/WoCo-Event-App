@@ -77,6 +77,7 @@ import { eraseOrder } from "../lib/attendee-batch/erase.js";
 import { getOrderRecord, ledgerReadable, ordersForEmailHash, type OrderRecord } from "../lib/attendee-batch/ledger.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { heldOrdersHealth, paidUnstored } from "../lib/attendee-batch/held-orders.js";
+import { deleteHolding, holdingByBoxRoot, holdingsForEmailHash, holdingStoreUnreadable } from "../lib/holding/store.js";
 import { MAX_LIMIT as RETENTION_MAX_LIMIT, previewOrderRetention, runOrderRetention } from "../lib/attendee-batch/retention.js";
 import { getListingSeed, isListedForSnapshot, listedEventIds, needsRestoreFromSnapshot, setListed } from "../lib/event/listing-state.js";
 import { directoryPublishingEnabled, rebuildSnapshotFull, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
@@ -860,6 +861,10 @@ ops.post("/attendee-batch/refresh", async (c) => {
  * POST /api/ops/attendee-batch/orders/:root/burn — body `{ by, reason }`.
  * Erases one order from Swarm (every chunk's slot overwritten). Irreversible.
  * Resumable: calling it again finishes an interrupted burn.
+ *
+ * A buyer's ticket-receipt root (kind "holding") goes the same way, stored or not, and
+ * its record in `.data/holding-receipts/` is deleted whole: this is a data-subject
+ * request, so even the public values the buyer's own erase would keep go too.
  */
 ops.post("/attendee-batch/orders/:root/burn", async (c) => {
   const root = c.req.param("root").toLowerCase().replace(/^0x/, "");
@@ -868,21 +873,51 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
   const by = (body?.by || "").trim().slice(0, 100);
   const reason = (body?.reason || "").trim().slice(0, 500);
   if (!by || !reason) return c.json({ ok: false, error: "`by` and `reason` are required - who decided this, and why?" }, 400);
+  // An unreadable ledger loads empty: every stored order would read "not found", and a
+  // receipt record deleted on that answer was the only pointer to a box still on Swarm.
+  if (!ledgerReadable()) {
+    return c.json({ ok: false, error: "The attendee ledger is unreadable - see /api/health; no erasure until restored" }, 503);
+  }
   try {
+    const receipt = holdingByBoxRoot(root);
     const out = await eraseOrder(root, { by: "request" });
+    // The receipt's record goes only once its box can no longer be stored or served.
+    const receiptGone = () => {
+      if (!receipt) return null;
+      try {
+        deleteHolding(receipt.sessionId);
+        return true;
+      } catch (err) {
+        console.error(`[ops] receipt record ${receipt.sessionId} not deleted:`, (err as Error).message);
+        return false;
+      }
+    };
     switch (out.kind) {
       case "in-flight":
         return c.json({ ok: false, error: "This order is being stored right now - retry in a minute and it will be burned" }, 409);
       case "hold-not-deleted":
         return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
       case "not-found":
+        // A receipt never stored is tombstoned, never "not found": this one was stored,
+        // and the ledger (restored from an older backup?) has lost its slots.
+        if (receipt) {
+          console.error(`[ops] receipt box ${root} was stored but the attendee ledger has no record of it - nothing erased`);
+          return c.json({ ok: false, error: "This receipt box was stored, but the attendee ledger has no record of it - restore the ledger before erasing" }, 503);
+        }
         return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
-      case "deleted-before-store":
+      case "deleted-before-store": {
+        const deleted = receiptGone();
         console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
-        return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
-      case "burned":
+        return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null, ...(deleted !== null ? { receiptRecordDeleted: deleted } : {}) } });
+      }
+      case "burned": {
+        const deleted = out.record.state === "burned" ? receiptGone() : null;
         console.log(`[ops] attendee order ${root} burn by ${by} (${reason}): ${out.record.state}`);
-        return c.json({ ok: true, data: { root, state: out.record.state, burnedAt: out.record.burnedAt ?? null } });
+        return c.json({
+          ok: true,
+          data: { root, state: out.record.state, burnedAt: out.record.burnedAt ?? null, ...(deleted !== null ? { receiptRecordDeleted: deleted } : {}) },
+        });
+      }
     }
   } catch (err) {
     console.error(`[ops] attendee order ${root} burn by ${by} failed:`, (err as Error).message);
@@ -952,8 +987,9 @@ function retentionLimit(raw: string | undefined): number | undefined | null {
  * POST /api/ops/attendee-batch/lookup — body `{ email }` or `{ emailHash }`.
  * One person's attendee orders, for an access or erasure request (#546): every
  * ledger record under their email hash, any state, plus paid orders still held
- * for storage. POST so an address never sits in a URL or an access log; only
- * the hash comes back. Feed each `root` to `.../orders/:root/burn` to erase.
+ * for storage and ticket-receipt boxes not yet stored (`receipts`). POST so an
+ * address never sits in a URL or an access log; only the hash comes back. Feed
+ * each `root` to `.../orders/:root/burn` to erase.
  */
 ops.post("/attendee-batch/lookup", async (c) => {
   const body = (await c.req.json().catch(() => null)) as { email?: unknown; emailHash?: unknown } | null;
@@ -967,8 +1003,8 @@ ops.post("/attendee-batch/lookup", async (c) => {
     return c.json({ ok: false, error: "Give `email`, or `emailHash` as 64 hex characters" }, 400);
   }
   // "No orders" from a store we cannot read would be a false answer to a data subject.
-  if (!ledgerReadable() || heldOrdersHealth().unreadable) {
-    return c.json({ ok: false, error: "The attendee ledger or held orders are unreadable - see /api/health; no answer until restored" }, 503);
+  if (!ledgerReadable() || heldOrdersHealth().unreadable || holdingStoreUnreadable()) {
+    return c.json({ ok: false, error: "The attendee ledger, held orders or ticket receipts are unreadable - see /api/health; no answer until restored" }, 503);
   }
   const row = (root: string, record: OrderRecord, resentTo: boolean) => ({
     root,
@@ -994,7 +1030,12 @@ ops.post("/attendee-batch/lookup", async (c) => {
   const held = paidUnstored()
     .filter((o) => o.emailHash === emailHash)
     .map((o) => ({ root: o.root, eventId: o.eventId ?? null, paidAt: o.paidAt ?? null }));
-  return c.json({ ok: true, data: { emailHash, orders, held } });
+  // Ticket-receipt boxes not on the ledger yet (their store has not started): they live
+  // only in `.data/holding-receipts/`. A stored one is already in `orders` (kind "holding").
+  const receipts = holdingsForEmailHash(emailHash)
+    .filter((r) => !known.has(r.issued!.boxRoot) && !getOrderRecord(r.issued!.boxRoot))
+    .map((r) => ({ root: r.issued!.boxRoot, kind: "holding" as const, eventId: r.eventId, issuedAt: r.issued!.issuedAt }));
+  return c.json({ ok: true, data: { emailHash, orders, held, receipts } });
 });
 
 export { ops };

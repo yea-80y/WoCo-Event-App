@@ -379,3 +379,258 @@ test("unpaid requests are capped: the oldest makes room", async () => {
     store._setMaxUnpaidRequestsForTests(5_000);
   }
 });
+
+// ── Before the flag flips (spec 13a items 2-4) ──────────────────────────────
+
+test("one key, one sale: any value another sale owns is refused, in any role; freed when that sale goes", async () => {
+  const a = await requestFrom(101, 2);
+  const sA = nextSession();
+  assert.equal(store.recordHoldingRequest({ sessionId: sA, eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request: a.request }), true);
+  const b = await requestFrom(102, 2);
+  const reuses: Array<[string, typeof b.request]> = [
+    ["a holder", { ...b.request, holders: [a.request.holders[1]!, b.request.holders[1]!] }],
+    ["an answer key", { ...b.request, answerKeys: [b.request.answerKeys[0]!, a.request.answerKeys[0]!] }],
+    ["the pickup signer", { ...b.request, pickupSigner: a.request.pickupSigner }],
+    ["the count-once commitment", { ...b.request, nkCommit: a.request.nkCommit }],
+    ["a holder as an answer key", { ...b.request, answerKeys: [a.request.holders[0]!, b.request.answerKeys[1]!] }],
+    ["the pickup signer as a holder", { ...b.request, holders: [a.request.pickupSigner, b.request.holders[1]!] }],
+    ["the pickup id", { ...b.request, pickupId: a.request.pickupId }],
+  ];
+  for (const [what, request] of reuses) {
+    const s = nextSession();
+    assert.equal(store.recordHoldingRequest({ sessionId: s, eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request }), false, what);
+    assert.equal(store.getHolding(s), null, what);
+  }
+  // A guest record at fulfilment is held to the same rule.
+  const g = holdingPublicValues(new Uint8Array(32).fill(103), 1);
+  const sG = nextSession();
+  assert.equal(store.recordHoldingIssued({
+    sessionId: sG, eventId: EVENT, seriesId: SERIES,
+    guest: { holders: [a.request.holders[0]!], answerKeys: g.answerKeys, nkCommit: g.nkCommit, pickupId: g.pickupId, pickupSigner: g.pickupSigner, pickupPub: Buffer.from(g.pickupPub).toString("hex") },
+    issued: { chainId: TARGET.chainId, ledger: TARGET.ledger, onChainEventId: ON_CHAIN, slots: [1], boxRoot: "12".repeat(32) },
+  }), false);
+  assert.equal(store.getHolding(sG), null);
+  // The untouched request of B still goes in; after A is deleted, A's values are free again.
+  assert.equal(store.recordHoldingRequest({ sessionId: nextSession(), eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request: b.request }), true);
+  store.deleteHolding(sA);
+  assert.equal(store.recordHoldingRequest({ sessionId: nextSession(), eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request: a.request }), true);
+});
+
+test("the values a sale owns are found again after a restart", async () => {
+  const a = await requestFrom(104, 1);
+  store.recordHoldingRequest({ sessionId: nextSession(), eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request: a.request });
+  store._resetHoldingStoreForTests();
+  const b = await requestFrom(105, 1);
+  assert.equal(store.recordHoldingRequest({ sessionId: nextSession(), eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request: { ...b.request, nkCommit: a.request.nkCommit } }), false);
+});
+
+test("a box root names one sale", async () => {
+  const a = guestInput(106);
+  const kept = await keepHoldingReceipts(a, failing);
+  const g = holdingPublicValues(new Uint8Array(32).fill(107), 1);
+  const s = nextSession();
+  assert.equal(store.recordHoldingIssued({
+    sessionId: s, eventId: EVENT, seriesId: SERIES,
+    guest: { holders: g.holders, answerKeys: g.answerKeys, nkCommit: g.nkCommit, pickupId: g.pickupId, pickupSigner: g.pickupSigner, pickupPub: Buffer.from(g.pickupPub).toString("hex") },
+    issued: { chainId: TARGET.chainId, ledger: TARGET.ledger, onChainEventId: ON_CHAIN, slots: [1], boxRoot: kept!.boxRoot },
+  }), false);
+  assert.equal(store.holdingByBoxRoot(kept!.boxRoot)?.sessionId, a.sessionId);
+  assert.equal(store.holdingByBoxRoot("0x" + kept!.boxRoot.toUpperCase())?.sessionId, a.sessionId);
+});
+
+test("the buyer's erase drops what opens, finds or links the receipt, and keeps the public values", async () => {
+  const { request } = await requestFrom(110, 2);
+  const s = nextSession();
+  store.recordHoldingRequest({ sessionId: s, eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request });
+  assert.equal(store.markHoldingErased(s), false, "nothing to erase before it is paid");
+  const pv = holdingPublicValues(new Uint8Array(32).fill(110), 2);
+  await keepHoldingReceipts({
+    sessionId: s, eventId: EVENT, seriesId: SERIES, target: TARGET,
+    receipts: signedReceipts(pv).map(({ holding, sig }) => ({ holding, sig })), pickupId: request.pickupId, pickupPub: request.pickupPub, emailHash: "e1".repeat(32),
+  }, failing);
+  const before = store.getHolding(s)!;
+  assert.ok(before.issued!.box && before.sealedR && before.account && before.issued!.emailHash);
+
+  const t = Date.parse("2026-11-24T12:00:00Z");
+  assert.equal(store.markHoldingErased(s, t), true);
+  const after = store.getHolding(s)!;
+  assert.equal(after.erasedAt, new Date(t).toISOString());
+  for (const gone of ["sealedR", "account"] as const) assert.equal(after[gone], undefined, gone);
+  assert.equal(after.issued!.box, undefined);
+  assert.equal(after.issued!.emailHash, undefined);
+  // What a replacement re-signs over (spec 8), and where the box was.
+  assert.deepEqual(after.holders, before.holders);
+  assert.deepEqual(after.answerKeys, before.answerKeys);
+  assert.equal(after.nkCommit, before.nkCommit);
+  assert.equal(after.pickupPub, before.pickupPub);
+  assert.equal(after.pickupId, before.pickupId);
+  assert.deepEqual(after.issued!.slots, before.issued!.slots);
+  assert.equal(after.issued!.boxRoot, before.issued!.boxRoot);
+
+  assert.equal(store.markHoldingErased(s, t + 1), true, "idempotent");
+  assert.equal(store.getHolding(s)!.erasedAt, new Date(t).toISOString());
+  assert.equal(store.holdingsForAccount(ACCOUNT).some((x) => x.sessionId === s), false);
+  assert.equal(store.holdingsForEmailHash("e1".repeat(32)).length, 0);
+  assert.equal(store.unstoredHoldings().some((x) => x.sessionId === s), false, "never retried");
+  assert.equal(store.markHoldingStored(s), true, "a store landing late adds nothing");
+  assert.equal(store.getHolding(s)!.issued!.storedAt, undefined);
+
+  // The minute sweep leaves it: its box is erased by construction, its values stay until the end.
+  store.sweepHoldings(() => true);
+  assert.ok(store.getHolding(s));
+  // And the erased record reads back after a restart, still owning its values.
+  store._resetHoldingStoreForTests();
+  assert.ok(store.getHolding(s)!.erasedAt);
+  const other = await requestFrom(111, 1);
+  assert.equal(store.recordHoldingRequest({ sessionId: nextSession(), eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request: { ...other.request, nkCommit: request.nkCommit } }), false);
+  store.deleteHolding(s);
+});
+
+test("an erased record still carrying a secret, an account or a box is unreadable, never trusted", () => {
+  const base = {
+    v: 1, eventId: EVENT, seriesId: SERIES, createdAt: new Date().toISOString(), keep: "email", holders: ["0x" + "01".repeat(20)],
+    answerKeys: ["0x" + "02".repeat(20)], nkCommit: "0x" + "03".repeat(32), pickupId: "04".repeat(32), pickupSigner: "0x" + "05".repeat(20),
+    pickupPub: "06", erasedAt: new Date().toISOString(),
+    issued: { chainId: 1, ledger: "0x" + "07".repeat(20), onChainEventId: ON_CHAIN, slots: [1], boxRoot: "08".repeat(32), issuedAt: new Date().toISOString() },
+  };
+  const box = { v: 2, kem: "aa", nonce: "bb", ct: "cc" };
+  for (const bad of [
+    { account: ACCOUNT },
+    { sealedR: box },
+    { issued: { ...base.issued, emailHash: "e2".repeat(32) } },
+    { issued: undefined },
+  ]) {
+    const s = nextSession();
+    writeFileSync(join(process.cwd(), ".data", "holding-receipts", `${s}.json`), JSON.stringify({ ...base, sessionId: s, ...bad }), { mode: 0o600 });
+    store._resetHoldingStoreForTests();
+    assert.throws(() => store.getHolding(s), /unreadable/, JSON.stringify(bad));
+    store.deleteHolding(s);
+  }
+  const s = nextSession();
+  writeFileSync(join(process.cwd(), ".data", "holding-receipts", `${s}.json`), JSON.stringify({ ...base, sessionId: s }), { mode: 0o600 });
+  store._resetHoldingStoreForTests();
+  assert.ok(store.getHolding(s)?.erasedAt, "the clean erased shape reads");
+  store.deleteHolding(s);
+});
+
+test("each record on its own clock: 12 months after the on-chain end, the end itself once erased; every doubt keeps it", async () => {
+  store._resetHoldingStoreForTests();
+  const END = Date.parse("2026-12-01T00:00:00Z");
+  const YEAR_ON = Date.parse("2027-12-01T00:00:00Z");
+  const ON_A = "0x" + "a0".repeat(32);
+  const ON_B = "0x" + "b0".repeat(32);
+  const ON_C = "0x" + "c0".repeat(32);
+  async function paid(seed: number, onChain: string) {
+    const input = guestInput(seed);
+    input.receipts = input.receipts.map(({ holding, sig }) => ({ holding: { ...holding, eventId: onChain }, sig }));
+    await keepHoldingReceipts(input, failing);
+    return input.sessionId;
+  }
+  const live = await paid(120, ON_A);
+  const erased = await paid(121, ON_A);
+  assert.equal(store.markHoldingErased(erased), true);
+  const noEnd = await paid(122, ON_B);
+  const rpcDown = await paid(123, ON_C);
+  const unpaid = (await requestFrom(124, 1)).request;
+  const sUnpaid = nextSession();
+  store.recordHoldingRequest({ sessionId: sUnpaid, eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request: unpaid });
+
+  const endReads: string[] = [];
+  const deps = (now: number, chainNow: number | Error) => ({
+    now: () => now,
+    chainNow: async () => {
+      if (chainNow instanceof Error) throw chainNow;
+      return chainNow;
+    },
+    chainEnd: async (r: { issued: { onChainEventId: string } }) => {
+      endReads.push(r.issued.onChainEventId);
+      if (r.issued.onChainEventId === ON_B) return null;
+      if (r.issued.onChainEventId === ON_C) throw new Error("rpc down");
+      return END;
+    },
+  });
+
+  // Before the end: nothing goes, and the chain's clock is never asked.
+  let clockReads = 0;
+  let out = await store.sweepHoldingsDue({ ...deps(END - 1, END - 1), chainNow: async () => (clockReads++, END - 1) });
+  assert.equal(out.removed, 0);
+  assert.equal(out.endUnknown, 2);
+  assert.equal(clockReads, 0, "no chain read for a record not due by our own clock");
+  assert.equal(endReads.filter((x) => x === ON_A).length, 1, "one end read per event a pass");
+  // At the end, but the chain's clock is behind ours: kept.
+  out = await store.sweepHoldingsDue(deps(END + 1000, END - 1));
+  assert.ok(store.getHolding(erased), "a fast server clock cannot delete early");
+  // At the end, the chain's clock unreadable: kept.
+  out = await store.sweepHoldingsDue(deps(END + 1000, new Error("no block")));
+  assert.ok(store.getHolding(erased));
+  // At the end: the erased record goes, the live one stays.
+  out = await store.sweepHoldingsDue(deps(END + 1000, END + 1000));
+  assert.equal(store.getHolding(erased), null);
+  assert.ok(store.getHolding(live));
+  // A day short of 12 months: kept. At 12 months: gone. No end on chain, or none readable: kept for good.
+  await store.sweepHoldingsDue(deps(YEAR_ON - 86_400_000, YEAR_ON));
+  assert.ok(store.getHolding(live));
+  out = await store.sweepHoldingsDue(deps(YEAR_ON, YEAR_ON));
+  assert.equal(store.getHolding(live), null);
+  assert.ok(store.getHolding(noEnd));
+  assert.ok(store.getHolding(rpcDown));
+  assert.ok(store.getHolding(sUnpaid), "an unpaid request is the 48 h rule's, not this one's");
+  assert.equal(store.holdingReceiptsHealth().due.endUnknown, 2);
+  for (const s of [noEnd, rpcDown, sUnpaid]) store.deleteHolding(s);
+});
+
+test("a paid sale owed receipts that got none turns health red for a day, and says why; the count stays", () => {
+  store._resetHoldingStoreForTests();
+  const at = Date.parse("2026-11-24T10:00:00Z");
+  assert.equal(store.holdingReceiptsHealth(at).ok, true);
+  store.noteHoldingMissed(nextSession(), "2 of 2 receipts not signed", at);
+  const h = store.holdingReceiptsHealth(at + 1000);
+  assert.equal(h.ok, false);
+  assert.equal(h.missed, 1);
+  assert.deepEqual(h.lastMissed, { at: "2026-11-24T10:00:00.000Z", why: "2 of 2 receipts not signed" });
+  assert.equal(store.holdingReceiptsHealth(at + store.MISSED_RECEIPT_RED_MS - 1).ok, false, "still red just inside the day");
+  const later = store.holdingReceiptsHealth(at + store.MISSED_RECEIPT_RED_MS);
+  assert.equal(later.ok, true, "green a day on, with no restart");
+  assert.equal(later.missed, 1, "the count since boot is kept");
+  store._resetHoldingStoreForTests();
+});
+
+test("the retry worker: an erased box never takes a slot of the pass, and one erased mid-pass is never sent", async () => {
+  await retryUnstoredHoldings(1000, storing);
+  assert.equal(store.unstoredHoldings().length, 0);
+  const erasedFirst = guestInput(140);
+  const next = guestInput(141);
+  const keptErased = await keepHoldingReceipts(erasedFirst, failing);
+  await keepHoldingReceipts(next, failing);
+  ledger.recordErasedBeforeStore(keptErased!.boxRoot, { kind: "holding", eventId: EVENT });
+  // A pass of one: the erased box (listed first) must not use it up.
+  assert.equal((await retryUnstoredHoldings(1, storing)).stored, 1);
+  assert.ok(store.getHolding(next.sessionId)!.issued!.storedAt);
+
+  // Two waiting; the first one's store erases the second before its turn.
+  const a = guestInput(142);
+  const b = guestInput(143);
+  await keepHoldingReceipts(a, failing);
+  const keptB = await keepHoldingReceipts(b, failing);
+  const bJson = JSON.stringify(store.getHolding(b.sessionId)!.issued!.box);
+  const seen: string[] = [];
+  const erasingMidPass = {
+    store: async (d: string | Uint8Array, m: Parameters<typeof storing.store>[1]) => {
+      seen.push(String(d));
+      if (!ledger.getOrderRecord(keptB!.boxRoot)) ledger.recordErasedBeforeStore(keptB!.boxRoot, { kind: "holding", eventId: EVENT });
+      return storing.store(d, m);
+    },
+    now: () => Date.now(),
+  };
+  await retryUnstoredHoldings(100, erasingMidPass);
+  assert.equal(seen.includes(bJson), false, "read again before its store, and left alone");
+  assert.ok(store.getHolding(a.sessionId)!.issued!.storedAt);
+});
+
+test("records by email hash: paid ones only", async () => {
+  const input = { ...guestInput(130), emailHash: "e3".repeat(32) };
+  await keepHoldingReceipts(input, failing);
+  const unpaid = await requestFrom(131, 1);
+  store.recordHoldingRequest({ sessionId: nextSession(), eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request: unpaid.request });
+  assert.deepEqual(store.holdingsForEmailHash("e3".repeat(32)).map((r) => r.sessionId), [input.sessionId]);
+});

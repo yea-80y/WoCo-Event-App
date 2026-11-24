@@ -146,6 +146,8 @@ import { seatStateGateHealth } from "./lib/seating/seat-state-gate.js";
 import { ticketHoldsHealth } from "./lib/ticket-hold/store.js";
 import { holdingReceiptsHealth, sweepHoldings } from "./lib/holding/store.js";
 import { retryUnstoredHoldings } from "./lib/holding/keep.js";
+import { runHoldingDueSweep } from "./lib/holding/due.js";
+import { holdingsRoutes } from "./routes/holdings.js";
 import { isOrderErased } from "./lib/attendee-batch/ledger.js";
 import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
 import { getAttendeeStamper, retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
@@ -916,6 +918,8 @@ app.route("/api/events", checkinOrganiser);
 app.route("/api/events", eventCancel);
 app.route("/api/events", ledger2RelayRoutes());
 app.route("/api/events", seatMovedRoutes());
+// Private ticket receipts: collect, erase our copy, a signed-in buyer's own (behind holdingReceiptsAllowed).
+app.route("/api/holdings", holdingsRoutes());
 
 // Door scanner endpoints — authed by X-Door-Pass token, not session delegation
 app.route("/api/checkin", checkin);
@@ -1061,6 +1065,12 @@ const sweepOrderRetention = () => {
 };
 setTimeout(sweepOrderRetention, 7 * 60_000).unref();
 setInterval(sweepOrderRetention, 24 * 60 * 60 * 1000).unref();
+// Ticket receipts: each record on its own clock (12 months after the event's onchain end,
+// or the end itself once the buyer erased it), whatever became of its attendee batch.
+// No records = no chain read. Never throws.
+const sweepHoldingDue = () => void runHoldingDueSweep();
+setTimeout(sweepHoldingDue, 8 * 60_000).unref();
+setInterval(sweepHoldingDue, 24 * 60 * 60 * 1000).unref();
 // #965: our gateway serves every stored attendee order and no erased one. Only a
 // server that owns an attendee batch edits the list: a dev server's key is blank.
 const tickGateway = () => {

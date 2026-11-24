@@ -17,11 +17,20 @@
  * none (a sale never recorded) leaves both copies to the roster sweep, 2 days after
  * the event.
  *
+ * A buyer's ticket-receipt box (kind "holding", lib/holding/) is erased the same way,
+ * but it is never an organiser's order: no door entry or held ticket is touched. One never
+ * stored lives in the holding record, not in held orders: its local copy (if any is left)
+ * is dropped and its root tombstoned (kind "holding"), so nothing can ever store it. What
+ * else of the record goes is the caller's choice (the buyer's erase keeps the public
+ * values; a data-subject request deletes the record).
+ *
  * Synchronous from the in-flight check to the tombstone, so no store can start
  * between. Throws on anything else; the caller reports it.
  */
 
+import { HOLDING_RETENTION_MONTHS } from "@woco/shared/holding/request";
 import { getRecordedFeedSigner } from "../event/feed-signer-record.js";
+import { dropHoldingBox, holdingByBoxRoot, isHoldingBoxStoring } from "../holding/store.js";
 import { burnOrder, type BurnDeps } from "./burn.js";
 import { getHeldOrder, releaseHeldOrder } from "./held-orders.js";
 import { getOrderRecord, recordErasedBeforeStore, type Erasure, type OrderRecord } from "./ledger.js";
@@ -39,10 +48,30 @@ export type EraseOutcome =
 
 export async function eraseOrder(rawRoot: string, erasure: Erasure, burnDeps?: BurnDeps): Promise<EraseOutcome> {
   const root = rawRoot.toLowerCase().replace(/^0x/, "");
-  if (isStoreInFlight(root)) return { kind: "in-flight" };
+  if (isStoreInFlight(root) || isHoldingBoxStoring(root)) return { kind: "in-flight" };
   const heldBefore = getHeldOrder(root);
   if (heldBefore && !releaseHeldOrder(root)) return { kind: "hold-not-deleted" };
   if (!getOrderRecord(root)) {
+    const receipt = heldBefore ? null : holdingByBoxRoot(root);
+    // Never stored: whether its local copy is still here (an erasure request) or the
+    // buyer's own erase already dropped it, the root is tombstoned so nothing stores it.
+    if (receipt?.issued && !receipt.issued.storedAt) {
+      recordErasedBeforeStore(
+        root,
+        {
+          kind: "holding",
+          eventId: receipt.eventId,
+          seriesId: receipt.seriesId,
+          ...(receipt.issued.emailHash ? { emailHash: receipt.issued.emailHash } : {}),
+          retainMonths: HOLDING_RETENTION_MONTHS,
+        },
+        Date.now(),
+        erasure,
+      );
+      // The tombstone already stops any store; a box left here only waits for the caller.
+      if (!dropHoldingBox(receipt.sessionId)) console.error(`[erase] receipt box ${root.slice(0, 10)}… tombstoned, its local copy not dropped yet`);
+      return { kind: "deleted-before-store" };
+    }
     if (!heldBefore) return { kind: "not-found" };
     const eventId = heldBefore.eventId;
     const organiser = eventId ? getRecordedFeedSigner(eventId)?.creatorAddress : undefined;
@@ -62,7 +91,8 @@ export async function eraseOrder(rawRoot: string, erasure: Erasure, burnDeps?: B
     return { kind: "deleted-before-store" };
   }
   const record = await burnOrder(root, burnDeps, erasure);
-  forgetAtTheDoor(root);
+  // A receipt box carries no ticket: the door and the held tickets are the organiser order's.
+  if (record.kind !== "holding") forgetAtTheDoor(root);
   return { kind: "burned", record };
 }
 

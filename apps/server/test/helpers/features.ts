@@ -10,9 +10,10 @@ import { FEATURES } from "@woco/shared";
  * `accountBackupsAllowed`: the sponsorship tests of the backup ops.
  * `agentCommerceAllowed`: the privacy-notice sale gate on the (flag-off) agent rail.
  * `seatedEventsAllowed`: the seated create / register checks (docs/SEATING.md).
+ * `holdingReceiptsAllowed`: the ticket-receipt routes (routes/holdings.ts).
  */
 export function enableFeature(
-  name: "walletLoginAllowed" | "accountBackupsAllowed" | "agentCommerceAllowed" | "seatedEventsAllowed",
+  name: "walletLoginAllowed" | "accountBackupsAllowed" | "agentCommerceAllowed" | "seatedEventsAllowed" | "holdingReceiptsAllowed",
   on = true,
 ): void {
   (FEATURES as Record<string, boolean>)[name] = on;

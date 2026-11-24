@@ -201,7 +201,8 @@ type Step =
   | "newHoldingSecret"
   | "signHolding"
   | "keepHoldingReceipts"
-  | "recordSaleReceipts";
+  | "recordSaleReceipts"
+  | "noteHoldingMissed";
 
 /** The seated plan the default seated registration is pinned to. */
 const SEAT_PLAN = "0x" + "5d".repeat(32);
@@ -307,6 +308,8 @@ function fakeDeps(o: FakeOpts = {}) {
   /** Ticket receipts: what keeping was handed (the guest secret copied, as fulfilment zeroes it), digests, secrets made, burner addresses. */
   const kept: Array<{ input: KeepHoldingInput; r?: Uint8Array }> = [];
   const saleReceipts: Array<{ sessionId: string; receipts: Array<{ slot: number; digest: string }> }> = [];
+  /** Sales owed receipts that got none (the health count). */
+  const missed: Array<{ sessionId: string; why: string }> = [];
   const secrets: Uint8Array[] = [];
   const burnerAddresses: string[] = [];
   let nextSlot = 0;
@@ -435,6 +438,10 @@ function fakeDeps(o: FakeOpts = {}) {
       saleReceipts.push({ sessionId, receipts });
       boom("recordSaleReceipts");
     },
+    noteHoldingMissed: (sessionId, why) => {
+      missed.push({ sessionId, why });
+      boom("noteHoldingMissed");
+    },
     batchClaimForOnChain: async (ev, burners, _ref, contract) => {
       boom("batchClaimForOnChain");
       const idx = chunkIdx++;
@@ -561,7 +568,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries, holds, themeAsked, seatMints, settles, kept, saleReceipts, secrets, burnerAddresses };
+  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries, holds, themeAsked, seatMints, settles, kept, saleReceipts, missed, secrets, burnerAddresses };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -1730,6 +1737,54 @@ describe("ticket receipts", () => {
     assert.equal(outcome.issued, 1);
     assert.equal(f.kept[0]!.input.receipts.length, 1);
     assert.equal(f.kept[0]!.input.receipts[0]!.holding.slot, 0);
+  });
+
+  // ── The health count of sales owed receipts that got none (spec 13a item 3) ──
+
+  test("receipts kept for every ticket, or none owed: nothing counted as missed", async () => {
+    for (const [buyer, opts] of [
+      [{}, { sale, holding: ON }],
+      [{ wallet: BUYER_WALLET }, { sale, holding: { on: true, request: requestFor(7, 2) } }],
+      [{}, { sale }],
+      [{}, { holding: ON }],
+      [{ wallet: BUYER_WALLET, email: null }, { sale, holding: ON }],
+      [{}, { sale, holding: ON, cancellation: "cancelled" as const }],
+      [{}, { sale, holding: ON, fail: "signMessage" as Step, signFailAt: 1 }],
+      // A request that could not be read, on a sale that then minted nothing: no ticket is short of a receipt.
+      [{ wallet: BUYER_WALLET }, { sale, holding: ON, fail: "holdingRequest" as Step, revertAtChunk: 0 }],
+    ] as const) {
+      const { f } = await run(buyer as never, opts as never);
+      assert.deepEqual(f.missed, [], JSON.stringify(opts));
+    }
+  });
+
+  test("a ticket whose receipt was not signed is counted", async () => {
+    const { f } = await run({}, { sale, holding: { on: true, wrongKey: true } });
+    assert.equal(f.missed.length, 1);
+    assert.match(f.missed[0]!.why, /2 of 2 receipts not signed/);
+  });
+
+  test("receipts signed but not kept are counted", async () => {
+    for (const opts of [{ sale, holding: { on: true, keepReturns: null } }, { sale, holding: ON, fail: "keepHoldingReceipts" as Step }]) {
+      const { f } = await run({}, opts);
+      assert.equal(f.missed.length, 1);
+      assert.match(f.missed[0]!.why, /not kept/);
+    }
+  });
+
+  test("a request that cannot be read is counted once tickets are issued", async () => {
+    const { f, outcome } = await run({ wallet: BUYER_WALLET }, { sale, holding: ON, fail: "holdingRequest" });
+    assert.equal(outcome.issued, 2);
+    assert.equal(f.missed.length, 1);
+    assert.match(f.missed[0]!.why, /could not be read/);
+  });
+
+  test("the count failing changes nothing about the sale", async () => {
+    const { f, outcome } = await run({}, { sale, holding: { on: true, wrongKey: true }, fail: "noteHoldingMissed" });
+    assert.ok(f.calls.includes("noteHoldingMissed"));
+    assert.equal(outcome.issued, 2);
+    assert.equal(outcome.refund.kind, "not-needed");
+    assert.equal(outcome.email, "sent");
   });
 
   for (const step of RECEIPT_STEPS) {
