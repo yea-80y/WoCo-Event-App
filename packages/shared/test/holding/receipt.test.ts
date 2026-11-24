@@ -109,6 +109,7 @@ test("presentation: golden, equal to ethers, signed by the answer key", async ()
 });
 
 test("presentation checks: accepted, and each way it is refused", () => {
+  assert.equal(HOLDING_PRESENTATION_MAX_SECS, 30 * 24 * 60 * 60);
   const base = {
     target: TARGET,
     receipt: HOLDING,

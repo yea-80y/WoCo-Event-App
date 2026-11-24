@@ -66,6 +66,7 @@ test("erase: golden, equal to ethers, and checked by signer, pickup id and windo
   assert.equal(erasePickupDigest(G.pickupId, T0), G.eraseDigest);
   const sig = signErasePickup(G.pickupId, T0, holdingPickupSigner(R).privateKey);
   assert.equal(sig, G.eraseSig);
+  assert.equal(HOLDING_ERASE_WINDOW_SECS, 5 * 60);
   const base = { pickupId: G.pickupId, issuedAt: T0, signature: sig, expectedSigner: G.pickupSigner, nowSecs: T0 };
   assert.equal(checkErasePickup(base), true);
   assert.equal(checkErasePickup({ ...base, nowSecs: T0 + HOLDING_ERASE_WINDOW_SECS }), true);
@@ -84,11 +85,19 @@ test("an erase can never pass as a door QR or a receipt", () => {
   assert.equal(new Set([door, G.receiptDigest, G.eraseDigest, G.presentationDigest]).size, 4);
 });
 
-test("seal contexts: three distinct labels, bound to the pickup id", () => {
+test("seal contexts: three distinct FROZEN labels, bound to the pickup id", () => {
+  assert.equal(HOLDING_SECRET_SEAL_INFO, "woco/holding/v1/secret");
+  assert.equal(HOLDING_BOX_SEAL_INFO, "woco/holding/v1/box");
+  assert.equal(HOLDING_COPY_SEAL_INFO, "woco/holding/v1/copy");
   assert.equal(new Set([HOLDING_SECRET_SEAL_INFO, HOLDING_BOX_SEAL_INFO, HOLDING_COPY_SEAL_INFO]).size, 3);
-  for (const ctx of [holdingSecretSealContext, holdingBoxSealContext, holdingCopySealContext]) {
+  for (const [ctx, info] of [
+    [holdingSecretSealContext, HOLDING_SECRET_SEAL_INFO],
+    [holdingBoxSealContext, HOLDING_BOX_SEAL_INFO],
+    [holdingCopySealContext, HOLDING_COPY_SEAL_INFO],
+  ] as const) {
     const c = ctx(G.pickupId);
-    assert.equal(c.aad, `${c.info}:${G.pickupId}`);
+    assert.equal(c.info, info);
+    assert.equal(c.aad, `${info}:${G.pickupId}`);
     assert.throws(() => ctx(G.pickupId.toUpperCase()));
     assert.throws(() => ctx(G.pickupId.slice(1)));
   }
