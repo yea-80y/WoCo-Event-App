@@ -60,6 +60,13 @@ export interface TicketEmailOpts {
    *  replies land — the From domain stays platform-owned so a bad organiser
    *  campaign can never tank ticket-delivery reputation (see client.ts). */
   replyTo?: string;
+  /**
+   * A guest's private receipt link (woco-ops/spec-receipt-note-20261123.md 5.2):
+   * `{APP}/#/keep?k=<secret>&b=<box root>`. The secret is in the fragment, so it never
+   * reaches a server when opened. Set only by fulfilment, behind
+   * `FEATURES.holdingReceiptsAllowed`, and never stored or logged.
+   */
+  holdingKeepUrl?: string;
   /** Breadcrumbs stored with the failure if this send is finally abandoned, so
    *  an undelivered PAID ticket can be traced back to its order rather than
    *  being an anonymous line in the ledger. */
@@ -68,7 +75,7 @@ export interface TicketEmailOpts {
 
 /** Canonical app host for email CTAs. Emails are rendered server-side with no
  *  request context, so this cannot come from Origin/Referer. */
-const APP_BASE = (process.env.FRONTEND_URL || "https://woco.eth.limo").replace(/\/$/, "");
+export const APP_BASE = (process.env.FRONTEND_URL || "https://woco.eth.limo").replace(/\/$/, "");
 
 /** Route A signup-landing URL for one ticket, or null when the QR is
  *  unparseable. The token rides in the hash fragment — never sent to any
@@ -180,6 +187,13 @@ export function buildTicketHtml(opts: TicketEmailOpts, media: { hero?: boolean }
             ${multiTicket ? `<p class="note">The button adds your first ticket. Each ticket goes into one account, so friends can add theirs with the link under each ticket.</p>` : ""}
           </div>` : "";
 
+  const receiptBlock = opts.holdingKeepUrl ? `
+          <div class="panel">
+            <div class="panel-title">Your private receipt</div>
+            <p class="panel-copy">Proof you bought ${multiTicket ? "these tickets" : "this ticket"}, that only you can open. Keep it in a free WoCo profile to use it later. Only the button in this email can open it.</p>
+            <a href="${escHtml(opts.holdingKeepUrl)}" class="btn-outline">Keep my receipt</a>
+          </div>` : "";
+
   const detail = (label: string, main?: string, sub?: string) => main ? `
                 <td class="cell" valign="top">
                   <div class="label">${label}</div>
@@ -259,6 +273,7 @@ export function buildTicketHtml(opts: TicketEmailOpts, media: { hero?: boolean }
       </div>` : ""}
       <p class="small">${multiTicket ? "Your tickets are" : "Your ticket is"} also attached to this email as ${multiTicket ? "images" : "an image"}${calendar ? ", with a calendar file" : ""}. ${multiTicket ? "They work" : "It works"} offline, on screen or printed.</p>
       ${ctaBlock}
+      ${receiptBlock}
       <div class="help">
         ${opts.replyTo ? `<div>Questions about the event? Reply to this email to reach the organiser.</div>` : ""}
         <div>Problem with your ticket? Email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>.</div>
@@ -295,6 +310,9 @@ export function buildTicketText(opts: TicketEmailOpts): string {
   });
   if (multi) lines.push("", "Going with friends? Send each person their own ticket. Every ticket lets one person in and the first scan wins.");
   lines.push("", `Your ticket${multi ? "s are" : " is"} also attached to this email.`);
+  if (opts.holdingKeepUrl) {
+    lines.push("", `Your private receipt - proof you bought ${multi ? "these tickets" : "this ticket"}, that only you can open. Keep it in a free WoCo profile: ${opts.holdingKeepUrl}`);
+  }
   if (opts.replyTo) lines.push("Questions about the event? Reply to this email to reach the organiser.");
   lines.push(`Problem with your ticket? Email ${SUPPORT_EMAIL}.`);
   return lines.join("\n") + "\n" + companyFooterText();

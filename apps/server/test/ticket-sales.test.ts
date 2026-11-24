@@ -119,6 +119,37 @@ describe("recording", () => {
   });
 });
 
+describe("ticket receipts (the void list's input)", () => {
+  const D1 = "0x" + "d1".repeat(32);
+  const D2 = "0x" + "d2".repeat(32);
+
+  test("a digest is kept only for a slot this sale minted, only well-formed, once per slot", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [4, 5]);
+    assert.equal(ts.recordSaleReceipts("cs_1", [
+      { slot: 4, digest: D1 },
+      { slot: 9, digest: D2 },
+      { slot: 5, digest: "0x12" },
+      { slot: 5, digest: D2.toUpperCase().replace("0X", "0x") },
+    ]), true);
+    assert.deepEqual(ts.getSale("cs_1")!.receipts, { "4": D1 });
+    ts.recordSaleReceipts("cs_1", [{ slot: 4, digest: D2 }, { slot: 5, digest: D2 }]);
+    assert.deepEqual(ts.getSale("cs_1")!.receipts, { "4": D1, "5": D2 }, "slot 4 keeps its first digest");
+  });
+
+  test("no sale record: nothing recorded, and it says so", () => {
+    assert.equal(ts.recordSaleReceipts("cs_missing", [{ slot: 0, digest: D1 }]), false);
+  });
+
+  test("they persist and reload", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [3]);
+    ts.recordSaleReceipts("cs_1", [{ slot: 3, digest: D1 }]);
+    ts.__resetForTests();
+    assert.deepEqual(ts.getSale("cs_1")!.receipts, { "3": D1 });
+  });
+});
+
 describe("applyRefundState", () => {
   test("a FULL refund voids every slot; a failed one lifts the void again", () => {
     stub();

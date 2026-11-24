@@ -89,6 +89,12 @@ export interface TicketSale {
    */
   orderRef?: string;
   /**
+   * Ticket receipts (woco-ops/spec-receipt-note-20261123.md): slot -> the digest of the
+   * receipt signed for it at the sale, written once. What the signed void list names when
+   * this sale is voided (spec section 6). Opaque hashes: no buyer value is in them.
+   */
+  receipts?: Record<string, string>;
+  /**
    * Minor units WE refunded or tried to (fulfilment's unfilled part, or a
    * tampered session in full). Recorded before the refund call, so the refund
    * event that follows is recognised as ours whatever order things land in.
@@ -306,6 +312,25 @@ export function recordSaleSlots(
   index(sale);
   persist();
   return true;
+}
+
+/**
+ * The receipts fulfilment signed for this sale, by slot. Only for slots this sale minted,
+ * and never overwritten: a receipt is signed once per slot. False when nothing could be
+ * recorded (no sale record, or the write failed).
+ */
+export function recordSaleReceipts(sessionId: string, receipts: Array<{ slot: number; digest: string }>): boolean {
+  ensureLoaded();
+  const sale = store[sessionId];
+  if (!sale) {
+    console.error(`[ticket-sales] receipts for ${sessionId} with no sale record — the void list cannot name them`);
+    return false;
+  }
+  for (const { slot, digest } of receipts) {
+    if (!sale.slots.includes(slot) || !/^0x[0-9a-f]{64}$/.test(digest)) continue;
+    (sale.receipts ??= {})[String(slot)] ??= digest;
+  }
+  return persist();
 }
 
 /** What we refunded ourselves. Only ever grows: one auto-refund per sale, replayed verbatim on retry. */

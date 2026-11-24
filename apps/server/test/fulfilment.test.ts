@@ -23,12 +23,17 @@ import assert from "node:assert/strict";
 import type { EventFeed } from "@woco/shared";
 import { deriveXWingKeypairFromSeed } from "@woco/shared/crypto/xwing";
 import { openBoxJson, orderSealContext } from "@woco/shared/crypto/sealed-box";
+import { Wallet } from "ethers";
+import { holdingPublicValues } from "@woco/shared/holding/derive";
+import { recoverTicketHoldingSigner, signTicketHolding, ticketHoldingDigest } from "@woco/shared/holding/receipt";
 import {
   fulfilPaidSession,
   type FulfilmentDeps,
   type FulfilmentSession,
   type FulfilmentOutcome,
+  type HoldingRequestView,
 } from "../src/lib/stripe/fulfilment.js";
+import type { KeepHoldingInput } from "../src/lib/holding/keep.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -191,7 +196,12 @@ type Step =
   | "registrationSeatingFor"
   | "claimSeatedHold"
   | "batchClaimSeatsOnChain"
-  | "settleSeatedHold";
+  | "settleSeatedHold"
+  | "holdingRequest"
+  | "newHoldingSecret"
+  | "signHolding"
+  | "keepHoldingReceipts"
+  | "recordSaleReceipts";
 
 /** The seated plan the default seated registration is pinned to. */
 const SEAT_PLAN = "0x" + "5d".repeat(32);
@@ -238,6 +248,18 @@ interface FakeOpts {
    * mint ends (default: mints each seat).
    */
   seated?: { planDigest?: string; claim?: ReturnType<FulfilmentDeps["claimSeatedHold"]>; mintThrows?: Error };
+  /**
+   * Ticket receipts (woco-ops/spec-receipt-note-20261123.md): the flag, a signed-in
+   * buyer's checkout request, and what keeping answers (default: a box root, plus a link
+   * for a guest). With `on`, burners are real keys so receipts can be checked.
+   */
+  holding?: {
+    on?: boolean;
+    request?: HoldingRequestView | null;
+    keepReturns?: { boxRoot: string; keepUrl?: string } | null;
+    /** Each burner signs its receipt with some OTHER key: the self-check must drop it. */
+    wrongKey?: boolean;
+  };
 }
 
 function fakeDeps(o: FakeOpts = {}) {
@@ -282,6 +304,11 @@ function fakeDeps(o: FakeOpts = {}) {
   const themeAsked: Array<[string, string]> = [];
   /** Held ticket copies asked for (#983). */
   const holds: Array<Parameters<FulfilmentDeps["holdTicketCopy"]>[0]> = [];
+  /** Ticket receipts: what keeping was handed (the guest secret copied, as fulfilment zeroes it), digests, secrets made, burner addresses. */
+  const kept: Array<{ input: KeepHoldingInput; r?: Uint8Array }> = [];
+  const saleReceipts: Array<{ sessionId: string; receipts: Array<{ slot: number; digest: string }> }> = [];
+  const secrets: Uint8Array[] = [];
+  const burnerAddresses: string[] = [];
   let nextSlot = 0;
   let chunkIdx = 0;
   let burnerSeq = 0;
@@ -367,14 +394,46 @@ function fakeDeps(o: FakeOpts = {}) {
     generateBurner: () => {
       boom("generateBurner");
       const n = burnerSeq++;
+      // With receipts on, a real key, so a receipt's signature can be checked against it.
+      const wallet = o.holding?.on ? Wallet.createRandom() : null;
+      const address = wallet ? wallet.address : `0xburner${n}`;
+      burnerAddresses.push(address.toLowerCase());
       return {
-        address: `0xburner${n}`,
+        address,
         signMessage: async () => {
           calls.push("signMessage");
           if (o.fail === "signMessage" && n === (o.signFailAt ?? 0)) throw new Error("signMessage exploded");
           return `sig${n}`;
         },
+        signHolding: (target, holding) => {
+          boom("signHolding");
+          if (!wallet) throw new Error("fake burner has no key");
+          const signer = o.holding?.wrongKey ? Wallet.createRandom() : wallet;
+          return signTicketHolding(target, holding, Buffer.from(signer.privateKey.slice(2), "hex"));
+        },
       };
+    },
+    holdingReceiptsOn: () => o.holding?.on ?? false,
+    holdingRequest: () => {
+      boom("holdingRequest");
+      return o.holding?.request ?? null;
+    },
+    newHoldingSecret: () => {
+      boom("newHoldingSecret");
+      const r = new Uint8Array(32).map((_, i) => i + 1 + secrets.length);
+      secrets.push(r);
+      return r;
+    },
+    keepHoldingReceipts: async (input) => {
+      // Attempt recorded before the throw; the secret copied, since fulfilment zeroes it after the email.
+      kept.push({ input, ...(input.guest ? { r: input.guest.r.slice() } : {}) });
+      boom("keepHoldingReceipts");
+      if (o.holding?.keepReturns !== undefined) return o.holding.keepReturns;
+      return { boxRoot: "bb".repeat(32), ...(input.guest ? { keepUrl: `https://app.example/#/keep?k=test&b=${"bb".repeat(32)}` } : {}) };
+    },
+    recordSaleReceipts: (sessionId, receipts) => {
+      saleReceipts.push({ sessionId, receipts });
+      boom("recordSaleReceipts");
     },
     batchClaimForOnChain: async (ev, burners, _ref, contract) => {
       boom("batchClaimForOnChain");
@@ -502,7 +561,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries, holds, themeAsked, seatMints, settles };
+  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries, holds, themeAsked, seatMints, settles, kept, saleReceipts, secrets, burnerAddresses };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -1562,4 +1621,127 @@ test("#12: the webhook hands fulfilment the fee its provenance check proved the 
   const { readFileSync } = await import("node:fs");
   const route = readFileSync(new URL("../src/routes/stripe.ts", import.meta.url), "utf8");
   assert.match(route, /fulfilPaidSession\(session, event\.created, liveFulfilmentDeps, verdict\.feeId\)/);
+});
+
+// ---------------------------------------------------------------------------
+// Ticket receipts (woco-ops/spec-receipt-note-20261123.md) - accessories of the sale
+// ---------------------------------------------------------------------------
+
+describe("ticket receipts", () => {
+  const LEDGER2 = { chainId: 42161, address: "0x" + "c3".repeat(20), version: "ledger2" as const };
+  const sale = { ok: true as const, contract: LEDGER2 };
+  const target = { chainId: LEDGER2.chainId, ledger: LEDGER2.address };
+  const ON = { on: true };
+  const RECEIPT_STEPS = ["holdingRequest", "newHoldingSecret", "signHolding", "keepHoldingReceipts", "recordSaleReceipts"];
+
+  function requestFor(seed: number, n: number): HoldingRequestView {
+    const pv = holdingPublicValues(new Uint8Array(32).fill(seed), n);
+    return { holders: pv.holders, answerKeys: pv.answerKeys, nkCommit: pv.nkCommit, pickupId: pv.pickupId, pickupPub: Buffer.from(pv.pickupPub).toString("hex") };
+  }
+
+  test("off: nothing about receipts is asked, signed or emailed", async () => {
+    const { f } = await run({}, { sale });
+    for (const step of RECEIPT_STEPS) assert.ok(!f.calls.includes(step), step);
+    assert.equal(f.kept.length, 0);
+    assert.equal(f.emails[0]!.holdingKeepUrl, undefined);
+  });
+
+  test("not ledger2: no receipt, even with the flag on", async () => {
+    const { f, outcome } = await run({}, { holding: ON });
+    assert.equal(outcome.issued, 2);
+    for (const step of RECEIPT_STEPS) assert.ok(!f.calls.includes(step), step);
+  });
+
+  test("guest: one receipt per ticket, by that ticket's key, over the secret's values; link emailed; secret zeroed", async () => {
+    const { f, outcome } = await run({}, { sale, holding: ON });
+    assert.equal(outcome.issued, 2);
+    assert.equal(f.secrets.length, 1);
+    const pv = holdingPublicValues(f.kept[0]!.r!, 2);
+    const receipts = f.kept[0]!.input.receipts;
+    assert.equal(receipts.length, 2);
+    receipts.forEach(({ holding, sig }, i) => {
+      assert.equal(holding.slot, i);
+      assert.equal(holding.eventId, ON_CHAIN_EVENT_ID);
+      assert.equal(holding.holder, pv.holders[i]);
+      assert.equal(holding.answerKey, pv.answerKeys[i]);
+      assert.equal(holding.nkCommit, pv.nkCommit);
+      assert.equal(recoverTicketHoldingSigner(target, holding, sig), f.burnerAddresses[i]);
+    });
+    assert.deepEqual(f.kept[0]!.input.target, target);
+    assert.equal(f.kept[0]!.input.pickupId, pv.pickupId);
+    assert.equal(f.kept[0]!.input.pickupPub, Buffer.from(pv.pickupPub).toString("hex"));
+    assert.equal(f.kept[0]!.input.guest?.pickupSigner, pv.pickupSigner);
+    assert.equal(f.kept[0]!.input.emailHash, "h(buyer@example.com)");
+    assert.deepEqual(f.saleReceipts[0]!.receipts, receipts.map(({ holding }) => ({ slot: holding.slot, digest: ticketHoldingDigest(target, holding) })));
+    assert.match(f.emails[0]!.holdingKeepUrl ?? "", /#\/keep\?k=/);
+    assert.ok(f.secrets[0]!.every((b) => b === 0), "the secret is zeroed after the email");
+  });
+
+  test("signed in with a request: the buyer's own values, no secret made, no link emailed", async () => {
+    const request = requestFor(7, 2);
+    const { f } = await run({ wallet: BUYER_WALLET }, { sale, holding: { on: true, request } });
+    assert.equal(f.secrets.length, 0);
+    assert.equal(f.kept[0]!.input.guest, undefined);
+    assert.deepEqual(f.kept[0]!.input.receipts.map((x) => x.holding.holder), request.holders);
+    assert.deepEqual(f.kept[0]!.input.receipts.map((x) => x.holding.answerKey), request.answerKeys);
+    assert.equal(f.kept[0]!.input.pickupId, request.pickupId);
+    assert.equal(f.emails[0]!.holdingKeepUrl, undefined);
+  });
+
+  test("signed in without a usable request, with an email: a guest's receipt instead", async () => {
+    for (const request of [null, requestFor(7, 1)]) {
+      const { f } = await run({ wallet: BUYER_WALLET }, { sale, holding: { on: true, request } });
+      assert.equal(f.secrets.length, 1);
+      assert.ok(f.kept[0]!.input.guest);
+      assert.match(f.emails[0]!.holdingKeepUrl ?? "", /#\/keep\?k=/);
+    }
+  });
+
+  test("a sale stopped before the mint: no secret made, nothing asked", async () => {
+    const { f, outcome } = await run({}, { sale, holding: ON, cancellation: "cancelled" });
+    assert.equal(outcome.issued, 0);
+    for (const step of RECEIPT_STEPS) assert.ok(!f.calls.includes(step), step);
+    assert.equal(f.secrets.length, 0);
+  });
+
+  test("no request and no email: no receipt, the sale untouched", async () => {
+    const { f, outcome } = await run({ wallet: BUYER_WALLET, email: null }, { sale, holding: ON });
+    assert.equal(outcome.issued, 2);
+    assert.equal(f.secrets.length, 0);
+    assert.equal(f.kept.length, 0);
+  });
+
+  test("a receipt that does not recover to its key is dropped; the tickets stand", async () => {
+    const { f, outcome } = await run({}, { sale, holding: { on: true, wrongKey: true } });
+    assert.equal(outcome.issued, 2);
+    assert.equal(f.kept.length, 0);
+    assert.equal(f.saleReceipts.length, 0);
+    assert.equal(f.emails[0]!.holdingKeepUrl, undefined);
+  });
+
+  test("keeping returns nothing: no link in the email", async () => {
+    const { f } = await run({}, { sale, holding: { on: true, keepReturns: null } });
+    assert.equal(f.kept.length, 1);
+    assert.equal(f.emails[0]!.holdingKeepUrl, undefined);
+  });
+
+  test("a mid-batch signing failure: receipts only for the tickets issued", async () => {
+    const { f, outcome } = await run({}, { sale, holding: ON, fail: "signMessage", signFailAt: 1 });
+    assert.equal(outcome.issued, 1);
+    assert.equal(f.kept[0]!.input.receipts.length, 1);
+    assert.equal(f.kept[0]!.input.receipts[0]!.holding.slot, 0);
+  });
+
+  for (const step of RECEIPT_STEPS) {
+    test(`${step} throws: every ticket still issued and emailed, nothing refunded`, async () => {
+      const wallet = step === "holdingRequest" ? BUYER_WALLET : undefined;
+      const { f, outcome } = await run({ ...(wallet ? { wallet } : {}) }, { sale, holding: ON, fail: step as Step });
+      assert.equal(outcome.issued, 2);
+      assert.equal(outcome.refund.kind, "not-needed");
+      assert.equal(outcome.email, "sent");
+      if (step === "keepHoldingReceipts" || step === "signHolding" || step === "newHoldingSecret") {
+        assert.equal(f.emails[0]!.holdingKeepUrl, undefined, "no link to a box nobody kept");
+      }
+    });
+  }
 });

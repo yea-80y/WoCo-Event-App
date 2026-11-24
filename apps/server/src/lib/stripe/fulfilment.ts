@@ -35,6 +35,14 @@ import {
   type SitePalette,
 } from "@woco/shared";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+import { holdingPublicValues } from "@woco/shared/holding/derive";
+import {
+  recoverTicketHoldingSigner,
+  ticketHoldingDigest,
+  type HoldingTarget,
+  type TicketHolding,
+} from "@woco/shared/holding/receipt";
+import type { KeepHoldingInput, SignedReceipt } from "../holding/keep.js";
 import type { EventKeys } from "../keyring/event-keys.js";
 import { sellableKeys } from "../keyring/sale-keys.js";
 import { checkSalesWindow } from "../event/sales-window.js";
@@ -71,6 +79,17 @@ export interface FulfilmentSession {
 export interface Burner {
   address: string;
   signMessage(message: string): Promise<string>;
+  /** The ticket receipt (woco-ops/spec-receipt-note-20261123.md section 3): signed while this key owns the slot. */
+  signHolding(target: HoldingTarget, holding: TicketHolding): string;
+}
+
+/** A signed-in buyer's checkout request for a sale (`lib/holding/store.ts`), as fulfilment reads it. */
+export interface HoldingRequestView {
+  holders: string[];
+  answerKeys: string[];
+  nkCommit: string;
+  pickupId: string;
+  pickupPub: string;
 }
 
 /**
@@ -198,6 +217,21 @@ export interface FulfilmentDeps {
    * throw; fenced anyway.
    */
   recordAutoRefund(sessionId: string, amount: number): void;
+
+  /**
+   * Ticket receipts (woco-ops/spec-receipt-note-20261123.md). All accessories of a paid
+   * sale: none may stop a mint, an email or cause a refund.
+   * `holdingReceiptsOn`: `FEATURES.holdingReceiptsAllowed`, zero I/O.
+   * `holdingRequest`: a signed-in buyer's checkout request, or null; throws when unreadable.
+   * `newHoldingSecret`: a guest order's secret (option A), made after payment.
+   * `keepHoldingReceipts`: seal, record, store; never rejects in production.
+   * `recordSaleReceipts`: each slot's receipt digest on the sale record, for the void list.
+   */
+  holdingReceiptsOn(): boolean;
+  holdingRequest(sessionId: string): HoldingRequestView | null;
+  newHoldingSecret(): Uint8Array;
+  keepHoldingReceipts(input: KeepHoldingInput): Promise<{ boxRoot: string; keepUrl?: string } | null>;
+  recordSaleReceipts(sessionId: string, receipts: Array<{ slot: number; digest: string }>): void;
 
   /** Gate binding. THROWS when it cannot persist — fenced here, correct at /redeem. */
   bindTicket(binding: Omit<GateBinding, "boundAt" | "parentAddress"> & { parentAddress: string }): boolean;
@@ -864,6 +898,17 @@ export async function fulfilPaidSession(
     stoppedReason = "Event has no order key on record — not sold";
   }
 
+  // ── 3d. Ticket receipts: which, if any (an accessory; a fault means none) ──
+  let holdingPlan: HoldingPlan | null = null;
+  const holdingReceipts: SignedReceipt[] = [];
+  if (!stoppedReason && isV2 && mintContract) {
+    try {
+      holdingPlan = planHolding(deps, session.id, quantity, !!accountClaim, claimerEmail || undefined, mintContract);
+    } catch (err) {
+      console.error(`[fulfilment] ${session.id}: no receipts for this sale (the sale stands): ${errMessage(err)}`);
+    }
+  }
+
   // ── 4. Mint (the whole block is fenced: an unexpected throw becomes a
   //       stoppedReason, never an escape past the refund) ──
   if (stoppedReason) {
@@ -886,6 +931,8 @@ export async function fulfilPaidSession(
         accountClaim,
         claimedResults,
         ...(seated ? { seated } : {}),
+        ...(holdingPlan ? { holding: holdingPlan } : {}),
+        receipts: holdingReceipts,
         setStopped: (reason) => {
           stoppedReason = reason;
         },
@@ -1131,6 +1178,48 @@ export async function fulfilPaidSession(
   // PNG and shown on the page, and sealed for the door below.
   const buyerName = session.customer_details?.name?.trim() || undefined;
 
+  // ── 7d. Keep the receipts (accessories: fenced, never a refund, never a missed email) ──
+  // Before the email, so a guest's link can name the box. Only a guest's link goes in
+  // the email, and only to the purchase address the sale was made with.
+  let holdingKeepUrl: string | undefined;
+  if (holdingPlan && holdingReceipts.length > 0) {
+    const plan = holdingPlan;
+    try {
+      deps.recordSaleReceipts(
+        session.id,
+        holdingReceipts.map(({ holding }) => ({ slot: holding.slot, digest: ticketHoldingDigest(plan.target, holding) })),
+      );
+    } catch (err) {
+      console.error(`[fulfilment] ${session.id}: receipt digests not recorded — the void list cannot name them: ${errMessage(err)}`);
+    }
+    try {
+      const kept = await deps.keepHoldingReceipts({
+        sessionId: session.id,
+        eventId,
+        seriesId,
+        target: plan.target,
+        receipts: holdingReceipts,
+        pickupId: plan.pickupId,
+        pickupPub: plan.pickupPub,
+        ...(emailHash ? { emailHash } : {}),
+        ...(plan.guest
+          ? {
+              guest: {
+                r: plan.guest.r,
+                holders: plan.holders,
+                answerKeys: plan.answerKeys,
+                nkCommit: plan.nkCommit,
+                pickupSigner: plan.guest.pickupSigner,
+              },
+            }
+          : {}),
+      });
+      if (kept?.keepUrl && claimerEmail) holdingKeepUrl = kept.keepUrl;
+    } catch (err) {
+      console.error(`[fulfilment] ${session.id}: receipts not kept (the sale stands): ${errMessage(err)}`);
+    }
+  }
+
   // ── 8. Deliver ──
   let email: EmailOutcome;
   if (claimedResults.length === 0) {
@@ -1198,6 +1287,7 @@ export async function fulfilPaidSession(
         // a signed-in buyer's single ticket when the add above did not land
         // (#582). Only a ticket that was actually added goes without it.
         profileCta: !accountClaimBound || claimedResults.length > 1,
+        ...(holdingKeepUrl ? { holdingKeepUrl } : {}),
         // The buyer has paid. If every retry and the failover both fail, this
         // is what makes the undelivered ticket findable — see
         // lib/email/failure-ledger.ts.
@@ -1227,6 +1317,10 @@ export async function fulfilPaidSession(
       }
     }
   }
+
+  // A guest's secret has done its one job (the email link): drop it. Best effort - the
+  // link string itself cannot be wiped in JS, and goes out of scope with this call.
+  holdingPlan?.guest?.r.fill(0);
 
   // ── 9. Door entries (fenced: the door list is a convenience, never the sale) ──
   // After the email, so a slow seal delays nothing a buyer waits for.
@@ -1279,7 +1373,62 @@ interface MintV2Args {
   claimedResults: ClaimedTicket[];
   /** Allocated seating: burner i is minted in `seats[i]`, from the claimed hold. */
   seated?: SeatedMint;
+  /** Ticket receipts to sign, by order position (= burner index); absent = none. */
+  holding?: HoldingPlan;
+  /** Filled in place: one receipt per slot signed and checked, in slot order. */
+  receipts: SignedReceipt[];
   setStopped(reason: string): void;
+}
+
+/**
+ * The receipts a sale will carry (woco-ops/spec-receipt-note-20261123.md 5): the values
+ * each ticket's receipt commits to, by order position. For a guest (option A) the order
+ * secret rides along ONLY to build the email link, and is zeroed after the email.
+ */
+interface HoldingPlan {
+  target: HoldingTarget;
+  holders: string[];
+  answerKeys: string[];
+  nkCommit: string;
+  pickupId: string;
+  pickupPub: string;
+  guest?: { r: Uint8Array; pickupSigner: string };
+}
+
+/**
+ * Which receipts, if any. Only on ledger2, the contract card sales mint on. A signed-in
+ * buyer's own request wins; with none (an older client), a buyer with an email address
+ * gets a guest's receipt, its link in that email. Throws only on a store fault: no
+ * receipt then.
+ */
+function planHolding(
+  deps: FulfilmentDeps,
+  sessionId: string,
+  quantity: number,
+  signedIn: boolean,
+  claimerEmail: string | undefined,
+  contract: EventContractTarget,
+): HoldingPlan | null {
+  if (!deps.holdingReceiptsOn() || contract.version !== "ledger2") return null;
+  const target: HoldingTarget = { chainId: contract.chainId, ledger: contract.address.toLowerCase() };
+  if (signedIn) {
+    const q = deps.holdingRequest(sessionId);
+    if (q && q.holders.length === quantity && q.answerKeys.length === quantity) {
+      return { target, holders: q.holders, answerKeys: q.answerKeys, nkCommit: q.nkCommit, pickupId: q.pickupId, pickupPub: q.pickupPub };
+    }
+  }
+  if (!claimerEmail) return null;
+  const r = deps.newHoldingSecret();
+  const pv = holdingPublicValues(r, quantity);
+  return {
+    target,
+    holders: pv.holders,
+    answerKeys: pv.answerKeys,
+    nkCommit: pv.nkCommit,
+    pickupId: pv.pickupId,
+    pickupPub: Buffer.from(pv.pickupPub).toString("hex"),
+    guest: { r, pickupSigner: pv.pickupSigner },
+  };
 }
 
 /** A seated sale's seats, and each one as the hold pinned it (label and parts). */
@@ -1415,6 +1564,30 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean; unre
       ...(pinned?.label ? { seatLabel: pinned.label } : {}),
       ...(pinned?.ticketSeat ? { seat: pinned.ticketSeat } : {}),
     });
+
+    // The receipt, while this key still owns the slot. An accessory: a failure costs
+    // this ticket its receipt, never the ticket. Checked against the key before kept.
+    const plan = a.holding;
+    if (plan) {
+      try {
+        if (i >= plan.holders.length) throw new Error("no receipt values for this ticket");
+        const holding: TicketHolding = {
+          eventId: a.v2OnChainEventId.toLowerCase(),
+          slot,
+          holder: plan.holders[i]!,
+          answerKey: plan.answerKeys[i]!,
+          nkCommit: plan.nkCommit,
+        };
+        const sig = burners[i].signHolding(plan.target, holding);
+        if (recoverTicketHoldingSigner(plan.target, holding, sig) === burners[i].address.toLowerCase()) {
+          a.receipts.push({ holding, sig });
+        } else {
+          console.error(`[fulfilment/v2] receipt for slot ${slot} does not recover to its key — not kept`);
+        }
+      } catch (err) {
+        console.error(`[fulfilment/v2] receipt for slot ${slot} not signed (the ticket stands): ${errMessage(err)}`);
+      }
+    }
   }
   // burners[] goes out of scope here — private keys are unreferenced
   // and eligible for garbage collection.

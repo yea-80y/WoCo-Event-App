@@ -82,6 +82,8 @@ import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { getReservation, releaseForExpiredSession, reservationsPersisting, type Reservation } from "../lib/event/reservation-store.js";
 import { openSeatedSession, seatedCheckoutLines, seatedCheckoutRefusal } from "../lib/seating/seated-checkout.js";
 import { FEATURES } from "@woco/shared";
+import { parseHoldingRequest } from "@woco/shared/holding/request";
+import { recordHoldingRequest } from "../lib/holding/store.js";
 import { validateReturnUrl, getFrontendUrl } from "../lib/stripe/return-url.js";
 import { checkoutRedirectUrls } from "../lib/stripe/checkout-urls.js";
 import { checkoutStatusView, isCheckoutSessionId } from "../lib/stripe/checkout-status.js";
@@ -568,7 +570,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, pageUrl, quantity: rawQty, orderRef, orderRefToken, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketing: rawMarketing } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, pageUrl, quantity: rawQty, orderRef, orderRefToken, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketing: rawMarketing, holding: rawHolding } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
@@ -595,6 +597,13 @@ stripe.post("/create-checkout", async (c) => {
      *  organiser's notice below (an untouched box is a yes in one mode and a no
      *  in the other), and the text against the wording rebuilt here. */
     marketing?: unknown;
+    /**
+     * A signed-in buyer's ticket-receipt request (`@woco/shared/holding/request`): the
+     * order's public values and its secret sealed to the buyer's own key. Read only for a
+     * verified session, behind `FEATURES.holdingReceiptsAllowed`; anything malformed is
+     * ignored (that sale gets no receipt, never a refusal).
+     */
+    holding?: unknown;
   };
   const siteId = typeof rawSiteId === "string" && /^[0-9a-z_-]{10,}$/i.test(rawSiteId) ? rawSiteId : undefined;
   const marketing = parseMarketingChoice(rawMarketing);
@@ -1312,6 +1321,16 @@ stripe.post("/create-checkout", async (c) => {
       session = await createSession();
     }
     const stripeMs = performance.now() - tStripe;
+
+    // Ticket receipts (woco-ops/spec-receipt-note-20261123.md 5.1): a signed-in buyer's
+    // public values, kept for fulfilment under this session. Never in Stripe metadata (too
+    // large), never able to fail the checkout. A guest sends none: fulfilment makes theirs.
+    if (FEATURES.holdingReceiptsAllowed && verifiedAddress && rawHolding !== undefined) {
+      const request = parseHoldingRequest(rawHolding, quantity);
+      if (!request || !recordHoldingRequest({ sessionId: session.id, eventId, seriesId, account: verifiedAddress, request })) {
+        console.warn(`[stripe/create-checkout] ${session.id}: receipt request not kept - this sale gets no receipt`);
+      }
+    }
 
     console.log(
       `[stripe/create-checkout] timings — swarm=${swarmMs.toFixed(0)}ms ` +

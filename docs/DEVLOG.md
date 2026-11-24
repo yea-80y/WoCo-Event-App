@@ -6,6 +6,13 @@ Entries before 2026-09-10 use the retired noun "POD" for what is now called "obj
 
 ---
 
+## 2026-11-24 - Private ticket receipts, slices 1 and 2a (dark: `holdingReceiptsAllowed` off)
+
+- A buyer gets a receipt per ticket that proves they bought it without naming them: signed at mint by the ticket's one-time key, held by the buyer, shown only to whoever they choose. Design and every decision: woco-ops `spec-receipt-note-20261123.md` (owner sign-off 2026-11-23, Fable design sign-off twice).
+- Slice 1 (#1130, WoCo-Contracts #55): the frozen formats in `packages/shared/src/holding/` (derivations from one order secret, receipt, presentation, void list, pickup erase, sealed box), golden vectors pinned in TypeScript and Solidity.
+- Slice 2a: fulfilment signs each receipt on ledger2 and checks it before keeping it; the box is sealed to the order's pickup key, recorded in `.data/holding-receipts/`, and stored on the attendee batch as kind `holding` (the buyer's, 12 months, never filed under the organiser). A guest's secret is made after payment and exists only in the ticket email's Keep link (owner's option A). Every receipt step is an accessory: none can stop a ticket, its email, or cause or skip a refund.
+- Fable code sign-off with conditions, six fixed before merge. What must happen before the flag flips (email click tracking off, holder reuse, health count, per-record due date, erasure by email before store, copy): spec §13a. Next: slice 2b, the pickup / erase / mine routes.
+
 ## 2026-10-27 - Creator directories commit in one write (#950)
 
 - The event index, site directory and object directory paged into overflow feeds rewritten in place; a write failing between them and page 0 tore the directory, and since #949 every later change for that creator was refused until repaired by hand.
