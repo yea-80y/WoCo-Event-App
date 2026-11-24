@@ -143,7 +143,20 @@ test("a file on disk is a sealed box: no address, no batch, nothing but the day 
   assert.deepEqual(Object.keys(onDisk).sort(), ["box", "day", "v"]);
   assert.deepEqual(Object.keys(onDisk.box).sort(), ["ct", "enc", "v"]);
   assert.equal(onDisk.day, "2026-11-22");
+  // The ciphertext is random hex, so a short value such as "4242" turns up in its TEXT by
+  // chance (about 1 file in 25). So: secrets are looked for in everything but the ciphertext;
+  // the ciphertext must be bare hex; and its BYTES must not carry them either, which also
+  // catches a "seal" that merely hex-encodes the plaintext.
+  assert.match(onDisk.box.enc, /^[0-9a-f]+$/);
+  assert.match(onDisk.box.ct, /^[0-9a-f]+$/);
+  const clear = JSON.stringify({ ...onDisk, box: { ...onDisk.box, enc: "", ct: "" } });
+  const ctBytes = Buffer.from(onDisk.box.ct, "hex").toString("latin1");
   for (const secret of [addr(0xabcdef), addr(0x123456), PLATFORM, "4242", "soc", "bytes", "batches"]) {
+    assert.ok(!clear.includes(secret), `"${secret.slice(0, 12)}" is readable in the file`);
+    assert.ok(!ctBytes.includes(secret), `"${secret.slice(0, 12)}" is in the ciphertext's bytes`);
+  }
+  // Long values cannot occur in random hex by chance: the whole file must not carry them.
+  for (const secret of [addr(0xabcdef), addr(0x123456), PLATFORM]) {
     assert.ok(!text.includes(secret), `"${secret.slice(0, 12)}" is readable in the file`);
   }
 });
@@ -189,7 +202,9 @@ test("a seal that never finishes counts as a failed write, and the queue moves o
   const real = (await import("@woco/shared/crypto/sealed-box")).sealBoxJsonCompressed;
   list.__resetStoredAddressesForTest({
     now: () => now,
-    sealTimeoutMs: 30,
+    // The REAL seal below runs under this limit too: at 30 ms it failed about 1 run in 5 on
+    // a busy full-suite machine. 1 s is far above a real seal and well under the 3 s stuck guard.
+    sealTimeoutMs: 1_000,
     seal: (key, body, ctx) => (hang ? new Promise(() => {}) : real(key, body, ctx)),
   });
   soc(1);
@@ -284,10 +299,15 @@ test("the file name carries the day and a random tag: no time of day, no start t
   const realNow = Date.now;
   Date.now = () => 1_800_000_000_000;
   try {
+    // Each run's write settles before the next reset: a reset starts a new write queue, so
+    // a write still in the old one could land after the files are counted (seen under load).
+    // Date.now stays frozen throughout, so the two runs still start in the same millisecond.
     list.__resetStoredAddressesForTest({ now: () => now });
     soc(1);
+    await settle();
     list.__resetStoredAddressesForTest({ now: () => now });
     soc(1);
+    await settle();
   } finally {
     Date.now = realNow;
   }
