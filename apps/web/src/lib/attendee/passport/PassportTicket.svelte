@@ -15,6 +15,7 @@
     size = "row",
     pending = false,
     seat = null,
+    receiptSaved = false,
   }: {
     ticket: Ticket;
     now: number;
@@ -23,6 +24,8 @@
     pending?: boolean;
     /** Allocated seating: where it sits now - printed on the stub, as paper tickets do. */
     seat?: TicketSeat | null;
+    /** Its private receipt is saved in the account (spec-receipt-note 5.1). */
+    receiptSaved?: boolean;
   } = $props();
 
   const seatNote = $derived(seat ? ticketSeatNote(seat) : null);
@@ -68,6 +71,7 @@
       </span>
     {/if}
     {#if when}<span class="when">{when}</span>{/if}
+    {#if receiptSaved}<span class="receipt">Private receipt saved</span>{/if}
   </span>
   <!-- The stub, without the edition: its sequence would tell the buyer how many have sold.
        A seated ticket's stub carries its seat number, as a paper ticket's does. -->
@@ -153,6 +157,7 @@
   .title { font-size: 0.9375rem; font-weight: 600; letter-spacing: -0.01em; }
   .meta { font-size: 0.8125rem; color: var(--text-muted); }
   .when { margin-top: 0.125rem; font-size: 0.75rem; font-weight: 600; color: var(--accent); }
+  .receipt { margin-top: 0.125rem; font-size: 0.75rem; color: var(--text-muted); }
 
   /* Its own class: sharing `.stub` with the card turned the card's grid into flex and
      drew the card's border and mask on the perforation. */

@@ -2,10 +2,11 @@
  * `/api/holdings` - collecting a ticket receipt from the server's copy, and erasing that
  * copy (spec-receipt-note 5.2; server `routes/holdings.ts`).
  *
- * Both calls are UNAUTHENTICATED on purpose: no session headers, so neither links an
- * account to the ticket. Knowing the order's secret is the only authority - the pickup id
- * and the erase signature both come from it. The pickup id travels in the body, never the
- * URL, which reaches access logs.
+ * Pickup and erase are UNAUTHENTICATED on purpose: no session headers, so neither links
+ * an account to the ticket. Knowing the order's secret is the only authority - the pickup
+ * id and the erase signature both come from it. The pickup id travels in the body, never
+ * the URL, which reaches access logs. `mineHoldings` is the one signed call (5.1): the
+ * account's own signed-in sales, already linked to it.
  *
  * Only the route's own `code` says "not found" or "refused" (`HOLDING_API_CODES`): a bare
  * 404 or 403 - a proxy, a CDN error page, a server that predates the route - is "later".
@@ -53,6 +54,76 @@ export type EraseResult =
   | "refused"
   /** Could not erase now: try again later. */
   | "later";
+
+/** One of the signed-in account's own sales the server still holds a receipt for. */
+export interface MineHolding {
+  pickupId: string;
+  /** The order's secret, sealed to the account's order key when it was bought. */
+  sealedR: SealedBoxV2;
+  boxRoot: string;
+  /** Only while the box waits on the server to be stored; otherwise read it from Swarm by `boxRoot`. */
+  box?: SealedBoxV2;
+}
+
+export type MineResult =
+  /** `complete` false: the server could not read every record, so the list may be short. */
+  | { kind: "ok"; holdings: MineHolding[]; complete: boolean }
+  | { kind: "later" };
+
+/**
+ * The account's own signed-in sales whose receipts are still on the server
+ * (`POST /api/holdings/mine`). Session-signed - the one receipt call that is: the server
+ * already links these sales to the account (it was signed in when it bought), so
+ * asking adds nothing. Never starts a sign-in: no session here = "later". A row that is
+ * not well formed is dropped and the list called incomplete. `send`: a test seam.
+ */
+export async function mineHoldings(send: SignedPost = signedPost): Promise<MineResult> {
+  let res;
+  try {
+    res = await withTimeout(send("/api/holdings/mine"));
+  } catch {
+    return { kind: "later" };
+  }
+  const d = res.ok ? res.data : undefined;
+  if (!d || !Array.isArray(d.holdings) || typeof d.complete !== "boolean") return { kind: "later" };
+  let complete = d.complete;
+  const holdings: MineHolding[] = [];
+  for (const row of d.holdings as Record<string, unknown>[]) {
+    const ok =
+      !!row && typeof row === "object" &&
+      typeof row.pickupId === "string" && ROOT_RE.test(row.pickupId) &&
+      typeof row.boxRoot === "string" && ROOT_RE.test(row.boxRoot) &&
+      isSealedBoxV2(row.sealedR) &&
+      (row.box === undefined || isSealedBoxV2(row.box));
+    if (!ok) {
+      complete = false;
+      continue;
+    }
+    holdings.push({
+      pickupId: row.pickupId as string,
+      sealedR: row.sealedR as SealedBoxV2,
+      boxRoot: row.boxRoot as string,
+      ...(row.box === undefined ? {} : { box: row.box as SealedBoxV2 }),
+    });
+  }
+  return { kind: "ok", holdings, complete };
+}
+
+type SignedPost = (path: string) => Promise<{ ok: boolean; data?: { holdings?: unknown; complete?: unknown } }>;
+
+/** Session-signed, and never a new sign-in. Loaded on use: the Keep page's calls carry no session. */
+const signedPost: SignedPost = async (path) => {
+  const { authPost } = await import("./client.js");
+  return authPost<{ holdings?: unknown; complete?: unknown }>(path, {}, undefined, { establish: false });
+};
+
+/** `authPost` has no timeout of its own: a stalled call must not hold a background job for ever. */
+function withTimeout<T>(p: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out")), TIMEOUT_MS);
+    p.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
 
 export async function erasePickup(pickupId: string, issuedAt: number, sig: string): Promise<EraseResult> {
   let res;

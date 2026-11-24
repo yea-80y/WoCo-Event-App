@@ -14,6 +14,8 @@ import { auth } from './lib/auth/auth-store.svelte.js'
 auth.registerUpgradeFlow(() =>
   Promise.all([import('./lib/auth/upgrade-to-passkey.js'), import('./lib/auth/upgrade-to-passkey-live.js')]),
 )
+// The same for the automatic collection of signed-in ticket receipts (spec-receipt-note 5.1).
+auth.registerReceiptCollector(() => import('./lib/holding/collect-live.js'))
 
 const app = mount(App, {
   target: document.getElementById('app')!,

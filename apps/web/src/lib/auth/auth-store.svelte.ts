@@ -504,6 +504,33 @@ function _commitSigner(): void {
   void storeFeedSignerCache(u.seedAddress, u.parent, signer, current, u.chain?.ringRef ?? null).catch((e) =>
     console.warn("[auth] could not keep the feed signer (non-fatal):", e),
   );
+  // The account's keys are confirmed current here: its receipts can be collected.
+  _collectReceiptsSoon();
+}
+
+/**
+ * The automatic collection of signed-in receipts (spec-receipt-note 5.1), registered by
+ * the main app (main.ts) - never imported here, so the deployed-site builds that share
+ * this store do not carry it. It asks for nothing and decides for itself whether to run
+ * (`holding/collect-live.ts`).
+ */
+type ReceiptCollector = { collectInBackground(opts?: { force?: boolean }): Promise<unknown> };
+let _receiptCollector: (() => Promise<ReceiptCollector>) | null = null;
+function registerReceiptCollector(load: () => Promise<ReceiptCollector>): void {
+  _receiptCollector = load;
+}
+
+/** A moment after the trigger: the sign-in it follows finishes first. */
+const RECEIPT_COLLECT_DELAY_MS = 3_000;
+
+function _collectReceiptsSoon(): void {
+  if (!_receiptCollector || !FEATURES.holdingReceiptsAllowed) return;
+  const load = _receiptCollector;
+  setTimeout(() => {
+    void load()
+      .then((m) => m.collectInBackground())
+      .catch((e) => console.warn("[auth] receipt collection not run (tried again at the next sign-in):", e));
+  }, RECEIPT_COLLECT_DELAY_MS);
 }
 
 /** The anchor, cached briefly for the silent paths that ask it often. */
@@ -778,6 +805,8 @@ async function _establishFeedSignerEagerly(): Promise<void> {
   if (_kind !== "web3auth") return;
   try {
     await _getContentFeedSigner({ silent: true });
+    // The seed is on the device: the account's receipts can be collected.
+    _collectReceiptsSoon();
   } catch (e) {
     console.warn("[auth] eager feed-signer establishment failed (non-fatal):", e);
   }
@@ -3734,6 +3763,8 @@ async function ensureSession(): Promise<boolean> {
         void _maybeWritePasskeyRecord();
         void _resumeUpgrade();
       }
+      // The collection needs a session already here; the keys may have come first.
+      _collectReceiptsSoon();
       return true;
     } catch (e) {
       console.error("[auth] session delegation failed:", e);
@@ -5511,6 +5542,7 @@ export const auth = {
   onSessionRevoked,
   onSessionRejected,
   registerUpgradeFlow,
+  registerReceiptCollector,
   upgradeToPasskey,
   cancelPasskeyUpgrade,
   addPasskeyOnThisDevice,

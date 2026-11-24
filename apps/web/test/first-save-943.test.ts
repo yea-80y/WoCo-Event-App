@@ -215,6 +215,45 @@ test("superseded: another device published after the editor loaded - the save re
   assert.equal(out.base?.nextVersion, 2);
 });
 
+test("superseded: the writer waits (`onSuperseded`) between attempts - never before the first, never after the last", async () => {
+  const net: Net = { ourBee: new Map(), etherna: new Map() };
+  install(net);
+  const own = await readOwnNotice(ACCOUNT, signer.address);
+  assert.equal(own.status, "absent");
+  put(net.etherna, soc(idAt(NOTICE, 0), otherDevicesNotice()));
+  const { writeAtNextVersion } = await import("../src/lib/swarm/verified-write.js");
+  const { send, log } = countingTransport(net);
+  const seen: string[] = [];
+  const base = own.status === "absent" ? own.base : null;
+  const args = (sendVia: typeof send) => ({
+    signerPrivKey: signer.privKey,
+    ownerAddress: signer.address,
+    topic: NOTICE,
+    route: FEED_ROUTES.privacyNotice,
+    skipLegacy: true,
+    base,
+    build: () => notice(),
+    inconclusive: "read again",
+    onSuperseded: async (attempt: number) => void seen.push(`wait:${attempt}`),
+    transport: async (b: Parameters<typeof send>[0]) => (seen.push("send"), sendVia(b)),
+  });
+  await writeAtNextVersion(args(send));
+  assert.deepEqual(seen, ["send", "wait:0", "send"]);
+  assert.deepEqual(log.map((s) => s.address), [addressAt(NOTICE, 0), addressAt(NOTICE, 1)]);
+
+  // Beaten at every attempt: it waits between them, and gives up without a last wait.
+  seen.length = 0;
+  const always = countingTransport(net);
+  let v = 2;
+  await assert.rejects(
+    writeAtNextVersion(args(async (b) => {
+      put(net.etherna, soc(idAt(NOTICE, v++), otherDevicesNotice()));
+      return always.send(b);
+    })),
+  );
+  assert.deepEqual(seen, ["send", "wait:0", "send", "wait:1", "send"]);
+});
+
 test("a base read under another signer is never used - the write reads its own feed", async () => {
   // A key-ring rotation can change the signer under an open editor. The old
   // signer's next version on the new signer's feed would leave a gap no reader

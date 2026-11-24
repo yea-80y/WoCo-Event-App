@@ -18,6 +18,7 @@ import { holdingPickupId } from "@woco/shared/holding/derive";
 import {
   addToHoldingIndex,
   holdingGenKeysOf,
+  listHeldOrders,
   moveHoldingCopies,
   readAllHoldingCopies,
   readHoldingCopy,
@@ -397,9 +398,132 @@ test("a generation finds and opens only its own copies", async () => {
   assert.equal(await readHoldingIndex(b, f.io), null);
   assert.equal(await readHoldingCopy(b, holdingPickupId(R1), f.io), null);
   // The same bytes copied under b's signer and topic still do not open: sealed to a's key.
+  // A well-formed box that fails its tag reads as a JAM (Fable 3c PR 1 delta, inherent: the
+  // two cannot be told apart), so with nothing below it b holds no copy - never a's.
   const sealed = f.latest(a.signer.address, holdingCopyTopic(a.salt, holdingPickupId(R1)));
   f.put(b.signer.address, holdingCopyTopic(b.salt, holdingPickupId(R1)), 0, sealed);
-  assert.equal(await readHoldingCopy(b, holdingPickupId(R1), f.io), "unavailable");
+  assert.equal(await readHoldingCopy(b, holdingPickupId(R1), f.io), null);
+  // Listed in b's index all the same, that missing copy keeps a mover from calling b complete.
+  await addToHoldingIndex(b, [holdingIndexEntryOf(holdingPickupId(R1), makeBox(R1, 1))], f.io);
+  assert.equal((await readAllHoldingCopies([b], f.io)).complete, false);
+});
+
+/** Another writer's interleaved pages at `version` of `topic`: a well-formed box that fails its tag. */
+function jamAt(f: ReturnType<typeof fakeFeeds>, owner: string, topic: string, version: number, from: number) {
+  const good = JSON.parse(f.feeds.get(`${owner.slice(2)}|${topic}`)![from]!) as { ct: string };
+  const ct = good.ct.slice(0, 40) + (good.ct[40] === "0" ? "1" : "0") + good.ct.slice(41);
+  f.put(owner, topic, version, { ...good, ct });
+}
+
+test("a jammed copy reads as the newest version below it that opens: one race never stops a mover (Fable 3c PR 1)", async () => {
+  const f = fakeFeeds();
+  const g0 = await gen(S0);
+  const g1 = await gen(S1);
+  const id = holdingPickupId(R1);
+  const topic = holdingCopyTopic(g0.salt, id);
+  await saveHoldingCopy(g0, R1, makeBox(R1, 2), f.io); // copy v0
+  jamAt(f, g0.signer.address, topic, 1, 0);
+  const copy = await readHoldingCopy(g0, id, f.io);
+  assert.ok(copy && copy !== "unavailable" && sameHoldingCopy(copy, holdingCopyOf(R1, makeBox(R1, 2))));
+  assert.deepEqual(f.readsAt, [`${topic}@0`]);
+  assert.equal((await readAllHoldingCopies([g0], f.io)).complete, true);
+  assert.equal(await moveHoldingCopies([g0], g1, f.io), 1);
+
+  // A spent head is walked past only for a race (every chunk found): a page that reads absent stops.
+  const spent = fakeFeeds();
+  await saveHoldingCopy(g0, R1, makeBox(R1, 2), spent.io);
+  spent.put(g0.signer.address, topic, 1, { torn: true });
+  spent.spent.set(topic, 1);
+  assert.ok(sameHoldingCopy((await readHoldingCopy(g0, id, spent.io)) as never, holdingCopyOf(R1, makeBox(R1, 2))));
+  spent.spentBy.set(`${topic}@1`, "missing-page");
+  assert.equal(await readHoldingCopy(g0, id, spent.io), "unavailable");
+
+  // A copy that opens and is in a layout this build does not know is never "none".
+  const newer = fakeFeeds();
+  const { holdingCopySealContext } = await import("@woco/shared/crypto/sealed-box");
+  newer.put(g0.signer.address, topic, 0, await sealBoxJsonCompressed(g0.orderPublicKey, { v: 9 }, holdingCopySealContext(id)));
+  assert.equal(await readHoldingCopy(g0, id, newer.io), "unavailable");
+
+  // Walking down stops on anything uncertain: here, a version below that does not answer.
+  const unsure = fakeFeeds();
+  await saveHoldingCopy(g0, R1, makeBox(R1, 2), unsure.io);
+  jamAt(unsure, g0.signer.address, topic, 1, 0);
+  unsure.failReadsAt.add(`${topic}@0`);
+  assert.equal(await readHoldingCopy(g0, id, unsure.io), "unavailable");
+  assert.equal((await readAllHoldingCopies([g0], unsure.io)).complete, false);
+});
+
+test("a list screen reads every generation's list, shows one the scan could not see past, and says when one is missing", async () => {
+  const f = fakeFeeds();
+  const g0 = await gen(S0);
+  const g1 = await gen(S1);
+  await saveHoldingCopy(g0, R1, makeBox(R1, 1), f.io);
+  await saveHoldingCopy(g0, R2, makeBox(R2, 1, 20), f.io);
+  const remade = makeBox(R1, 1, 50);
+  await saveHoldingCopy(g1, R1, remade, f.io);
+
+  const all = await listHeldOrders([g0, g1], f.io);
+  assert.equal(all.complete, true);
+  const byId = new Map(all.orders.map((o) => [o.pickupId, o]));
+  assert.equal(byId.size, 2);
+  assert.deepEqual(byId.get(holdingPickupId(R1))!.editions, [51], "the newest generation's line wins");
+
+  // The scan stops one version short of g0's head: a mover refuses, a list shows that version.
+  f.dirty.add(indexTopic(g0));
+  assert.equal(await readHoldingIndex(g0, f.io), "unavailable");
+  const early = await listHeldOrders([g0], f.io);
+  assert.deepEqual(early.orders.map((o) => o.pickupId), [holdingPickupId(R1)]);
+  assert.equal(early.complete, true);
+  f.dirty.clear();
+
+  // An unreadable generation: the rest still shows, and the list says it is not whole.
+  f.failReads.add(indexTopic(g1));
+  const part = await listHeldOrders([g0, g1], f.io);
+  assert.equal(part.complete, false);
+  assert.deepEqual(part.orders.map((o) => o.pickupId).sort(), [R1, R2].map((r) => holdingPickupId(r)).sort());
+  // Never written from: reading lists writes nothing.
+  const n = f.writes.length;
+  await listHeldOrders([g0, g1], f.io);
+  assert.equal(f.writes.length, n);
+});
+
+test("saves for one copy signer run one at a time: the copy and its line together; a carry per copy, then the list (Fable 3c PR 1)", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  const to = await gen(S1);
+  const held: string[] = [];
+  let active = 0;
+  let most = 0;
+  const { withWebLock } = await import("../src/lib/utils/web-lock.ts");
+  f.io.exclusive = (owner, save) => {
+    held.push(owner);
+    return withWebLock(`test:${owner}`, async () => {
+      most = Math.max(most, ++active);
+      try {
+        await new Promise((r) => setTimeout(r, 5));
+        return await save();
+      } finally {
+        active--;
+      }
+    }, { timeoutMs: 10_000, locks: null });
+  };
+  const outs = await Promise.all([
+    saveHoldingCopy(k, R1, makeBox(R1, 1), f.io),
+    saveHoldingCopy(k, R2, makeBox(R2, 1, 20), f.io),
+    saveHoldingCopy(k, R3, makeBox(R3, 1, 30), f.io),
+  ]);
+  assert.deepEqual(outs, ["saved", "saved", "saved"]);
+  assert.equal(most, 1, "never two at once");
+  assert.deepEqual(held, [k.signer.address, k.signer.address, k.signer.address].map((a) => a.toLowerCase()));
+  assert.deepEqual(await listed(k, f.io), [R1, R2, R3].map((r) => holdingPickupId(r)).sort());
+  // Each save is one copy version and one list version: none was superseded.
+  assert.equal(f.writes.length, 6);
+
+  held.length = 0;
+  assert.equal(await moveHoldingCopies([k], to, f.io), 3);
+  // The NEW signer's lock, taken per copy and once for the list - never one bound over the
+  // whole carry, which would release it mid-loop (Fable 3c PR 2, 3).
+  assert.deepEqual(held, Array(4).fill(to.signer.address.toLowerCase()));
 });
 
 test("a copy filed under another order's id is refused", async () => {
