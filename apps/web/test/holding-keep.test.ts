@@ -192,8 +192,13 @@ test("pickup: the id in the BODY, no session headers; each answer mapped", async
 
   const box = await sealFor(R, makeBox(R, 1));
   assert.deepEqual((await withFetch(() => json(200, { ok: true, data: { boxRoot: ROOT_A, box } }), () => pickupHolding(id))).out, { kind: "ok", boxRoot: ROOT_A, box });
-  assert.deepEqual((await withFetch(() => json(404, { ok: false }), () => pickupHolding(id))).out, { kind: "not-found" });
+  assert.deepEqual((await withFetch(() => json(404, { ok: false, code: "RECEIPT_NOT_FOUND" }), () => pickupHolding(id))).out, { kind: "not-found" });
   for (const reply of [
+    // A 404 the route did not send - a proxy, a CDN page, a server without the route
+    // (Hono's plain "404 Not Found") - is never "no receipt" (3a carried item 11).
+    () => json(404, { ok: false }),
+    () => new Response("404 Not Found", { status: 404 }),
+    () => json(403, { ok: false, code: "RECEIPTS_OFF" }),
     () => json(503, { ok: false }),
     () => json(429, { ok: false }),
     () => json(200, { ok: true, data: { boxRoot: "zz" } }),
@@ -212,10 +217,49 @@ test("erase: the statement in the BODY, no session headers; each answer mapped",
   assert.ok(seen[0]!.url.endsWith("/api/holdings/pickup/erase") && !seen[0]!.url.includes(id));
   assert.deepEqual(JSON.parse(String(seen[0]!.init.body)), { pickupId: id, issuedAt: 1_800_000_000, sig: "0xsig" });
   assert.deepEqual(Object.keys(seen[0]!.init.headers as Record<string, string>), ["Content-Type"]);
-  for (const [status, want] of [[404, "gone"], [409, "busy"], [403, "refused"], [503, "later"], [429, "later"], [500, "later"]] as const) {
-    assert.equal((await withFetch(() => json(status, { ok: false }), () => erasePickup(id, 1, "0x"))).out, want, String(status));
+  for (const [status, code, want] of [
+    [404, "RECEIPT_NOT_FOUND", "gone"],
+    [409, "RECEIPT_STORING", "busy"],
+    [403, "RECEIPT_ERASE_REFUSED", "refused"],
+    // Only the route's own code decides: the same statuses without it are "later".
+    [404, undefined, "later"],
+    [409, undefined, "later"],
+    [403, undefined, "later"],
+    // Switched off is not a clock problem.
+    [403, "RECEIPTS_OFF", "later"],
+    [409, "RECEIPT_NOT_ISSUED", "later"],
+    [503, undefined, "later"],
+    [429, undefined, "later"],
+    [500, undefined, "later"],
+  ] as const) {
+    const body = code ? { ok: false, code } : { ok: false };
+    assert.equal((await withFetch(() => json(status, body), () => erasePickup(id, 1, "0x"))).out, want, `${status} ${code}`);
   }
+  assert.equal((await withFetch(() => new Response("404 Not Found", { status: 404 }), () => erasePickup(id, 1, "0x"))).out, "later");
   // A 200 that does not say "erased" is not one.
   assert.equal((await withFetch(() => json(200, { ok: true, data: {} }), () => erasePickup(id, 1, "0x"))).out, "later");
   assert.equal((await withFetch(() => { throw new TypeError("offline"); }, () => erasePickup(id, 1, "0x"))).out, "later");
+});
+
+test("both calls give up after a time limit: a stalled connection answers 'later'", async () => {
+  const id = holdingPickupId(R);
+  // Answers only when its signal fires, as a stalled connection would.
+  const stall = (_url: string, init: RequestInit) =>
+    new Promise<Response>((_, reject) => {
+      const signal = init.signal;
+      if (!signal) return reject(new Error("the call carries no time limit"));
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason));
+    });
+  const realTimeout = AbortSignal.timeout;
+  const limits: number[] = [];
+  // Fired at once, so the test does not wait 20 s; the limit asked for is recorded.
+  AbortSignal.timeout = (ms: number) => (limits.push(ms), AbortSignal.abort(new DOMException("timed out", "TimeoutError")));
+  try {
+    assert.deepEqual((await withFetch(stall, () => pickupHolding(id))).out, { kind: "later" });
+    assert.equal((await withFetch(stall, () => erasePickup(id, 1, "0x"))).out, "later");
+  } finally {
+    AbortSignal.timeout = realTimeout;
+  }
+  assert.deepEqual(limits, [20_000, 20_000]);
 });

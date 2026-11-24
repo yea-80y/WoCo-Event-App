@@ -101,6 +101,34 @@ function bumpVersionHint(owner: string, topic: string, version: number): void {
   }
 }
 
+/**
+ * Drop every version and band hint of the feeds whose topic starts with `topicPrefix`,
+ * whoever owns them. For a family whose hints alone say something private: the private
+ * receipt copies' hints count an account's orders and name their chunks (Fable 3a delta),
+ * so sign-out clears them. Returns how many went.
+ */
+export function forgetVersionHintsUnder(topicPrefix: string): number {
+  try {
+    const store = globalThis.localStorage;
+    if (!store) return 0;
+    const doomed: string[] = [];
+    for (let i = 0; i < store.length; i++) {
+      const k = store.key(i);
+      if (!k) continue;
+      const prefix = k.startsWith(HINT_PREFIX) ? HINT_PREFIX : k.startsWith(BAND_HINT_PREFIX) ? BAND_HINT_PREFIX : null;
+      if (!prefix) continue;
+      // `{prefix}{owner}:{topic}`; the owner has no ':'.
+      const rest = k.slice(prefix.length);
+      const sep = rest.indexOf(":");
+      if (sep !== -1 && rest.slice(sep + 1).startsWith(topicPrefix)) doomed.push(k);
+    }
+    for (const k of doomed) store.removeItem(k);
+    return doomed.length;
+  } catch {
+    return 0;
+  }
+}
+
 /** Drop a hint whose version exists nowhere, so it stops costing a server read. */
 function forgetVersionHint(owner: string, topic: string): void {
   try {

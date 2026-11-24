@@ -14,10 +14,17 @@
  * The server is on the read path only while a box waits here to be stored. Once it is
  * on Swarm the answer is its root alone, and the app reads it there (our gateway lists
  * it, #965).
+ *
+ * Every refusal the app acts on carries a `code` (`HOLDING_API_CODES`): a bare 404 from
+ * a proxy or an older server must never read as "no receipt".
+ *
+ * NOTHING HERE LOGS who asked: no address, no account, no pickup id
+ * (`test/holding-routes-no-logging.test.ts`). The per-IP limits keep counts in memory only.
  */
 
 import { Hono, type Context, type Next } from "hono";
 import { FEATURES } from "@woco/shared";
+import { HOLDING_API_CODES } from "@woco/shared/holding/api-codes";
 import { checkErasePickup } from "@woco/shared/holding/pickup";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -52,7 +59,7 @@ function tryLater(c: Context<AppEnv>) {
 
 function storingNow(c: Context<AppEnv>) {
   c.header("Retry-After", "60");
-  return c.json({ ok: false, error: "Your receipt is being saved right now - try again in a minute" }, 409);
+  return c.json({ ok: false, error: "Your receipt is being saved right now - try again in a minute", code: HOLDING_API_CODES.STORING }, 409);
 }
 
 const PICKUP_ID_RE = /^[0-9a-f]{64}$/;
@@ -61,7 +68,7 @@ const MAX_SIG_CHARS = 140;
 
 async function gate(c: Context<AppEnv>, next: Next) {
   if (!FEATURES.holdingReceiptsAllowed) {
-    return c.json({ ok: false, error: "Private ticket receipts are not available yet" }, 403);
+    return c.json({ ok: false, error: "Private ticket receipts are not available yet", code: HOLDING_API_CODES.OFF }, 403);
   }
   await next();
 }
@@ -71,7 +78,7 @@ function notFound(c: Context<AppEnv>) {
   if (holdingStoreUnreadable() > 0) {
     return c.json({ ok: false, error: "Receipts cannot be read right now - try again later" }, 503);
   }
-  return c.json({ ok: false, error: "No receipt with that id" }, 404);
+  return c.json({ ok: false, error: "No receipt with that id", code: HOLDING_API_CODES.NOT_FOUND }, 404);
 }
 
 async function readBody(c: Context<AppEnv>): Promise<Record<string, unknown> | null> {
@@ -131,9 +138,9 @@ export function holdingsRoutes(deps: HoldingsRouteDeps = liveDeps) {
     if (!checkErasePickup({ pickupId, issuedAt, signature: sig, expectedSigner: r.pickupSigner, nowSecs })) {
       // An id `/pickup` calls unknown (unpaid, erased) reads the same here to anyone without its key.
       if (!collectable(r)) return notFound(c);
-      return c.json({ ok: false, error: "Not signed by this receipt's key, or the signature is out of date" }, 403);
+      return c.json({ ok: false, error: "Not signed by this receipt's key, or the signature is out of date", code: HOLDING_API_CODES.ERASE_REFUSED }, 403);
     }
-    if (!r.issued) return c.json({ ok: false, error: "There is no receipt to erase yet" }, 409);
+    if (!r.issued) return c.json({ ok: false, error: "There is no receipt to erase yet", code: HOLDING_API_CODES.NOT_ISSUED }, 409);
     const root = r.issued.boxRoot;
     if (isHoldingBoxStoring(root)) return storingNow(c);
 

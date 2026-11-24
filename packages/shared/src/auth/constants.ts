@@ -59,6 +59,10 @@ export const StorageKeys = {
   // Kernel override, and never a seed derived from this passkey.
   DEVICE_KERNEL_BINDING: "woco:auth:device-kernel",
   PASSKEY_CREDENTIAL: "woco:auth:passkey-credential",
+  // A private ticket receipt kept on this device (spec-receipt-note 5.2): one entry per
+  // order at `${HOLDING_DEVICE}:{pickupId}`, the order's secret and its checked box under
+  // the device key. Not account data: a guest has no account. Deleted at sign-out.
+  HOLDING_DEVICE: "woco:holding:device",
   // Which way in this device last used, "passkey" | "email" - written at sign-out from
   // the committed kind, kept after it like the pin above. The sign-in sheet's "Last used"
   // and its first-visit chooser read it (sign-in-hint.ts); nothing else may.

@@ -52,6 +52,18 @@ export async function delKV(key: string): Promise<void> {
   });
 }
 
+/** Every key that starts with `prefix`. */
+export async function listKeys(prefix: string): Promise<string[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readonly");
+    const req = tx.objectStore(IDB_STORE).getAllKeys(IDBKeyRange.bound(prefix, `${prefix}￿`));
+    // The range already holds only keys starting with `prefix`.
+    req.onsuccess = () => resolve((req.result as IDBValidKey[]).filter((k): k is string => typeof k === "string"));
+    req.onerror = () => reject(req.error);
+  });
+}
+
 export async function clearAll(): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {

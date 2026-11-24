@@ -5308,6 +5308,17 @@ async function logout(opts: { force?: boolean } = {}): Promise<void> {
     await logoutCoinbase();
   }
   await clearAllAuth();
+  // Every sign-out - the person's, or a forced one, which is always a security decision
+  // (a revoked session, this passkey removed, an orphan refused): every private receipt
+  // kept on this device goes, so a shared or lost device keeps none (spec-receipt-note
+  // 5.2). Not in `clearAllAuth` itself: it also runs at boot for a stale session, where a
+  // Keep link opened seconds earlier must survive (Fable 3b condition 2). Opened on a
+  // device that was just revoked, that link goes too; the page then says to reopen it.
+  try {
+    await (await import("../holding/device-store.js")).forgetAllDeviceReceipts();
+  } catch (e) {
+    console.warn('[auth] sign-out step "holding-device" failed (continuing):', e);
+  }
 }
 
 async function clearAllAuth(): Promise<void> {
@@ -5396,6 +5407,19 @@ async function clearAllAuth(): Promise<void> {
   await step("aa-sessions", () => delKV(StorageKeys.WOCO_AA_SESSION));
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
   await step("user-caches", () => cacheClearByPrefix(USER_SCOPED_PREFIXES));
+  // Private ticket receipts (spec-receipt-note 5.2): the feed hints that count this
+  // account's saved receipts and name their chunks (Fable 3a delta), and the receipts
+  // kept on this device that are already saved in an account or no longer open (Fable
+  // 3b delta). Not the unsaved ones: this also runs at boot for a stale session, and a
+  // Keep link opened seconds earlier must survive it. A sign-out takes those (`logout`).
+  await step("holding-hints", async () => {
+    const [{ forgetVersionHintsUnder }, { HOLDING_TOPIC_PREFIX }] = await Promise.all([
+      import("../swarm/content-feed.js"),
+      import("@woco/shared/holding/copy"),
+    ]);
+    forgetVersionHintsUnder(HOLDING_TOPIC_PREFIX);
+  });
+  await step("holding-device-saved", async () => (await import("../holding/device-store.js")).forgetSavedDeviceReceipts());
   // A pending empty-accounts logout must not fire into the NEXT sign-in (#186).
   if (_emptyAccountsTimer) {
     clearTimeout(_emptyAccountsTimer);
