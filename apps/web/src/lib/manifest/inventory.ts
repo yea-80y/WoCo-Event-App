@@ -32,6 +32,7 @@ import {
   type SocTransport,
 } from "../swarm/content-feed.js";
 import { FEED_ROUTES, type FeedRoute } from "../swarm/gateways.js";
+import { withWebLock, type WebLocks } from "../utils/web-lock.js";
 import { openFromSelf, sealToSelf } from "./self-seal.js";
 import { mergeFeedEntry, removeFeedEntry, restoreFeedEntry, retireBackupEntries, retireOneBackupEntry } from "./ops.js";
 
@@ -189,11 +190,7 @@ async function manifestBaseForWrite(args: {
 export const MANIFEST_EDIT_TIMEOUT_MS = 120_000;
 
 /** The part of the Web Locks API used here. */
-export interface ManifestLocks {
-  request<T>(name: string, callback: () => Promise<T>): Promise<T>;
-}
-
-const chains = new Map<string, Promise<unknown>>();
+export type ManifestLocks = WebLocks;
 
 /**
  * One read-modify-write of `owner`'s manifest at a time.
@@ -213,28 +210,12 @@ export function withManifestLock<T>(
   edit: () => Promise<T>,
   opts: { timeoutMs?: number; locks?: ManifestLocks | null } = {},
 ): Promise<T> {
-  const name = `woco:manifest:${owner.toLowerCase()}`;
   const timeoutMs = opts.timeoutMs ?? MANIFEST_EDIT_TIMEOUT_MS;
-  const bounded = (): Promise<T> =>
-    new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`manifest update did not finish within ${Math.round(timeoutMs / 1000)}s`)),
-        timeoutMs,
-      );
-      edit().then(resolve, reject).finally(() => clearTimeout(timer));
-    });
-  const locks = opts.locks === undefined
-    ? (globalThis as { navigator?: { locks?: ManifestLocks } }).navigator?.locks
-    : opts.locks;
-  if (locks) return locks.request(name, bounded);
-
-  const run = (chains.get(name) ?? Promise.resolve()).then(bounded, bounded);
-  const tail = run.then(() => undefined, () => undefined);
-  chains.set(name, tail);
-  void tail.then(() => {
-    if (chains.get(name) === tail) chains.delete(name);
+  return withWebLock(`woco:manifest:${owner.toLowerCase()}`, edit, {
+    timeoutMs,
+    locks: opts.locks,
+    timeoutMessage: `manifest update did not finish within ${Math.round(timeoutMs / 1000)}s`,
   });
-  return run;
 }
 
 // Backup reads live in backup-inventory.ts (#166 item 4): every consumer of the

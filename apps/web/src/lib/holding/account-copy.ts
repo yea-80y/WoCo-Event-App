@@ -48,6 +48,16 @@ export interface HoldingFeedIO {
   read(owner: string, topic: string): Promise<ContentFeedResult<unknown>>;
   /** A thorough read of one known version (`readContentFeedAtVersion`): walking a jammed list down. */
   readAt(owner: string, topic: string, version: number): Promise<ContentFeedResult<unknown>>;
+  /**
+   * Run `save` as the only receipt save for `owner` (a generation's copy signer) in this
+   * browser: two tabs saving at once race at the same versions and can jam them
+   * (Fable 3c PR 1). Absent = no lock (tests).
+   */
+  exclusive?<T>(owner: string, save: () => Promise<T>): Promise<T>;
+}
+
+function exclusively<T>(io: HoldingFeedIO, owner: string, save: () => Promise<T>): Promise<T> {
+  return io.exclusive ? io.exclusive(owner.toLowerCase(), save) : save();
 }
 
 /**
@@ -110,17 +120,6 @@ async function openAs<T>(
 // Reading
 // ---------------------------------------------------------------------------
 
-/**
- * A found version that is CERTAINLY the latest. A scan that could not see past it
- * (`scanClean` false) may have stopped short of the head: a list read one version early
- * misses the orders added since, and a mover would carry less and call it complete.
- */
-function headOf(read: ContentFeedResult<unknown>): { value: unknown } | null | "unavailable" {
-  if (read.status === "absent") return null;
-  if (read.status !== "found" || !read.scanClean) return "unavailable";
-  return { value: read.value };
-}
-
 type Opened<T> = { kind: "ok"; value: T } | { kind: "jammed" } | { kind: "newer" } | { kind: "unavailable" };
 
 /**
@@ -168,33 +167,38 @@ async function openOrWhy<T>(
 }
 
 /**
- * The generation's list as of `read`, a thorough read of its head: null when it has none,
- * "newer" when it is in a layout this build does not know, "unavailable" when it could
- * not be read for certain.
+ * A sealed feed's value as of `read`, a thorough read of its head - the list, or one
+ * order's copy: null when it has none, "newer" when it is in a layout this build does not
+ * know, "unavailable" when it could not be read for certain.
  *
  * A head whose chunks were all found but do not make one value (`spentByRace`), or make a
  * box that fails its tag, is JAMMED (Fable 3a, 5): two writers raced at one version and
  * their pages interleaved (a version is written once and keeps the first bytes of each
  * page). No save ever counted on a jammed version - a save is confirmed only when its own
- * bytes read back whole and open - so the list is the newest earlier version that opens,
- * and the next save goes on top of the jam. Below version 0 that is the empty list.
+ * bytes read back whole and open - so the value is the newest earlier version that opens,
+ * and the next save goes on top of the jam. Below version 0 there is none.
  * Anything uncertain stops: an unanswered read, a page that reads absent, a scan that may
  * not have reached the head, a gap below a version that exists, a key fault, a walk past
  * `HOLDING_INDEX_WALK_MAX`.
+ *
+ * `forList`: for a screen that only SHOWS what is there (Profile > Tickets), a head the
+ * scan could not see past is taken as it is - the last good list, perhaps one version
+ * early - instead of nothing (Fable 3a delta). Never for a save or a mover.
  */
-async function indexAsOf(
+async function latestAsOf<T>(
   keys: HoldingGenKeys,
   topic: string,
   read: ContentFeedResult<unknown>,
   io: HoldingFeedIO,
-): Promise<HoldingIndexV1 | null | "newer" | "unavailable"> {
-  const s = await shared();
-  const ctx = s.holdingIndexSealContext(topic);
+  ctx: { info: string; aad: string },
+  parse: (x: unknown) => T | null,
+  opts: { forList?: boolean } = {},
+): Promise<T | null | "newer" | "unavailable"> {
   let jammedAt: number;
   if (read.status === "absent") return null;
   if (read.status === "found") {
-    if (!read.scanClean) return "unavailable";
-    const head = await openOrWhy(keys, read.value, ctx, s.parseHoldingIndex);
+    if (!read.scanClean && !opts.forList) return "unavailable";
+    const head = await openOrWhy(keys, read.value, ctx, parse);
     if (head.kind === "ok") return head.value;
     if (head.kind !== "jammed") return head.kind;
     jammedAt = read.version;
@@ -208,7 +212,7 @@ async function indexAsOf(
       .readAt(keys.signer.address, topic, v)
       .catch(() => ({ status: "unavailable" as const }));
     if (at.status === "found") {
-      const opened = await openOrWhy(keys, at.value, ctx, s.parseHoldingIndex);
+      const opened = await openOrWhy(keys, at.value, ctx, parse);
       if (opened.kind === "ok") return opened.value;
       if (opened.kind !== "jammed") return opened.kind;
       continue;
@@ -219,24 +223,73 @@ async function indexAsOf(
   return null;
 }
 
-/** The generation's index: null when it has none, "unavailable" when it could not be read or opened. */
-export async function readHoldingIndex(keys: HoldingGenKeys, io: HoldingFeedIO): Promise<HoldingIndexV1 | null | "unavailable"> {
+/** The generation's list as of `read` (`latestAsOf`). */
+async function indexAsOf(
+  keys: HoldingGenKeys,
+  topic: string,
+  read: ContentFeedResult<unknown>,
+  io: HoldingFeedIO,
+  opts: { forList?: boolean } = {},
+): Promise<HoldingIndexV1 | null | "newer" | "unavailable"> {
+  const s = await shared();
+  return latestAsOf(keys, topic, read, io, s.holdingIndexSealContext(topic), s.parseHoldingIndex, opts);
+}
+
+/**
+ * The generation's index: null when it has none, "unavailable" when it could not be read
+ * or opened. `forList`: see `latestAsOf` - never for a save or a mover.
+ */
+export async function readHoldingIndex(
+  keys: HoldingGenKeys,
+  io: HoldingFeedIO,
+  opts: { forList?: boolean } = {},
+): Promise<HoldingIndexV1 | null | "unavailable"> {
   const s = await shared();
   const topic = s.holdingIndexTopic(keys.salt);
   const read = await io.read(keys.signer.address, topic).catch((): ContentFeedResult<unknown> => ({ status: "unavailable" }));
-  const index = await indexAsOf(keys, topic, read, io);
+  const index = await indexAsOf(keys, topic, read, io, opts);
   // A list in a layout this build cannot read is never "none": a write on top would drop its orders.
   return index === "newer" ? "unavailable" : index;
 }
 
-/** One order's copy: null when there is none, "unavailable" when it could not be read or opened. */
+/**
+ * One order's copy: null when there is none, "unavailable" when it could not be read or
+ * opened. A jammed copy reads as the newest version below it that opens (`latestAsOf`):
+ * two devices collecting the same order at once can jam it, and one unreadable copy would
+ * otherwise stop every mover until that order was saved again (Fable 3c PR 1).
+ */
 export async function readHoldingCopy(keys: HoldingGenKeys, pickupId: string, io: HoldingFeedIO): Promise<HoldingCopyV1 | null | "unavailable"> {
   const s = await shared();
   const topic = s.holdingCopyTopic(keys.salt, pickupId);
-  const read = headOf(await io.read(keys.signer.address, topic).catch(() => ({ status: "unavailable" as const })));
-  if (read === null || read === "unavailable") return read;
-  const copy = await openAs(keys, read.value, s.holdingCopySealContext(pickupId), s.parseHoldingCopy);
-  return copy && (await copyIsFor(copy, pickupId)) ? copy : "unavailable";
+  const read = await io.read(keys.signer.address, topic).catch((): ContentFeedResult<unknown> => ({ status: "unavailable" }));
+  const copy = await latestAsOf(keys, topic, read, io, s.holdingCopySealContext(pickupId), s.parseHoldingCopy);
+  if (copy === null || copy === "unavailable") return copy;
+  if (copy === "newer") return "unavailable";
+  return (await copyIsFor(copy, pickupId)) ? copy : "unavailable";
+}
+
+/**
+ * The orders the account's lists name, across `gens` (newest LAST; the newest
+ * generation's line for an order wins), for a screen that only shows them: read
+ * `forList`, never written from. `complete` is false when any list could not be read.
+ */
+export async function listHeldOrders(gens: HoldingGenKeys[], io: HoldingFeedIO): Promise<{ orders: HoldingIndexEntry[]; complete: boolean }> {
+  const seen = new Set<string>();
+  const orders: HoldingIndexEntry[] = [];
+  let complete = true;
+  for (const keys of [...gens].reverse()) {
+    const index = await readHoldingIndex(keys, io, { forList: true });
+    if (index === "unavailable") {
+      complete = false;
+      continue;
+    }
+    for (const entry of index?.orders ?? []) {
+      if (seen.has(entry.pickupId)) continue;
+      seen.add(entry.pickupId);
+      orders.push(entry);
+    }
+  }
+  return { orders, complete };
 }
 
 /** The copy's secret is the order's: what it is filed under. */
@@ -364,8 +417,11 @@ export async function saveHoldingCopy(keys: HoldingGenKeys, r: Uint8Array, box: 
   ]);
   const checked = checkedHoldingBox(r, box).box;
   const copy = s.holdingCopyOf(r, checked);
-  if ((await writeHoldingCopy(keys, copy, io)) !== "saved") return "unconfirmed";
-  return addToHoldingIndex(keys, [s.holdingIndexEntryOf(holdingPickupId(r), checked)], io);
+  const entry = s.holdingIndexEntryOf(holdingPickupId(r), checked);
+  return exclusively(io, keys.signer.address, async () => {
+    if ((await writeHoldingCopy(keys, copy, io)) !== "saved") return "unconfirmed";
+    return addToHoldingIndex(keys, [entry], io);
+  });
 }
 
 /** What `readAllHoldingCopies` found, for `writeHoldingCopies`. */
@@ -380,12 +436,14 @@ export async function writeHoldingCopies(to: HoldingGenKeys, copies: SavedHoldin
   // Not even a read for an account with none: a thorough read of a never-written feed can
   // come back inconclusive, and that would hold a passkey removal open for nothing.
   if (copies.length === 0) return;
-  for (const { copy } of copies) {
-    if ((await writeHoldingCopy(to, copy, io)) !== "saved") throw new HoldingSaveError("a saved receipt could not be confirmed yet - try again later");
-  }
-  if ((await addToHoldingIndex(to, copies.map((c) => c.entry), io)) !== "saved") {
-    throw new HoldingSaveError("your receipt list could not be confirmed yet - try again later");
-  }
+  await exclusively(io, to.signer.address, async () => {
+    for (const { copy } of copies) {
+      if ((await writeHoldingCopy(to, copy, io)) !== "saved") throw new HoldingSaveError("a saved receipt could not be confirmed yet - try again later");
+    }
+    if ((await addToHoldingIndex(to, copies.map((c) => c.entry), io)) !== "saved") {
+      throw new HoldingSaveError("your receipt list could not be confirmed yet - try again later");
+    }
+  });
 }
 
 /**

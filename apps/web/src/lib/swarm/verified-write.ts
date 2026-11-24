@@ -325,6 +325,11 @@ export async function writeAtNextVersion<T, R = unknown>(args: {
   /** May be async: a sealed document is opened and sealed again per attempt. */
   build: (read: ContentFeedResult<R>) => T | Promise<T>;
   inconclusive: string;
+  /**
+   * Awaited after a `superseded` attempt, before the next read. Two writers that keep
+   * meeting at the same version stay in lockstep without it; a random wait parts them.
+   */
+  onSuperseded?: (attempt: number) => Promise<void>;
   /** Test seam - production always posts to our server. */
   transport?: SocTransport;
 }): Promise<{ data: T; written: Exclude<VerifiedWriteResult, { status: "superseded" }> }> {
@@ -361,6 +366,7 @@ export async function writeAtNextVersion<T, R = unknown>(args: {
     });
     if (written.status !== "superseded") return { data, written };
     base = null;
+    if (args.onSuperseded && attempt + 1 < BASE_WRITE_ATTEMPTS) await args.onSuperseded(attempt);
   }
   throw new Error(SUPERSEDED_MESSAGE);
 }
