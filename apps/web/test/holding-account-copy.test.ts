@@ -1,0 +1,300 @@
+/**
+ * The buyer's own receipt copies (`src/lib/holding/account-copy.ts`, spec-receipt-note 5.1):
+ * saved and read back before they count, found only under their own generation's keys,
+ * never written over an index that cannot be read, and carried whole to new keys.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import {
+  holdingCopyOf,
+  holdingCopyTopic,
+  holdingIndexEntryOf,
+  holdingIndexTopic,
+  sameHoldingCopy,
+} from "@woco/shared/holding/copy";
+import { holdingIndexSealContext, openBoxJson, sealBoxJsonCompressed } from "@woco/shared/crypto/sealed-box";
+import { holdingPickupId } from "@woco/shared/holding/derive";
+import {
+  addToHoldingIndex,
+  holdingGenKeysOf,
+  moveHoldingCopies,
+  readAllHoldingCopies,
+  readHoldingCopy,
+  readHoldingIndex,
+  saveHoldingCopy,
+  writeHoldingCopies,
+  writeHoldingCopy,
+  type HoldingGenKeys,
+} from "../src/lib/holding/account-copy.ts";
+import { fakeFeeds, makeBox, secret } from "./holding-fixture.ts";
+
+const S0 = `0x${"31".repeat(32)}`;
+const S1 = `0x${"32".repeat(32)}`;
+const S2 = `0x${"33".repeat(32)}`;
+const R1 = secret(1);
+const R2 = secret(2);
+const R3 = secret(3);
+
+const gen = (s: string) => holdingGenKeysOf(s);
+
+function indexTopic(k: HoldingGenKeys) {
+  return holdingIndexTopic(k.salt);
+}
+
+test("a generation's keys come from its secret: signer, order key and salt", async () => {
+  const a = await gen(S0);
+  const b = await gen(S1);
+  assert.match(a.signer.address, /^0x[0-9a-f]{40}$/);
+  assert.notEqual(a.signer.address, b.signer.address);
+  assert.notEqual(bytesToHex(a.salt), bytesToHex(b.salt));
+  assert.notEqual(bytesToHex(a.orderPublicKey), bytesToHex(b.orderPublicKey));
+  assert.deepEqual(await gen(S0.slice(2)), a, "with or without 0x");
+});
+
+test("save: the copy and its index line land, and read back as saved", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  const box = makeBox(R1, 2);
+  assert.equal(await saveHoldingCopy(k, R1, box, f.io), "saved");
+
+  const copy = await readHoldingCopy(k, holdingPickupId(R1), f.io);
+  assert.ok(copy && copy !== "unavailable");
+  assert.ok(sameHoldingCopy(copy, holdingCopyOf(R1, box)));
+  const index = await readHoldingIndex(k, f.io);
+  assert.deepEqual(index, { v: 1, orders: [holdingIndexEntryOf(holdingPickupId(R1), box)] });
+
+  // Stored under the generation's own signer, at salted topics, sealed: no secret in the clear.
+  for (const w of f.writes) assert.equal(w.owner, k.signer.address);
+  assert.deepEqual(f.writes.map((w) => w.topic).sort(), [holdingCopyTopic(k.salt, holdingPickupId(R1)), indexTopic(k)].sort());
+  const stored = [...f.feeds.values()].flat().join("");
+  assert.ok(!stored.includes(bytesToHex(R1)), "the order secret in the clear");
+  assert.ok(!stored.includes(holdingPickupId(R1)), "the pickup id in the clear");
+});
+
+test("save again: nothing is written when the same copy and line are already there", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  const box = makeBox(R1, 2);
+  await saveHoldingCopy(k, R1, box, f.io);
+  const n = f.writes.length;
+  // Another receipt order in the array, same receipts: still the same copy.
+  assert.equal(await saveHoldingCopy(k, R1, { v: 1, receipts: [...box.receipts].reverse() }, f.io), "saved");
+  assert.equal(f.writes.length, n);
+});
+
+test("a re-made box goes on top: the copy's next version, the line replaced", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  await saveHoldingCopy(k, R1, makeBox(R1, 2), f.io);
+  const remade = makeBox(R1, 2, 40);
+  assert.equal(await saveHoldingCopy(k, R1, remade, f.io), "saved");
+  const copy = await readHoldingCopy(k, holdingPickupId(R1), f.io);
+  assert.ok(copy && copy !== "unavailable" && sameHoldingCopy(copy, holdingCopyOf(R1, remade)));
+  const index = await readHoldingIndex(k, f.io);
+  assert.ok(index && index !== "unavailable");
+  assert.deepEqual(index.orders.map((e) => e.editions), [[41, 42]]);
+});
+
+test("two orders: the index lists both, each copy under its own topic", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io);
+  await saveHoldingCopy(k, R2, makeBox(R2, 3, 20), f.io);
+  const index = await readHoldingIndex(k, f.io);
+  assert.ok(index && index !== "unavailable");
+  assert.deepEqual(index.orders.map((e) => e.pickupId).sort(), [holdingPickupId(R1), holdingPickupId(R2)].sort());
+  const all = await readAllHoldingCopies([k], f.io);
+  assert.equal(all.complete, true);
+  assert.equal(all.copies.length, 2);
+});
+
+test("another tab's index line, written at the version we aimed for, survives our save", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io);
+  const topic = indexTopic(k);
+  const theirs = { v: 1, orders: [holdingIndexEntryOf(holdingPickupId(R1), makeBox(R1, 1)), holdingIndexEntryOf(holdingPickupId(R3), makeBox(R3, 1, 30))] };
+  const sealedTheirs = await sealBoxJsonCompressed(k.orderPublicKey, theirs, holdingIndexSealContext(topic));
+  let raced = false;
+  f.beforeWrite = (owner, t, version) => {
+    if (t === topic && !raced) {
+      raced = true;
+      f.put(owner, t, version, sealedTheirs);
+    }
+  };
+  assert.equal(await saveHoldingCopy(k, R2, makeBox(R2, 1, 20), f.io), "saved");
+  assert.ok(raced);
+  const index = await readHoldingIndex(k, f.io);
+  assert.ok(index && index !== "unavailable");
+  assert.deepEqual(index.orders.map((e) => e.pickupId).sort(), [R1, R2, R3].map((r) => holdingPickupId(r)).sort());
+});
+
+test("an index that cannot be read or opened is never written over", async () => {
+  const k = await gen(S0);
+  // Unreadable right now.
+  const f = fakeFeeds();
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io);
+  f.failReads.add(indexTopic(k));
+  const before = f.writes.length;
+  await assert.rejects(saveHoldingCopy(k, R2, makeBox(R2, 1, 20), f.io));
+  assert.equal(f.writes.filter((w) => w.topic === indexTopic(k)).length, f.writes.slice(0, before).filter((w) => w.topic === indexTopic(k)).length);
+  assert.equal(await readHoldingIndex(k, f.io), "unavailable");
+
+  // Present but not ours to open (sealed under another generation's key).
+  const g = fakeFeeds();
+  const other = await gen(S1);
+  g.put(k.signer.address, indexTopic(k), 0, await sealBoxJsonCompressed(other.orderPublicKey, { v: 1, orders: [] }, holdingIndexSealContext(indexTopic(k))));
+  await assert.rejects(addToHoldingIndex(k, [holdingIndexEntryOf(holdingPickupId(R2), makeBox(R2, 1))], g.io));
+  assert.equal(g.writes.length, 0);
+  assert.equal(await readHoldingIndex(k, g.io), "unavailable");
+});
+
+test("an index whose latest version is spent is never rebuilt from nothing", async () => {
+  // The writer could write past it (`unusableAt`), but what it held is unknown: building
+  // the next version from an empty list would drop every order it listed.
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  f.spent.set(indexTopic(k), 0);
+  await assert.rejects(saveHoldingCopy(k, R1, makeBox(R1, 1), f.io), /could not be read/);
+  assert.equal(f.writes.filter((w) => w.topic === indexTopic(k)).length, 0);
+});
+
+test("a save whose sealed bytes do not open under the account's key is not saved", async () => {
+  // A key pair that does not match (a bug, not an attack): caught before anything trusts it.
+  const f = fakeFeeds();
+  const k = { ...(await gen(S0)), orderPublicKey: (await gen(S1)).orderPublicKey };
+  await assert.rejects(writeHoldingCopy(k, holdingCopyOf(R1, makeBox(R1, 1)), f.io), /saved receipt does not open/);
+  await assert.rejects(saveHoldingCopy(k, R1, makeBox(R1, 1), f.io), /does not open/);
+  const g = fakeFeeds();
+  const good = await gen(S0);
+  await saveHoldingCopy(good, R1, makeBox(R1, 1), g.io);
+  await assert.rejects(addToHoldingIndex(k, [holdingIndexEntryOf(holdingPickupId(R2), makeBox(R2, 1))], g.io), /does not open/);
+});
+
+test("an unconfirmed copy is not saved, and its index line is not written", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  f.unconfirmAfter = 0;
+  assert.equal(await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io), "unconfirmed");
+  assert.equal(f.writes.filter((w) => w.topic === indexTopic(k)).length, 0);
+  // The bytes did land: the next attempt finds them and only adds the line.
+  f.unconfirmAfter = Infinity;
+  assert.equal(await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io), "saved");
+  assert.equal(f.writes.filter((w) => w.topic !== indexTopic(k)).length, 1);
+});
+
+test("an unconfirmed index line is not saved", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  f.unconfirmAfter = 1;
+  assert.equal(await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io), "unconfirmed");
+});
+
+test("a generation finds and opens only its own copies", async () => {
+  const f = fakeFeeds();
+  const a = await gen(S0);
+  const b = await gen(S1);
+  await saveHoldingCopy(a, R1, makeBox(R1, 1), f.io);
+  assert.equal(await readHoldingIndex(b, f.io), null);
+  assert.equal(await readHoldingCopy(b, holdingPickupId(R1), f.io), null);
+  // The same bytes copied under b's signer and topic still do not open: sealed to a's key.
+  const sealed = f.latest(a.signer.address, holdingCopyTopic(a.salt, holdingPickupId(R1)));
+  f.put(b.signer.address, holdingCopyTopic(b.salt, holdingPickupId(R1)), 0, sealed);
+  assert.equal(await readHoldingCopy(b, holdingPickupId(R1), f.io), "unavailable");
+});
+
+test("a copy filed under another order's id is refused", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io);
+  const { holdingCopySealContext } = await import("@woco/shared/crypto/sealed-box");
+  // R2's copy, sealed under R1's context and filed at R1's topic: opens, but is not R1's.
+  const wrong = await sealBoxJsonCompressed(k.orderPublicKey, holdingCopyOf(R2, makeBox(R2, 1)), holdingCopySealContext(holdingPickupId(R1)));
+  f.put(k.signer.address, holdingCopyTopic(k.salt, holdingPickupId(R1)), 1, wrong);
+  assert.equal(await readHoldingCopy(k, holdingPickupId(R1), f.io), "unavailable");
+});
+
+test("reading every generation: the newest copy of an order wins; a missing or unreadable one makes it incomplete", async () => {
+  const f = fakeFeeds();
+  const g0 = await gen(S0);
+  const g1 = await gen(S1);
+  await saveHoldingCopy(g0, R1, makeBox(R1, 1), f.io);
+  await saveHoldingCopy(g0, R2, makeBox(R2, 1, 20), f.io);
+  const remade = makeBox(R1, 1, 50);
+  await saveHoldingCopy(g1, R1, remade, f.io);
+
+  const all = await readAllHoldingCopies([g0, g1], f.io);
+  assert.equal(all.complete, true);
+  const byId = new Map(all.copies.map((c) => [c.entry.pickupId, c]));
+  assert.equal(byId.size, 2);
+  assert.ok(sameHoldingCopy(byId.get(holdingPickupId(R1))!.copy, holdingCopyOf(R1, remade)));
+
+  // Listed in g0's index but the copy cannot be read.
+  f.failReads.add(holdingCopyTopic(g0.salt, holdingPickupId(R2)));
+  assert.equal((await readAllHoldingCopies([g0, g1], f.io)).complete, false);
+  f.failReads.clear();
+  f.failReads.add(indexTopic(g0));
+  assert.equal((await readAllHoldingCopies([g0, g1], f.io)).complete, false);
+});
+
+test("move: every generation's copies land under the new keys, read back; a second run writes nothing", async () => {
+  const f = fakeFeeds();
+  const g0 = await gen(S0);
+  const g1 = await gen(S1);
+  const g2 = await gen(S2);
+  await saveHoldingCopy(g0, R1, makeBox(R1, 2), f.io);
+  await saveHoldingCopy(g1, R2, makeBox(R2, 1, 20), f.io);
+  assert.equal(await moveHoldingCopies([g0, g1], g2, f.io), 2);
+  const moved = await readAllHoldingCopies([g2], f.io);
+  assert.equal(moved.complete, true);
+  assert.deepEqual(moved.copies.map((c) => c.entry.pickupId).sort(), [holdingPickupId(R1), holdingPickupId(R2)].sort());
+  // One index write for the lot.
+  assert.equal(f.writes.filter((w) => w.topic === indexTopic(g2)).length, 1);
+  const n = f.writes.length;
+  assert.equal(await moveHoldingCopies([g0, g1], g2, f.io), 2);
+  assert.equal(f.writes.length, n);
+  // The old copies stay where they were.
+  assert.equal((await readAllHoldingCopies([g0], f.io)).copies.length, 1);
+});
+
+test("move: an incomplete read moves nothing; nothing to move writes nothing", async () => {
+  const f = fakeFeeds();
+  const g0 = await gen(S0);
+  const g1 = await gen(S1);
+  await saveHoldingCopy(g0, R1, makeBox(R1, 1), f.io);
+  f.failReads.add(holdingCopyTopic(g0.salt, holdingPickupId(R1)));
+  const n = f.writes.length;
+  await assert.rejects(moveHoldingCopies([g0], g1, f.io));
+  assert.equal(f.writes.length, n);
+
+  const empty = fakeFeeds();
+  assert.equal(await moveHoldingCopies([g0], g1, empty.io), 0);
+  assert.equal(empty.writes.length, 0);
+  // Not even a read of the new generation: a never-written feed's thorough read can come
+  // back inconclusive, and would hold the removal open for an account with no receipts.
+  assert.deepEqual(empty.reads, [indexTopic(g0)]);
+});
+
+test("move: a copy or index that does not read back under the new keys fails the move", async () => {
+  const g0 = await gen(S0);
+  const g1 = await gen(S1);
+  for (const after of [0, 1]) {
+    const f = fakeFeeds();
+    await saveHoldingCopy(g0, R1, makeBox(R1, 1), f.io);
+    f.unconfirmAfter = f.writes.length + after;
+    await assert.rejects(moveHoldingCopies([g0], g1, f.io));
+  }
+  const f = fakeFeeds();
+  await assert.doesNotReject(writeHoldingCopies(g1, [], f.io));
+  assert.equal(f.writes.length, 0);
+});
+
+test("the index is sealed to the generation's order key, bound to its topic", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io);
+  const sealed = f.latest(k.signer.address, indexTopic(k));
+  const opened = await openBoxJson(k.orderSecretKey, sealed, holdingIndexSealContext(indexTopic(k)));
+  assert.deepEqual(opened, { v: 1, orders: [holdingIndexEntryOf(holdingPickupId(R1), makeBox(R1, 1))] });
+});
