@@ -50,6 +50,9 @@ export const FEED_FAMILY_STORES = {
   /** Referral confirmations, badges and the referrer index. SERVER-written by the
    *  campaign issuer, read by clients. */
   campaignIssuer: "woco",
+  /** The buyer's own ticket-receipt copies and their index (`holding/copy.ts`). Client-written;
+   *  the server only relays them. */
+  holding: "etherna",
   /** Recovery: the portability envelope, the escrow envelope, the guardian's account index. */
   recoveryPortability: "etherna",
   recoveryEnvelope: "etherna",
