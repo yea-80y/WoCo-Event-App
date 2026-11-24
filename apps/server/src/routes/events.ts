@@ -158,7 +158,8 @@ events.get("/:id", async (c) => {
   const validHint = signerHint && /^0x[0-9a-fA-F]{40}$/.test(signerHint) ? signerHint.toLowerCase() : undefined;
   try {
     // Client-supplied signer ⇒ display-only read, never the money-path cache. Trusted
-    // resolution (directory) still takes precedence. Memoized per (event, hint).
+    // resolution (directory) still takes precedence. Memoized per (event, hint), one key
+    // for every hint when the event has a recorded signer (getEventForDisplayMemo).
     const read = await getEventForDisplayMemo(eventId, validHint);
     if (read.status === "error") return c.json({ ok: false, error: "Failed to get event" }, 500);
     const event = read.data;
