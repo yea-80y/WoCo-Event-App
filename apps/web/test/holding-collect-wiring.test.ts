@@ -138,6 +138,7 @@ test("the per-ticket mark: read without a prompt, only with the account's keys h
   assert.doesNotMatch(read, /ensure|toSeal|loginRequest|write/i);
   assert.match(read, /held\.all\.map\(\(s\) => holdingGenKeysOf\(s\)\)/);
   assert.match(read, /listHeldOrders\(gens, liveHoldingFeedIO\)/);
+  assert.match(read, /receiptMarks\(orders, complete, lastGood\.get\(account\)\)/);
   assert.match(read, /for \(const g of gens\) g\.orderSecretKey\.fill\(0\);/);
   // Profile > Tickets reads them only while the keys are here, and again after a collection saved something.
   const effect = PASSPORT.slice(PASSPORT.indexOf("$effect(() => {\n    void receiptsChanged.n;"));

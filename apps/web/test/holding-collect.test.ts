@@ -22,6 +22,7 @@ import { mineHoldings, type EraseResult, type MineHolding, type MineResult } fro
 import { holdingGenKeysOf, readAllHoldingCopies, saveHoldingCopy, type HoldingGenKeys } from "../src/lib/holding/account-copy.ts";
 import type { BoxSourceResult } from "../src/lib/holding/box-source.ts";
 import { collectReceipts, openSaleSecret, pendingCopies, type CollectDeps } from "../src/lib/holding/collect.ts";
+import { markKey, receiptMarks } from "../src/lib/holding/marks.ts";
 import { ifLockFree } from "../src/lib/utils/web-lock.ts";
 import { fakeFeeds, makeBox, sealFor, secret } from "./holding-fixture.ts";
 
@@ -316,6 +317,22 @@ test("mine: signed, never a new sign-in; only well-formed rows; anything else is
     assert.deepEqual(await mineHoldings(reply(body)), { kind: "later" });
   }
   assert.deepEqual(await mineHoldings(async () => { throw new Error("Not authenticated"); }), { kind: "later" });
+});
+
+test("the per-ticket mark: one per ticket number the lists name; a read that missed a list keeps what the last one showed", async () => {
+  const { holdingIndexEntryOf } = await import("@woco/shared/holding/copy");
+  const a = holdingIndexEntryOf(holdingPickupId(R1), makeBox(R1, 2, 10)); // tickets 11, 12
+  const b = holdingIndexEntryOf(holdingPickupId(R2), makeBox(R2, 1, 20, "series-2")); // ticket 21
+  const marks = receiptMarks([a, b], true, new Set(["evt-1|series-9#1"]));
+  assert.deepEqual([...marks].sort(), ["evt-1|series-1#11", "evt-1|series-1#12", "evt-1|series-2#21"], "a whole read replaces the last");
+  // The passport keys a ticket by its event, series and number.
+  assert.ok(marks.has(markKey("evt-1", "series-1", 12)));
+  assert.ok(!marks.has(markKey("evt-2", "series-1", 12)), "another event's ticket with the same series id and number");
+  assert.ok(!marks.has(markKey("evt-1", "series-1", 13)));
+  // One list unreadable this time: the marks it gave before stay.
+  const partial = receiptMarks([b], false, marks);
+  assert.deepEqual([...partial].sort(), [...marks].sort());
+  assert.deepEqual([...receiptMarks([], false, undefined)], []);
 });
 
 test("one collection per account at a time: a second start while one runs does not run", async () => {

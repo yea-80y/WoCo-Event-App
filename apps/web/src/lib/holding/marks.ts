@@ -12,10 +12,17 @@
  * A mark is `markKey(eventId, seriesId, edition)`; the list's event and series ids are
  * the account's own hints, for display only.
  */
-import { auth } from "../auth/auth-store.svelte.js";
+import type { HoldingIndexEntry } from "@woco/shared/holding/copy";
 
 export function markKey(eventId: string, seriesId: string, edition: number): string {
   return `${eventId}|${seriesId}#${edition}`;
+}
+
+/** The marks the lists give; a read that missed a list keeps what `last` showed too. */
+export function receiptMarks(orders: HoldingIndexEntry[], complete: boolean, last: Set<string> | undefined): Set<string> {
+  const marks = new Set(orders.flatMap((o) => o.editions.map((n) => markKey(o.wocoEventId, o.seriesId, n))));
+  if (!complete) for (const m of last ?? []) marks.add(m);
+  return marks;
 }
 
 const lastGood = new Map<string, Set<string>>();
@@ -23,6 +30,7 @@ const lastGood = new Map<string, Set<string>>();
 /** The marks for the signed-in `parent`, or null when this device cannot read them now. */
 export async function readReceiptMarks(parent: string): Promise<Set<string> | null> {
   const account = parent.toLowerCase();
+  const { auth } = await import("../auth/auth-store.svelte.js");
   const held = await auth.getAccountSecrets().catch(() => null);
   if (!held || auth.parent?.toLowerCase() !== account) return lastGood.get(account) ?? null;
   const [{ holdingGenKeysOf, listHeldOrders }, { liveHoldingFeedIO }] = await Promise.all([
@@ -32,8 +40,7 @@ export async function readReceiptMarks(parent: string): Promise<Set<string> | nu
   const gens = await Promise.all(held.all.map((s) => holdingGenKeysOf(s)));
   try {
     const { orders, complete } = await listHeldOrders(gens, liveHoldingFeedIO);
-    const marks = new Set(orders.flatMap((o) => o.editions.map((n) => markKey(o.wocoEventId, o.seriesId, n))));
-    if (!complete) for (const m of lastGood.get(account) ?? []) marks.add(m);
+    const marks = receiptMarks(orders, complete, lastGood.get(account));
     if (auth.parent?.toLowerCase() !== account) return null;
     lastGood.set(account, marks);
     return marks;
