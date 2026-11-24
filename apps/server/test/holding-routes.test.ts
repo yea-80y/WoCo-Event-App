@@ -335,6 +335,14 @@ test("erase while the box is being stored: try again in a minute, nothing change
   assert.ok(store.getHolding(sale.sessionId)!.issued!.box);
   assert.equal(ledger.getOrderRecord(sale.boxRoot), null);
 
+  // Whatever the erase itself answers "in flight" for, the route never calls it erased.
+  const other = await guestSale({ stored: true });
+  eraseBox = async () => ({ kind: "in-flight" });
+  try {
+    assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(other.r, other.pv.pickupId))).status, 409);
+  } finally {
+    eraseBox = (root) => eraseOrder(root, { by: "request" }, honestBurns as never);
+  }
 });
 
 test("a burn that fails part done: the buyer's erase is recorded at once, the sweep keeps the public values, a retry finishes the burn", async () => {
