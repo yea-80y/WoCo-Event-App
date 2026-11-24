@@ -44,6 +44,7 @@ const { keepHoldingReceipts, retryUnstoredHoldings } = await import("../src/lib/
 const ledger = await import("../src/lib/attendee-batch/ledger.js");
 const writer = await import("../src/lib/attendee-batch/writer.js");
 const { eraseOrder } = await import("../src/lib/attendee-batch/erase.js");
+const { erasureStarted } = await import("../src/lib/attendee-batch/order-gateway.js");
 const { ordersStatus } = await import("../src/lib/event/orders-status.js");
 const { holdingsRoutes } = await import("../src/routes/holdings.js");
 const { ops } = await import("../src/routes/ops.js");
@@ -72,7 +73,7 @@ const honestBurns = {
 let clock = Date.now();
 let eraseBox: (root: string) => ReturnType<typeof eraseOrder> = (root) => eraseOrder(root, { by: "request" }, honestBurns as never);
 const app = new Hono();
-app.route("/api/holdings", holdingsRoutes({ eraseBox: (root) => eraseBox(root), now: () => clock }));
+app.route("/api/holdings", holdingsRoutes({ eraseBox: (root) => eraseBox(root), erasureStarted, now: () => clock }));
 app.route("/api/ops", ops);
 
 let sessions = 0;
@@ -344,6 +345,40 @@ test("erase while the box is being stored: try again in a minute, nothing change
     eraseBox = (root) => eraseOrder(root, { by: "request" }, honestBurns as never);
   }
   assert.equal(store.getHolding(stored.sessionId)!.erasedAt, undefined, "nothing marked erased that was not");
+});
+
+test("a burn that fails part done: the buyer's erase is recorded at once, the sweep keeps the public values, a retry finishes the burn", async () => {
+  const sale = await guestSale({ stored: true });
+  const failingBurns = { stamper: writer.getAttendeeStamper, upload: async () => { throw new Error("bee down mid-burn"); } };
+  eraseBox = (root) => eraseOrder(root, { by: "request" }, failingBurns as never);
+  try {
+    assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(sale.r, sale.pv.pickupId))).status, 503);
+  } finally {
+    eraseBox = (root) => eraseOrder(root, { by: "request" }, honestBurns as never);
+  }
+  assert.equal(erasureStarted(sale.boxRoot), true);
+  assert.notEqual(ledger.getOrderRecord(sale.boxRoot)!.state, "burned");
+  const rec = store.getHolding(sale.sessionId)!;
+  assert.ok(rec.erasedAt, "recorded at once");
+  assert.equal(rec.issued!.emailHash, undefined);
+  store.sweepHoldings(ledger.isOrderErased);
+  assert.ok(store.getHolding(sale.sessionId), "the public values stay until the event's end");
+  // The retry the 503 asked for finishes the burn, though the record already reads erased.
+  assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(sale.r, sale.pv.pickupId))).status, 200);
+  assert.equal(ledger.getOrderRecord(sale.boxRoot)!.state, "burned");
+});
+
+test("a failed erase that never started a burn changes nothing", async () => {
+  const sale = await guestSale({ stored: true });
+  eraseBox = async () => {
+    throw new Error("no stamper");
+  };
+  try {
+    assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(sale.r, sale.pv.pickupId))).status, 503);
+  } finally {
+    eraseBox = (root) => eraseOrder(root, { by: "request" }, honestBurns as never);
+  }
+  assert.equal(store.getHolding(sale.sessionId)!.erasedAt, undefined);
 });
 
 test("an erasure meeting a real store in flight waits for it, then burns it", async () => {

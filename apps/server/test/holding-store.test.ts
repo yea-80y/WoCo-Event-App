@@ -550,10 +550,12 @@ test("each record on its own clock: 12 months after the on-chain end, the end it
     },
   });
 
-  // Before the end: nothing goes.
-  let out = await store.sweepHoldingsDue(deps(END - 1, END - 1));
+  // Before the end: nothing goes, and the chain's clock is never asked.
+  let clockReads = 0;
+  let out = await store.sweepHoldingsDue({ ...deps(END - 1, END - 1), chainNow: async () => (clockReads++, END - 1) });
   assert.equal(out.removed, 0);
   assert.equal(out.endUnknown, 2);
+  assert.equal(clockReads, 0, "no chain read for a record not due by our own clock");
   assert.equal(endReads.filter((x) => x === ON_A).length, 1, "one end read per event a pass");
   // At the end, but the chain's clock is behind ours: kept.
   out = await store.sweepHoldingsDue(deps(END + 1000, END - 1));
@@ -586,6 +588,38 @@ test("a paid sale owed receipts that got none turns health red, and says why", (
   assert.equal(h.missed, 1);
   assert.deepEqual(h.lastMissed, { at: "2026-11-24T10:00:00.000Z", why: "2 of 2 receipts not signed" });
   store._resetHoldingStoreForTests();
+});
+
+test("the retry worker: an erased box never takes a slot of the pass, and one erased mid-pass is never sent", async () => {
+  await retryUnstoredHoldings(1000, storing);
+  assert.equal(store.unstoredHoldings().length, 0);
+  const erasedFirst = guestInput(140);
+  const next = guestInput(141);
+  const keptErased = await keepHoldingReceipts(erasedFirst, failing);
+  await keepHoldingReceipts(next, failing);
+  ledger.recordErasedBeforeStore(keptErased!.boxRoot, { kind: "holding", eventId: EVENT });
+  // A pass of one: the erased box (listed first) must not use it up.
+  assert.equal((await retryUnstoredHoldings(1, storing)).stored, 1);
+  assert.ok(store.getHolding(next.sessionId)!.issued!.storedAt);
+
+  // Two waiting; the first one's store erases the second before its turn.
+  const a = guestInput(142);
+  const b = guestInput(143);
+  await keepHoldingReceipts(a, failing);
+  const keptB = await keepHoldingReceipts(b, failing);
+  const bJson = JSON.stringify(store.getHolding(b.sessionId)!.issued!.box);
+  const seen: string[] = [];
+  const erasingMidPass = {
+    store: async (d: string | Uint8Array, m: Parameters<typeof storing.store>[1]) => {
+      seen.push(String(d));
+      if (!ledger.getOrderRecord(keptB!.boxRoot)) ledger.recordErasedBeforeStore(keptB!.boxRoot, { kind: "holding", eventId: EVENT });
+      return storing.store(d, m);
+    },
+    now: () => Date.now(),
+  };
+  await retryUnstoredHoldings(100, erasingMidPass);
+  assert.equal(seen.includes(bJson), false, "read again before its store, and left alone");
+  assert.ok(store.getHolding(a.sessionId)!.issued!.storedAt);
 });
 
 test("records by email hash: paid ones only", async () => {

@@ -150,17 +150,18 @@ function ownedKeys(v: { pickupId: string; holders: string[]; answerKeys: string[
   ];
 }
 
-/** True when any of these values already belongs to a sale other than `sessionId`. */
-function claimedElsewhere(v: Parameters<typeof ownedKeys>[0], sessionId: string): boolean {
-  return ownedKeys(v).some((k) => {
-    const owner = owners.get(k);
-    return owner !== undefined && owner !== sessionId;
-  });
+/**
+ * True when any of these values already belongs to a sale. Asked only before a sale's
+ * first record is written, so a value it owns itself never reaches here.
+ */
+function claimedElsewhere(v: Parameters<typeof ownedKeys>[0]): boolean {
+  return ownedKeys(v).some((k) => owners.has(k));
 }
 
 function remember(r: HoldingRecordV1): void {
   cache.set(r.sessionId, r);
-  // First writer keeps a value: a record that collides on disk never takes another's.
+  // First writer keeps a value. Only a hand-edited file can collide (every write path
+  // refuses one); then deleting the later file never frees the earlier one's values.
   for (const k of ownedKeys(r)) if (!owners.has(k)) owners.set(k, r.sessionId);
   if (r.issued && !byBoxRoot.has(r.issued.boxRoot)) byBoxRoot.set(r.issued.boxRoot, r.sessionId);
 }
@@ -315,7 +316,7 @@ export function recordHoldingRequest(input: {
   try {
     if (!CHECKOUT_SESSION_RE.test(input.sessionId) || !ADDRESS_RE.test(input.account.toLowerCase())) return false;
     if (getHolding(input.sessionId)) return true;
-    if (claimedElsewhere(input.request, input.sessionId)) return false;
+    if (claimedElsewhere(input.request)) return false;
     const unpaid = [...cache.values()].filter((r) => !r.issued);
     if (unpaid.length >= MAX_UNPAID_REQUESTS) {
       unpaid.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -368,7 +369,7 @@ export function recordHoldingIssued(input: {
       if (input.guest && input.guest.pickupId !== existing.pickupId) return false;
       base = existing;
     } else if (input.guest) {
-      if (claimedElsewhere(input.guest, input.sessionId)) return false;
+      if (claimedElsewhere(input.guest)) return false;
       base = { v: 1, sessionId: input.sessionId, eventId: input.eventId, seriesId: input.seriesId, createdAt: now, keep: "email", ...input.guest };
     } else {
       return false;
