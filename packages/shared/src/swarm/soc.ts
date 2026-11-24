@@ -434,6 +434,8 @@ export type VersionedFeedRead =
        * something repairs it.
        */
       unusableAt?: number;
+      /** Why, with `unusableAt`: see {@link SpentBy}. */
+      spentBy?: SpentBy;
     };
 
 export interface SocVersionResolution {
@@ -798,7 +800,21 @@ export type AssembledContentFeed =
        * that page may be perfectly fine on the next attempt.
        */
       unusable?: true;
+      /** Why, when `unusable`: see {@link SpentBy}. */
+      spentBy?: SpentBy;
     };
+
+/**
+ * Why a version will never read. They are not alike for a caller deciding what the
+ * version once held:
+ * - `length`, `not-json`: every chunk was found and signature-checked, and they do not
+ *   make one value - two writers raced at the version and its pages interleaved, or a
+ *   torn retry (above).
+ * - `missing-page`: a page reads ABSENT under the manifest. A race cannot cause it (every
+ *   writer uploads all its pages before its manifest); a lost chunk or a false 404 can.
+ * - `page-count`: the manifest itself is not one this code writes.
+ */
+export type SpentBy = "length" | "not-json" | "missing-page" | "page-count";
 
 export async function assembleContentFeed(
   read: SocChunkProbe,
@@ -824,7 +840,7 @@ export async function assembleContentFeed(
   }
   if (!isContentFeedManifest(head)) return base; // single-chunk feed
   if (head.pages < 1 || head.pages > 256) {
-    return { status: "unavailable", reason: `manifest page count out of range: ${head.pages}`, unusable: true };
+    return { status: "unavailable", reason: `manifest page count out of range: ${head.pages}`, unusable: true, spentBy: "page-count" };
   }
 
   const parts: Uint8Array[] = [];
@@ -837,7 +853,7 @@ export async function assembleContentFeed(
       // could ANSWER for is the ordinary network fault — retrying is the right
       // answer there, and calling it unusable would offer repair over a hiccup.
       return page.status === "absent"
-        ? { status: "unavailable", reason, unusable: true }
+        ? { status: "unavailable", reason, unusable: true, spentBy: "missing-page" }
         : { status: "unavailable", reason };
     }
     parts.push(page.bytes);
@@ -850,6 +866,7 @@ export async function assembleContentFeed(
       status: "unavailable",
       reason: `multi-chunk length mismatch: assembled ${full.length} B, manifest declares ${head.len} B`,
       unusable: true,
+      spentBy: "length",
     };
   }
   return { status: "found", bytes: full };
@@ -925,7 +942,7 @@ export async function readVersionedContentFeed(
     // offer a repair seeded from below it, and the rewrite - landing past the
     // real head - would erase every good version in between.
     return asm.unusable && clean
-      ? { status: "unavailable", reason: asm.reason, unusableAt: latest }
+      ? { status: "unavailable", reason: asm.reason, unusableAt: latest, spentBy: asm.spentBy }
       : { status: "unavailable", reason: asm.reason };
   }
 
@@ -948,6 +965,6 @@ export async function readVersionedContentFeed(
   }
   if (legacy.status === "absent") return { status: "absent" };
   return legacy.unusable
-    ? { status: "unavailable", reason: legacy.reason, unusableAt: LEGACY_CONTENT_FEED_VERSION }
+    ? { status: "unavailable", reason: legacy.reason, unusableAt: LEGACY_CONTENT_FEED_VERSION, spentBy: legacy.spentBy }
     : { status: "unavailable", reason: legacy.reason };
 }

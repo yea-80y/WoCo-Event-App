@@ -24,7 +24,7 @@
  * (+11.9) when orders moved to this box.
  */
 
-import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
+import { Aes256Gcm, CipherSuite, HkdfSha256, OpenError } from "@hpke/core";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { XWingKem } from "./xwing-hpke.js";
 import { assertXWingPublicKey, XWING_SEED_BYTES } from "./xwing.js";
@@ -170,6 +170,11 @@ export function holdingCopySealContext(pickupId: string): SealContext {
  * The buyer's list of their own receipt copies (`holding/copy.ts`), sealed to their
  * account's order key and bound to the topic it is stored under, so a list lifted to
  * another account or generation fails its tag. FROZEN.
+ *
+ * A future list layout must still open under this exact key and context and say so by
+ * the `v` INSIDE the sealed list, or move to a new topic. A list that fails its tag here
+ * is read by older builds as a JAMMED version (two writers raced) and built past from the
+ * version below it (`apps/web/src/lib/holding/account-copy.ts`, `indexAsOf`).
  */
 export const HOLDING_INDEX_SEAL_INFO = "woco/holding/v1/index";
 
@@ -179,6 +184,16 @@ export function holdingIndexSealContext(indexTopic: string): SealContext {
 }
 
 const suite = new CipherSuite({ kem: new XWingKem(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
+
+/**
+ * `openBox` threw for `box` because a well-formed v2 box failed its authentication tag
+ * (HPKE's `OpenError`): its bytes, or the key or context it was sealed under, are not
+ * these. Never true for a box of another version or shape, nor for a key or decapsulation
+ * fault - those say nothing about what the box holds.
+ */
+export function isSealedBoxTagFailure(box: unknown, err: unknown): boolean {
+  return isSealedBoxV2(box) && err instanceof OpenError;
+}
 
 function toBytes(key: Uint8Array | string): Uint8Array {
   if (typeof key !== "string") return key;

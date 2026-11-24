@@ -37,6 +37,7 @@ import {
   type ContentFeedManifest,
   type SocChunkProbe,
   type SocReadOutcome,
+  type SpentBy,
   SOC_MAX_PAYLOAD_SIZE,
 } from "@woco/shared";
 
@@ -359,6 +360,8 @@ export type ContentFeedResult<T> =
        * fail the same way, so the only way forward is to write past it.
        */
       unusableAt?: number;
+      /** Why, with `unusableAt` - a race, or a chunk that reads absent (`SpentBy`). */
+      spentBy?: SpentBy;
     };
 
 /**
@@ -417,7 +420,7 @@ export async function readContentFeedResult<T>(
     // is spent and only a write past it can move the feed on. Unless the scan
     // was dirty: then this may not be the head, and a retry is the honest answer.
     const reason = "feed payload is not valid JSON";
-    return res.scanClean ? { status: "unavailable", reason, unusableAt: res.version } : { status: "unavailable", reason };
+    return res.scanClean ? { status: "unavailable", reason, unusableAt: res.version, spentBy: "not-json" } : { status: "unavailable", reason };
   }
 }
 
@@ -514,7 +517,7 @@ export async function readContentFeedAtVersion<T>(
   if (asm.status !== "found") {
     const reason = `version ${version} did not resolve`;
     return asm.unusable
-      ? { status: "unavailable", reason, unusableAt: version }
+      ? { status: "unavailable", reason, unusableAt: version, spentBy: asm.spentBy }
       : { status: "unavailable", reason };
   }
   try {
@@ -525,7 +528,7 @@ export async function readContentFeedAtVersion<T>(
       scanClean: true,
     };
   } catch {
-    return { status: "unavailable", reason: "feed payload is not valid JSON", unusableAt: version };
+    return { status: "unavailable", reason: "feed payload is not valid JSON", unusableAt: version, spentBy: "not-json" };
   }
 }
 

@@ -30,8 +30,9 @@
       ]);
       if (fragment) {
         const got = await acceptKeepLink(fragment, { device });
-        if (got === "malformed") malformed = true;
-        else fromLink = got.pickupId;
+        // The latest link decides: a good one opened after a broken one clears the warning.
+        malformed = got === "malformed";
+        if (got !== "malformed") fromLink = got.pickupId;
       }
       receipts = await device.listDeviceReceipts();
       storageFailed = false;

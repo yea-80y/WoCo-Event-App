@@ -13,7 +13,7 @@
 
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { contentFeedSocIdentifier, versionedSocIdentifier } from "@woco/shared";
+import { CONTENT_FEED_MC_MARKER, contentFeedSocIdentifier, versionedPageIdentifier, versionedSocIdentifier } from "@woco/shared";
 import { probeSoc } from "../src/lib/swarm/probe-soc.js";
 import { hintKey, readBandedContentFeed, readContentFeedAtVersion, readContentFeedResult, writeContentFeed } from "../src/lib/swarm/content-feed.js";
 import { ETHERNA_GATEWAY_URL, FEED_ROUTES, WOCO_ROUTE } from "../src/lib/swarm/gateways.js";
@@ -113,6 +113,20 @@ test("bytes that are not JSON are called unusable only when the scan could confi
   install({ ourBee: new Map([[junk.address, junk]]), etherna: new Map() });
   const alone = await readContentFeedResult(OWNER, TOPIC, { route: FEED_ROUTES.profile, thorough: true });
   assert.equal((alone as { unusableAt?: number }).unusableAt, 0);
+  assert.equal((alone as { spentBy?: string }).spentBy, "not-json", "found whole: a race or a foreign writer, never a lost chunk");
+
+  // The exact-version reader says the same.
+  const exact = await readContentFeedAtVersion(OWNER, TOPIC, 0, { route: FEED_ROUTES.profile, thorough: true });
+  assert.deepEqual([(exact as { unusableAt?: number }).unusableAt, (exact as { spentBy?: string }).spentBy], [0, "not-json"]);
+});
+
+test("a page that reads absent under a manifest is spent as a MISSING PAGE, never as a race", async () => {
+  const base = contentFeedSocIdentifier(TOPIC);
+  const manifest = soc(at(0), { [CONTENT_FEED_MC_MARKER]: 1, pages: 2, len: 6 });
+  const page1 = socBytes(versionedPageIdentifier(base, 0, 1), new TextEncoder().encode("abc"));
+  install({ ourBee: new Map([[manifest.address, manifest], [page1.address, page1]]), etherna: new Map() });
+  const exact = await readContentFeedAtVersion(OWNER, TOPIC, 0, { route: FEED_ROUTES.profile, thorough: true });
+  assert.deepEqual([(exact as { unusableAt?: number }).unusableAt, (exact as { spentBy?: string }).spentBy], [0, "missing-page"]);
 });
 
 test("a stored hint naming a version that exists nowhere costs one server ask, then is forgotten (#689)", async () => {

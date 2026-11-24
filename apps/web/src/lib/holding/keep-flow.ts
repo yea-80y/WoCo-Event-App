@@ -11,7 +11,10 @@
  *   build knows, before anything is shown or kept.
  * - `saveToAccount`: the "Save to your WoCo account" press, given keys from a CONFIRMED-
  *   current account secret. Saved and read back, THEN our copy erased (`keepInAccount`).
- * - `finishErase`: erasing our copy again, for a receipt already saved.
+ * - `recheckDeviceBox`: when a card appears, a box the device already keeps, checked
+ *   again. LOCAL ONLY, like `acceptKeepLink`.
+ * - `finishErase`: erasing our copy again, for a receipt already saved in the signed-in
+ *   account.
  *
  * A secret is never dropped here on any answer - "not found", "later", a refusal, a
  * thrown error. The device keeps it until the person signs out there; a step that finds
@@ -78,24 +81,49 @@ export type ShowResult =
   | { kind: "later" }
   | { kind: "refused"; reason: HoldingBoxRefusal };
 
+/**
+ * A box this device keeps, checked again - never trusted as stored. Null when there is
+ * none or it does not check against the secret.
+ */
+async function checkKept(kept: DeviceReceipt, r: Uint8Array): Promise<Extract<ShowResult, { kind: "shown" | "unknown-ledger" }> | null> {
+  if (!kept.box) return null;
+  const { checkedHoldingBox, HoldingBoxRefusedError } = await import("@woco/shared/holding/open");
+  try {
+    const checked = checkedHoldingBox(r, kept.box);
+    if (!(await isKnownLedger(checked.box))) return { kind: "unknown-ledger" };
+    return { kind: "shown", receipt: kept, receipts: checked.receipts };
+  } catch (e) {
+    if (!(e instanceof HoldingBoxRefusedError)) throw e;
+    return null;
+  }
+}
+
+/**
+ * When a card appears: the box this device already keeps, checked again. LOCAL ONLY -
+ * no fetch, whatever it finds - so a page that reloaded mid-save (a sign-in redirect,
+ * on an iPhone) offers Save again without a second press. Null: show the button.
+ */
+export async function recheckDeviceBox(pickupId: string, deps: Pick<KeepFlowDeps, "device">): Promise<Extract<ShowResult, { kind: "shown" }> | null> {
+  const kept = await deps.device.readDeviceReceipt(pickupId);
+  if (!kept?.box) return null;
+  const r = await bytesOf(kept.r);
+  try {
+    const got = await checkKept(kept, r);
+    return got?.kind === "shown" ? got : null;
+  } finally {
+    r.fill(0);
+  }
+}
+
 /** The "Show my receipt" press. */
 export async function showReceipt(pickupId: string, deps: KeepFlowDeps): Promise<ShowResult> {
   const kept = await deps.device.readDeviceReceipt(pickupId);
   if (!kept) return { kind: "not-on-device" };
   const r = await bytesOf(kept.r);
   try {
-    if (kept.box) {
-      // Kept on this device after an earlier check: checked again, never trusted as stored.
-      const { checkedHoldingBox, HoldingBoxRefusedError } = await import("@woco/shared/holding/open");
-      try {
-        const checked = checkedHoldingBox(r, kept.box);
-        if (!(await isKnownLedger(checked.box))) return { kind: "unknown-ledger" };
-        return { kind: "shown", receipt: kept, receipts: checked.receipts };
-      } catch (e) {
-        if (!(e instanceof HoldingBoxRefusedError)) throw e;
-        // Fall through to fetching it afresh.
-      }
-    }
+    // Kept on this device after an earlier check; one that no longer checks is fetched afresh.
+    const local = await checkKept(kept, r);
+    if (local) return local;
     const got = await deps.fetchBox(r, kept.boxRoot);
     if (got.kind !== "ok") return got;
     if (!(await isKnownLedger(got.box))) return { kind: "unknown-ledger" };
@@ -132,11 +160,14 @@ export async function saveToAccount(pickupId: string, keys: HoldingGenKeys, acco
   }
 }
 
-/** Erase our copy of a receipt already saved in an account. */
-export async function finishErase(pickupId: string, deps: KeepFlowDeps): Promise<EraseResult | "not-saved" | "not-on-device"> {
+/**
+ * Erase our copy of a receipt already saved in an account - the signed-in `account`'s:
+ * a receipt this device saved into someone else's account is not theirs to erase from here.
+ */
+export async function finishErase(pickupId: string, account: string, deps: KeepFlowDeps): Promise<EraseResult | "not-saved" | "not-on-device"> {
   const kept = await deps.device.readDeviceReceipt(pickupId);
   if (!kept) return "not-on-device";
-  if (!kept.savedTo) return "not-saved";
+  if (!kept.savedTo || kept.savedTo !== account.toLowerCase()) return "not-saved";
   if (kept.serverErased) return "erased";
   const r = await bytesOf(kept.r);
   try {

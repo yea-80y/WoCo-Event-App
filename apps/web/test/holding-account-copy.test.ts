@@ -141,23 +141,221 @@ test("an index that cannot be read or opened is never written over", async () =>
   assert.equal(f.writes.filter((w) => w.topic === indexTopic(k)).length, f.writes.slice(0, before).filter((w) => w.topic === indexTopic(k)).length);
   assert.equal(await readHoldingIndex(k, f.io), "unavailable");
 
-  // Present but not ours to open (sealed under another generation's key).
-  const g = fakeFeeds();
-  const other = await gen(S1);
-  g.put(k.signer.address, indexTopic(k), 0, await sealBoxJsonCompressed(other.orderPublicKey, { v: 1, orders: [] }, holdingIndexSealContext(indexTopic(k))));
-  await assert.rejects(addToHoldingIndex(k, [holdingIndexEntryOf(holdingPickupId(R2), makeBox(R2, 1))], g.io));
-  assert.equal(g.writes.length, 0);
-  assert.equal(await readHoldingIndex(k, g.io), "unavailable");
+  // Opens - the account wrote it - but is not a list this build knows (a newer layout).
+  for (const newer of [{ v: 2, orders: [], more: true }, { v: 1, orders: "not a list" }]) {
+    const g = fakeFeeds();
+    g.put(k.signer.address, indexTopic(k), 0, await sealBoxJsonCompressed(k.orderPublicKey, newer, holdingIndexSealContext(indexTopic(k))));
+    await assert.rejects(addToHoldingIndex(k, [holdingIndexEntryOf(holdingPickupId(R2), makeBox(R2, 1))], g.io), /could not be opened/);
+    assert.equal(g.writes.length, 0);
+    assert.equal(await readHoldingIndex(k, g.io), "unavailable");
+  }
+  // A box version or shape this build does not know: as newer, never a jam to walk past
+  // (Fable 3c PR 1, 2: interleaved pages always leave a well-formed box).
+  for (const unknown of [{ v: 3, enc: "00", ct: "00" }, { v: 2, enc: "zz", ct: "00" }]) {
+    const h = fakeFeeds();
+    h.put(k.signer.address, indexTopic(k), 0, unknown);
+    await assert.rejects(addToHoldingIndex(k, [holdingIndexEntryOf(holdingPickupId(R2), makeBox(R2, 1))], h.io), /could not be opened/);
+    assert.equal(h.writes.length, 0);
+  }
 });
 
-test("an index whose latest version is spent is never rebuilt from nothing", async () => {
-  // The writer could write past it (`unusableAt`), but what it held is unknown: building
-  // the next version from an empty list would drop every order it listed.
+test("a page that reads ABSENT is not a jam: the list stops, nothing is written, a mover refuses (Fable 3c PR 1, 1)", async () => {
+  const g0 = await gen(S0);
+  const g1 = await gen(S1);
+  const setup = async () => {
+    const f = fakeFeeds();
+    await saveHoldingCopy(g0, R1, makeBox(R1, 1), f.io); // index v0
+    await saveHoldingCopy(g0, R2, makeBox(R2, 1, 20), f.io); // index v1
+    return f;
+  };
+  // The head: a lost chunk or a false 404 under a manifest a confirmed save may have written;
+  // or a manifest this code never writes.
+  for (const why of ["missing-page", "page-count"] as const) {
+    const head = await setup();
+    head.put(g0.signer.address, indexTopic(g0), 2, { lostPage: true });
+    head.spent.set(indexTopic(g0), 2);
+    head.spentBy.set(`${indexTopic(g0)}@2`, why);
+    assert.equal(await readHoldingIndex(g0, head.io), "unavailable", why);
+    assert.deepEqual(head.readsAt, [], "not walked");
+    const n = head.writes.length;
+    await assert.rejects(saveHoldingCopy(g0, R3, makeBox(R3, 1, 30), head.io), /could not be read/);
+    assert.equal(head.writes.filter((w) => w.topic === indexTopic(g0)).length, head.writes.slice(0, n).filter((w) => w.topic === indexTopic(g0)).length);
+    assert.equal((await readAllHoldingCopies([g0], head.io)).complete, false);
+    await assert.rejects(moveHoldingCopies([g0], g1, head.io));
+  }
+
+  // Below a jam, the walk stops there too.
+  const below = await setup();
+  jam(below, g0, 3, 1);
+  below.spentBelow.add(`${indexTopic(g0)}@2`);
+  below.spentBy.set(`${indexTopic(g0)}@2`, "missing-page");
+  assert.equal(await readHoldingIndex(g0, below.io), "unavailable");
+  assert.deepEqual(below.readsAt, [`${indexTopic(g0)}@2`]);
+});
+
+test("every chunk found but not one value - a length mismatch or not JSON - is a race: walked past", async () => {
+  const k = await gen(S0);
+  for (const why of ["length", "not-json"] as const) {
+    const f = fakeFeeds();
+    await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io); // index v0
+    f.put(k.signer.address, indexTopic(k), 1, { torn: true });
+    f.spentBelow.add(`${indexTopic(k)}@1`);
+    f.spentBy.set(`${indexTopic(k)}@1`, why);
+    f.put(k.signer.address, indexTopic(k), 2, { torn: true });
+    f.spent.set(indexTopic(k), 2);
+    f.spentBy.set(`${indexTopic(k)}@2`, why);
+    assert.deepEqual(await listed(k, f.io), [holdingPickupId(R1)], why);
+  }
+});
+
+test("a decapsulation fault BELOW a jam stops the walk: it says nothing about what that version holds", async () => {
   const f = fakeFeeds();
   const k = await gen(S0);
-  f.spent.set(indexTopic(k), 0);
-  await assert.rejects(saveHoldingCopy(k, R1, makeBox(R1, 1), f.io), /could not be read/);
-  assert.equal(f.writes.filter((w) => w.topic === indexTopic(k)).length, 0);
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io); // index v0
+  await saveHoldingCopy(k, R2, makeBox(R2, 1, 20), f.io); // index v1
+  const v1 = JSON.parse(f.feeds.get(`${k.signer.address.slice(2)}|${indexTopic(k)}`)![1]!) as { enc: string };
+  // Its X25519 half zeroed: a well-formed box whose key exchange cannot complete.
+  f.put(k.signer.address, indexTopic(k), 1, { ...v1, enc: v1.enc.slice(0, v1.enc.length - 64) + "0".repeat(64) });
+  jam(f, k, 2, 0);
+  assert.equal(await readHoldingIndex(k, f.io), "unavailable");
+  assert.deepEqual(f.readsAt, [`${indexTopic(k)}@1`], "never walked on to v0");
+});
+
+test("a key or decapsulation fault is not a jam: nothing is walked or written", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io);
+  const broken = { ...k, orderSecretKey: new Uint8Array(5) };
+  assert.equal(await readHoldingIndex(broken, f.io), "unavailable");
+  assert.deepEqual(f.readsAt, []);
+  const n = f.writes.length;
+  await assert.rejects(addToHoldingIndex(broken, [holdingIndexEntryOf(holdingPickupId(R2), makeBox(R2, 1))], f.io), /could not be read/);
+  assert.equal(f.writes.length, n);
+});
+
+// ---------------------------------------------------------------------------
+// A jammed list (Fable 3a, 5): two writers raced at one version and its pages
+// interleaved, so it is spent or does not open. No save counted on it.
+// ---------------------------------------------------------------------------
+
+/** The sealed list at `version`, its ciphertext damaged as interleaved pages leave it. */
+function jam(f: ReturnType<typeof fakeFeeds>, k: HoldingGenKeys, version: number, from: number) {
+  const good = JSON.parse(f.feeds.get(`${k.signer.address.slice(2)}|${indexTopic(k)}`)![from]!) as { ct: string };
+  const ct = good.ct.slice(0, 40) + (good.ct[40] === "0" ? "1" : "0") + good.ct.slice(41);
+  f.put(k.signer.address, indexTopic(k), version, { ...good, ct });
+}
+
+async function listed(k: HoldingGenKeys, io: ReturnType<typeof fakeFeeds>["io"]) {
+  const index = await readHoldingIndex(k, io);
+  assert.ok(index && index !== "unavailable", `list read: ${String(index)}`);
+  return index.orders.map((e) => e.pickupId).sort();
+}
+
+test("a jammed head that does not open: the newest version below it is the list, and the next save goes on top", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io); // index v0
+  await saveHoldingCopy(k, R2, makeBox(R2, 1, 20), f.io); // index v1
+  jam(f, k, 2, 1);
+  assert.deepEqual(await listed(k, f.io), [R1, R2].map((r) => holdingPickupId(r)).sort());
+  assert.deepEqual(f.readsAt, [`${indexTopic(k)}@1`]);
+
+  assert.equal(await saveHoldingCopy(k, R3, makeBox(R3, 1, 30), f.io), "saved");
+  const indexWrites = f.writes.filter((w) => w.topic === indexTopic(k));
+  assert.equal(indexWrites.at(-1)!.version, 3, "written past the jam");
+  f.readsAt.length = 0;
+  assert.deepEqual(await listed(k, f.io), [R1, R2, R3].map((r) => holdingPickupId(r)).sort());
+  assert.deepEqual(f.readsAt, [], "healed: the head opens again");
+});
+
+test("a spent head: built from the newest version below that opens, past a run of jams", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io); // index v0
+  jam(f, k, 1, 0);
+  f.spentBelow.add(`${indexTopic(k)}@2`);
+  f.put(k.signer.address, indexTopic(k), 3, { torn: true });
+  f.spent.set(indexTopic(k), 3);
+  assert.deepEqual(await listed(k, f.io), [holdingPickupId(R1)]);
+  assert.deepEqual(f.readsAt, [2, 1, 0].map((v) => `${indexTopic(k)}@${v}`));
+
+  assert.equal(await saveHoldingCopy(k, R2, makeBox(R2, 1, 20), f.io), "saved");
+  assert.equal(f.writes.filter((w) => w.topic === indexTopic(k)).at(-1)!.version, 4);
+  f.spent.clear();
+  assert.deepEqual(await listed(k, f.io), [R1, R2].map((r) => holdingPickupId(r)).sort());
+});
+
+test("a jam at the first version: nothing below it was ever listed, so the list starts empty", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io); // index v0
+  jam(f, k, 0, 0);
+  assert.equal(await readHoldingIndex(k, f.io), null);
+  assert.equal(await saveHoldingCopy(k, R2, makeBox(R2, 1, 20), f.io), "saved");
+  assert.deepEqual(await listed(k, f.io), [holdingPickupId(R2)]);
+
+  const g = fakeFeeds();
+  g.put(k.signer.address, indexTopic(k), 0, { torn: true });
+  g.spent.set(indexTopic(k), 0);
+  assert.equal(await readHoldingIndex(k, g.io), null);
+});
+
+test("walking down a jam stops on anything uncertain: an unanswered read, a gap, a newer layout, the cap", async () => {
+  const k = await gen(S0);
+  const setup = async () => {
+    const f = fakeFeeds();
+    await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io); // index v0
+    await saveHoldingCopy(k, R2, makeBox(R2, 1, 20), f.io); // index v1
+    jam(f, k, 2, 1);
+    return f;
+  };
+  const refusesToWrite = async (f: Awaited<ReturnType<typeof setup>>) => {
+    assert.equal(await readHoldingIndex(k, f.io), "unavailable");
+    const n = f.writes.length;
+    await assert.rejects(addToHoldingIndex(k, [holdingIndexEntryOf(holdingPickupId(R3), makeBox(R3, 1, 30))], f.io));
+    assert.equal(f.writes.length, n);
+  };
+
+  const unanswered = await setup();
+  unanswered.failReadsAt.add(`${indexTopic(k)}@1`);
+  await refusesToWrite(unanswered);
+
+  const gap = await setup();
+  gap.feeds.get(`${k.signer.address.slice(2)}|${indexTopic(k)}`)![1] = undefined as unknown as string;
+  await refusesToWrite(gap);
+
+  const newer = await setup();
+  newer.put(k.signer.address, indexTopic(k), 1, await sealBoxJsonCompressed(k.orderPublicKey, { v: 9 }, holdingIndexSealContext(indexTopic(k))));
+  await refusesToWrite(newer);
+
+  // A run of jams longer than the cap is not walked to its end.
+  const { HOLDING_INDEX_WALK_MAX } = await import("../src/lib/holding/account-copy.ts");
+  const long = await setup();
+  const head = HOLDING_INDEX_WALK_MAX + 3;
+  for (let v = 2; v < head; v++) long.spentBelow.add(`${indexTopic(k)}@${v}`);
+  long.put(k.signer.address, indexTopic(k), head, { torn: true });
+  long.spent.set(indexTopic(k), head);
+  await refusesToWrite(long);
+  assert.ok(long.readsAt.length <= 2 * HOLDING_INDEX_WALK_MAX, "never past the cap");
+  // One short of the cap still reaches the good version.
+  const reach = await setup();
+  const near = HOLDING_INDEX_WALK_MAX + 1;
+  for (let v = 2; v < near; v++) reach.spentBelow.add(`${indexTopic(k)}@${v}`);
+  reach.put(k.signer.address, indexTopic(k), near, { torn: true });
+  reach.spent.set(indexTopic(k), near);
+  assert.deepEqual(await listed(k, reach.io), [R1, R2].map((r) => holdingPickupId(r)).sort());
+});
+
+test("a jammed list reads complete for a mover: every order a save counted on is below the jam", async () => {
+  const f = fakeFeeds();
+  const g0 = await gen(S0);
+  const g1 = await gen(S1);
+  await saveHoldingCopy(g0, R1, makeBox(R1, 1), f.io);
+  await saveHoldingCopy(g0, R2, makeBox(R2, 1, 20), f.io);
+  jam(f, g0, 2, 1);
+  const all = await readAllHoldingCopies([g0], f.io);
+  assert.equal(all.complete, true);
+  assert.equal(await moveHoldingCopies([g0], g1, f.io), 2);
 });
 
 test("a save whose sealed bytes do not open under the account's key is not saved", async () => {
