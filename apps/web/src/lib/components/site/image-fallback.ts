@@ -21,6 +21,13 @@ function cleanGateway(url: string | undefined | null): string | null {
  * nodes only once it has spread. It is organiser-written, so it is honoured only
  * when it names one of the known gateways; anything else is ignored rather than
  * fetched, or an organiser could point every viewer's browser at their server.
+ *
+ * A PUBLISHED page (its config names a known `contentGatewayUrl`, our own gateway)
+ * tries that one before `storedOn`: its images were uploaded well before the page
+ * was read, ours answered in 0.26 s against Etherna's 1.0-1.3 s (2026-11-24), and
+ * it is the address the page's own head already names, so the tab icon and the
+ * picture are one download. An image edited a moment ago that our bee cannot find
+ * yet costs one 404 (~1.3 s) before `storedOn` is tried.
  */
 export function imageUrlCandidates(
   imageHash: string | undefined,
@@ -31,7 +38,9 @@ export function imageUrlCandidates(
 
   const runtime = typeof window !== "undefined" ? window.SITE_CONFIG : undefined;
   const stored = cleanGateway(storedOn);
+  const published = cleanGateway(runtime?.contentGatewayUrl);
   const gateways = [
+    published && KNOWN_IMAGE_GATEWAYS.includes(published) ? published : null,
     stored && KNOWN_IMAGE_GATEWAYS.includes(stored) ? stored : null,
     runtime?.contentGatewayUrl,
     runtime?.gatewayUrl,

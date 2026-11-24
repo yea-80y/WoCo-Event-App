@@ -6,7 +6,7 @@ import { FEATURES, BUYER_FEE_FLOOR_PCT, COVER_FEE_RATES, MIN_TICKET_PRICE, ticke
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { cancellationGate, withCancellation } from "../lib/event/cancellations.js";
-import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
+import { createEventV2, getEvent, getEventForDisplayMemo, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
 import { DeleteBlockedError } from "../lib/event/delete-safety.js";
 import { AccountKeysChangedError, AccountKeysUnavailableError } from "../lib/keyring/event-keys.js";
 import { setListed } from "../lib/event/listing-state.js";
@@ -157,9 +157,12 @@ events.get("/:id", async (c) => {
   const signerHint = c.req.query("signer");
   const validHint = signerHint && /^0x[0-9a-fA-F]{40}$/.test(signerHint) ? signerHint.toLowerCase() : undefined;
   try {
-    // Client-supplied signer ⇒ display-only, non-caching read (never poisons the
-    // money-path cache). Trusted resolution (directory) still takes precedence.
-    const event = await getEventForDisplay(eventId, validHint);
+    // Client-supplied signer ⇒ display-only read, never the money-path cache. Trusted
+    // resolution (directory) still takes precedence. Memoized per (event, hint), one key
+    // for every hint when the event has a recorded signer (getEventForDisplayMemo).
+    const read = await getEventForDisplayMemo(eventId, validHint);
+    if (read.status === "error") return c.json({ ok: false, error: "Failed to get event" }, 500);
+    const event = read.data;
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
     // #644: the server's record of a cancellation wins over the feed's field.
     return c.json({ ok: true, data: withCancellation(event) });
