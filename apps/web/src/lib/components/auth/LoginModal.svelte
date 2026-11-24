@@ -258,6 +258,7 @@
               : view === "wallet" ? "Connect a wallet"
               : loginRequest.context === "invite" ? "Create your account"
               : loginRequest.context === "ticket" ? "Add your ticket"
+              : loginRequest.context === "receipt" ? "Keep your receipt"
               : organiserSignIn ? "Organiser sign in"
               : sheet === "known" ? "Welcome back"
               : "Sign in"}
@@ -270,6 +271,8 @@
             </p>
           {:else if loginRequest.context === "ticket"}
             <p class="context-sub">Sign in, or create a free account. Your ticket goes straight into it.</p>
+          {:else if loginRequest.context === "receipt"}
+            <p class="context-sub">Sign in, or create a free account. Your private receipt is saved into it.</p>
           {:else if organiserSignIn}
             <!-- "New here?" is the sheet's own Create button now. -->
             <p class="context-sub">Organisers sign in with a passkey.</p>

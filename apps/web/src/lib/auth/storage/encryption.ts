@@ -81,6 +81,9 @@ export const AAD = {
     `woco/device/account-chain-window/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
   PENDING_ROTATION: (seedAddress: string, parent: string) =>
     `woco/device/pending-rotation/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  // A private ticket receipt kept on this device, bound to its order: an entry moved to
+  // another order's slot fails its tag. Not account-bound - a guest has no account.
+  HOLDING_DEVICE_ORDER: (pickupId: string) => `woco/device/holding-order/v1:${pickupId.toLowerCase()}`,
   // Two scoped ZeroDev session keys had AAD constructors here — the sub-ENS mint
   // key until #501, the referral campaign's EAS key until #476. Neither is
   // written any more, and an unused AAD constructor is worse than none (see the

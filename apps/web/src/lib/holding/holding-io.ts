@@ -14,18 +14,28 @@ export const liveHoldingFeedIO: HoldingFeedIO = {
     return readContentFeedWriteBase(owner, topic, { route: ROUTE, skipLegacy: true });
   },
   async write({ signer, topic, base, build }) {
-    const { writeAtNextVersion } = await import("../swarm/verified-write.js");
-    const { written } = await writeAtNextVersion({
-      signerPrivKey: signer.privKey,
-      ownerAddress: signer.address,
-      topic,
-      route: ROUTE,
-      skipLegacy: true,
-      base,
-      build,
-      inconclusive: "Your saved receipts could not be read just now - try again in a moment.",
-    });
-    return written.status === "verified" ? "verified" : "unconfirmed";
+    const [{ writeAtNextVersion }, { InconclusiveReadError }, { HoldingSaveError }] = await Promise.all([
+      import("../swarm/verified-write.js"),
+      import("../swarm/late-retry.js"),
+      import("./account-copy.js"),
+    ]);
+    try {
+      const { written } = await writeAtNextVersion({
+        signerPrivKey: signer.privKey,
+        ownerAddress: signer.address,
+        topic,
+        route: ROUTE,
+        skipLegacy: true,
+        base,
+        build,
+        inconclusive: "Your saved receipts could not be read just now - try again in a moment.",
+      });
+      return written.status === "verified" ? "verified" : "unconfirmed";
+    } catch (e) {
+      // Written for the person; anything else stays a plain error the page does not show.
+      if (e instanceof InconclusiveReadError) throw new HoldingSaveError(e.message);
+      throw e;
+    }
   },
   async read(owner, topic) {
     const { readContentFeedResult } = await import("../swarm/content-feed.js");

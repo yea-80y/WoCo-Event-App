@@ -17,6 +17,7 @@
  *     /event/:id                   event
  *     /tickets   (and /my-tickets) profile, passport tab
  *     /verify                      verify
+ *     /keep                        keep (private ticket receipts; the email link's secret is stripped first)
  *     /signup                      signup (email-CTA landing; ?gt= gate token)
  *     /profile, /profile/:addr     profile
  *     /account   (and /passkeys)   account (Account & security: sign-in, passkeys, devices, sessions;
@@ -48,6 +49,7 @@
 import { FEATURES } from "@woco/shared";
 import { restoreEscapedRoute } from "../browser/in-app-route.js";
 import { installWeb3AuthRedirectCapture } from "../auth/web3auth-redirect.js";
+import { holdKeepLink, stripKeepLink } from "../holding/keep-capture.js";
 
 export type Surface = "neutral" | "attendee" | "creator";
 
@@ -171,6 +173,9 @@ function matchRoute(pathWithQuery: string): Match {
     return { route: "account", params: addDevice ? { addDevice: "1" } : {}, surface: "attendee" };
   }
   if (path === "/link") return { route: "link", params: {}, surface: "attendee" };
+  // A private ticket receipt (spec-receipt-note 5.2). Its link's secret never reaches
+  // here: `update()` strips it first. Off, the path is an unknown one.
+  if (path === "/keep" && FEATURES.holdingReceiptsAllowed) return { route: "keep", params: {}, surface: "attendee" };
   if (path === "/recover") return { route: "recover", params: {}, surface: "attendee" };
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };
   const soonMatch = path.match(/^\/soon\/(.+)$/);
@@ -232,6 +237,13 @@ function matchRoute(pathWithQuery: string): Match {
 }
 
 function update() {
+  // FIRST, before anything reads the hash: a Keep link's secret leaves the address bar
+  // (no new history entry) and waits in memory for the Keep page. Stripped even while
+  // receipts are off, so a secret never sits in the bar; held only while they are on.
+  if (typeof window !== "undefined") {
+    const keep = stripKeepLink(window.location, (url) => window.history.replaceState(window.history.state, "", new URL(url, window.location.href).href));
+    if (keep && FEATURES.holdingReceiptsAllowed) holdKeepLink(keep);
+  }
   // Referral capture: #/ref/{referrer} persists the referrer, then renders the
   // invite page (see matchRoute). The referrer is an address OR a WoCo sub-ENS
   // name, so an organiser can share `#/ref/theirvenue` instead of forty hex

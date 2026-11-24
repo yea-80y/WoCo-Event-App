@@ -8,7 +8,8 @@
 -->
 <script lang="ts">
   import type { BadgeV1 } from "@woco/shared";
-  import { lookupSubject, currentEra, WOCO_SUBJECTS } from "@woco/shared";
+  import { FEATURES, lookupSubject, currentEra, WOCO_SUBJECTS } from "@woco/shared";
+  import type { DeviceReceipt } from "../../holding/device-store.js";
   import { onMount, untrack } from "svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
@@ -41,6 +42,31 @@
   type CreditRow = { subject: string; total: number; visibility: "public" | "private" };
   let credits = $state<CreditRow[] | null>(null);
   let creditsState = $state<"loading" | "ok" | "locked" | "unavailable">("loading");
+
+  /**
+   * Private ticket receipts kept on THIS device (spec-receipt-note 5.2): a short list,
+   * read from local storage only - no prompt, no network. The account's saved
+   * collection comes with slice 3c.
+   */
+  let deviceReceipts = $state<DeviceReceipt[]>([]);
+
+  async function loadDeviceReceipts() {
+    try {
+      deviceReceipts = await (await import("../../holding/device-store.js")).listDeviceReceipts();
+    } catch {
+      /* storage blocked: nothing to list */
+    }
+  }
+
+  onMount(() => {
+    if (FEATURES.holdingReceiptsAllowed) void loadDeviceReceipts();
+  });
+
+  function receiptLine(r: DeviceReceipt): string {
+    const n = r.box?.receipts.length ?? 0;
+    const what = r.title ?? "Your tickets";
+    return n > 0 ? `${what} - ${n === 1 ? "1 ticket" : `${n} tickets`}` : what;
+  }
 
   onMount(async () => {
     try {
@@ -121,6 +147,21 @@
         {@render list(tickets.past)}
       {/if}
       <p class="more">To add another ticket, tap <strong>Add to WoCo</strong> in its email.</p>
+    {/if}
+
+    {#if deviceReceipts.length > 0}
+      <h3 class="group group--receipts">Private receipts on this device</h3>
+      <ul class="receipts">
+        {#each deviceReceipts as r (r.pickupId)}
+          <li>
+            <span>{receiptLine(r)}</span>
+            <span class="receipt-state">
+              {r.savedTo && r.savedTo === auth.parent?.toLowerCase() ? "Private receipt saved" : "Not in your account yet"}
+            </span>
+          </li>
+        {/each}
+      </ul>
+      <button class="btn btn--text" onclick={() => navigate("/keep")}>Open private receipts</button>
     {/if}
   </section>
 
@@ -229,6 +270,23 @@
   .list + .group { margin-top: 1.5rem; }
   .list + .list { margin-top: 0.5rem; }
   .more { margin: 1rem 0 0; font-size: 0.8125rem; color: var(--text-muted); }
+  .receipts {
+    list-style: none;
+    margin: 0 0 0.5rem;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+  .receipts li {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-size: 0.875rem;
+    color: var(--text);
+  }
+  .receipt-state { color: var(--text-muted); font-size: 0.8125rem; white-space: nowrap; }
+  .group--receipts { margin-top: 1.5rem; }
 
   .credit {
     display: flex;

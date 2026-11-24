@@ -46,6 +46,7 @@
   const loadCoasterPage = () => import("./lib/credits/CoasterPage.svelte");
   const loadMemberHome = () => import("./lib/attendee/home/MemberHome.svelte");
   const loadContacts = () => import("./lib/attendee/contacts/ContactsScreen.svelte");
+  const loadKeepPage = () => import("./lib/attendee/keep/KeepPage.svelte");
 
   // Warm the chunks behind the bottom-nav destinations once the landing
   // screen is idle, so first navigation doesn't pay a cold Swarm fetch.
@@ -110,6 +111,8 @@
     <LazyRoute loader={loadEventPurchased} props={{ eventId: router.params.id }} />
   {:else if router.route === "verify"}
     <LazyRoute loader={loadVerifyTicket} />
+  {:else if router.route === "keep"}
+    <LazyRoute loader={loadKeepPage} />
   {:else if router.route === "signup"}
     <LazyRoute loader={loadSignupLanding} props={{ token: router.params.gt }} />
   {:else if router.route === "profile"}

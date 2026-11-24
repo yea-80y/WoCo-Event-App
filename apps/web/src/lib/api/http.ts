@@ -46,12 +46,13 @@ export async function get<T>(path: string, baseUrl?: string): Promise<ApiRespons
   return safeJson<T>(resp);
 }
 
-/** Unauthenticated POST request. */
-export async function post<T>(path: string, body: unknown, baseUrl?: string): Promise<ApiResponse<T>> {
+/** Unauthenticated POST request. `timeoutMs`: give up (throw) after this long, body included. */
+export async function post<T>(path: string, body: unknown, baseUrl?: string, opts: { timeoutMs?: number } = {}): Promise<ApiResponse<T>> {
   const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    ...(opts.timeoutMs !== undefined ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
   });
   return safeJson<T>(resp);
 }

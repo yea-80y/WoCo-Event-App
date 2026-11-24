@@ -234,6 +234,8 @@ test("install: opened on a Web3Auth or Stripe return, it repairs but never reloa
     `https://woco.eth.limo/#sessionId=abc`,
     `https://woco.eth.limo/#/event/1?stripe=success`,
     `https://woco.eth.limo/#/event/1?x=1&session_id=cs_test_1`,
+    // A private-receipt link: its secret leaves the address before the Keep page has stored it.
+    `https://woco.eth.limo/#/keep?k=${"A".repeat(43)}`,
   ]) {
     const { w, log } = fakeWindow({ href });
     await withWindow(w, async () => {
