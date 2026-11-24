@@ -10,6 +10,7 @@ import { holdingBoxSealContext, sealBoxJson } from "@woco/shared/crypto/sealed-b
 import type { HoldingBoxV1 } from "@woco/shared/holding/box";
 import type { HoldingFeedIO } from "../src/lib/holding/account-copy.ts";
 import type { ContentFeedResult, ContentFeedWriteBase } from "../src/lib/swarm/content-feed.ts";
+import type { SpentBy } from "@woco/shared";
 import { FEED_ROUTES } from "../src/lib/swarm/gateways.ts";
 
 export const TARGET = { chainId: 42161, ledger: "0x5cd8394ef7a4e50403ff72d6addd4582332a6050" };
@@ -54,6 +55,8 @@ export interface FakeFeeds {
   spent: Map<string, number>;
   /** More spent versions below the head, for `readAt` only: `${topic}@${version}`. */
   spentBelow: Set<string>;
+  /** Why a spent version is spent, by `${topic}@${version}` (`SpentBy`); "length" when not named. */
+  spentBy: Map<string, SpentBy>;
   /** Versions `readAt` cannot answer for right now: `${topic}@${version}`. */
   failReadsAt: Set<string>;
   /** Every `readAt`, as `${topic}@${version}`. */
@@ -81,6 +84,7 @@ export function fakeFeeds(): FakeFeeds {
     failReads: new Set(),
     spent: new Map(),
     spentBelow: new Set(),
+    spentBy: new Map(),
     failReadsAt: new Set(),
     readsAt: [],
     dirty: new Set(),
@@ -97,11 +101,17 @@ export function fakeFeeds(): FakeFeeds {
     },
     io: undefined as unknown as HoldingFeedIO,
   };
+  const spentResult = (topic: string, version: number): ContentFeedResult<unknown> => ({
+    status: "unavailable",
+    reason: "spent",
+    unusableAt: version,
+    spentBy: f.spentBy.get(`${topic}@${version}`) ?? "length",
+  });
   const read = (owner: string, topic: string): ContentFeedResult<unknown> => {
     f.reads.push(topic);
     if (f.failReads.has(topic)) return { status: "unavailable", reason: "test" };
     const spentAt = f.spent.get(topic);
-    if (spentAt !== undefined) return { status: "unavailable", reason: "spent", unusableAt: spentAt };
+    if (spentAt !== undefined) return spentResult(topic, spentAt);
     const v = feeds.get(key(owner, topic));
     if (!v?.length) return { status: "absent" };
     if (f.dirty.has(topic)) {
@@ -127,7 +137,7 @@ export function fakeFeeds(): FakeFeeds {
       const at = `${topic}@${version}`;
       f.readsAt.push(at);
       if (f.failReads.has(topic) || f.failReadsAt.has(at)) return { status: "unavailable", reason: "test" };
-      if (f.spent.get(topic) === version || f.spentBelow.has(at)) return { status: "unavailable", reason: "spent", unusableAt: version };
+      if (f.spent.get(topic) === version || f.spentBelow.has(at)) return spentResult(topic, version);
       const text = feeds.get(key(owner, topic))?.[version];
       if (text === undefined) return { status: "absent" };
       return { status: "found", value: JSON.parse(text), version, scanClean: true };

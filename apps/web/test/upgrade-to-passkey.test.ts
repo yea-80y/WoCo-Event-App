@@ -259,7 +259,6 @@ test("prepare: reads first, then the passkey, backups off, its hold, the copies,
     "readEnvelope",
     "writeProfile",
     "writeReferral",
-    "writeReceipts",
   ]);
   const mint = f.names().indexOf("mintPasskey");
   for (const read of ["readLive", "readReferrer", "readProfile", "readReceipts"]) {
@@ -298,12 +297,20 @@ test("PQ4: the new seed reaches only its PRF-locked copy and the PRF-sealed enve
   // The copies are SIGNED by the new feed key (a KDF child of the seed), never handed the seed.
   assert.deepEqual(f.calls.find((c) => c.name === "writeProfile")!.args[0], NEW_FEED.address);
   assert.deepEqual(f.calls.find((c) => c.name === "writeReferral")!.args, [NEW_FEED.address, REFERRER]);
-  // Receipts: read under the OLD seed, saved with keys the NEW seed gives - its receipt
-  // copy signer among them - and never the seed itself (the `seen` list above).
+  // Receipts: read under the OLD seed as a gate; carried only at the switch (`carryReceipts`).
   assert.deepEqual(f.calls.find((c) => c.name === "readReceipts")!.args, [OLD_SEED]);
-  const [to, saved] = f.calls.find((c) => c.name === "writeReceipts")!.args as [{ signer: { address: string } }, unknown];
+  assert.ok(!f.names().includes("writeReceipts"));
+});
+
+test("PQ4: the carry saves receipts with keys the NEW seed gives, never the seed itself", async () => {
+  const s = store({ landed: () => false });
+  await runUpgrade(s.host, s.io);
+  const writes = s.f.calls.filter((c) => c.name === "writeReceipts");
+  assert.equal(writes.length, 1, "once per attempt");
+  const [to, saved] = writes[0]!.args as [{ signer: { address: string } }, unknown];
   assert.equal(to.signer.address, holdingCopySigner(Buffer.from(NEW_SEED.slice(2), "hex")).address);
   assert.equal(saved, SAVED_RECEIPTS);
+  assert.ok(!everyArg(writes).includes(NEW_SEED.toLowerCase()), "handed the keys, not the seed");
 });
 
 test("PQ2: an account hosting events or websites is refused before any passkey is made", async () => {
@@ -370,18 +377,28 @@ test("prepare: a profile or referral copy that fails undoes the passkey's hold, 
   }
 });
 
-test("prepare: saved receipts that will not copy to the new seed undo the passkey's hold, no marker", async () => {
-  const f = fakes({ writeReceipts: async () => { throw new Error("a saved receipt could not be confirmed yet"); } });
-  await assert.rejects(prepareUpgrade(f.deps), { message: RECEIPTS_FAILED_MESSAGE });
-  assert.deepEqual(f.calls.find((c) => c.name === "clearPasskeyState")?.args, [PASSKEY]);
-  assert.equal(f.marker.map.size, 0);
+test("run: saved receipts that will not copy keep the prepared state - Try again needs no new passkey (Fable 3c PR 1, 3)", async () => {
+  let fail = true;
+  const s = store({ landed: () => false });
+  s.f.deps.writeReceipts = async () => {
+    if (fail) throw new Error("a saved receipt could not be confirmed yet");
+  };
+  await assert.rejects(runUpgrade(s.host, s.io), { message: RECEIPTS_FAILED_MESSAGE });
+  assert.equal(s.f.marker.map.get(PARENT)?.stage, "prepared");
+  assert.ok(!s.f.names().includes("clearPasskeyState"), "the passkey's hold stays");
+  assert.ok(!s.log.includes("requestIntent") && !s.log.some((x) => x.startsWith("switch:")));
+  fail = false;
+  await runUpgrade(s.host, s.io);
+  assert.equal(s.f.names().filter((n) => n === "mintPasskey").length, 1, "the same passkey");
+  assert.ok(s.log.includes("adoptPasskey"));
 });
 
-test("prepare: no saved receipts means no receipt copy", async () => {
+test("run: no saved receipts means no receipt copy", async () => {
   for (const none of [null, [] as unknown as SavedHoldingCopies]) {
-    const f = fakes({ readReceipts: async () => none });
-    await prepareUpgrade(f.deps);
-    assert.ok(!f.names().includes("writeReceipts"));
+    const s = store({ landed: () => false });
+    s.f.deps.readReceipts = async () => none;
+    await runUpgrade(s.host, s.io);
+    assert.ok(!s.f.names().includes("writeReceipts"));
   }
 });
 
@@ -756,7 +773,7 @@ test("run: receipts are carried again right before the switch, at every attempt 
   await runUpgrade(s.host, s.io);
 
   const newSigner = holdingCopySigner(Buffer.from(NEW_SEED.slice(2), "hex")).address;
-  assert.equal(s.written.length, 3, "prepare, then before each attempt's switch");
+  assert.equal(s.written.length, 2, "once before each attempt's switch - never in prepare");
   for (const w of s.written as { signer: string }[]) assert.equal(w.signer, newSigner, "sealed under the passkey's seed");
   assert.equal(((s.written.at(-1) as { list: unknown[] }).list).length, 2, "the later receipt went with them");
   const at = (x: string, from = 0) => s.log.indexOf(x, from);
@@ -794,6 +811,25 @@ test("run: a tab that no longer holds the passkey refuses when there are receipt
   empty.f.marker.write(prepared({ passkey: OTHER }));
   await runUpgrade(empty.host, empty.io);
   assert.ok(empty.log.includes("adoptPasskey"));
+});
+
+test("a chain that does not answer whether the switch landed: neither 'Press Undo' nor an Undo, nothing sent", async () => {
+  const OTHER = "0x4444444444444444444444444444444444444444";
+  const s = receiptStore({ landed: () => false });
+  s.f.oldRetracted();
+  s.f.marker.write(prepared({ passkey: OTHER }));
+  const kernel = s.host.emailKernel;
+  s.host.emailKernel = async () => ({ ...(await kernel()), readKernelSignerFor: async () => "error" as const });
+  await assert.rejects(runUpgrade(s.host, s.io), { message: READ_FAILED_MESSAGE });
+  assert.ok(!s.log.includes("requestIntent") && !s.log.some((x) => x.startsWith("switch:")));
+  assert.equal(s.written.length, 0);
+
+  // Undo off an unanswered read could take the passkey's hold away from an account it alone controls.
+  s.host.readSignerFor = async () => "error";
+  await assert.rejects(runCancel(s.host, s.io), { message: READ_FAILED_MESSAGE });
+  assert.equal(s.f.marker.map.get(PARENT)?.stage, "prepared", "nothing undone");
+  assert.ok(!s.f.names().includes("clearPasskeyState"));
+  assert.equal(s.f.writes.length, 0, "no likes re-posted");
 });
 
 test("run: a passkey this tab made for an EARLIER upgrade is never used for another's marker", async () => {

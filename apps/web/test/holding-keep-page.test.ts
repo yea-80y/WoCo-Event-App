@@ -147,9 +147,10 @@ test("KeepCard: only messages written for people reach the screen (Fable 3b cond
   assert.equal(script.split("\n").filter((l) => l.includes("e.message")).length, 2);
   // The sign-in and key step: only the key-verdict messages, never the browser's own words
   // for a cancelled passkey prompt or a network fault (Fable 3b, carried to 3c).
+  // The fallback is set FIRST, so a failing import (the same network fault) still shows it.
   assert.match(
     script,
-    /const written = \(\["behind", "keyless", "foreign", "unknown"\] as const\)\.map\(keysVerdictMessage\);\s*problem = e instanceof Error && written\.includes\(e\.message\) \? e\.message : NOT_READY;/,
+    /problem = NOT_READY;\s*try \{\s*const \{ keysVerdictMessage \} = await import\("\.\.\/\.\.\/keyring\/account-keys\.js"\);\s*const written = \(\["behind", "keyless", "foreign", "unknown"\] as const\)\.map\(keysVerdictMessage\);\s*if \(e instanceof Error && written\.includes\(e\.message\)\) problem = e\.message;\s*\} catch \{/,
   );
   assert.match(fnBody(script, "sayable"), /if \(HoldingSaveError && e instanceof HoldingSaveError\) return/);
   // A box that no longer checks is said plainly; nothing else gets past sayable.

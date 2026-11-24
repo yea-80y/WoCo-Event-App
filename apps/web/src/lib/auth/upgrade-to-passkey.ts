@@ -20,14 +20,14 @@
  *    reads it - and it leaves the device once the switch has landed.
  *
  * Phases, resumable from a device marker that holds no secret:
- *   prepare  - reads; the passkey ceremony; backups removed; the passkey's binding,
- *              locked seed and envelope (read back); profile and referral copied to
- *              the new feed, saved ticket receipts re-sealed under the new seed (read
- *              back); the marker; likes and follows retracted.
- *   switch   - the receipts carried again (`carryReceipts`: what was saved since
- *              prepare), then the op (the store). A refusal changes nothing past
- *              `prepare`: the same passkey retries it, or `cancelUpgrade` puts it
- *              all back.
+ *   prepare  - reads (the saved ticket receipts among them, as a gate); the passkey
+ *              ceremony; backups removed; the passkey's binding, locked seed and
+ *              envelope (read back); profile and referral copied to the new feed;
+ *              the marker; likes and follows retracted.
+ *   switch   - at every attempt, the saved ticket receipts re-sealed under the new
+ *              seed (`carryReceipts`, read back), then the op (the store). A refusal
+ *              changes nothing past `prepare`: the same passkey retries it, or
+ *              `cancelUpgrade` puts it all back.
  *   finalize - the email key's traces leave the device; the marker says "committed".
  *   move     - likes and follows re-posted under the new feed; the marker goes.
  *
@@ -196,6 +196,10 @@ export async function prepareUpgrade(
   const oldSeed = await d.oldSeed();
   if (!oldSeed) throw new Error(READ_FAILED_MESSAGE);
   const oldFeed = deriveFeedSignerKey(oldSeed).address.toLowerCase();
+  // The receipts are read here only as a gate - one that cannot be read stops the upgrade
+  // before any passkey is made. They are carried once, right before the switch
+  // (`carryReceipts`): a second pass seconds after a first asks bee again for the version
+  // the first just probed, which bee 2.8 stops answering for a minute (#943).
   const [likes, follows, referrer, profile, receipts] = await Promise.all([
     d.social.readLive(oldFeed, "like"),
     d.social.readLive(oldFeed, "follow"),
@@ -258,15 +262,6 @@ export async function prepareUpgrade(
   } catch (e) {
     await undo(COPY_FAILED_MESSAGE, e);
   }
-  if (receipts && receipts.length > 0) {
-    progress("Copying your ticket receipts…");
-    try {
-      const { holdingGenKeysOf } = await import("../holding/account-copy.js");
-      await d.writeReceipts(await holdingGenKeysOf(seed), receipts);
-    } catch (e) {
-      await undo(RECEIPTS_FAILED_MESSAGE, e);
-    }
-  }
 
   const marker: UpgradeMarker = {
     v: 1,
@@ -309,11 +304,12 @@ export async function retractOld(
 
 /**
  * The ticket receipts the old seed holds NOW, re-sealed under the passkey's seed: at
- * every attempt, right before the switch (spec-receipt-note 5.1, the gate on slice 3c).
- * Prepare's own copy can be minutes old by then (the passkey ceremony) or days (a
- * refused switch tried again): a receipt saved since, in another tab, would otherwise
- * go with the old seed once the switch lands. Idempotent - a copy already there is not
- * written again.
+ * every attempt, right before the switch (spec-receipt-note 5.1, the gate on slice 3c) -
+ * the only place they are carried. Prepare's read can be minutes old by then (the
+ * passkey ceremony) or days (a refused switch tried again): a receipt saved since, in
+ * another tab, would otherwise go with the old seed once the switch lands. Idempotent - a
+ * copy already there is not written again. A failure lands after the marker, so "Try
+ * again" reuses the same passkey.
  *
  * Only the passkey's seed can seal them. A tab that no longer holds it (closed or
  * reloaded since prepare) refuses when there is anything to carry: Undo, and a fresh
@@ -365,6 +361,17 @@ export interface SwitchChain {
 /** Has the switch landed: is the passkey on the account's list? */
 export async function switchLanded(c: Pick<SwitchChain, "readKernelSignerFor">, m: UpgradeMarker): Promise<boolean> {
   return (await c.readKernelSignerFor(m.parent, m.passkey).catch(() => "error" as const)) === m.passkey;
+}
+
+/**
+ * As `switchLanded`, for the two choices that must not be made blind: "unknown" when the
+ * chain did not answer, never "not landed". Undo after a switch that landed would take
+ * the passkey's hold away from an account it alone now controls; "Press Undo" must not
+ * be said off a read that failed.
+ */
+async function landedOrUnknown(c: Pick<SwitchChain, "readKernelSignerFor">, m: UpgradeMarker): Promise<boolean | "unknown"> {
+  const got = await c.readKernelSignerFor(m.parent, m.passkey).catch(() => "error" as const);
+  return got === "error" ? "unknown" : got === m.passkey;
 }
 
 /**
@@ -541,7 +548,9 @@ export async function runUpgrade(h: UpgradeStoreHost, io: UpgradeIO, progress: (
   // refusal of either leaves the likes where they are and nothing has changed. An
   // attempt whose op already landed (a tab closed on it) sends nothing and asks for
   // nothing; what it can still carry before the old seed goes, it does.
-  if (!(await switchLanded(chain, marker))) {
+  const landed = await landedOrUnknown(chain, marker);
+  if (landed === "unknown") throw new Error(READ_FAILED_MESSAGE);
+  if (!landed) {
     await carryReceipts(deps, marker, live, progress);
     await io.requestIntent();
   } else if (live) {
@@ -579,7 +588,9 @@ export async function runCancel(h: UpgradeStoreHost, io: UpgradeIO): Promise<voi
   if (!account) return;
   const marker = io.marker.read(account.parent);
   if (!marker || marker.emailKey !== account.emailKey || marker.stage !== "prepared") return;
-  if (await switchLanded({ readKernelSignerFor: h.readSignerFor }, marker)) throw new Error(ALREADY_LANDED_MESSAGE);
+  const landed = await landedOrUnknown({ readKernelSignerFor: h.readSignerFor }, marker);
+  if (landed === "unknown") throw new Error(READ_FAILED_MESSAGE);
+  if (landed) throw new Error(ALREADY_LANDED_MESSAGE);
   if (!(await h.ensureSession())) throw new Error(NO_SESSION_MESSAGE);
   await cancelUpgrade(await io.prepareDeps(account), marker);
   liveInTab = null;

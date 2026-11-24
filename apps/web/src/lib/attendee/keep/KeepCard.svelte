@@ -160,10 +160,16 @@
         secrets = await auth.getAccountSecrets({ toSeal: true });
       } catch (e) {
         // Only the account's key messages are written to be shown: a cancelled passkey
-        // prompt or a network fault throws the browser's own words.
-        const { keysVerdictMessage } = await import("../../keyring/account-keys.js");
-        const written = (["behind", "keyless", "foreign", "unknown"] as const).map(keysVerdictMessage);
-        problem = e instanceof Error && written.includes(e.message) ? e.message : NOT_READY;
+        // prompt or a network fault throws the browser's own words. The same fault can
+        // fail this import too: then the fallback, never no message at all.
+        problem = NOT_READY;
+        try {
+          const { keysVerdictMessage } = await import("../../keyring/account-keys.js");
+          const written = (["behind", "keyless", "foreign", "unknown"] as const).map(keysVerdictMessage);
+          if (e instanceof Error && written.includes(e.message)) problem = e.message;
+        } catch {
+          /* NOT_READY stands */
+        }
         return;
       }
       const account = auth.parent?.toLowerCase();

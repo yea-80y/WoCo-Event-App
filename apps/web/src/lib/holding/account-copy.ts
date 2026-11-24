@@ -121,12 +121,25 @@ function headOf(read: ContentFeedResult<unknown>): { value: unknown } | null | "
   return { value: read.value };
 }
 
-type Opened<T> = { kind: "ok"; value: T } | { kind: "jammed" } | { kind: "newer" };
+type Opened<T> = { kind: "ok"; value: T } | { kind: "jammed" } | { kind: "newer" } | { kind: "unavailable" };
 
 /**
- * A sealed value opened and parsed, or why not. "jammed": it does not open under this
- * key. "newer": it opens - so the account wrote it - but does not parse, or is a box
- * format this build does not know: a newer layout, never walked past or written over.
+ * A version that will never read, as a JAM: every chunk found and signature-checked, and
+ * they do not make one value. A page that reads ABSENT is not one - a race cannot cause
+ * it (every writer uploads its pages before its manifest), a lost chunk or a false 404
+ * can, and the version may hold a confirmed list (Fable 3c PR 1, 1).
+ */
+function spentByRace(read: ContentFeedResult<unknown>): boolean {
+  return read.status === "unavailable" && read.unusableAt !== undefined && (read.spentBy === "length" || read.spentBy === "not-json");
+}
+
+/**
+ * A sealed value opened and parsed, or why not.
+ * - "jammed": a well-formed box that fails its tag - what interleaved pages make (Fable
+ *   3c PR 1, 2): `v` and `enc` sit wholly on the first page, which one writer wrote.
+ * - "newer": a box version or shape this build does not know, or one that opens - so the
+ *   account wrote it - and does not parse. A newer layout: never walked past or written over.
+ * - "unavailable": any other fault (a key, decapsulation): says nothing about the box.
  */
 async function openOrWhy<T>(
   keys: HoldingGenKeys,
@@ -134,15 +147,15 @@ async function openOrWhy<T>(
   ctx: { info: string; aad: string },
   parse: (x: unknown) => T | null,
 ): Promise<Opened<T>> {
-  const [{ openBox, UnsupportedSealedBoxError }, { gunzip, isGzipped }] = await Promise.all([
-    import("@woco/shared/crypto/sealed-box"),
-    import("@woco/shared/crypto/compress"),
-  ]);
+  const [{ openBox, isSealedBoxTagFailure, MalformedSealedBoxError, UnsupportedSealedBoxError }, { gunzip, isGzipped }] =
+    await Promise.all([import("@woco/shared/crypto/sealed-box"), import("@woco/shared/crypto/compress")]);
   let plaintext: Uint8Array;
   try {
     plaintext = await openBox(keys.orderSecretKey, value, ctx);
   } catch (e) {
-    return e instanceof UnsupportedSealedBoxError ? { kind: "newer" } : { kind: "jammed" };
+    if (isSealedBoxTagFailure(value, e)) return { kind: "jammed" };
+    if (e instanceof UnsupportedSealedBoxError || e instanceof MalformedSealedBoxError) return { kind: "newer" };
+    return { kind: "unavailable" };
   }
   try {
     // As `openBoxJson`, split from the open so a failure here is told apart from a jam.
@@ -159,13 +172,14 @@ async function openOrWhy<T>(
  * "newer" when it is in a layout this build does not know, "unavailable" when it could
  * not be read for certain.
  *
- * A head that is spent (`unusableAt`) or does not open is JAMMED (Fable 3a, 5): two
- * writers raced at one version and their pages interleaved (a version is written once and
- * keeps the first bytes of each page). No save ever counted on a jammed version - a save
- * is confirmed only when its own bytes read back whole and open - so the list is the
- * newest earlier version that opens, and the next save goes on top of the jam. Below
- * version 0 that is the empty list. Anything uncertain stops: an unanswered read, a scan
- * that may not have reached the head, a gap below a version that exists, a walk past
+ * A head whose chunks were all found but do not make one value (`spentByRace`), or make a
+ * box that fails its tag, is JAMMED (Fable 3a, 5): two writers raced at one version and
+ * their pages interleaved (a version is written once and keeps the first bytes of each
+ * page). No save ever counted on a jammed version - a save is confirmed only when its own
+ * bytes read back whole and open - so the list is the newest earlier version that opens,
+ * and the next save goes on top of the jam. Below version 0 that is the empty list.
+ * Anything uncertain stops: an unanswered read, a page that reads absent, a scan that may
+ * not have reached the head, a gap below a version that exists, a key fault, a walk past
  * `HOLDING_INDEX_WALK_MAX`.
  */
 async function indexAsOf(
@@ -181,10 +195,11 @@ async function indexAsOf(
   if (read.status === "found") {
     if (!read.scanClean) return "unavailable";
     const head = await openOrWhy(keys, read.value, ctx, s.parseHoldingIndex);
-    if (head.kind !== "jammed") return head.kind === "ok" ? head.value : "newer";
+    if (head.kind === "ok") return head.value;
+    if (head.kind !== "jammed") return head.kind;
     jammedAt = read.version;
   } else {
-    if (read.unusableAt === undefined) return "unavailable";
+    if (!spentByRace(read) || read.unusableAt === undefined) return "unavailable";
     jammedAt = read.unusableAt;
   }
   for (let v = jammedAt - 1; v >= 0; v--) {
@@ -195,10 +210,10 @@ async function indexAsOf(
     if (at.status === "found") {
       const opened = await openOrWhy(keys, at.value, ctx, s.parseHoldingIndex);
       if (opened.kind === "ok") return opened.value;
-      if (opened.kind === "newer") return "newer";
+      if (opened.kind !== "jammed") return opened.kind;
       continue;
     }
-    if (at.status === "unavailable" && at.unusableAt !== undefined) continue;
+    if (spentByRace(at)) continue;
     return "unavailable";
   }
   return null;
