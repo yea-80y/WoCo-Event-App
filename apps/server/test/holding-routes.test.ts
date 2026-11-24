@@ -178,7 +178,10 @@ test("off: every route refuses before reading anything", async () => {
       await post("/api/holdings/mine", {}),
     ]) {
       assert.equal(res.status, 403);
-      assert.match(((await res.json()) as { error: string }).error, /not available yet/);
+      const body = (await res.json()) as { error: string; code?: string };
+      assert.match(body.error, /not available yet/);
+      // Never the erase's "refused" code: the app would tell the buyer to check their clock.
+      assert.equal(body.code, "RECEIPTS_OFF");
     }
     assert.ok(store.getHolding(sale.sessionId)!.issued!.box, "nothing erased");
     assert.equal(store.getHolding(sale.sessionId)!.erasedAt, undefined);
@@ -220,6 +223,8 @@ test("pickup: unknown, unpaid and erased read the same - not found", async () =>
   for (const pickupId of ["0f".repeat(32), unpaid.pv.pickupId, erased.pv.pickupId]) {
     const res = await post("/api/holdings/pickup", { pickupId });
     assert.equal(res.status, 404, pickupId);
+    // The route's own "not found" carries its code: a bare 404 (a proxy, an older server) has none.
+    assert.equal(((await res.json()) as { code?: string }).code, "RECEIPT_NOT_FOUND", pickupId);
   }
 });
 
@@ -299,6 +304,7 @@ test("erase: a stale, early, foreign or broken signature is refused, and nothing
   ] as const) {
     const res = await post("/api/holdings/pickup/erase", body);
     assert.equal(res.status, 403, what);
+    assert.equal(((await res.json()) as { code?: string }).code, "RECEIPT_ERASE_REFUSED", what);
   }
   for (const bad of [
     { pickupId: sale.pv.pickupId, issuedAt: String(now), sig: "0x00" },
@@ -316,10 +322,14 @@ test("erase: a stale, early, foreign or broken signature is refused, and nothing
 
 test("erase before payment: nothing to erase yet; unknown id: not found", async () => {
   const unpaid = await accountSale("0x" + "a3".repeat(20), { paid: false });
-  assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(unpaid.r, unpaid.pv.pickupId))).status, 409);
+  const early = await post("/api/holdings/pickup/erase", await eraseBody(unpaid.r, unpaid.pv.pickupId));
+  assert.equal(early.status, 409);
+  assert.equal(((await early.json()) as { code?: string }).code, "RECEIPT_NOT_ISSUED");
   assert.ok(store.getHolding(unpaid.sessionId)!.sealedR, "the request is untouched");
   const ghost = new Uint8Array(32).fill(223);
-  assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(ghost, "0d".repeat(32)))).status, 404);
+  const unknown = await post("/api/holdings/pickup/erase", await eraseBody(ghost, "0d".repeat(32)));
+  assert.equal(unknown.status, 404);
+  assert.equal(((await unknown.json()) as { code?: string }).code, "RECEIPT_NOT_FOUND");
 });
 
 test("erase while the box is being stored: try again in a minute, nothing changes", async () => {
@@ -329,6 +339,7 @@ test("erase while the box is being stored: try again in a minute, nothing change
     const res = await post("/api/holdings/pickup/erase", await eraseBody(sale.r, sale.pv.pickupId));
     assert.equal(res.status, 409);
     assert.equal(res.headers.get("Retry-After"), "60");
+    assert.equal(((await res.json()) as { code?: string }).code, "RECEIPT_STORING");
   } finally {
     store.setHoldingBoxStoring(sale.boxRoot, false);
   }
