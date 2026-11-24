@@ -9,7 +9,7 @@
 -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import { holdKeepLink, onKeepLink, takeKeepLink } from "../../holding/keep-capture.js";
+  import { onKeepLink, returnKeepLink, takeKeepLink } from "../../holding/keep-capture.js";
   import type { DeviceReceipt } from "../../holding/device-store.js";
   import KeepCard from "./KeepCard.svelte";
 
@@ -36,8 +36,9 @@
       receipts = await device.listDeviceReceipts();
       storageFailed = false;
     } catch {
-      // Storage blocked (a private window, say): the link stays in memory for a retry.
-      if (fragment) holdKeepLink(fragment);
+      // Storage blocked (a private window, say): the link stays in memory for the
+      // "Try again" button - put back quietly, or this page's own listener would loop.
+      if (fragment) returnKeepLink(fragment);
       storageFailed = true;
     }
     loaded = true;
@@ -67,7 +68,7 @@
   <header class="head">
     <h1 class="title">Private receipts</h1>
     <p class="lede">
-      Proof you bought your tickets, that only your link opens. Save it to a free WoCo account to keep it.
+      A private record of your order, that only your link opens. Save it to a free WoCo account to keep it.
     </p>
   </header>
 

@@ -50,6 +50,14 @@ export interface HoldingFeedIO {
 
 export type SaveResult = "saved" | "unconfirmed";
 
+/** A save that stopped, with a message written for the person (the Keep page shows it). */
+export class HoldingSaveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HoldingSaveError";
+  }
+}
+
 /** A generation's keys from its account secret (0x-hex). Lazy: loads the lattice code. */
 export async function holdingGenKeysOf(secretHex: string): Promise<HoldingGenKeys> {
   const [{ accountKeysOf }, { holdingCopySigner, holdingTopicSalt }, { bytesToHex, hexToBytes }] = await Promise.all([
@@ -195,7 +203,7 @@ export async function writeHoldingCopy(keys: HoldingGenKeys, copy: HoldingCopyV1
   });
   if (written !== "verified") return "unconfirmed";
   // The bytes Swarm holds are the ones sealed here: they must open under this account's key.
-  if (!(await openAs(keys, sealed, ctx, s.parseHoldingCopy))) throw new Error("the saved receipt does not open under this account's key");
+  if (!(await openAs(keys, sealed, ctx, s.parseHoldingCopy))) throw new HoldingSaveError("the saved receipt does not open under this account's key");
   return "saved";
 }
 
@@ -206,10 +214,10 @@ export async function addToHoldingIndex(keys: HoldingGenKeys, entries: HoldingIn
   const ctx = s.holdingIndexSealContext(topic);
   const current = async (read: ContentFeedResult<unknown>): Promise<HoldingIndexV1 | null> => {
     if (read.status === "absent") return null;
-    if (read.status !== "found") throw new Error("your receipt list could not be read - try again later");
+    if (read.status !== "found") throw new HoldingSaveError("your receipt list could not be read - try again later");
     const index = await openAs(keys, read.value, ctx, s.parseHoldingIndex);
     // Never written over: its orders would vanish from the account's list.
-    if (!index) throw new Error("your receipt list could not be opened");
+    if (!index) throw new HoldingSaveError("your receipt list could not be opened");
     return index;
   };
   const missing = (index: HoldingIndexV1 | null) =>
@@ -232,7 +240,7 @@ export async function addToHoldingIndex(keys: HoldingGenKeys, entries: HoldingIn
     },
   });
   if (written !== "verified") return "unconfirmed";
-  if (!(await openAs(keys, sealed, ctx, s.parseHoldingIndex))) throw new Error("the saved receipt list does not open under this account's key");
+  if (!(await openAs(keys, sealed, ctx, s.parseHoldingIndex))) throw new HoldingSaveError("the saved receipt list does not open under this account's key");
   return "saved";
 }
 
@@ -266,10 +274,10 @@ export async function writeHoldingCopies(to: HoldingGenKeys, copies: SavedHoldin
   // come back inconclusive, and that would hold a passkey removal open for nothing.
   if (copies.length === 0) return;
   for (const { copy } of copies) {
-    if ((await writeHoldingCopy(to, copy, io)) !== "saved") throw new Error("a saved receipt could not be confirmed yet - try again later");
+    if ((await writeHoldingCopy(to, copy, io)) !== "saved") throw new HoldingSaveError("a saved receipt could not be confirmed yet - try again later");
   }
   if ((await addToHoldingIndex(to, copies.map((c) => c.entry), io)) !== "saved") {
-    throw new Error("your receipt list could not be confirmed yet - try again later");
+    throw new HoldingSaveError("your receipt list could not be confirmed yet - try again later");
   }
 }
 
@@ -280,7 +288,7 @@ export async function writeHoldingCopies(to: HoldingGenKeys, copies: SavedHoldin
  */
 export async function moveHoldingCopies(from: HoldingGenKeys[], to: HoldingGenKeys, io: HoldingFeedIO): Promise<number> {
   const { copies, complete } = await readAllHoldingCopies(from, io);
-  if (!complete) throw new Error("your saved receipts could not all be read - try again later");
+  if (!complete) throw new HoldingSaveError("your saved receipts could not all be read - try again later");
   await writeHoldingCopies(to, copies, io);
   return copies.length;
 }

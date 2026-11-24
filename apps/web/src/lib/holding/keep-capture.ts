@@ -33,6 +33,14 @@ export function holdKeepLink(fragment: string): void {
   for (const l of listeners) l();
 }
 
+/**
+ * Put a taken fragment back, telling NOBODY: the page that could not store it retries
+ * on a button, never because it put the link back itself (that would loop for ever).
+ */
+export function returnKeepLink(fragment: string): void {
+  held = fragment;
+}
+
 /** The held fragment, once: it is not kept here after the page has it. */
 export function takeKeepLink(): string | null {
   const f = held;

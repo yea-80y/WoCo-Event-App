@@ -169,8 +169,9 @@ portability envelope is written.
 Private ticket receipts opened from a ticket email's Keep link (`woco:holding:device:*`, behind
 `FEATURES.holdingReceiptsAllowed`): the order's secret from the link, and once shown the checked
 receipts and the event's name, under the device key, for anyone using that browser (a guest has no
-account). Deleted at sign-out, together with the browser's notes of where the account's saved receipt
-copies are (`woco:cfv:*:woco/holding/v1/*`). The secret leaves the address bar as the page opens.
+account). Deleted when someone signs out on that browser; the browser's notes of where the account's
+saved receipt copies are (`woco:cfv:*:woco/holding/v1/*`) go at every sign-out, an expired session's
+included. The secret leaves the address bar as the page opens.
 
 ### 3.3 IP addresses
 
@@ -182,8 +183,11 @@ hour after the hold ends).
 Also present in host and container logs, kept 30 days (journald, #547; see §8 item 3), and in
 Cloudflare's logs under Cloudflare's own retention as our sub-processor.
 Which logs (checked on the VM 2026-11-24): the API server (`woco-server`) writes no client address
-to its logs, and its receipt routes and storage relay are guarded by a test against starting to
-(`apps/server/test/holding-routes-no-logging.test.ts`). The gateway (`bee-proxy`, separate repo)
+to its logs. On the receipt routes, the receipt store, the storage relay and the middleware every
+request passes, a test keeps it that way: no log line there names an address, an account, a pickup
+id or an email, or reads the request (`apps/server/test/holding-routes-no-logging.test.ts`). The
+one exception is a REFUSED sign-in: it logs the session key's address and the path, and a refused
+wallet or smart-wallet sign-in the account address it claimed (each line reviewed in that test). The gateway (`bee-proxy`, separate repo)
 logs every request it serves with its time, path and client address - so a read such as
 `GET /bytes/{root}` names what was read and from where, for 30 days. That includes the Keep page
 fetching a receipt box by its root; it does not include the account, which only the API server sees.
@@ -353,7 +357,7 @@ independent nodes worldwide:
 | Seating plan (`woco.seatplan.v1`) | The organiser's seating plan for an allocated-seating ticket type: sections, rows, seat labels and price bands. Fixed at publish and committed onchain through the ticket type's manifest | No |
 | Seat state (`woco/event/{eventId}/seats/{seriesId}`, `woco.seatstate.v1`) | Seats the organiser holds back, by a fixed kind (house, guest, press, access, unavailable, other - never free text), and seats confirmed back on sale. Signed by the organiser's content-feed signer. Names no buyer | No |
 | Like / follow statements | Public signed statements on the user's own feed (`packages/shared/src/social/`); a retraction is a new version, not a deletion | **Yes**, and intentionally public |
-| The buyer's own ticket-receipt copies (`holding` family, `packages/shared/src/holding/copy.ts`) | Written by the buyer's app only: each order's secret and receipts, and a list of the orders, X-Wing sealed to the buyer's account key, owned by a key of their own derived for this (not the one that owns their public profile), at topics salted from their account secret. Nobody else can look one up, open it, or tie it to an order. What a save still shows: WoCo's relay pays for the storage, so our server sees that the account stored sealed data, how much and when, and writes none of it - nor the address - to its logs (test-guarded, §3.3); Cloudflare sees the address as our network provider; Etherna and any node holding a chunk see the owning key, sizes and times, not whose account it is. Re-sealed under new keys when a passkey is removed or the account upgrades to a passkey. Like every chunk, cannot be deleted from Swarm; lasts while the batch pays. Behind `FEATURES.holdingReceiptsAllowed` | **Yes** (pseudonymous), encrypted to the buyer |
+| The buyer's own ticket-receipt copies (`holding` family, `packages/shared/src/holding/copy.ts`) | Written by the buyer's app only: each order's secret and receipts, and a list of the orders, X-Wing sealed to the buyer's account key, owned by a key of their own derived for this (not the one that owns their public profile), at topics salted from their account secret. Nobody else can look one up, open it, or tie it to an order. What a save still shows: WoCo's relay pays for the storage, so our server sees that the account stored sealed data, how much and when, and a save that succeeds writes none of it - nor the address - to its logs (test-guarded; a refused sign-in is logged, §3.3); Cloudflare sees the address as our network provider; Etherna and any node holding a chunk see the owning key, sizes and times, not whose account it is. Re-sealed under new keys when a passkey is removed or the account upgrades to a passkey. Like every chunk, cannot be deleted from Swarm; lasts while the batch pays. Behind `FEATURES.holdingReceiptsAllowed` | **Yes** (pseudonymous), encrypted to the buyer |
 | Profile feeds | display name, avatar, bio — organiser-published | **Yes**, and intentionally public |
 | Organiser privacy notice (`woco/legal/privacy-notice/{account}`, `woco.privacy-notice.v2`) | The organiser's name, privacy contact email, optional postal address and ICO number, and their choices (who else sees attendee details, months order-form answers are kept, whether they email only about their own events, plus optional "anything else" lines), signed by their content-feed signer and published when they press "Publish". The public notice pages read it through `GET /api/privacy-notice/*`, which picks the account and signer from server records only (`routes/privacy-notice.ts`); the server stores none of it. Earlier versions stay retrievable after an edit - Organiser Terms §4 says so, and the editor asks for business, not personal, details | **Yes** (the organiser's own details), and intentionally public |
 | Marketing contact list blob (email, name and every other order-form answer except a sensitive one (UK GDPR Art. 9 or Art. 10) or one about another person - the same for a ticked "Email me" and a soft opt-in. The checkout names each one before the buyer agrees, and the buyer's consent record holds the ids of those questions, which are all the import copies, for that record's event only (2026-10-15); plus one tombstone per contact the organiser deleted: a hash of the organiser's address and the email, and the date of the deletion - not the address). Buyers with a checkout record (opt-in or soft opt-in) are added automatically, in the organiser's browser, whenever they use WoCo; an unsubscribed, declined, bounced or suppressed address never is, and a deleted one only on an "Email me" ticked after the deletion (2026-10-14) | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |

@@ -36,8 +36,10 @@ test("KeepPage on load: only the link and this device - no network step, no sign
   assert.doesNotMatch(load, NETWORK);
   assert.match(load, /acceptKeepLink\(fragment, \{ device \}\)/);
   assert.match(load, /device\.listDeviceReceipts\(\)/);
-  // A storage failure puts the link back in memory: never dropped.
-  assert.match(load, /catch \{[^}]*if \(fragment\) holdKeepLink\(fragment\);/);
+  // A storage failure puts the link back in memory, QUIETLY: never dropped, and never a
+  // notification its own listener would answer with another failing attempt (Fable 3b).
+  assert.match(load, /catch \{[\s\S]*?if \(fragment\) returnKeepLink\(fragment\);/);
+  assert.doesNotMatch(script, /holdKeepLink/);
   assert.doesNotMatch(fnBody(script, "reload"), NETWORK);
 });
 
@@ -74,9 +76,14 @@ test("KeepCard wording: the order's keys, never 'valid'; no 'never' claims", () 
   const card = read("lib/attendee/keep/KeepCard.svelte");
   const markup = card.slice(card.indexOf("</script>"), card.indexOf("<style>"));
   assert.match(markup, /Your order's keys/);
-  const copy = card.slice(0, card.indexOf("<style>")).replace(/<!--[\s\S]*?-->/g, "").replace(/\/\/.*$/gm, "");
+  const copy = card
+    .slice(0, card.indexOf("<style>"))
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
   assert.doesNotMatch(copy, /\bvalid\b/i);
-  assert.doesNotMatch(copy.replace(/never "valid"|never claims/gi, ""), /"[^"]*\bnever\b[^"]*"/i);
+  // Words in quotes on one line: what the screen can say.
+  assert.doesNotMatch(copy, /"[^"\n]*\bnever\b[^"\n]*"/i);
 });
 
 test("sign-out: the receipt feed hints go, every other hint stays", () => {
@@ -103,12 +110,32 @@ test("sign-out: the receipt feed hints go, every other hint stays", () => {
   }
 });
 
-test("sign-out sweep: the receipt hints, then the receipts kept on this device, each its own guarded step", () => {
+test("sign-out: every clear drops the receipt hints; only the PERSON's sign-out drops the device's receipts", () => {
   const auth = read("lib/auth/auth-store.svelte.ts");
   const clear = auth.slice(auth.indexOf("async function clearAllAuth()"), auth.indexOf("// A pending empty-accounts logout"));
   assert.match(clear, /await step\("holding-hints", async \(\) => \{[\s\S]*?forgetVersionHintsUnder\(HOLDING_TOPIC_PREFIX\);/);
-  assert.match(clear, /await step\("holding-device", async \(\) => \(await import\("\.\.\/holding\/device-store\.js"\)\)\.forgetAllDeviceReceipts\(\)\);/);
-  assert.ok(clear.indexOf('step("identity-keys"') < clear.indexOf('step("holding-device"'), "after the identity keys, as every other sweep step");
+  assert.ok(clear.indexOf('step("identity-keys"') < clear.indexOf('step("holding-hints"'), "after the identity keys, as every other sweep step");
+  // Fable 3b condition 2: the boot-time clear of a stale session and every forced sign-out
+  // run `clearAllAuth` too - a Keep link opened seconds earlier must survive them.
+  assert.doesNotMatch(clear, /forgetAllDeviceReceipts/);
+  const logout = auth.slice(auth.indexOf("async function logout("), auth.indexOf("async function clearAllAuth()"));
+  assert.match(
+    logout,
+    /await clearAllAuth\(\);[\s\S]*?if \(!opts\.force\) \{\s*try \{\s*await \(await import\("\.\.\/holding\/device-store\.js"\)\)\.forgetAllDeviceReceipts\(\);/,
+  );
+  assert.equal(auth.match(/forgetAllDeviceReceipts/g)!.length, 1, "nowhere else");
+});
+
+test("KeepCard: only messages written for people reach the screen (Fable 3b condition 5)", () => {
+  const script = scriptOf(read("lib/attendee/keep/KeepCard.svelte"));
+  // Raw error text on two lines only: the account's own sign-in and key step, and
+  // sayable()'s HoldingSaveError branch.
+  assert.equal(script.split("\n").filter((l) => l.includes("e.message")).length, 2);
+  assert.match(script, /\} catch \(e\) \{\s*\/\/ The account's own sign-in and key messages are written to be shown\.\s*problem = e instanceof Error && e\.message \? e\.message :/);
+  assert.match(fnBody(script, "sayable"), /if \(HoldingSaveError && e instanceof HoldingSaveError\) return/);
+  assert.match(script, /problem = sayable\(e, SAVE_FAILED, copy\.HoldingSaveError\);/);
+  for (const name of ["show", "eraseAgain"]) assert.doesNotMatch(fnBody(script, name), /e\.message|\(e\)/, `${name} shows only its own words`);
+  assert.match(read("lib/attendee/keep/KeepPage.svelte"), /A private record of your order, that only your link opens\./);
 });
 
 test("payment page: the receipt line for guests only, behind the flag, and no secret on the page", () => {

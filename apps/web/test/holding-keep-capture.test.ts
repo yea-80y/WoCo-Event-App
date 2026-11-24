@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { holdingKeepFragment } from "@woco/shared/holding/pickup";
-import { holdKeepLink, onKeepLink, stripKeepLink, takeKeepLink } from "../src/lib/holding/keep-capture.ts";
+import { holdKeepLink, onKeepLink, returnKeepLink, stripKeepLink, takeKeepLink } from "../src/lib/holding/keep-capture.ts";
 
 const R = new Uint8Array(32).fill(7);
 const ROOT = "ab".repeat(32);
@@ -55,6 +55,15 @@ test("held once: the page takes it, and it is not kept after; a page already ope
   holdKeepLink("#/keep?k=b");
   assert.equal(told, 1, "unsubscribed");
   assert.equal(takeKeepLink(), "#/keep?k=b");
+});
+
+test("a link put back after a failed store is held quietly: the page's own listener is not called (Fable 3b, no loop)", () => {
+  let told = 0;
+  const off = onKeepLink(() => told++);
+  returnKeepLink("#/keep?k=c");
+  assert.equal(told, 0, "putting it back starts no new attempt");
+  assert.equal(takeKeepLink(), "#/keep?k=c", "but the Try again button finds it");
+  off();
 });
 
 test("the router strips FIRST in update(), before any hash read, and holds only while receipts are on", () => {

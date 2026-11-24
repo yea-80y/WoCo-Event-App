@@ -186,6 +186,45 @@ test("save: never a box naming an unknown ledger, however it reached the device"
   assert.deepEqual(await showReceipt(pickupId, deps), { kind: "unknown-ledger" });
 });
 
+test("a receipt no longer on the device says so - never 'try later' (Fable 3b condition 2)", async () => {
+  const r = secret(63);
+  const keys = await holdingGenKeysOf(`0x${"63".repeat(32)}`);
+  const box = makeBox(r, 1);
+  const { pickupId } = await device.rememberKeepLink(r, ROOT);
+  await device.forgetAllDeviceReceipts();
+  const { deps, calls } = flow({ fetchBox: async (got) => okFrom(got, box) });
+  assert.deepEqual(await showReceipt(pickupId, deps), { kind: "not-on-device" });
+  assert.deepEqual(await saveToAccount(pickupId, keys, ACCOUNT, deps), { kind: "not-on-device" });
+  assert.equal(await finishErase(pickupId, deps), "not-on-device");
+  assert.deepEqual(calls, { fetchBox: 0, erase: 0 });
+
+  // Gone WHILE the box was being fetched: shown nowhere, and not written back.
+  const r2 = secret(64);
+  const kept2 = await device.rememberKeepLink(r2, ROOT);
+  const racing = flow({
+    fetchBox: async (got) => {
+      await device.forgetAllDeviceReceipts();
+      return okFrom(got, makeBox(r2, 1));
+    },
+  });
+  assert.deepEqual(await showReceipt(kept2.pickupId, racing.deps), { kind: "not-on-device" });
+  assert.equal(await device.readDeviceReceipt(kept2.pickupId), null);
+});
+
+test("a save Swarm cannot place says so in words for the person (HoldingSaveError), never raw", async () => {
+  const [{ liveHoldingFeedIO }, { HoldingSaveError }] = await Promise.all([
+    import("../src/lib/holding/holding-io.ts"),
+    import("../src/lib/holding/account-copy.ts"),
+  ]);
+  const keys = await holdingGenKeysOf(`0x${"65".repeat(32)}`);
+  // Every read fails (fetch throws here), so no version can be proven next.
+  const base = { read: { status: "unavailable" as const, reason: "test" }, nextVersion: null, owner: keys.signer.address.slice(2), topic: "woco/holding/v1/" + "65".repeat(32), route: "etherna" as never };
+  await assert.rejects(
+    liveHoldingFeedIO.write({ signer: keys.signer, topic: base.topic, base, build: async () => ({}) }),
+    (e: unknown) => e instanceof HoldingSaveError && /could not be read just now/.test((e as Error).message),
+  );
+});
+
 test("finish erase: never for a receipt not saved in an account", async () => {
   const r = secret(60);
   const { deps, calls } = flow();

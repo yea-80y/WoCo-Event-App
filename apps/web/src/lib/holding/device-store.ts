@@ -8,13 +8,16 @@
  * server's copy expiring loses nothing for a guest who has not signed up).
  *
  * The rules:
- * - Nothing here ever drops a secret on an error. An entry goes only at sign-out.
+ * - Nothing here ever drops a secret on an error. An entry goes only when someone signs
+ *   out on this device by their own choice (`logout`, not a forced or boot-time clear).
+ * - Only a Keep link makes an entry; later steps update it or do nothing.
  * - A field once known is never written over with nothing (two tabs, a stale read).
  * - Local only: no network, ever. The Keep page's load uses only this file.
  *
- * Not account data: one device, any person. Signing out deletes every entry
- * (`forgetAllDeviceReceipts`, from the sign-out sweep), so a shared device keeps no
- * receipt once someone signs out; one saved to an account is in that account.
+ * Not account data: one device, any person. The person's sign-out deletes every entry
+ * (`forgetAllDeviceReceipts`), so a shared device keeps no receipt once someone signs
+ * out; one saved to an account is in that account, and our copy of one not saved is
+ * still there for the email link.
  */
 import type { HoldingBoxV1 } from "@woco/shared/holding/box";
 import { StorageKeys } from "@woco/shared";
@@ -101,18 +104,33 @@ export async function listDeviceReceipts(): Promise<DeviceReceipt[]> {
   return out.sort((a, b) => b.keptAt - a.keptAt);
 }
 
-// One write at a time in this tab: each is a read, a merge and a write.
+// One change at a time in this tab - each update is a read, a merge and a write, and
+// the sign-out sweep waits its turn too, so an update in flight never lands after it.
 let queue: Promise<unknown> = Promise.resolve();
 
+function queued<T>(run: () => Promise<T>): Promise<T> {
+  const p = queue.then(run, run);
+  queue = p.catch(() => {});
+  return p;
+}
+
 /**
- * Merge `change` into the entry for the order of `r`, creating it if needed. A field
- * already known is never removed: only `change`'s defined fields are applied.
+ * Merge `change` into the entry for the order of `r`. A field already known is never
+ * removed: only `change`'s defined fields are applied. ONLY a Keep link (`create`) makes
+ * an entry; every later step updates one that exists or does nothing, so a step still
+ * running when someone signs out cannot write the secret back (Fable 3b condition 3).
  */
-async function update(rHex: string, change: Partial<Omit<DeviceReceipt, "pickupId" | "r" | "keptAt">>, now: number): Promise<DeviceReceipt> {
-  const run = async () => {
+async function update(
+  rHex: string,
+  change: Partial<Omit<DeviceReceipt, "pickupId" | "r" | "keptAt">>,
+  now: number,
+  create: boolean,
+): Promise<DeviceReceipt | null> {
+  return queued(async () => {
     const { holdingPickupId, hexToBytes } = await shared();
     const pickupId = holdingPickupId(hexToBytes(rHex));
     const was = await readDeviceReceipt(pickupId);
+    if (!was && !create) return null;
     const next: DeviceReceipt = { ...(was ?? { pickupId, r: rHex, keptAt: now }) };
     // Only what `change` names is written, so once erased stays erased and a saved
     // account stays named.
@@ -121,38 +139,39 @@ async function update(rHex: string, change: Partial<Omit<DeviceReceipt, "pickupI
     const stored: StoredV1 = { v: 1, ...rest };
     await putKV(keyOf(pickupId), await encrypt(await ensureDeviceKey(), AAD.HOLDING_DEVICE_ORDER(pickupId), stored));
     return next;
-  };
-  const p = queue.then(run, run);
-  queue = p.catch(() => {});
-  return p;
+  });
 }
 
-/** Keep the secret from a Keep link (and where its box is). Local only. */
+/** Keep the secret from a Keep link (and where its box is). The only step that makes an entry. Local only. */
 export async function rememberKeepLink(r: Uint8Array, boxRoot: string | undefined, now = Date.now()): Promise<DeviceReceipt> {
   const { bytesToHex } = await shared();
-  return update(bytesToHex(r), boxRoot && HEX64.test(boxRoot) ? { boxRoot } : {}, now);
+  const kept = await update(bytesToHex(r), boxRoot && HEX64.test(boxRoot) ? { boxRoot } : {}, now, true);
+  if (!kept) throw new Error("the receipt could not be kept on this device");
+  return kept;
 }
 
-/** Keep the checked box, and where it was found. */
-export async function rememberDeviceBox(rHex: string, box: HoldingBoxV1, boxRoot: string, now = Date.now()): Promise<DeviceReceipt> {
-  return update(rHex, { box, boxRoot }, now);
+/** Keep the checked box, and where it was found. Null: the entry is no longer on this device. */
+export async function rememberDeviceBox(rHex: string, box: HoldingBoxV1, boxRoot: string, now = Date.now()): Promise<DeviceReceipt | null> {
+  return update(rHex, { box, boxRoot }, now, false);
 }
 
-export async function rememberDeviceTitle(rHex: string, title: string, now = Date.now()): Promise<DeviceReceipt> {
-  return update(rHex, { title: title.slice(0, 200) }, now);
+export async function rememberDeviceTitle(rHex: string, title: string, now = Date.now()): Promise<DeviceReceipt | null> {
+  return update(rHex, { title: title.slice(0, 200) }, now, false);
 }
 
 /** The copy read back in `account`. */
-export async function markDeviceReceiptSaved(rHex: string, account: string, now = Date.now()): Promise<DeviceReceipt> {
-  return update(rHex, { savedTo: account.toLowerCase() }, now);
+export async function markDeviceReceiptSaved(rHex: string, account: string, now = Date.now()): Promise<DeviceReceipt | null> {
+  return update(rHex, { savedTo: account.toLowerCase() }, now, false);
 }
 
 /** Our server's copy is gone. */
-export async function markDeviceReceiptErased(rHex: string, now = Date.now()): Promise<DeviceReceipt> {
-  return update(rHex, { serverErased: true }, now);
+export async function markDeviceReceiptErased(rHex: string, now = Date.now()): Promise<DeviceReceipt | null> {
+  return update(rHex, { serverErased: true }, now, false);
 }
 
-/** Sign-out: every receipt kept on this device goes. */
+/** The person's own sign-out: every receipt kept on this device goes. */
 export async function forgetAllDeviceReceipts(): Promise<void> {
-  for (const k of await listKeys(PREFIX)) await delKV(k);
+  await queued(async () => {
+    for (const k of await listKeys(PREFIX)) await delKV(k);
+  });
 }

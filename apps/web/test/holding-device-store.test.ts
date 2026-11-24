@@ -98,6 +98,32 @@ test("list: every entry this device can open, newest first; a malformed root is 
   assert.equal(list[0]!.boxRoot, undefined);
 });
 
+test("only a Keep link makes an entry: a later step on a missing one does nothing (Fable 3b condition 3)", async () => {
+  await device.forgetAllDeviceReceipts();
+  const r = secret(28);
+  const rHex = bytesToHex(r);
+  assert.equal(await device.rememberDeviceBox(rHex, makeBox(r, 1), ROOT), null);
+  assert.equal(await device.rememberDeviceTitle(rHex, "An event"), null);
+  assert.equal(await device.markDeviceReceiptSaved(rHex, ACCOUNT), null);
+  assert.equal(await device.markDeviceReceiptErased(rHex), null);
+  assert.deepEqual(await device.listDeviceReceipts(), [], "nothing written back");
+});
+
+test("a sign-out sweep waits for a step already queued, and a step queued after it writes nothing back", async () => {
+  await device.forgetAllDeviceReceipts();
+  const r = secret(29);
+  const rHex = bytesToHex(r);
+  await device.rememberKeepLink(r, ROOT);
+  // In flight together, in this order: a mark, the sweep, then a late title.
+  const mark = device.markDeviceReceiptSaved(rHex, ACCOUNT);
+  const sweep = device.forgetAllDeviceReceipts();
+  const late = device.rememberDeviceTitle(rHex, "Late");
+  assert.ok(await mark, "the step before the sweep finished first");
+  await sweep;
+  assert.equal(await late, null, "the step after it found nothing to update");
+  assert.deepEqual(await device.listDeviceReceipts(), []);
+});
+
 test("sign-out sweep: every entry goes, nothing else in the store", async () => {
   await device.rememberKeepLink(secret(38), ROOT);
   await putKV("woco:auth:last-way-in", "passkey");

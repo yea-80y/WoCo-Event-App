@@ -14,7 +14,8 @@
  * - `finishErase`: erasing our copy again, for a receipt already saved.
  *
  * A secret is never dropped here on any answer - "not found", "later", a refusal, a
- * thrown error. The device keeps it until sign-out.
+ * thrown error. The device keeps it until the person signs out there; a step that finds
+ * it gone says so ("not-on-device": open the email link again), never "try later".
  */
 import type { HoldingBoxV1 } from "@woco/shared/holding/box";
 import type { CheckedReceipt, HoldingBoxRefusal } from "@woco/shared/holding/open";
@@ -68,6 +69,8 @@ export async function acceptKeepLink(fragment: string, deps: Pick<KeepFlowDeps, 
 
 export type ShowResult =
   | { kind: "shown"; receipt: DeviceReceipt; receipts: CheckedReceipt[] }
+  /** This device no longer keeps the receipt (someone signed out here): open the email link again. */
+  | { kind: "not-on-device" }
   /** The box names a ticket ledger this build does not know: not shown, not kept. */
   | { kind: "unknown-ledger" }
   /** The server has no receipt for this secret and Swarm did not serve it. */
@@ -78,7 +81,7 @@ export type ShowResult =
 /** The "Show my receipt" press. */
 export async function showReceipt(pickupId: string, deps: KeepFlowDeps): Promise<ShowResult> {
   const kept = await deps.device.readDeviceReceipt(pickupId);
-  if (!kept) return { kind: "later" };
+  if (!kept) return { kind: "not-on-device" };
   const r = await bytesOf(kept.r);
   try {
     if (kept.box) {
@@ -97,6 +100,7 @@ export async function showReceipt(pickupId: string, deps: KeepFlowDeps): Promise
     if (got.kind !== "ok") return got;
     if (!(await isKnownLedger(got.box))) return { kind: "unknown-ledger" };
     const receipt = await deps.device.rememberDeviceBox(kept.r, got.box, got.boxRoot);
+    if (!receipt) return { kind: "not-on-device" };
     return { kind: "shown", receipt, receipts: got.receipts };
   } finally {
     r.fill(0);
@@ -109,12 +113,15 @@ export type SaveOutcome =
   /** Sent, but not read back yet: our copy was left alone. */
   | { kind: "unconfirmed" }
   /** No checked box on the device: show it first. */
-  | { kind: "not-shown" };
+  | { kind: "not-shown" }
+  /** This device no longer keeps the receipt: open the email link again. */
+  | { kind: "not-on-device" };
 
 /** The "Save to your WoCo account" press. `account`: the signed-in account, `keys` its CURRENT generation. */
 export async function saveToAccount(pickupId: string, keys: HoldingGenKeys, account: string, deps: KeepFlowDeps): Promise<SaveOutcome> {
   const kept = await deps.device.readDeviceReceipt(pickupId);
-  if (!kept?.box || !(await isKnownLedger(kept.box))) return { kind: "not-shown" };
+  if (!kept) return { kind: "not-on-device" };
+  if (!kept.box || !(await isKnownLedger(kept.box))) return { kind: "not-shown" };
   const r = await bytesOf(kept.r);
   try {
     const { keepInAccount } = await import("./keep.js");
@@ -126,9 +133,10 @@ export async function saveToAccount(pickupId: string, keys: HoldingGenKeys, acco
 }
 
 /** Erase our copy of a receipt already saved in an account. */
-export async function finishErase(pickupId: string, deps: KeepFlowDeps): Promise<EraseResult | "not-saved"> {
+export async function finishErase(pickupId: string, deps: KeepFlowDeps): Promise<EraseResult | "not-saved" | "not-on-device"> {
   const kept = await deps.device.readDeviceReceipt(pickupId);
-  if (!kept?.savedTo) return "not-saved";
+  if (!kept) return "not-on-device";
+  if (!kept.savedTo) return "not-saved";
   if (kept.serverErased) return "erased";
   const r = await bytesOf(kept.r);
   try {

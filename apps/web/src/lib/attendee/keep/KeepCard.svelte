@@ -36,12 +36,28 @@
     return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
   }
 
+  const GONE_FROM_DEVICE =
+    "This receipt is no longer kept on this device. Open Keep my receipt in your ticket email again.";
+  const SAVE_FAILED =
+    "Couldn't save your receipt just now - try again in a moment. Nothing is lost: our copy stays until your account's copy is confirmed.";
+
+  /**
+   * Only messages written for people reach the screen: the account's own sign-in and key
+   * messages, and a save that stopped for a reason it explains (`HoldingSaveError`).
+   * Anything else ("Failed to fetch", a refused box) shows `fallback`.
+   */
+  function sayable(e: unknown, fallback: string, HoldingSaveError?: new (...a: never[]) => Error): string {
+    if (HoldingSaveError && e instanceof HoldingSaveError) return e.message.charAt(0).toUpperCase() + e.message.slice(1);
+    return fallback;
+  }
+
   const SHOW_PROBLEM: Record<Exclude<ShowResult["kind"], "shown">, string> = {
     "not-found":
       "We couldn't find this receipt. If you already saved it to a WoCo account, it's there. Otherwise try again later - this device keeps your link.",
     later: "Couldn't load your receipt just now. Try again in a minute - this device keeps your link.",
     refused: "This receipt didn't check out, so it isn't shown or kept.",
     "unknown-ledger": "This receipt names a ticket system this app doesn't recognise, so it isn't shown.",
+    "not-on-device": GONE_FROM_DEVICE,
   };
 
   const ERASE_NOTE: Record<EraseResult, string> = {
@@ -71,7 +87,8 @@
       ]);
       let title = cacheGet<{ title?: string }>(cacheKey.event(id))?.title;
       if (!title) title = (await (await import("../../api/events.js")).getEvent(id))?.title;
-      if (title) kept = await device.rememberDeviceTitle(rHex, title);
+      const got = title ? await device.rememberDeviceTitle(rHex, title) : null;
+      if (got) kept = got;
     } catch {
       /* the receipt stands without its event's name */
     }
@@ -91,8 +108,8 @@
       } else {
         problem = SHOW_PROBLEM[got.kind];
       }
-    } catch (e) {
-      problem = e instanceof Error ? e.message : "Couldn't load your receipt - try again.";
+    } catch {
+      problem = "Couldn't load your receipt just now - try again. This device keeps your link.";
     } finally {
       busy = null;
       onchange?.();
@@ -107,29 +124,39 @@
     busy = "save";
     let orderSecretKey: Uint8Array | null = null;
     try {
-      if (!(await auth.ensureAccountSetup({ identity: true }))) {
-        problem = "Your account isn't ready on this device yet - try again.";
+      let secrets: { current: string } | null;
+      try {
+        if (!(await auth.ensureAccountSetup({ identity: true }))) {
+          problem = "Your account isn't ready on this device yet - try again.";
+          return;
+        }
+        // The CURRENT generation, confirmed (a passkey account's keys checked against the chain).
+        secrets = await auth.getAccountSecrets({ toSeal: true });
+      } catch (e) {
+        // The account's own sign-in and key messages are written to be shown.
+        problem = e instanceof Error && e.message ? e.message : "Your account isn't ready on this device yet - try again.";
         return;
       }
-      // The CURRENT generation, confirmed (a passkey account's keys checked against the chain).
-      const secrets = await auth.getAccountSecrets({ toSeal: true });
       const account = auth.parent?.toLowerCase();
       if (!secrets || !account) {
         problem = "Your account's keys aren't on this device - sign in again and retry.";
         return;
       }
-      const [{ holdingGenKeysOf }, flow] = await Promise.all([
+      const [copy, flow] = await Promise.all([
         import("../../holding/account-copy.js"),
         import("../../holding/keep-flow.js"),
       ]);
-      const keys = await holdingGenKeysOf(secrets.current);
-      orderSecretKey = keys.orderSecretKey;
-      const out = await flow.saveToAccount(kept.pickupId, keys, account, await flow.liveKeepFlowDeps());
-      if (out.kind === "saved") eraseNote = out.erase;
-      else if (out.kind === "unconfirmed") unconfirmed = true;
-      else problem = "Show your receipt first, then save it.";
-    } catch (e) {
-      problem = e instanceof Error ? e.message : "Couldn't save your receipt - try again.";
+      try {
+        const keys = await copy.holdingGenKeysOf(secrets.current);
+        orderSecretKey = keys.orderSecretKey;
+        const out = await flow.saveToAccount(kept.pickupId, keys, account, await flow.liveKeepFlowDeps());
+        if (out.kind === "saved") eraseNote = out.erase;
+        else if (out.kind === "unconfirmed") unconfirmed = true;
+        else if (out.kind === "not-on-device") problem = GONE_FROM_DEVICE;
+        else problem = "Show your receipt first, then save it.";
+      } catch (e) {
+        problem = sayable(e, SAVE_FAILED, copy.HoldingSaveError);
+      }
     } finally {
       orderSecretKey?.fill(0);
       busy = null;
@@ -143,9 +170,10 @@
     try {
       const flow = await import("../../holding/keep-flow.js");
       const got = await flow.finishErase(kept.pickupId, await flow.liveKeepFlowDeps());
-      if (got !== "not-saved") eraseNote = got;
-    } catch (e) {
-      problem = e instanceof Error ? e.message : "Couldn't delete our copy - try again.";
+      if (got === "not-on-device") problem = GONE_FROM_DEVICE;
+      else if (got !== "not-saved") eraseNote = got;
+    } catch {
+      problem = "Couldn't delete our copy just now - try again later. Your receipt is safe in your account either way.";
     } finally {
       busy = null;
       await refreshKept();
