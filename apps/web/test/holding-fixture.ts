@@ -50,8 +50,14 @@ export interface FakeFeeds {
   writes: { owner: string; topic: string; version: number }[];
   /** Topics whose reads answer "unavailable". */
   failReads: Set<string>;
-  /** Topics whose given version exists and will never read: "unavailable" with `unusableAt`. */
+  /** Topics whose given version exists and will never read: "unavailable" with `unusableAt` - at the head, and for `readAt`. */
   spent: Map<string, number>;
+  /** More spent versions below the head, for `readAt` only: `${topic}@${version}`. */
+  spentBelow: Set<string>;
+  /** Versions `readAt` cannot answer for right now: `${topic}@${version}`. */
+  failReadsAt: Set<string>;
+  /** Every `readAt`, as `${topic}@${version}`. */
+  readsAt: string[];
   /** Topics whose scan stops one version short of the head: found, `scanClean` false. */
   dirty: Set<string>;
   /** Every read, by topic. */
@@ -74,6 +80,9 @@ export function fakeFeeds(): FakeFeeds {
     writes,
     failReads: new Set(),
     spent: new Map(),
+    spentBelow: new Set(),
+    failReadsAt: new Set(),
+    readsAt: [],
     dirty: new Set(),
     reads: [],
     unconfirmAfter: Infinity,
@@ -114,6 +123,15 @@ export function fakeFeeds(): FakeFeeds {
   f.io = {
     readBase: async (owner, topic) => base(owner, topic),
     read: async (owner, topic) => read(owner, topic),
+    readAt: async (owner, topic, version) => {
+      const at = `${topic}@${version}`;
+      f.readsAt.push(at);
+      if (f.failReads.has(topic) || f.failReadsAt.has(at)) return { status: "unavailable", reason: "test" };
+      if (f.spent.get(topic) === version || f.spentBelow.has(at)) return { status: "unavailable", reason: "spent", unusableAt: version };
+      const text = feeds.get(key(owner, topic))?.[version];
+      if (text === undefined) return { status: "absent" };
+      return { status: "found", value: JSON.parse(text), version, scanClean: true };
+    },
     write: async ({ signer, topic, base: first, build }) => {
       let b: ContentFeedWriteBase<unknown> | null = first;
       for (let attempt = 0; attempt < 3; attempt++) {

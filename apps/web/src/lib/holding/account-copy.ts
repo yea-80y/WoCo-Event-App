@@ -46,7 +46,16 @@ export interface HoldingFeedIO {
   }): Promise<"verified" | "unconfirmed">;
   /** A thorough read of the latest version. */
   read(owner: string, topic: string): Promise<ContentFeedResult<unknown>>;
+  /** A thorough read of one known version (`readContentFeedAtVersion`): walking a jammed list down. */
+  readAt(owner: string, topic: string, version: number): Promise<ContentFeedResult<unknown>>;
 }
+
+/**
+ * How many versions below a jammed list's head are tried for one that opens. Two
+ * writers jam a version only by racing at it, so a run of jammed versions is short;
+ * past this the list is "unavailable", never rebuilt from what was not read.
+ */
+export const HOLDING_INDEX_WALK_MAX = 32;
 
 export type SaveResult = "saved" | "unconfirmed";
 
@@ -112,14 +121,97 @@ function headOf(read: ContentFeedResult<unknown>): { value: unknown } | null | "
   return { value: read.value };
 }
 
+type Opened<T> = { kind: "ok"; value: T } | { kind: "jammed" } | { kind: "newer" };
+
+/**
+ * A sealed value opened and parsed, or why not. "jammed": it does not open under this
+ * key. "newer": it opens - so the account wrote it - but does not parse, or is a box
+ * format this build does not know: a newer layout, never walked past or written over.
+ */
+async function openOrWhy<T>(
+  keys: HoldingGenKeys,
+  value: unknown,
+  ctx: { info: string; aad: string },
+  parse: (x: unknown) => T | null,
+): Promise<Opened<T>> {
+  const [{ openBox, UnsupportedSealedBoxError }, { gunzip, isGzipped }] = await Promise.all([
+    import("@woco/shared/crypto/sealed-box"),
+    import("@woco/shared/crypto/compress"),
+  ]);
+  let plaintext: Uint8Array;
+  try {
+    plaintext = await openBox(keys.orderSecretKey, value, ctx);
+  } catch (e) {
+    return e instanceof UnsupportedSealedBoxError ? { kind: "newer" } : { kind: "jammed" };
+  }
+  try {
+    // As `openBoxJson`, split from the open so a failure here is told apart from a jam.
+    const json = isGzipped(plaintext) ? await gunzip(plaintext) : plaintext;
+    const parsed = parse(JSON.parse(new TextDecoder().decode(json)));
+    return parsed ? { kind: "ok", value: parsed } : { kind: "newer" };
+  } catch {
+    return { kind: "newer" };
+  }
+}
+
+/**
+ * The generation's list as of `read`, a thorough read of its head: null when it has none,
+ * "newer" when it is in a layout this build does not know, "unavailable" when it could
+ * not be read for certain.
+ *
+ * A head that is spent (`unusableAt`) or does not open is JAMMED (Fable 3a, 5): two
+ * writers raced at one version and their pages interleaved (a version is written once and
+ * keeps the first bytes of each page). No save ever counted on a jammed version - a save
+ * is confirmed only when its own bytes read back whole and open - so the list is the
+ * newest earlier version that opens, and the next save goes on top of the jam. Below
+ * version 0 that is the empty list. Anything uncertain stops: an unanswered read, a scan
+ * that may not have reached the head, a gap below a version that exists, a walk past
+ * `HOLDING_INDEX_WALK_MAX`.
+ */
+async function indexAsOf(
+  keys: HoldingGenKeys,
+  topic: string,
+  read: ContentFeedResult<unknown>,
+  io: HoldingFeedIO,
+): Promise<HoldingIndexV1 | null | "newer" | "unavailable"> {
+  const s = await shared();
+  const ctx = s.holdingIndexSealContext(topic);
+  let jammedAt: number;
+  if (read.status === "absent") return null;
+  if (read.status === "found") {
+    if (!read.scanClean) return "unavailable";
+    const head = await openOrWhy(keys, read.value, ctx, s.parseHoldingIndex);
+    if (head.kind !== "jammed") return head.kind === "ok" ? head.value : "newer";
+    jammedAt = read.version;
+  } else {
+    if (read.unusableAt === undefined) return "unavailable";
+    jammedAt = read.unusableAt;
+  }
+  for (let v = jammedAt - 1; v >= 0; v--) {
+    if (jammedAt - v > HOLDING_INDEX_WALK_MAX) return "unavailable";
+    const at: ContentFeedResult<unknown> = await io
+      .readAt(keys.signer.address, topic, v)
+      .catch(() => ({ status: "unavailable" as const }));
+    if (at.status === "found") {
+      const opened = await openOrWhy(keys, at.value, ctx, s.parseHoldingIndex);
+      if (opened.kind === "ok") return opened.value;
+      if (opened.kind === "newer") return "newer";
+      continue;
+    }
+    if (at.status === "unavailable" && at.unusableAt !== undefined) continue;
+    return "unavailable";
+  }
+  return null;
+}
+
 /** The generation's index: null when it has none, "unavailable" when it could not be read or opened. */
 export async function readHoldingIndex(keys: HoldingGenKeys, io: HoldingFeedIO): Promise<HoldingIndexV1 | null | "unavailable"> {
   const s = await shared();
   const topic = s.holdingIndexTopic(keys.salt);
-  const read = headOf(await io.read(keys.signer.address, topic).catch(() => ({ status: "unavailable" as const })));
-  if (read === null || read === "unavailable") return read;
-  // Present but not ours to read is never "none": a write on top would drop its orders.
-  return (await openAs(keys, read.value, s.holdingIndexSealContext(topic), s.parseHoldingIndex)) ?? "unavailable";
+  const read = await io.read(keys.signer.address, topic).catch((): ContentFeedResult<unknown> => ({ status: "unavailable" }));
+  const index = await indexAsOf(keys, topic, read, io);
+  // A list in a layout this build cannot read is never "none": a write on top would drop its orders.
+  return index === "newer" ? "unavailable" : index;
 }
 
 /** One order's copy: null when there is none, "unavailable" when it could not be read or opened. */
@@ -212,12 +304,12 @@ export async function addToHoldingIndex(keys: HoldingGenKeys, entries: HoldingIn
   const s = await shared();
   const topic = s.holdingIndexTopic(keys.salt);
   const ctx = s.holdingIndexSealContext(topic);
+  // A jammed head is built past from the newest version that opens (`indexAsOf`).
   const current = async (read: ContentFeedResult<unknown>): Promise<HoldingIndexV1 | null> => {
-    if (read.status === "absent") return null;
-    if (read.status !== "found") throw new HoldingSaveError("your receipt list could not be read - try again later");
-    const index = await openAs(keys, read.value, ctx, s.parseHoldingIndex);
+    const index = await indexAsOf(keys, topic, read, io);
+    if (index === "unavailable") throw new HoldingSaveError("your receipt list could not be read - try again later");
     // Never written over: its orders would vanish from the account's list.
-    if (!index) throw new HoldingSaveError("your receipt list could not be opened");
+    if (index === "newer") throw new HoldingSaveError("your receipt list could not be opened");
     return index;
   };
   const missing = (index: HoldingIndexV1 | null) =>
