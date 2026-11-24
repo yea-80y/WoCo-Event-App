@@ -27,7 +27,8 @@ function cleanGateway(url: string | undefined | null): string | null {
  * was read, ours answered in 0.26 s against Etherna's 1.0-1.3 s (2026-11-24), and
  * it is the address the page's own head already names, so the tab icon and the
  * picture are one download. An image edited a moment ago that our bee cannot find
- * yet costs one 404 (~1.3 s) before `storedOn` is tried.
+ * yet costs one 404 (~1.3 s) before `storedOn` is tried; a slow answer is covered
+ * by the head start (`image-head-start.ts`).
  */
 export function imageUrlCandidates(
   imageHash: string | undefined,
@@ -38,9 +39,8 @@ export function imageUrlCandidates(
 
   const runtime = typeof window !== "undefined" ? window.SITE_CONFIG : undefined;
   const stored = cleanGateway(storedOn);
-  const published = cleanGateway(runtime?.contentGatewayUrl);
   const gateways = [
-    published && KNOWN_IMAGE_GATEWAYS.includes(published) ? published : null,
+    publishedContentGateway(),
     stored && KNOWN_IMAGE_GATEWAYS.includes(stored) ? stored : null,
     runtime?.contentGatewayUrl,
     runtime?.gatewayUrl,
@@ -55,6 +55,13 @@ export function imageUrlCandidates(
   }
 
   return [...unique].map((gateway) => `${gateway}/bytes/${imageHash}`);
+}
+
+/** Our own content gateway when this is a published page (its config names a known one), else null. */
+export function publishedContentGateway(): string | null {
+  const runtime = typeof window !== "undefined" ? window.SITE_CONFIG : undefined;
+  const published = cleanGateway(runtime?.contentGatewayUrl);
+  return published && KNOWN_IMAGE_GATEWAYS.includes(published) ? published : null;
 }
 
 export function firstImageUrl(

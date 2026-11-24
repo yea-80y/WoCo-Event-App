@@ -13,6 +13,7 @@
   import { WOCO_POLICY_URL } from "../../legal/organiser-notice.js";
   import { WOCO_POLICY_LINK_LABEL } from "@woco/shared";
   import { firstImageUrl, useNextImageUrl } from "./image-fallback.js";
+  import { imageHeadStart } from "./image-head-start.js";
 
   interface Props {
     eventId: string;
@@ -388,6 +389,7 @@
           alt={event.title}
           class="hero-img"
           data-image-gateway-index="0"
+          use:imageHeadStart={{ imageHash: event.imageHash, preferredGateway: BEE_GATEWAY, storedOn: event.gatewayUrl }}
           onerror={(e) => useNextImageUrl(e, event?.imageHash, BEE_GATEWAY, event?.gatewayUrl)}
         />
         <div class="hero-fade"></div>
