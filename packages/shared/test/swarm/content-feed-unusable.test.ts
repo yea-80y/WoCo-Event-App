@@ -74,10 +74,12 @@ test("page count out of range is unusable, and names its version", async () => {
     versionedPageIdentifier(base, 0, p));
   assert.equal(asm.status, "unavailable");
   assert.equal(asm.status === "unavailable" && asm.unusable, true);
+  assert.equal(asm.status === "unavailable" && asm.spentBy, "page-count");
 
   const read = await readVersionedContentFeed(store.read, TOPIC);
   assert.equal(read.status, "unavailable");
   assert.equal(read.status === "unavailable" && read.unusableAt, 0);
+  assert.equal(read.status === "unavailable" && read.spentBy, "page-count");
 });
 
 test("an ABSENT page under an existing manifest is unusable (the torn write), and names its version", async () => {
@@ -89,9 +91,12 @@ test("an ABSENT page under an existing manifest is unusable (the torn write), an
   const asm = await assembleContentFeed(store.read, versionedSocIdentifier(base, 0), (p) =>
     versionedPageIdentifier(base, 0, p));
   assert.equal(asm.status === "unavailable" && asm.unusable, true);
+  // Said apart from a race: a page reading absent may be a lost chunk or a false 404.
+  assert.equal(asm.status === "unavailable" && asm.spentBy, "missing-page");
 
   const read = await readVersionedContentFeed(store.read, TOPIC);
   assert.equal(read.status === "unavailable" && read.unusableAt, 0);
+  assert.equal(read.status === "unavailable" && read.spentBy, "missing-page");
 });
 
 test("a length mismatch is unusable, and names its version", async () => {
@@ -102,9 +107,11 @@ test("a length mismatch is unusable, and names its version", async () => {
   const asm = await assembleContentFeed(store.read, versionedSocIdentifier(base, 0), (p) =>
     versionedPageIdentifier(base, 0, p));
   assert.equal(asm.status === "unavailable" && asm.unusable, true);
+  assert.equal(asm.status === "unavailable" && asm.spentBy, "length");
 
   const read = await readVersionedContentFeed(store.read, TOPIC);
   assert.equal(read.status === "unavailable" && read.unusableAt, 0);
+  assert.equal(read.status === "unavailable" && read.spentBy, "length");
 });
 
 test("the version named is the LATEST one, not 0", async () => {
@@ -128,6 +135,7 @@ test("a legacy (pre-versioning) chunk that will not assemble is named by the leg
   const read = await readVersionedContentFeed(store.read, TOPIC);
   assert.equal(read.status, "unavailable");
   assert.equal(read.status === "unavailable" && read.unusableAt, LEGACY_CONTENT_FEED_VERSION);
+  assert.equal(read.status === "unavailable" && read.spentBy, "length");
 });
 
 // ── The inconclusive cases: NOTHING may be named ────────────────────────────

@@ -40,6 +40,7 @@ import {
   sealBoxJsonCompressed,
   openBoxJson,
   isSealedBoxV2,
+  isSealedBoxTagFailure,
   orderSealContext,
   listSealContext,
   UnsupportedSealedBoxError,
@@ -264,6 +265,23 @@ test("a v2 box with broken fields is MALFORMED, never mistaken for an old format
   ]) {
     await assert.rejects(openBox(ACCOUNT.secretKey, bad, ORDER_CTX), MalformedSealedBoxError);
   }
+});
+
+test("a tag failure is told apart: only a well-formed box failing to open, never a shape or key fault", async () => {
+  const box = await sealBox(ACCOUNT.publicKey, te.encode("x"), ORDER_CTX);
+  const flipped = { ...box, ct: (box.ct[0] === "0" ? "1" : "0") + box.ct.slice(1) };
+  const err = await openBox(ACCOUNT.secretKey, flipped, ORDER_CTX).then(() => null, (e: unknown) => e);
+  assert.equal(isSealedBoxTagFailure(flipped, err), true);
+  // Another context fails the same way: the bytes were not sealed for this one.
+  const elsewhere = await openBox(ACCOUNT.secretKey, box, { info: "other", aad: "other" }).then(() => null, (e: unknown) => e);
+  assert.equal(isSealedBoxTagFailure(box, elsewhere), true);
+  // The same error beside something that is not a v2 box says nothing about a box.
+  assert.equal(isSealedBoxTagFailure({ v: 3, enc: box.enc, ct: box.ct }, err), false);
+  assert.equal(isSealedBoxTagFailure({ ...box, note: "x" }, err), false);
+  // A shape fault, or an error of another kind, is not a tag failure.
+  const malformed = await openBox(ACCOUNT.secretKey, { ...box, ct: "" }, ORDER_CTX).then(() => null, (e: unknown) => e);
+  assert.equal(isSealedBoxTagFailure({ ...box, ct: "" }, malformed), false);
+  assert.equal(isSealedBoxTagFailure(box, new Error("network")), false);
 });
 
 test("the shape check takes EXACTLY {v, enc, ct} — nothing may ride beside a box", async () => {

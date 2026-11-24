@@ -21,7 +21,7 @@ import { holdingGenKeysOf, readHoldingIndex } from "../src/lib/holding/account-c
 import * as device from "../src/lib/holding/device-store.ts";
 import type { BoxSourceResult } from "../src/lib/holding/box-source.ts";
 import type { EraseResult } from "../src/lib/api/holdings.ts";
-import { acceptKeepLink, finishErase, isKnownLedger, saveToAccount, showReceipt, type KeepFlowDeps } from "../src/lib/holding/keep-flow.ts";
+import { acceptKeepLink, finishErase, isKnownLedger, recheckDeviceBox, saveToAccount, showReceipt, type KeepFlowDeps } from "../src/lib/holding/keep-flow.ts";
 import { fakeFeeds, makeBox, secret } from "./holding-fixture.ts";
 
 let fetches = 0;
@@ -166,11 +166,11 @@ test("save then erase answers busy, refused or later: saved stands, the erase ca
     assert.equal(kept.serverErased, undefined, erase);
 
     const second = flow({ erase: "erased", feeds });
-    assert.equal(await finishErase(pickupId, second.deps), "erased");
+    assert.equal(await finishErase(pickupId, ACCOUNT, second.deps), "erased");
     kept = (await device.readDeviceReceipt(pickupId))!;
     assert.equal(kept.serverErased, true);
     // Done is done: no second request.
-    assert.equal(await finishErase(pickupId, second.deps), "erased");
+    assert.equal(await finishErase(pickupId, ACCOUNT, second.deps), "erased");
     assert.equal(second.calls.erase, 1);
   }
 });
@@ -195,7 +195,7 @@ test("a receipt no longer on the device says so - never 'try later' (Fable 3b co
   const { deps, calls } = flow({ fetchBox: async (got) => okFrom(got, box) });
   assert.deepEqual(await showReceipt(pickupId, deps), { kind: "not-on-device" });
   assert.deepEqual(await saveToAccount(pickupId, keys, ACCOUNT, deps), { kind: "not-on-device" });
-  assert.equal(await finishErase(pickupId, deps), "not-on-device");
+  assert.equal(await finishErase(pickupId, ACCOUNT, deps), "not-on-device");
   assert.deepEqual(calls, { fetchBox: 0, erase: 0 });
 
   // Gone WHILE the box was being fetched: shown nowhere, and not written back.
@@ -229,8 +229,51 @@ test("finish erase: never for a receipt not saved in an account", async () => {
   const r = secret(60);
   const { deps, calls } = flow();
   const { pickupId } = await device.rememberKeepLink(r, ROOT);
-  assert.equal(await finishErase(pickupId, deps), "not-saved");
+  assert.equal(await finishErase(pickupId, ACCOUNT, deps), "not-saved");
   assert.equal(calls.erase, 0);
+});
+
+test("finish erase: only for the account it was saved to (Fable 3b, carried to 3c)", async () => {
+  const r = secret(62);
+  const keys = await holdingGenKeysOf(`0x${"62".repeat(32)}`);
+  const { deps, calls } = flow({ fetchBox: async (got) => okFrom(got, makeBox(r, 1)), erase: "later" });
+  const { pickupId } = await device.rememberKeepLink(r, ROOT);
+  await showReceipt(pickupId, deps);
+  assert.equal((await saveToAccount(pickupId, keys, ACCOUNT, deps)).kind, "saved");
+  const erases = calls.erase;
+  const other = "0x" + "c3".repeat(20);
+  assert.equal(await finishErase(pickupId, other, deps), "not-saved");
+  assert.equal(calls.erase, erases, "nothing asked of the server for another account");
+  assert.equal(await finishErase(pickupId, ACCOUNT.toUpperCase().replace("0X", "0x"), deps), "later", "the same account, any case");
+  assert.equal(calls.erase, erases + 1);
+});
+
+test("recheck on mount: a box the device keeps is checked again with NO network - shown, or nothing", async () => {
+  const r = secret(63);
+  const before = fetches;
+  const { deps, calls } = flow({ fetchBox: async (got) => okFrom(got, makeBox(r, 2)) });
+  const { pickupId } = await device.rememberKeepLink(r, ROOT);
+  assert.equal(await recheckDeviceBox(pickupId, { device }), null, "no box yet: the Show button");
+  await showReceipt(pickupId, deps);
+  const shown = calls.fetchBox;
+
+  const got = await recheckDeviceBox(pickupId, { device });
+  assert.equal(got?.kind, "shown");
+  assert.deepEqual(got!.receipts.map((c) => c.receipt.edition), [7, 8]);
+  assert.equal(calls.fetchBox, shown, "no fetch");
+  assert.equal(fetches, before, "no request of any kind");
+
+  // A kept box that no longer checks, or names a ledger this build does not know: nothing shown, nothing fetched.
+  const bad = secret(64);
+  const { pickupId: badId } = await device.rememberKeepLink(bad, ROOT);
+  await device.rememberDeviceBox(bytesToHex(bad), makeBox(secret(65), 1), ROOT);
+  assert.equal(await recheckDeviceBox(badId, { device }), null);
+  const foreign = secret(66);
+  const { pickupId: foreignId } = await device.rememberKeepLink(foreign, ROOT);
+  await device.rememberDeviceBox(bytesToHex(foreign), foreignBox(foreign), ROOT);
+  assert.equal(await recheckDeviceBox(foreignId, { device }), null);
+  assert.equal(await recheckDeviceBox("ab".repeat(32), { device }), null, "not on this device");
+  assert.equal(fetches, before);
 });
 
 test("a 'gone' erase (nothing of ours left) counts as done", async () => {

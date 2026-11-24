@@ -41,4 +41,8 @@ export const liveHoldingFeedIO: HoldingFeedIO = {
     const { readContentFeedResult } = await import("../swarm/content-feed.js");
     return readContentFeedResult(owner, topic, { route: ROUTE, skipLegacy: true, thorough: true });
   },
+  async readAt(owner, topic, version) {
+    const { readContentFeedAtVersion } = await import("../swarm/content-feed.js");
+    return readContentFeedAtVersion(owner, topic, version, { route: ROUTE, thorough: true });
+  },
 };

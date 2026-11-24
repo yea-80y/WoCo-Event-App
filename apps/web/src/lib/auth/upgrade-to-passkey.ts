@@ -20,12 +20,14 @@
  *    reads it - and it leaves the device once the switch has landed.
  *
  * Phases, resumable from a device marker that holds no secret:
- *   prepare  - reads; the passkey ceremony; backups removed; the passkey's binding,
- *              locked seed and envelope (read back); profile and referral copied to
- *              the new feed, saved ticket receipts re-sealed under the new seed (read
- *              back); the marker; likes and follows retracted.
- *   switch   - the op (the store). A refusal changes nothing past `prepare`: the
- *              same passkey retries it, or `cancelUpgrade` puts it all back.
+ *   prepare  - reads (the saved ticket receipts among them, as a gate); the passkey
+ *              ceremony; backups removed; the passkey's binding, locked seed and
+ *              envelope (read back); profile and referral copied to the new feed;
+ *              the marker; likes and follows retracted.
+ *   switch   - at every attempt, the saved ticket receipts re-sealed under the new
+ *              seed (`carryReceipts`, read back), then the op (the store). A refusal
+ *              changes nothing past `prepare`: the same passkey retries it, or
+ *              `cancelUpgrade` puts it all back.
  *   finalize - the email key's traces leave the device; the marker says "committed".
  *   move     - likes and follows re-posted under the new feed; the marker goes.
  *
@@ -67,6 +69,8 @@ export const BACKUPS_FAILED_MESSAGE =
   "Couldn't remove this account's backups just now - your account hasn't changed. Try again.";
 export const COPY_FAILED_MESSAGE = "Couldn't copy your profile to the new passkey - nothing was changed. Try again.";
 export const RECEIPTS_FAILED_MESSAGE = "Couldn't copy your saved ticket receipts to the new passkey - nothing was changed. Try again.";
+export const RECEIPTS_NEED_RESTART_MESSAGE =
+  "This tab can't bring your ticket receipts across. Press Undo, then upgrade again - nothing has changed yet.";
 export const RETRACT_FAILED_MESSAGE = "Couldn't move your likes and follows yet - your account hasn't changed. Try again.";
 export const SWITCH_FAILED_MESSAGE = "The upgrade didn't go through - your account hasn't changed. Try again in a moment.";
 
@@ -192,6 +196,10 @@ export async function prepareUpgrade(
   const oldSeed = await d.oldSeed();
   if (!oldSeed) throw new Error(READ_FAILED_MESSAGE);
   const oldFeed = deriveFeedSignerKey(oldSeed).address.toLowerCase();
+  // The receipts are read here only as a gate - one that cannot be read stops the upgrade
+  // before any passkey is made. They are carried once, right before the switch
+  // (`carryReceipts`): a second pass seconds after a first asks bee again for the version
+  // the first just probed, which bee 2.8 stops answering for a minute (#943).
   const [likes, follows, referrer, profile, receipts] = await Promise.all([
     d.social.readLive(oldFeed, "like"),
     d.social.readLive(oldFeed, "follow"),
@@ -254,15 +262,6 @@ export async function prepareUpgrade(
   } catch (e) {
     await undo(COPY_FAILED_MESSAGE, e);
   }
-  if (receipts && receipts.length > 0) {
-    progress("Copying your ticket receipts…");
-    try {
-      const { holdingGenKeysOf } = await import("../holding/account-copy.js");
-      await d.writeReceipts(await holdingGenKeysOf(seed), receipts);
-    } catch (e) {
-      await undo(RECEIPTS_FAILED_MESSAGE, e);
-    }
-  }
 
   const marker: UpgradeMarker = {
     v: 1,
@@ -303,6 +302,41 @@ export async function retractOld(
   return next;
 }
 
+/**
+ * The ticket receipts the old seed holds NOW, re-sealed under the passkey's seed: at
+ * every attempt, right before the switch (spec-receipt-note 5.1, the gate on slice 3c) -
+ * the only place they are carried. Prepare's read can be minutes old by then (the
+ * passkey ceremony) or days (a refused switch tried again): a receipt saved since, in
+ * another tab, would otherwise go with the old seed once the switch lands. Idempotent - a
+ * copy already there is not written again. A failure lands after the marker, so "Try
+ * again" reuses the same passkey.
+ *
+ * Only the passkey's seed can seal them. A tab that no longer holds it (closed or
+ * reloaded since prepare) refuses when there is anything to carry: Undo, and a fresh
+ * upgrade carries it all. Throws the words to show; nothing has changed past prepare.
+ */
+export async function carryReceipts(
+  d: Pick<PrepareDeps, "oldSeed" | "readReceipts" | "writeReceipts">,
+  marker: UpgradeMarker,
+  live: LivePasskey | null,
+  progress: (msg: string) => void = () => {},
+): Promise<void> {
+  const seed = await d.oldSeed();
+  if (!seed || deriveFeedSignerKey(seed).address.toLowerCase() !== marker.oldFeedSigner) throw new Error(READ_FAILED_MESSAGE);
+  const receipts = await d.readReceipts(seed);
+  if (receipts === "unavailable") throw new Error(READ_FAILED_MESSAGE);
+  if (!receipts || receipts.length === 0) return;
+  if (!live || live.passkey !== marker.passkey) throw new Error(RECEIPTS_NEED_RESTART_MESSAGE);
+  progress("Copying your ticket receipts…");
+  try {
+    const { holdingGenKeysOf } = await import("../holding/account-copy.js");
+    await d.writeReceipts(await holdingGenKeysOf(live.seed), receipts);
+  } catch (e) {
+    console.warn("[upgrade] receipts not carried:", e);
+    throw new Error(RECEIPTS_FAILED_MESSAGE);
+  }
+}
+
 async function writeAll(social: SocialDeps, signer: FeedKey, m: UpgradeMarker, value: boolean): Promise<boolean> {
   let ok = true;
   for (const [kind, subjects] of [["like", m.likes], ["follow", m.follows]] as const) {
@@ -327,6 +361,17 @@ export interface SwitchChain {
 /** Has the switch landed: is the passkey on the account's list? */
 export async function switchLanded(c: Pick<SwitchChain, "readKernelSignerFor">, m: UpgradeMarker): Promise<boolean> {
   return (await c.readKernelSignerFor(m.parent, m.passkey).catch(() => "error" as const)) === m.passkey;
+}
+
+/**
+ * As `switchLanded`, for the two choices that must not be made blind: "unknown" when the
+ * chain did not answer, never "not landed". Undo after a switch that landed would take
+ * the passkey's hold away from an account it alone now controls; "Press Undo" must not
+ * be said off a read that failed.
+ */
+async function landedOrUnknown(c: Pick<SwitchChain, "readKernelSignerFor">, m: UpgradeMarker): Promise<boolean | "unknown"> {
+  const got = await c.readKernelSignerFor(m.parent, m.passkey).catch(() => "error" as const);
+  return got === "error" ? "unknown" : got === m.passkey;
 }
 
 /**
@@ -498,14 +543,23 @@ export async function runUpgrade(h: UpgradeStoreHost, io: UpgradeIO, progress: (
     liveInTab = prepared.live;
   }
   const chain = await h.emailKernel();
-  // The intent first, afresh at every attempt that will send an op: a refusal then
-  // leaves the likes where they are and nothing has changed. An attempt whose op
-  // already landed (a tab closed on it) sends nothing and asks for nothing.
-  if (!(await switchLanded(chain, marker))) await io.requestIntent();
+  const live = liveInTab?.passkey === marker.passkey ? liveInTab : null;
+  // The receipts, then the intent, afresh at every attempt that will send an op: a
+  // refusal of either leaves the likes where they are and nothing has changed. An
+  // attempt whose op already landed (a tab closed on it) sends nothing and asks for
+  // nothing; what it can still carry before the old seed goes, it does.
+  const landed = await landedOrUnknown(chain, marker);
+  if (landed === "unknown") throw new Error(READ_FAILED_MESSAGE);
+  if (!landed) {
+    await carryReceipts(deps, marker, live, progress);
+    await io.requestIntent();
+  } else if (live) {
+    await carryReceipts(deps, marker, live, progress).catch((e) => console.warn("[upgrade] receipts after a landed switch:", e));
+  }
   marker = await retractOld(deps, marker, progress);
   progress("Handing your account to your passkey…");
   const { confirmed } = await sendUpgradeSwitch(chain, marker);
-  await commitUpgrade(h, io, marker, liveInTab?.passkey === marker.passkey ? liveInTab : null, confirmed);
+  await commitUpgrade(h, io, marker, live, confirmed);
   liveInTab = null;
   h.resumeLater();
 }
@@ -534,7 +588,9 @@ export async function runCancel(h: UpgradeStoreHost, io: UpgradeIO): Promise<voi
   if (!account) return;
   const marker = io.marker.read(account.parent);
   if (!marker || marker.emailKey !== account.emailKey || marker.stage !== "prepared") return;
-  if (await switchLanded({ readKernelSignerFor: h.readSignerFor }, marker)) throw new Error(ALREADY_LANDED_MESSAGE);
+  const landed = await landedOrUnknown({ readKernelSignerFor: h.readSignerFor }, marker);
+  if (landed === "unknown") throw new Error(READ_FAILED_MESSAGE);
+  if (landed) throw new Error(ALREADY_LANDED_MESSAGE);
   if (!(await h.ensureSession())) throw new Error(NO_SESSION_MESSAGE);
   await cancelUpgrade(await io.prepareDeps(account), marker);
   liveInTab = null;
