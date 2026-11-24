@@ -35,6 +35,8 @@ test("KeepPage on load: only the link and this device - no network step, no sign
   const load = fnBody(script, "loadLocal");
   assert.doesNotMatch(load, NETWORK);
   assert.match(load, /acceptKeepLink\(fragment, \{ device \}\)/);
+  // The latest link decides the warning: a good one after a broken one clears it.
+  assert.match(load, /malformed = got === "malformed";/);
   assert.match(load, /device\.listDeviceReceipts\(\)/);
   // A storage failure puts the link back in memory, QUIETLY: never dropped, and never a
   // notification its own listener would answer with another failing attempt (Fable 3b).
@@ -43,10 +45,19 @@ test("KeepPage on load: only the link and this device - no network step, no sign
   assert.doesNotMatch(fnBody(script, "reload"), NETWORK);
 });
 
-test("KeepCard: every network step is a button press; nothing runs on mount", () => {
+test("KeepCard: every network step is a button press; on mount only the device's own box, checked again", () => {
   const card = read("lib/attendee/keep/KeepCard.svelte");
   const script = scriptOf(card);
-  assert.doesNotMatch(script, /onMount|\$effect/);
+  assert.doesNotMatch(script, /\$effect/);
+  // Mount runs one LOCAL step (Fable 3b, carried to 3c): the device's box re-checked, so a
+  // page that reloaded mid-save offers Save at once. Given the device store alone.
+  assert.equal(script.match(/onMount\(/g)!.length, 1);
+  assert.match(script, /onMount\(\(\) => \{\s*void recheck\(\);\s*\}\);/);
+  const recheck = fnBody(script, "recheck");
+  assert.doesNotMatch(recheck, NETWORK);
+  assert.doesNotMatch(recheck, /liveKeepFlowDeps|loadTitle/);
+  assert.match(recheck, /flow\.recheckDeviceBox\(kept\.pickupId, \{ device \}\)/);
+  assert.equal((script.match(/(?<!function )\brecheck\(\)/g) ?? []).length, 1, "called from mount only");
   // The network steps live in the press handlers...
   assert.match(fnBody(script, "show"), /showReceipt\(/);
   assert.match(fnBody(script, "save"), /saveToAccount\(/);
@@ -134,9 +145,15 @@ test("KeepCard: only messages written for people reach the screen (Fable 3b cond
   // Raw error text on two lines only: the account's own sign-in and key step, and
   // sayable()'s HoldingSaveError branch.
   assert.equal(script.split("\n").filter((l) => l.includes("e.message")).length, 2);
-  assert.match(script, /\} catch \(e\) \{\s*\/\/ The account's own sign-in and key messages are written to be shown\.\s*problem = e instanceof Error && e\.message \? e\.message :/);
+  // The sign-in and key step: only the key-verdict messages, never the browser's own words
+  // for a cancelled passkey prompt or a network fault (Fable 3b, carried to 3c).
+  assert.match(
+    script,
+    /const written = \(\["behind", "keyless", "foreign", "unknown"\] as const\)\.map\(keysVerdictMessage\);\s*problem = e instanceof Error && written\.includes\(e\.message\) \? e\.message : NOT_READY;/,
+  );
   assert.match(fnBody(script, "sayable"), /if \(HoldingSaveError && e instanceof HoldingSaveError\) return/);
-  assert.match(script, /problem = sayable\(e, SAVE_FAILED, copy\.HoldingSaveError\);/);
+  // A box that no longer checks is said plainly; nothing else gets past sayable.
+  assert.match(script, /problem = e instanceof HoldingBoxRefusedError \? SAVE_REFUSED : sayable\(e, SAVE_FAILED, copy\.HoldingSaveError\);/);
   for (const name of ["show", "eraseAgain"]) assert.doesNotMatch(fnBody(script, name), /e\.message|\(e\)/, `${name} shows only its own words`);
   assert.match(read("lib/attendee/keep/KeepPage.svelte"), /A private record of your order, that only your link opens\./);
 });

@@ -4,12 +4,14 @@
   Every network step is a button press: "Show my receipt" fetches and checks the box,
   "Save to your WoCo account" signs in, saves, reads back and THEN erases our copy,
   "Delete our copy" erases it again for a receipt already saved. Rendering reads only
-  what the device already holds.
+  what the device already holds; on mount a box the device keeps is checked again,
+  locally, so a page that reloaded mid-save (a sign-in redirect) offers Save at once.
 
   Wording (spec 13a item 6): these are the ORDER'S KEYS, never "valid" - whether the
   tickets still stand is the verifier's question, against the chain. No "never" claims.
 -->
 <script lang="ts">
+  import { onMount } from "svelte";
   import type { CheckedReceipt } from "@woco/shared/holding/open";
   import type { EraseResult } from "../../api/holdings.js";
   import type { DeviceReceipt } from "../../holding/device-store.js";
@@ -40,6 +42,30 @@
     "This receipt is no longer kept on this device. Open Keep my receipt in your ticket email again.";
   const SAVE_FAILED =
     "Couldn't save your receipt just now - try again in a moment. Nothing is lost: our copy stays until your account's copy is confirmed.";
+  const NOT_READY = "Your account isn't ready on this device yet - try again.";
+  const SAVE_REFUSED = "This receipt didn't check out, so it can't be saved. Open the link in your ticket email again.";
+
+  /** LOCAL ONLY: a box this device keeps, checked again - never a fetch. */
+  async function recheck() {
+    if (!kept.box) return;
+    try {
+      const [flow, device] = await Promise.all([
+        import("../../holding/keep-flow.js"),
+        import("../../holding/device-store.js"),
+      ]);
+      const got = await flow.recheckDeviceBox(kept.pickupId, { device });
+      if (got && !checked) {
+        kept = got.receipt;
+        checked = got.receipts;
+      }
+    } catch {
+      /* the Show button stays */
+    }
+  }
+
+  onMount(() => {
+    void recheck();
+  });
 
   /**
    * Only messages written for people reach the screen: the account's own sign-in and key
@@ -127,14 +153,17 @@
       let secrets: { current: string } | null;
       try {
         if (!(await auth.ensureAccountSetup({ identity: true }))) {
-          problem = "Your account isn't ready on this device yet - try again.";
+          problem = NOT_READY;
           return;
         }
         // The CURRENT generation, confirmed (a passkey account's keys checked against the chain).
         secrets = await auth.getAccountSecrets({ toSeal: true });
       } catch (e) {
-        // The account's own sign-in and key messages are written to be shown.
-        problem = e instanceof Error && e.message ? e.message : "Your account isn't ready on this device yet - try again.";
+        // Only the account's key messages are written to be shown: a cancelled passkey
+        // prompt or a network fault throws the browser's own words.
+        const { keysVerdictMessage } = await import("../../keyring/account-keys.js");
+        const written = (["behind", "keyless", "foreign", "unknown"] as const).map(keysVerdictMessage);
+        problem = e instanceof Error && written.includes(e.message) ? e.message : NOT_READY;
         return;
       }
       const account = auth.parent?.toLowerCase();
@@ -155,7 +184,9 @@
         else if (out.kind === "not-on-device") problem = GONE_FROM_DEVICE;
         else problem = "Show your receipt first, then save it.";
       } catch (e) {
-        problem = sayable(e, SAVE_FAILED, copy.HoldingSaveError);
+        // A box that no longer checks: trying again cannot help (rare - it was checked at Show).
+        const { HoldingBoxRefusedError } = await import("@woco/shared/holding/open");
+        problem = e instanceof HoldingBoxRefusedError ? SAVE_REFUSED : sayable(e, SAVE_FAILED, copy.HoldingSaveError);
       }
     } finally {
       orderSecretKey?.fill(0);
@@ -168,8 +199,10 @@
     busy = "erase";
     problem = null;
     try {
+      const account = auth.parent?.toLowerCase();
+      if (!account) return;
       const flow = await import("../../holding/keep-flow.js");
-      const got = await flow.finishErase(kept.pickupId, await flow.liveKeepFlowDeps());
+      const got = await flow.finishErase(kept.pickupId, account, await flow.liveKeepFlowDeps());
       if (got === "not-on-device") problem = GONE_FROM_DEVICE;
       else if (got !== "not-saved") eraseNote = got;
     } catch {
