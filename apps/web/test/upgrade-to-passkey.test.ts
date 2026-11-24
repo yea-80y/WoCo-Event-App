@@ -25,6 +25,7 @@ import {
   BACKUPS_FAILED_MESSAGE,
   COPY_FAILED_MESSAGE,
   RECEIPTS_FAILED_MESSAGE,
+  RECEIPTS_NEED_RESTART_MESSAGE,
   ENVELOPE_FAILED_MESSAGE,
   HOSTS_SOMETHING_MESSAGE,
   LOCKED_DEPLOYED_MESSAGE,
@@ -726,6 +727,112 @@ test("run: a refused switch keeps the prepared state; the retry reuses the SAME 
   await runUpgrade(s.host, s.io);
   assert.equal(s.f.names().filter((n) => n === "mintPasskey").length, 1, "one passkey, not two");
   assert.equal((s.adopted()!.live as { passkey: string }).passkey, PASSKEY);
+});
+
+// ── Receipts carried at every attempt (spec-receipt-note 5.1, the gate on slice 3c) ──
+
+/** The store, with the receipt write logged beside the switch and a list that can grow. */
+function receiptStore(over: Parameters<typeof store>[0] = {}) {
+  const s = store(over);
+  let saved: SavedHoldingCopies | null | "unavailable" = SAVED_RECEIPTS;
+  const written: unknown[] = [];
+  s.f.deps.readReceipts = async () => saved;
+  s.f.deps.writeReceipts = async (to, list) => {
+    s.log.push("writeReceipts");
+    written.push({ signer: to.signer.address, list });
+  };
+  return { ...s, written, setSaved: (x: typeof saved) => (saved = x) };
+}
+
+const LATER_RECEIPT = { copy: { v: 1, r: "d4".repeat(32), box: { v: 1, receipts: [] } }, entry: { pickupId: "d5".repeat(32) } };
+
+test("run: receipts are carried again right before the switch, at every attempt - one saved since prepare goes too", async () => {
+  let refuse = true;
+  const s = receiptStore({ landed: () => false, switchFails: () => refuse });
+  await assert.rejects(runUpgrade(s.host, s.io), { message: SWITCH_FAILED_MESSAGE });
+  // Kept in another tab while the switch was refused: under the OLD seed.
+  s.setSaved([...(SAVED_RECEIPTS as unknown[]), LATER_RECEIPT] as unknown as SavedHoldingCopies);
+  refuse = false;
+  await runUpgrade(s.host, s.io);
+
+  const newSigner = holdingCopySigner(Buffer.from(NEW_SEED.slice(2), "hex")).address;
+  assert.equal(s.written.length, 3, "prepare, then before each attempt's switch");
+  for (const w of s.written as { signer: string }[]) assert.equal(w.signer, newSigner, "sealed under the passkey's seed");
+  assert.equal(((s.written.at(-1) as { list: unknown[] }).list).length, 2, "the later receipt went with them");
+  const at = (x: string, from = 0) => s.log.indexOf(x, from);
+  const firstSwitch = at(`switch:${PASSKEY}`);
+  const lastCarry = s.log.lastIndexOf("writeReceipts");
+  assert.ok(lastCarry < s.log.lastIndexOf(`switch:${PASSKEY}`) && lastCarry > firstSwitch, "the retry carried before its own op");
+  assert.ok(s.log.lastIndexOf("writeReceipts") < s.log.lastIndexOf("requestIntent"), "before the intent, so a failed carry spends none");
+  assert.ok(s.log.lastIndexOf("writeReceipts") < s.log.indexOf("wipeOldSeed"), "before the old seed goes");
+});
+
+test("run: a tab that no longer holds the passkey refuses when there are receipts to carry - Undo, then upgrade again", async () => {
+  // Prepared in a tab since closed: this one never made the passkey.
+  const OTHER = "0x4444444444444444444444444444444444444444";
+  const s = receiptStore({ landed: () => false });
+  s.f.oldRetracted();
+  s.f.marker.write(prepared({ passkey: OTHER }));
+  await assert.rejects(runUpgrade(s.host, s.io), { message: RECEIPTS_NEED_RESTART_MESSAGE });
+  assert.ok(!s.log.includes("requestIntent") && !s.log.some((x) => x.startsWith("switch:")), "nothing asked for or sent");
+  assert.equal(s.written.length, 0);
+  assert.ok(!s.log.includes("wipeOldSeed"), "the old seed stays");
+  assert.equal(s.f.marker.map.get(PARENT)?.stage, "prepared", "Undo is still on offer");
+
+  // Nothing saved under the old seed: nothing to lose, so it finishes as before.
+  const none = receiptStore({ landed: () => false });
+  none.setSaved(null);
+  none.f.oldRetracted();
+  none.f.marker.write(prepared({ passkey: OTHER }));
+  await runUpgrade(none.host, none.io);
+  assert.ok(none.log.includes(`switch:${OTHER}`) && none.log.includes("adoptPasskey"));
+});
+
+test("run: an old-seed receipt list that cannot be read, or a carry that does not land, stops before the intent and the op", async () => {
+  const unread = receiptStore({ landed: () => false });
+  unread.f.oldRetracted();
+  unread.f.marker.write(prepared());
+  unread.setSaved("unavailable");
+  await assert.rejects(runUpgrade(unread.host, unread.io), { message: READ_FAILED_MESSAGE });
+  assert.ok(!unread.log.includes("requestIntent") && !unread.log.some((x) => x.startsWith("switch:")));
+
+  let fail = false;
+  const s = receiptStore({ landed: () => false, switchFails: () => true });
+  await assert.rejects(runUpgrade(s.host, s.io), { message: SWITCH_FAILED_MESSAGE }); // this tab holds the passkey now
+  s.f.deps.writeReceipts = async () => {
+    fail = true;
+    throw new Error("a saved receipt could not be confirmed yet");
+  };
+  const intents = s.log.filter((x) => x === "requestIntent").length;
+  await assert.rejects(runUpgrade(s.host, s.io), { message: RECEIPTS_FAILED_MESSAGE });
+  assert.ok(fail);
+  assert.equal(s.log.filter((x) => x === "requestIntent").length, intents, "no new intent");
+  assert.equal(s.f.marker.map.get(PARENT)?.stage, "prepared");
+});
+
+test("run: an old seed that is not the one prepare read carries nothing", async () => {
+  const s = receiptStore({ landed: () => false });
+  s.f.oldRetracted();
+  s.f.marker.write(prepared({ oldFeedSigner: NEW_FEED.address.toLowerCase() }));
+  await assert.rejects(runUpgrade(s.host, s.io), { message: READ_FAILED_MESSAGE });
+  assert.equal(s.written.length, 0);
+});
+
+test("run: a switch that landed meanwhile still commits when this tab's last carry fails", async () => {
+  let landedNow = false;
+  const s = receiptStore({ landed: () => landedNow, switchFails: () => true });
+  await assert.rejects(runUpgrade(s.host, s.io), { message: SWITCH_FAILED_MESSAGE });
+  landedNow = true;
+  const before = s.written.length;
+  s.f.deps.writeReceipts = async () => {
+    s.log.push("writeReceipts:failed");
+    throw new Error("relay busy");
+  };
+  await runUpgrade(s.host, s.io);
+  assert.equal(s.written.length, before);
+  assert.ok(s.log.includes("writeReceipts:failed"), "tried, with this tab's passkey");
+  assert.ok(s.log.indexOf("writeReceipts:failed") < s.log.indexOf("wipeOldSeed"));
+  assert.ok(s.log.includes("adoptPasskey"), "committed all the same: the account already moved");
 });
 
 test("run: only an email account can upgrade", async () => {

@@ -24,8 +24,10 @@
  *              locked seed and envelope (read back); profile and referral copied to
  *              the new feed, saved ticket receipts re-sealed under the new seed (read
  *              back); the marker; likes and follows retracted.
- *   switch   - the op (the store). A refusal changes nothing past `prepare`: the
- *              same passkey retries it, or `cancelUpgrade` puts it all back.
+ *   switch   - the receipts carried again (`carryReceipts`: what was saved since
+ *              prepare), then the op (the store). A refusal changes nothing past
+ *              `prepare`: the same passkey retries it, or `cancelUpgrade` puts it
+ *              all back.
  *   finalize - the email key's traces leave the device; the marker says "committed".
  *   move     - likes and follows re-posted under the new feed; the marker goes.
  *
@@ -67,6 +69,8 @@ export const BACKUPS_FAILED_MESSAGE =
   "Couldn't remove this account's backups just now - your account hasn't changed. Try again.";
 export const COPY_FAILED_MESSAGE = "Couldn't copy your profile to the new passkey - nothing was changed. Try again.";
 export const RECEIPTS_FAILED_MESSAGE = "Couldn't copy your saved ticket receipts to the new passkey - nothing was changed. Try again.";
+export const RECEIPTS_NEED_RESTART_MESSAGE =
+  "This tab can't bring your ticket receipts across. Press Undo, then upgrade again - nothing has changed yet.";
 export const RETRACT_FAILED_MESSAGE = "Couldn't move your likes and follows yet - your account hasn't changed. Try again.";
 export const SWITCH_FAILED_MESSAGE = "The upgrade didn't go through - your account hasn't changed. Try again in a moment.";
 
@@ -303,6 +307,40 @@ export async function retractOld(
   return next;
 }
 
+/**
+ * The ticket receipts the old seed holds NOW, re-sealed under the passkey's seed: at
+ * every attempt, right before the switch (spec-receipt-note 5.1, the gate on slice 3c).
+ * Prepare's own copy can be minutes old by then (the passkey ceremony) or days (a
+ * refused switch tried again): a receipt saved since, in another tab, would otherwise
+ * go with the old seed once the switch lands. Idempotent - a copy already there is not
+ * written again.
+ *
+ * Only the passkey's seed can seal them. A tab that no longer holds it (closed or
+ * reloaded since prepare) refuses when there is anything to carry: Undo, and a fresh
+ * upgrade carries it all. Throws the words to show; nothing has changed past prepare.
+ */
+export async function carryReceipts(
+  d: Pick<PrepareDeps, "oldSeed" | "readReceipts" | "writeReceipts">,
+  marker: UpgradeMarker,
+  live: LivePasskey | null,
+  progress: (msg: string) => void = () => {},
+): Promise<void> {
+  const seed = await d.oldSeed();
+  if (!seed || deriveFeedSignerKey(seed).address.toLowerCase() !== marker.oldFeedSigner) throw new Error(READ_FAILED_MESSAGE);
+  const receipts = await d.readReceipts(seed);
+  if (receipts === "unavailable") throw new Error(READ_FAILED_MESSAGE);
+  if (!receipts || receipts.length === 0) return;
+  if (!live || live.passkey !== marker.passkey) throw new Error(RECEIPTS_NEED_RESTART_MESSAGE);
+  progress("Copying your ticket receipts…");
+  try {
+    const { holdingGenKeysOf } = await import("../holding/account-copy.js");
+    await d.writeReceipts(await holdingGenKeysOf(live.seed), receipts);
+  } catch (e) {
+    console.warn("[upgrade] receipts not carried:", e);
+    throw new Error(RECEIPTS_FAILED_MESSAGE);
+  }
+}
+
 async function writeAll(social: SocialDeps, signer: FeedKey, m: UpgradeMarker, value: boolean): Promise<boolean> {
   let ok = true;
   for (const [kind, subjects] of [["like", m.likes], ["follow", m.follows]] as const) {
@@ -498,14 +536,21 @@ export async function runUpgrade(h: UpgradeStoreHost, io: UpgradeIO, progress: (
     liveInTab = prepared.live;
   }
   const chain = await h.emailKernel();
-  // The intent first, afresh at every attempt that will send an op: a refusal then
-  // leaves the likes where they are and nothing has changed. An attempt whose op
-  // already landed (a tab closed on it) sends nothing and asks for nothing.
-  if (!(await switchLanded(chain, marker))) await io.requestIntent();
+  const live = liveInTab?.passkey === marker.passkey ? liveInTab : null;
+  // The receipts, then the intent, afresh at every attempt that will send an op: a
+  // refusal of either leaves the likes where they are and nothing has changed. An
+  // attempt whose op already landed (a tab closed on it) sends nothing and asks for
+  // nothing; what it can still carry before the old seed goes, it does.
+  if (!(await switchLanded(chain, marker))) {
+    await carryReceipts(deps, marker, live, progress);
+    await io.requestIntent();
+  } else if (live) {
+    await carryReceipts(deps, marker, live, progress).catch((e) => console.warn("[upgrade] receipts after a landed switch:", e));
+  }
   marker = await retractOld(deps, marker, progress);
   progress("Handing your account to your passkey…");
   const { confirmed } = await sendUpgradeSwitch(chain, marker);
-  await commitUpgrade(h, io, marker, liveInTab?.passkey === marker.passkey ? liveInTab : null, confirmed);
+  await commitUpgrade(h, io, marker, live, confirmed);
   liveInTab = null;
   h.resumeLater();
 }
