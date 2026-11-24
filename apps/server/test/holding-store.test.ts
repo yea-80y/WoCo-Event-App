@@ -22,7 +22,7 @@ globalThis.fetch = (async () => {
   throw new Error("bee unreachable");
 }) as unknown as typeof fetch;
 
-const { sealBox, openBoxJson, holdingBoxSealContext, holdingSecretSealContext } = await import("@woco/shared/crypto/sealed-box");
+const { sealBox, sealBoxJson, openBoxJson, holdingBoxSealContext, holdingSecretSealContext } = await import("@woco/shared/crypto/sealed-box");
 const { holdingPublicValues, holdingPickupKem } = await import("@woco/shared/holding/derive");
 const { signTicketHolding, recoverTicketHoldingSigner } = await import("@woco/shared/holding/receipt");
 const { parseHoldingKeepFragment } = await import("@woco/shared/holding/pickup");
@@ -174,9 +174,26 @@ test("a signed-in buyer's request is completed at fulfilment, write-once, with n
   assert.equal(rec.keep, "account");
   assert.ok(rec.sealedR);
   assert.equal(rec.issued?.boxRoot, kept!.boxRoot);
-  // A second keep for the same sale changes nothing.
-  assert.equal(store.recordHoldingIssued({ sessionId: s, eventId: EVENT, seriesId: SERIES, issued: { ...rec.issued!, boxRoot: "00".repeat(32) } }), true);
+  // A second keep for the same sale changes nothing, and is "recorded" only for the same box.
+  assert.equal(store.recordHoldingIssued({ sessionId: s, eventId: EVENT, seriesId: SERIES, issued: { ...rec.issued!, boxRoot: "00".repeat(32) } }), false);
+  assert.equal(store.recordHoldingIssued({ sessionId: s, eventId: EVENT, seriesId: SERIES, issued: rec.issued! }), true);
   assert.equal(store.getHolding(s)!.issued!.boxRoot, kept!.boxRoot);
+});
+
+test("a guest keep that meets another order's request for the same sale is refused: no link", async () => {
+  const { request } = await requestFrom(23, 1);
+  const s = nextSession();
+  store.recordHoldingRequest({ sessionId: s, eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request });
+  const r = new Uint8Array(32).fill(24);
+  const pv = holdingPublicValues(r, 1);
+  const kept = await keepHoldingReceipts({
+    sessionId: s, eventId: EVENT, seriesId: SERIES, target: TARGET,
+    receipts: signedReceipts(pv).map(({ holding, sig }) => ({ holding, sig })), pickupId: pv.pickupId, pickupPub: Buffer.from(pv.pickupPub).toString("hex"),
+    guest: { r, holders: pv.holders, answerKeys: pv.answerKeys, nkCommit: pv.nkCommit, pickupSigner: pv.pickupSigner },
+  }, storing);
+  assert.equal(kept, null);
+  assert.equal(store.getHolding(s)!.issued, undefined);
+  assert.equal(store.getHolding(s)!.pickupId, request.pickupId);
 });
 
 test("no receipts, or nothing recorded: no link", async () => {
@@ -233,4 +250,132 @@ test("the sweep drops an unpaid request after a day and a record whose box was e
   assert.ok(store.getHolding(sFresh));
   assert.equal(store.getHolding(sErased), null);
   assert.equal(store.holdingByPickupId(pv.pickupId), null);
+});
+
+// ── Fable sign-off conditions (2026-11-24) ──────────────────────────────────
+
+function guestInput(seed: number) {
+  const r = new Uint8Array(32).fill(seed);
+  const pv = holdingPublicValues(r, 1);
+  return {
+    sessionId: nextSession(), eventId: EVENT, seriesId: SERIES, target: TARGET,
+    receipts: signedReceipts(pv).map(({ holding, sig }) => ({ holding, sig })), pickupId: pv.pickupId, pickupPub: Buffer.from(pv.pickupPub).toString("hex"),
+    guest: { r, holders: pv.holders, answerKeys: pv.answerKeys, nkCommit: pv.nkCommit, pickupSigner: pv.pickupSigner },
+  };
+}
+
+test("a box erased before its upload landed is never retried, and the sweep drops it", async () => {
+  const input = guestInput(71);
+  const kept = await keepHoldingReceipts(input, failing);
+  const json = JSON.stringify(store.getHolding(input.sessionId)!.issued!.box);
+  ledger.recordErasedBeforeStore(kept!.boxRoot, { eventId: EVENT });
+  const seen: string[] = [];
+  await retryUnstoredHoldings(100, { store: (d, m) => (seen.push(String(d)), storing.store(d, m)), now: () => Date.now() });
+  assert.equal(seen.includes(json), false, "never sent to the batch");
+  store.sweepHoldings(ledger.isOrderErased);
+  assert.equal(store.getHolding(input.sessionId), null, "its local copy goes");
+});
+
+test("the email waits at most the store wait; a late store still lands; the retry never stores it twice at once", async () => {
+  await retryUnstoredHoldings(100, storing);
+  const input = guestInput(72);
+  const seen: string[] = [];
+  let release!: () => void;
+  let first = true;
+  const slow = {
+    store: (d: string | Uint8Array, m: Parameters<typeof storing.store>[1]) => {
+      seen.push(String(d));
+      if (!first) return storing.store(d, m);
+      first = false;
+      return new Promise<string>((resolve, reject) => {
+        release = () => void storing.store(d, m).then(resolve, reject);
+      });
+    },
+    now: () => Date.now(),
+    storeWaitMs: 20,
+  };
+  const t0 = Date.now();
+  const kept = await keepHoldingReceipts(input, slow as never);
+  assert.ok(Date.now() - t0 < 2_000, "the email did not wait for the batch");
+  assert.ok(kept?.keepUrl, "the link needs no upload");
+  const json = JSON.stringify(store.getHolding(input.sessionId)!.issued!.box);
+  await retryUnstoredHoldings(100, slow as never);
+  assert.equal(seen.filter((d) => d === json).length, 1, "the retry left the box being stored alone");
+  release();
+  for (let i = 0; i < 200 && store.getHolding(input.sessionId)!.issued!.box; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(store.getHolding(input.sessionId)!.issued!.box, undefined, "the late store landed");
+  assert.ok(store.getHolding(input.sessionId)!.issued!.storedAt);
+});
+
+test("one retry pass at a time", async () => {
+  // Two boxes waiting: a second pass while the first is still busy with one must not take the other.
+  const input = guestInput(73);
+  await keepHoldingReceipts(input, failing);
+  const other = guestInput(75);
+  await keepHoldingReceipts(other, failing);
+  let open!: () => void;
+  const gate = new Promise<void>((r) => (open = r));
+  const gated = { store: async (d: string | Uint8Array, m: Parameters<typeof storing.store>[1]) => (await gate, storing.store(d, m)), now: () => Date.now() };
+  const first = retryUnstoredHoldings(100, gated as never);
+  // Bounded, so a missing guard fails here instead of hanging on the closed gate.
+  let giveUp: ReturnType<typeof setTimeout> | undefined;
+  const second = await Promise.race([
+    retryUnstoredHoldings(100, gated as never),
+    new Promise((r) => (giveUp = setTimeout(() => r("a second pass started"), 1_000))),
+  ]).finally(() => clearTimeout(giveUp));
+  assert.deepEqual(second, { stored: 0, failed: 0 });
+  open();
+  assert.ok((await first).stored >= 2);
+  assert.equal(store.getHolding(input.sessionId)!.issued!.box, undefined);
+  assert.equal(store.getHolding(other.sessionId)!.issued!.box, undefined);
+});
+
+test("an unpaid request outlives a Stripe session's day (a late webhook still finds it), then goes", async () => {
+  const now = Date.now();
+  const hour = 60 * 60 * 1000;
+  const late = await requestFrom(90, 1);
+  const sLate = nextSession();
+  store.recordHoldingRequest({ sessionId: sLate, eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request: late.request, now: now - 30 * hour });
+  const old = await requestFrom(91, 1);
+  const sOld = nextSession();
+  store.recordHoldingRequest({ sessionId: sOld, eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request: old.request, now: now - 49 * hour });
+  store.sweepHoldings(() => false, now);
+  assert.ok(store.getHolding(sLate), "30 h: kept");
+  assert.equal(store.getHolding(sOld), null, "49 h: gone");
+});
+
+test("a box that does not hash to its recorded root is never uploaded", async () => {
+  const r = new Uint8Array(32).fill(74);
+  const pv = holdingPublicValues(r, 1);
+  const s = nextSession();
+  const box = await sealBoxJson(Buffer.from(pv.pickupPub).toString("hex"), { v: 1, receipts: [] }, holdingBoxSealContext(pv.pickupId));
+  store.recordHoldingIssued({
+    sessionId: s, eventId: EVENT, seriesId: SERIES,
+    guest: { holders: pv.holders, answerKeys: pv.answerKeys, nkCommit: pv.nkCommit, pickupId: pv.pickupId, pickupSigner: pv.pickupSigner, pickupPub: Buffer.from(pv.pickupPub).toString("hex") },
+    issued: { chainId: TARGET.chainId, ledger: TARGET.ledger, onChainEventId: ON_CHAIN, slots: [1], boxRoot: "11".repeat(32), box },
+  });
+  const seen: string[] = [];
+  await retryUnstoredHoldings(100, { store: (d, m) => (seen.push(String(d)), storing.store(d, m)), now: () => Date.now() });
+  assert.equal(seen.includes(JSON.stringify(box)), false);
+  assert.ok(store.getHolding(s)!.issued!.box, "kept for an operator, never stored");
+  store.deleteHolding(s);
+});
+
+test("unpaid requests are capped: the oldest makes room", async () => {
+  store._setMaxUnpaidRequestsForTests(2);
+  try {
+    const t = Date.now();
+    const ids: string[] = [];
+    for (let k = 0; k < 3; k++) {
+      const { request } = await requestFrom(80 + k, 1);
+      const s = nextSession();
+      ids.push(s);
+      assert.equal(store.recordHoldingRequest({ sessionId: s, eventId: EVENT, seriesId: SERIES, account: ACCOUNT, request, now: t + k }), true);
+    }
+    assert.equal(store.getHolding(ids[0]!), null, "the oldest unpaid went");
+    assert.ok(store.getHolding(ids[1]!));
+    assert.ok(store.getHolding(ids[2]!));
+  } finally {
+    store._setMaxUnpaidRequestsForTests(5_000);
+  }
 });

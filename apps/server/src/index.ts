@@ -1079,13 +1079,14 @@ setInterval(() => {
   sweepHeldOrders();
   retryPaidHeldOrders().catch((err) => console.warn("[attendee-batch] held-order retry failed:", (err as Error).message));
   // Ticket receipts: store boxes whose first upload failed, and drop records no longer
-  // owed (unpaid requests after a day, boxes the attendee batch has erased).
-  retryUnstoredHoldings().catch((err) => console.warn("[holding] retry failed:", (err as Error).message));
+  // owed (unpaid requests, boxes the attendee batch has erased). The sweep first, so a
+  // box erased before it was stored is dropped rather than retried.
   try {
     sweepHoldings(isOrderErased);
   } catch (err) {
     console.warn("[holding] sweep failed:", (err as Error).message);
   }
+  retryUnstoredHoldings().catch((err) => console.warn("[holding] retry failed:", (err as Error).message));
 }, 60_000).unref();
 // A line in the journal each time a health check turns red or green, so a page
 // from the uptime monitor can be traced after the alarm has cleared. Two minutes

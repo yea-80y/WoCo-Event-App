@@ -34,6 +34,8 @@ const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 const BYTES32_RE = /^0x[0-9a-f]{64}$/;
 const PICKUP_ID_RE = /^[0-9a-f]{64}$/;
 const PUB_RE = new RegExp(`^[0-9a-f]{${XWING_PUBLIC_KEY_BYTES * 2}}$`);
+/** The ciphertext of a sealed 32-byte order secret, hex: 32 bytes plus the 16-byte tag. */
+export const SEALED_SECRET_CT_HEX = 96;
 
 /**
  * The request for an order of exactly `quantity` tickets, or null. Every address
@@ -51,7 +53,9 @@ export function parseHoldingRequest(x: unknown, quantity: number): HoldingReques
   if (typeof q.nkCommit !== "string" || !BYTES32_RE.test(q.nkCommit)) return null;
   if (typeof q.pickupId !== "string" || !PICKUP_ID_RE.test(q.pickupId)) return null;
   if (typeof q.pickupPub !== "string" || !PUB_RE.test(q.pickupPub)) return null;
-  if (!isSealedBoxV2(q.sealedR)) return null;
+  // A sealed 32-byte secret is exactly 48 bytes of ciphertext (the secret and its tag).
+  // Anything longer is not one, and every request is written to disk and held in memory.
+  if (!isSealedBoxV2(q.sealedR) || q.sealedR.ct.length !== SEALED_SECRET_CT_HEX) return null;
   return {
     v: 1,
     holders: [...q.holders] as string[],

@@ -14,7 +14,7 @@
  *   - the buyer erases it (pickup signer, routes/holdings.ts);
  *   - its box is erased on the attendee batch (12 months after the event, or a
  *     data-subject request): `sweepHoldings`;
- *   - a request was never paid: 24 h, as held orders.
+ *   - a request was never paid: 48 h (or sooner, the oldest first, past 5,000 unpaid).
  *
  * MUST SURVIVE RESTARTS until then. Losing a record loses that buyer's way to find
  * their receipt (the box on Swarm stays, at an address only the record and a guest's
@@ -33,8 +33,13 @@ import { errorClass } from "../http/error-class.js";
 const DIR = join(process.cwd(), ".data", "holding-receipts");
 const TAG = "holding-receipts";
 
-/** An unpaid request is dropped after this, as an unpaid held order. */
-export const HOLDING_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * An unpaid request is dropped after this. Longer than a Stripe session's 24 h life, so
+ * a webhook that arrives late (our server down a while) still finds the buyer's request.
+ */
+export const HOLDING_REQUEST_TTL_MS = 48 * 60 * 60 * 1000;
+/** Unpaid requests kept at most; the oldest makes room (held orders' rule). */
+export let MAX_UNPAID_REQUESTS = 5_000;
 
 export interface HoldingIssued {
   chainId: number;
@@ -142,14 +147,17 @@ function readRecord(sessionId: string): HoldingRecordV1 | null {
 /** Load every record once, so pickup ids resolve after a restart. Unreadable files are counted, never touched. */
 function scanOnce(): void {
   if (scanned) return;
-  scanned = true;
   let names: string[];
   try {
     names = readdirSync(DIR);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      scanned = true;
+      return;
+    }
     throw err;
   }
+  scanned = true;
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
     const sessionId = name.slice(0, -5);
@@ -212,6 +220,11 @@ export function recordHoldingRequest(input: {
     if (!CHECKOUT_SESSION_RE.test(input.sessionId) || !ADDRESS_RE.test(input.account.toLowerCase())) return false;
     if (getHolding(input.sessionId)) return true;
     if (holdingByPickupId(input.request.pickupId)) return false;
+    const unpaid = [...cache.values()].filter((r) => !r.issued);
+    if (unpaid.length >= MAX_UNPAID_REQUESTS) {
+      unpaid.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      for (const old of unpaid.slice(0, unpaid.length - MAX_UNPAID_REQUESTS + 1)) deleteHolding(old.sessionId);
+    }
     const q = input.request;
     return write({
       v: 1,
@@ -251,9 +264,12 @@ export function recordHoldingIssued(input: {
   try {
     const now = new Date(input.now ?? Date.now()).toISOString();
     const existing = getHolding(input.sessionId);
-    if (existing?.issued) return true;
+    // A replay is "recorded" only if it names the same box; otherwise its link would
+    // point at a box this record does not hold.
+    if (existing?.issued) return existing.issued.boxRoot === input.issued.boxRoot;
     let base: HoldingRecordV1;
     if (existing) {
+      if (input.guest && input.guest.pickupId !== existing.pickupId) return false;
       base = existing;
     } else if (input.guest) {
       if (holdingByPickupId(input.guest.pickupId)) return false;
@@ -316,7 +332,9 @@ export function sweepHoldings(isErased: (root: string) => boolean, now = Date.no
   let removed = 0;
   for (const r of [...cache.values()]) {
     const stale = !r.issued && now - Date.parse(r.createdAt) > HOLDING_REQUEST_TTL_MS;
-    const erased = !!r.issued?.storedAt && isErased(r.issued.boxRoot);
+    // Stored or not: a box erased before its upload landed can never be stored (the
+    // ledger refuses it), so its local copy goes too.
+    const erased = !!r.issued && isErased(r.issued.boxRoot);
     if (stale || erased) {
       try {
         deleteHolding(r.sessionId);
@@ -336,11 +354,16 @@ export function holdingReceiptsHealth(now = Date.now()) {
   return { ok: unreadable.size === 0 && waiting === 0, unreadable: unreadable.size, unstoredOverAnHour: waiting, records: cache.size, ...health };
 }
 
+export function _setMaxUnpaidRequestsForTests(n: number): void {
+  MAX_UNPAID_REQUESTS = n;
+}
+
 export function _resetHoldingStoreForTests(): void {
   cache.clear();
   unreadable.clear();
   byPickup.clear();
   scanned = false;
+  MAX_UNPAID_REQUESTS = 5_000;
   health.issued = 0;
   health.failed = 0;
   health.stored = 0;

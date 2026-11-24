@@ -1568,8 +1568,9 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean; unre
     // The receipt, while this key still owns the slot. An accessory: a failure costs
     // this ticket its receipt, never the ticket. Checked against the key before kept.
     const plan = a.holding;
-    if (plan && i < plan.holders.length) {
+    if (plan) {
       try {
+        if (i >= plan.holders.length) throw new Error("no receipt values for this ticket");
         const holding: TicketHolding = {
           eventId: a.v2OnChainEventId.toLowerCase(),
           slot,
