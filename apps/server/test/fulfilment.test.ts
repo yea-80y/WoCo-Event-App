@@ -1750,6 +1750,8 @@ describe("ticket receipts", () => {
       [{ wallet: BUYER_WALLET, email: null }, { sale, holding: ON }],
       [{}, { sale, holding: ON, cancellation: "cancelled" as const }],
       [{}, { sale, holding: ON, fail: "signMessage" as Step, signFailAt: 1 }],
+      // A request that could not be read, on a sale that then minted nothing: no ticket is short of a receipt.
+      [{ wallet: BUYER_WALLET }, { sale, holding: ON, fail: "holdingRequest" as Step, revertAtChunk: 0 }],
     ] as const) {
       const { f } = await run(buyer as never, opts as never);
       assert.deepEqual(f.missed, [], JSON.stringify(opts));

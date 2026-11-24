@@ -346,6 +346,33 @@ test("erase while the box is being stored: try again in a minute, nothing change
   assert.equal(store.getHolding(stored.sessionId)!.erasedAt, undefined, "nothing marked erased that was not");
 });
 
+test("an erasure meeting a real store in flight waits for it, then burns it", async () => {
+  const r = new Uint8Array(32).fill(++seeds);
+  const pv = holdingPublicValues(r, 1);
+  const sessionId = nextSession();
+  let release!: () => void;
+  const gate = new Promise<void>((res) => (release = res));
+  const slow = { store: async (d: string | Uint8Array, m: Parameters<typeof storing.store>[1]) => (await gate, storing.store(d, m)), now: () => Date.now(), storeWaitMs: 10 };
+  const kept = await keepHoldingReceipts({
+    sessionId, eventId: EVENT, seriesId: SERIES, target: TARGET, receipts: receiptsFor(pv),
+    pickupId: pv.pickupId, pickupPub: Buffer.from(pv.pickupPub).toString("hex"),
+    guest: { r, holders: pv.holders, answerKeys: pv.answerKeys, nkCommit: pv.nkCommit, pickupSigner: pv.pickupSigner },
+  }, slow as never);
+  assert.deepEqual(await eraseOrder(kept!.boxRoot, { by: "request" }, honestBurns as never), { kind: "in-flight" });
+  assert.equal(ledger.getOrderRecord(kept!.boxRoot), null, "no tombstone under a landing store");
+  release();
+  for (let i = 0; i < 200 && !store.getHolding(sessionId)!.issued!.storedAt; i++) await new Promise((res) => setTimeout(res, 10));
+  assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(r, pv.pickupId))).status, 200);
+  assert.equal(ledger.getOrderRecord(kept!.boxRoot)!.state, "burned");
+});
+
+test("the shared erase drops a not-yet-stored box's local copy itself", async () => {
+  const sale = await guestSale({ stored: false });
+  assert.deepEqual(await eraseOrder(sale.boxRoot, { by: "request" }), { kind: "deleted-before-store" });
+  assert.equal(store.getHolding(sale.sessionId)!.issued!.box, undefined);
+  assert.equal((await post("/api/holdings/pickup", { pickupId: sale.pv.pickupId })).status, 200, "the record is the caller's to finish");
+});
+
 test("pickup and erase are limited per address", async () => {
   const ip = { "cf-connecting-ip": "192.0.2.7" };
   const pickups: number[] = [];
