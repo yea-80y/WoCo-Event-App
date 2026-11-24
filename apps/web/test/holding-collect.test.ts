@@ -215,6 +215,10 @@ test("a sale an upgrade already carried (no key here opens it): our copy erased 
   assert.deepEqual(h.erased, [holdingPickupId(R1)]);
   assert.equal(feeds.writes.length, writes, "nothing written again");
 
+  // Its erase answered "later": counted as saved, and left for the next run.
+  const busy = harness({ rows: [carried], gens: [g], feeds, erase: () => "later" });
+  assert.deepEqual(await collectReceipts(busy.deps), { saved: 1, erased: 0, left: 1, skipped: 0, done: false });
+
   // Not in the account: left alone - the erase would lose the only copy.
   const none = harness({ rows: [await row(oldSeed, R2, 2, { inline: true })], gens: [g] });
   assert.deepEqual(await collectReceipts(none.deps), { saved: 0, erased: 0, left: 0, skipped: 1, done: true });
@@ -288,8 +292,9 @@ test("the upgrade's read opens and checks every sale the old seed opens, and sav
   assert.ok(!h.log.some((x) => x.startsWith("erase:")));
 
   // Anything it could not read makes the whole read unavailable: carrying part would lose the rest.
+  const swarm = new Map([[rootOf(2), { r: R2, box: makeBox(R2, 1, 20) }]]);
   for (const over of [{ mine: { kind: "later" } as MineResult }, { complete: false }]) {
-    assert.equal(await pendingCopies(harness({ rows, gens: [old], ...over }).deps), "unavailable");
+    assert.equal(await pendingCopies(harness({ rows, gens: [old], swarm, ...over }).deps), "unavailable");
   }
   const unfetched = harness({ rows: [await row(old, R2, 2)], gens: [old] });
   assert.equal(await pendingCopies(unfetched.deps), "unavailable");
@@ -333,6 +338,17 @@ test("the per-ticket mark: one per ticket number the lists name; a read that mis
   const partial = receiptMarks([b], false, marks);
   assert.deepEqual([...partial].sort(), [...marks].sort());
   assert.deepEqual([...receiptMarks([], false, undefined)], []);
+});
+
+test("the browser's Web Locks are used where it has them; this tab's chain only where it has not", async () => {
+  const { withWebLock } = await import("../src/lib/utils/web-lock.ts");
+  const asked: string[] = [];
+  const locks = { request: <T,>(name: string, cb: () => Promise<T>) => (asked.push(name), cb()) };
+  assert.equal(await withWebLock("test:save", async () => "done", { timeoutMs: 1_000, locks }), "done");
+  assert.deepEqual(asked, ["test:save"]);
+  asked.length = 0;
+  assert.equal(await withWebLock("test:save", async () => "here", { timeoutMs: 1_000, locks: null }), "here");
+  assert.deepEqual(asked, []);
 });
 
 test("one collection per account at a time: a second start while one runs does not run", async () => {

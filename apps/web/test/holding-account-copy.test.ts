@@ -438,6 +438,12 @@ test("a jammed copy reads as the newest version below it that opens: one race ne
   spent.spentBy.set(`${topic}@1`, "missing-page");
   assert.equal(await readHoldingCopy(g0, id, spent.io), "unavailable");
 
+  // A copy that opens and is in a layout this build does not know is never "none".
+  const newer = fakeFeeds();
+  const { holdingCopySealContext } = await import("@woco/shared/crypto/sealed-box");
+  newer.put(g0.signer.address, topic, 0, await sealBoxJsonCompressed(g0.orderPublicKey, { v: 9 }, holdingCopySealContext(id)));
+  assert.equal(await readHoldingCopy(g0, id, newer.io), "unavailable");
+
   // Walking down stops on anything uncertain: here, a version below that does not answer.
   const unsure = fakeFeeds();
   await saveHoldingCopy(g0, R1, makeBox(R1, 2), unsure.io);
