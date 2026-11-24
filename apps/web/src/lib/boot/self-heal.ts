@@ -100,7 +100,9 @@ export function installSelfHeal(): void {
   // This runs before the app, so the URL is still as navigated. A Web3Auth or Stripe
   // result is stripped from it at capture and held in memory until consumed; a reload
   // in between would drop the sign-in. Repair only - the app's refresh prompt then works.
-  const returned = /[#?&](?:b64Params|sessionId|stripe|session_id)=/.test(w.location.href);
+  // A private-receipt Keep link likewise: the router takes its secret out of the address
+  // and the Keep page stores it on the device, so a reload in between loses it here.
+  const returned = /[#?&](?:b64Params|sessionId|stripe|session_id)=|#\/keep\?/.test(w.location.href);
 
   // An observer, not getEntriesByType: the resource buffer stops at 250 entries (API
   // calls count), and a dashboard opened late in a session is exactly when it is full.

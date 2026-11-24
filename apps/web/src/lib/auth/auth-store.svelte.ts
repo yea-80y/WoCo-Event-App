@@ -5396,6 +5396,18 @@ async function clearAllAuth(): Promise<void> {
   await step("aa-sessions", () => delKV(StorageKeys.WOCO_AA_SESSION));
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
   await step("user-caches", () => cacheClearByPrefix(USER_SCOPED_PREFIXES));
+  // Private ticket receipts (spec-receipt-note 5.2): the feed hints that count this
+  // account's saved receipts and name their chunks (Fable 3a delta), then every receipt
+  // kept on this device - a shared device keeps none once someone signs out. Hints
+  // first: they need no storage open.
+  await step("holding-hints", async () => {
+    const [{ forgetVersionHintsUnder }, { HOLDING_TOPIC_PREFIX }] = await Promise.all([
+      import("../swarm/content-feed.js"),
+      import("@woco/shared/holding/copy"),
+    ]);
+    forgetVersionHintsUnder(HOLDING_TOPIC_PREFIX);
+  });
+  await step("holding-device", async () => (await import("../holding/device-store.js")).forgetAllDeviceReceipts());
   // A pending empty-accounts logout must not fire into the NEXT sign-in (#186).
   if (_emptyAccountsTimer) {
     clearTimeout(_emptyAccountsTimer);
