@@ -15,6 +15,8 @@
   import { navigate } from "../../router/router.svelte.js";
   import CohortStamp from "../../components/campaign/CohortStamp.svelte";
   import { gate } from "../gate/gate.svelte.js";
+  import { markKey, readReceiptMarks } from "../../holding/marks.js";
+  import { receiptsChanged } from "../../holding/receipts-changed.svelte.js";
   import PassportTicket from "./PassportTicket.svelte";
   import { passportState } from "./passport-state.svelte.js";
 
@@ -45,8 +47,8 @@
 
   /**
    * Private ticket receipts kept on THIS device (spec-receipt-note 5.2): a short list,
-   * read from local storage only - no prompt, no network. The account's saved
-   * collection comes with slice 3c.
+   * read from local storage only - no prompt, no network. Those saved in the account
+   * are marked on the tickets themselves (below).
    */
   let deviceReceipts = $state<DeviceReceipt[]>([]);
 
@@ -61,6 +63,34 @@
   onMount(() => {
     if (FEATURES.holdingReceiptsAllowed) void loadDeviceReceipts();
   });
+
+  /**
+   * Tickets whose private receipt is saved in the account (spec-receipt-note 5.1): read
+   * from the account's own receipt lists, never a prompt - a locked passkey account shows
+   * none until it unlocks. Read again when the keys arrive and after the automatic
+   * collection saved something.
+   */
+  let savedReceipts = $state<Set<string>>(new Set());
+
+  async function loadReceiptMarks(parent: string) {
+    try {
+      const got = await readReceiptMarks(parent);
+      if (got && auth.parent?.toLowerCase() === parent) savedReceipts = got;
+    } catch {
+      /* nothing marked: the tickets show as before */
+    }
+  }
+
+  $effect(() => {
+    void receiptsChanged.n;
+    const parent = auth.parent?.toLowerCase();
+    if (!FEATURES.holdingReceiptsAllowed || !parent || !auth.hasIdentitySeed) return;
+    untrack(() => void loadReceiptMarks(parent));
+  });
+
+  function receiptSaved(ticket: (typeof tickets.upcoming)[number]): boolean {
+    return savedReceipts.has(markKey(ticket.eventId, ticket.seriesId, ticket.edition));
+  }
 
   function receiptLine(r: DeviceReceipt): string {
     const n = r.box?.receipts.length ?? 0;
@@ -108,7 +138,9 @@
 {#snippet list(rows: typeof tickets.upcoming)}
   <ul class="list">
     {#each rows as ticket (`${ticket.seriesId}#${ticket.edition}`)}
-      <li><PassportTicket {ticket} now={passport.now} pending={passport.loading} seat={passport.seatOf(ticket)} /></li>
+      <li>
+        <PassportTicket {ticket} now={passport.now} pending={passport.loading} seat={passport.seatOf(ticket)} receiptSaved={receiptSaved(ticket)} />
+      </li>
     {/each}
   </ul>
 {/snippet}
