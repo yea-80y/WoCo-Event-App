@@ -786,6 +786,28 @@ test("run: a tab that no longer holds the passkey refuses when there are receipt
   none.f.marker.write(prepared({ passkey: OTHER }));
   await runUpgrade(none.host, none.io);
   assert.ok(none.log.includes(`switch:${OTHER}`) && none.log.includes("adoptPasskey"));
+
+  // An empty list is nothing to carry too.
+  const empty = receiptStore({ landed: () => false });
+  empty.setSaved([] as unknown as SavedHoldingCopies);
+  empty.f.oldRetracted();
+  empty.f.marker.write(prepared({ passkey: OTHER }));
+  await runUpgrade(empty.host, empty.io);
+  assert.ok(empty.log.includes("adoptPasskey"));
+});
+
+test("run: a passkey this tab made for an EARLIER upgrade is never used for another's marker", async () => {
+  // This tab prepared an upgrade with PASSKEY whose switch was refused: it still holds that passkey.
+  const first = receiptStore({ landed: () => false, switchFails: () => true });
+  await assert.rejects(runUpgrade(first.host, first.io), { message: SWITCH_FAILED_MESSAGE });
+  // The marker now names another passkey (prepared in another tab): neither carry nor commit takes ours.
+  const OTHER = "0x4444444444444444444444444444444444444444";
+  const s = receiptStore({ landed: () => false });
+  s.setSaved(null);
+  s.f.oldRetracted();
+  s.f.marker.write(prepared({ passkey: OTHER }));
+  await runUpgrade(s.host, s.io);
+  assert.equal(s.adopted()!.live, null, "committed without a live passkey");
 });
 
 test("run: an old-seed receipt list that cannot be read, or a carry that does not land, stops before the intent and the op", async () => {
