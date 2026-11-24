@@ -487,7 +487,7 @@ test("a list screen reads every generation's list, shows one the scan could not 
   assert.equal(f.writes.length, n);
 });
 
-test("saves for one copy signer run one at a time: the copy and its line, every carried copy and the list (Fable 3c PR 1)", async () => {
+test("saves for one copy signer run one at a time: the copy and its line together; a carry per copy, then the list (Fable 3c PR 1)", async () => {
   const f = fakeFeeds();
   const k = await gen(S0);
   const to = await gen(S1);
@@ -521,7 +521,9 @@ test("saves for one copy signer run one at a time: the copy and its line, every 
 
   held.length = 0;
   assert.equal(await moveHoldingCopies([k], to, f.io), 3);
-  assert.deepEqual(held, [to.signer.address.toLowerCase()], "the carry holds the NEW signer's lock, once");
+  // The NEW signer's lock, taken per copy and once for the list - never one bound over the
+  // whole carry, which would release it mid-loop (Fable 3c PR 2, 3).
+  assert.deepEqual(held, Array(4).fill(to.signer.address.toLowerCase()));
 });
 
 test("a copy filed under another order's id is refused", async () => {

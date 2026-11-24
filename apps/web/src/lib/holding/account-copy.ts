@@ -436,14 +436,16 @@ export async function writeHoldingCopies(to: HoldingGenKeys, copies: SavedHoldin
   // Not even a read for an account with none: a thorough read of a never-written feed can
   // come back inconclusive, and that would hold a passkey removal open for nothing.
   if (copies.length === 0) return;
-  await exclusively(io, to.signer.address, async () => {
-    for (const { copy } of copies) {
-      if ((await writeHoldingCopy(to, copy, io)) !== "saved") throw new HoldingSaveError("a saved receipt could not be confirmed yet - try again later");
+  // The lock is taken per save, never around the loop: one bound over dozens of copies
+  // would release it mid-loop, and "Try again" would then race the writer still going.
+  for (const { copy } of copies) {
+    if ((await exclusively(io, to.signer.address, () => writeHoldingCopy(to, copy, io))) !== "saved") {
+      throw new HoldingSaveError("a saved receipt could not be confirmed yet - try again later");
     }
-    if ((await addToHoldingIndex(to, copies.map((c) => c.entry), io)) !== "saved") {
-      throw new HoldingSaveError("your receipt list could not be confirmed yet - try again later");
-    }
-  });
+  }
+  if ((await exclusively(io, to.signer.address, () => addToHoldingIndex(to, copies.map((c) => c.entry), io))) !== "saved") {
+    throw new HoldingSaveError("your receipt list could not be confirmed yet - try again later");
+  }
 }
 
 /**

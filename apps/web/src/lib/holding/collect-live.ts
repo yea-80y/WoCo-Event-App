@@ -13,11 +13,21 @@
  *  - no upgrade to a passkey is half done here (`receiptSavesPaused`);
  *  - no run for this account is going on in another tab, and none finished in this tab
  *    in the last `COLLECT_EVERY_MS` (unless `force`).
+ * Its saves never start a sign-in either (`backgroundHoldingFeedIO`).
  *
- * What our server sees (said plainly): one signed request for the account's own sales -
- * already linked to it by the purchase - then, per receipt, its box read from our
- * gateway by root (or the pickup API while unstored), the account's save through the
- * storage relay, and the unsigned erase. Nothing it did not already know.
+ * What our server could see (said plainly; Fable 3c PR 2):
+ *  - one signed request for the account's own sales, already linked to it by the
+ *    purchase - and so the moment this account's keys came onto a device (an unlock);
+ *  - per receipt, the box inside that answer while it waits to be stored, else a read of
+ *    its root through our gateway (the pickup API only when the gateway cannot serve it);
+ *  - the save through the storage relay under the account's session: the copy signer's
+ *    address and each chunk address;
+ *  - the unsigned erase, from the same connection just after the save.
+ * A server that logged the relay and the erase together would keep the account-to-sale
+ * link the erase removes, and where the account's receipts live. Ours logs neither (no
+ * address or account on the receipt routes or the relay; the gateway's address log is an
+ * open owner decision, spec 5.2). Profile > Tickets reads the account's lists through the
+ * gateway at every open.
  */
 import { FEATURES } from "@woco/shared";
 import { auth } from "../auth/auth-store.svelte.js";
@@ -84,7 +94,7 @@ export async function collectInBackground(opts: { force?: boolean } = {}): Promi
         const held = sealing ? await auth.getAccountSecrets().catch(() => null) : null;
         if (!sealing || !held || !bound()) return null;
 
-        const [{ holdingGenKeysOf }, { collectReceipts }, { liveHoldingFeedIO }, { fetchHoldingBox }, { liveKeepDeps }, { mineHoldings }] =
+        const [{ holdingGenKeysOf }, { collectReceipts }, { backgroundHoldingFeedIO }, { fetchHoldingBox }, { liveKeepDeps }, { mineHoldings }] =
           await Promise.all([
             import("./account-copy.js"),
             import("./collect.js"),
@@ -104,8 +114,9 @@ export async function collectInBackground(opts: { force?: boolean } = {}): Promi
             gens,
             current,
             fetchBox: (r, root) => fetchHoldingBox(r, root),
-            io: liveHoldingFeedIO,
-            keep: await liveKeepDeps(),
+            io: backgroundHoldingFeedIO,
+            // The erase carries no session at all; the saves inside keepInAccount never start one.
+            keep: { ...(await liveKeepDeps()), io: backgroundHoldingFeedIO },
             // Right before every save or erase: the same account and current secret, no upgrade
             // begun meanwhile, and one fresh read of the key ring's anchor per run (no prompt) -
             // never the verdict alone.

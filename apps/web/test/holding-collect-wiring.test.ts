@@ -67,6 +67,18 @@ test("a run asks for nothing: flag, kind, a session already here, keys confirmed
   assert.match(run, /for \(const g of gens\) g\.orderSecretKey\.fill\(0\);/);
 });
 
+test("the collection's saves never start a sign-in: the background I/O, for its own saves and the ones inside keepInAccount (Fable 3c PR 2, 2)", () => {
+  const run = fn(LIVE, "export async function collectInBackground(");
+  assert.match(run, /io: backgroundHoldingFeedIO,/);
+  assert.match(run, /keep: \{ \.\.\.\(await liveKeepDeps\(\)\), io: backgroundHoldingFeedIO \},/);
+  assert.doesNotMatch(run, /liveHoldingFeedIO/);
+  assert.match(IO, /const backgroundTransport: SocTransport = async \(body\) =>\s*\(await import\("\.\.\/swarm\/client-soc\.js"\)\)\.postSignedSoc\(body, \{ establish: false \}\);/);
+  assert.match(IO, /\.\.\.\(opts\.background \? \{ transport: backgroundTransport \} : \{\}\),/);
+  assert.match(IO, /export const backgroundHoldingFeedIO: HoldingFeedIO = holdingFeedIO\(\{ background: true \}\);/);
+  const soc = src("../src/lib/swarm/client-soc.ts");
+  assert.match(soc, /authPost<SocWriteResult>\("\/api\/swarm\/soc", body, undefined, opts\)/);
+});
+
 test("the list call is signed and never starts a sign-in", () => {
   assert.match(API, /authPost<\{ holdings\?: unknown; complete\?: unknown \}>\(path, \{\}, undefined, \{ establish: false \}\)/);
   // The Keep page's two calls still carry no session.
@@ -144,6 +156,9 @@ test("the per-ticket mark: read without a prompt, only with the account's keys h
   const effect = PASSPORT.slice(PASSPORT.indexOf("$effect(() => {\n    void receiptsChanged.n;"));
   assert.match(effect, /if \(!FEATURES\.holdingReceiptsAllowed \|\| !parent \|\| !auth\.hasIdentitySeed\) return;/);
   assert.match(PASSPORT, /receiptSaved=\{receiptSaved\(ticket\)\}/);
+  // Another account (or none) on the same mounted tab never shows the last one's marks.
+  assert.match(effect, /if \(parent !== marksFor\) \{\s*marksFor = parent;\s*savedReceipts = new Set\(\);\s*\}/);
+  assert.ok(effect.indexOf("savedReceipts = new Set();") < effect.indexOf("if (!FEATURES.holdingReceiptsAllowed"), "before any early return");
 });
 
 test("the upgrade reads the old seed's uncollected sales whole, over the email session, dark while the flag is off", () => {

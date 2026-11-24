@@ -81,9 +81,16 @@
     }
   }
 
+  let marksFor: string | null = null;
+
   $effect(() => {
     void receiptsChanged.n;
-    const parent = auth.parent?.toLowerCase();
+    const parent = auth.parent?.toLowerCase() ?? null;
+    // Another account, or none, on this tab: never show the last one's marks.
+    if (parent !== marksFor) {
+      marksFor = parent;
+      savedReceipts = new Set();
+    }
     if (!FEATURES.holdingReceiptsAllowed || !parent || !auth.hasIdentitySeed) return;
     untrack(() => void loadReceiptMarks(parent));
   });

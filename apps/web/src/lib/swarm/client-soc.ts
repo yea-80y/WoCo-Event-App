@@ -14,6 +14,7 @@
  */
 
 import { authPost } from "../api/client.js";
+import type { RequestSigningOptions } from "../auth/request-session.js";
 import { signSoc, type SignedSocBody } from "./soc-sign.js";
 
 export interface SocWriteResult {
@@ -44,9 +45,16 @@ export async function signAndUploadSoc(args: {
   return postSignedSoc({ ...signSoc(chunk), ...(gatewayUrl ? { gatewayUrl } : {}) });
 }
 
-/** Have the server stamp + upload a SOC already signed (`signSoc`, soc-sign.ts). */
-export async function postSignedSoc(body: SignedSocBody & { gatewayUrl?: string }): Promise<SocWriteResult> {
-  const res = await authPost<SocWriteResult>("/api/swarm/soc", body);
+/**
+ * Have the server stamp + upload a SOC already signed (`signSoc`, soc-sign.ts).
+ * `opts.establish: false` for a save nobody pressed a button for: no usable session here
+ * means it fails, never a new sign-in.
+ */
+export async function postSignedSoc(
+  body: SignedSocBody & { gatewayUrl?: string },
+  opts: RequestSigningOptions = {},
+): Promise<SocWriteResult> {
+  const res = await authPost<SocWriteResult>("/api/swarm/soc", body, undefined, opts);
   if (!res.ok || !res.data) throw new Error(res.error || "SOC upload failed");
   return res.data;
 }

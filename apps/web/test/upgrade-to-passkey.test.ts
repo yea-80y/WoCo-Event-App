@@ -759,8 +759,8 @@ function receiptStore(over: Parameters<typeof store>[0] = {}) {
   let saved: SavedHoldingCopies | null | "unavailable" = SAVED_RECEIPTS;
   let pending: SavedHoldingCopies | "unavailable" = [];
   const written: unknown[] = [];
-  s.f.deps.readReceipts = async () => saved;
-  s.f.deps.readPending = async () => pending;
+  s.f.deps.readReceipts = async () => (s.log.push("readReceipts"), saved);
+  s.f.deps.readPending = async () => (s.log.push("readPending"), pending);
   s.f.deps.writeReceipts = async (to, list) => {
     s.log.push("writeReceipts");
     written.push({ signer: to.signer.address, list });
@@ -865,6 +865,17 @@ test("run: the marker keeps a digest of what was carried; a tab without the pass
   assert.equal(first.f.marker.map.get(PARENT)?.carried, digest, "kept past the retraction");
   assert.equal(await carriedDigest([...both].reverse()), digest, "order-free");
   assert.doesNotMatch(digest, new RegExp("e6".repeat(32)), "no secret in it");
+  // The server's list is read before the saved copies (a sale collected between the two
+  // reads is then seen in the second).
+  const carryReads = first.log.filter((x) => x === "readPending" || x === "readReceipts").slice(-2);
+  assert.deepEqual(carryReads, ["readPending", "readReceipts"]);
+
+  // The tab that holds the passkey trusts it too: a retry with nothing new writes nothing,
+  // so it does not ask bee again for versions it probed seconds ago (Fable 3c PR 2, 6).
+  first.log.length = 0;
+  await assert.rejects(runUpgrade(first.host, first.io), { message: SWITCH_FAILED_MESSAGE });
+  assert.equal(first.written.length, 1, "no second carry");
+  assert.ok(first.log.includes("requestIntent"), "the attempt went on to its op");
 
   // Another tab, never holding the passkey: the same receipts - nothing more to carry.
   const OTHER = "0x4444444444444444444444444444444444444444";
@@ -944,6 +955,8 @@ test("run: an old-seed receipt list that cannot be read, or a carry that does no
   let fail = false;
   const s = receiptStore({ landed: () => false, switchFails: () => true });
   await assert.rejects(runUpgrade(s.host, s.io), { message: SWITCH_FAILED_MESSAGE }); // this tab holds the passkey now
+  // A receipt saved since: this attempt has something new to carry.
+  s.setSaved([...(SAVED_RECEIPTS as unknown[]), LATER_RECEIPT] as unknown as SavedHoldingCopies);
   s.f.deps.writeReceipts = async () => {
     fail = true;
     throw new Error("a saved receipt could not be confirmed yet");
@@ -969,6 +982,7 @@ test("run: a switch that landed meanwhile still commits when this tab's last car
   await assert.rejects(runUpgrade(s.host, s.io), { message: SWITCH_FAILED_MESSAGE });
   landedNow = true;
   const before = s.written.length;
+  s.setSaved([...(SAVED_RECEIPTS as unknown[]), LATER_RECEIPT] as unknown as SavedHoldingCopies);
   s.f.deps.writeReceipts = async () => {
     s.log.push("writeReceipts:failed");
     throw new Error("relay busy");

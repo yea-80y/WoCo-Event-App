@@ -325,11 +325,12 @@ export async function retractOld(
  * able to collect them as before. Once the passkey opens the account, its own collection
  * finds them in the account and erases the server's copy (`holding/collect.ts`).
  *
- * Only the passkey's seed can seal them. A tab that no longer holds it (closed or
- * reloaded since prepare) can still finish when the tab that held it carried them and
- * nothing has changed since: the marker keeps a digest of what was carried (`carried`,
- * Fable 3c PR 1). Otherwise it refuses: Undo, and a fresh upgrade carries it all. Throws
- * the words to show; nothing has changed past prepare. Returns the marker as it now is.
+ * Only the passkey's seed can seal them. The marker keeps a digest of what was last
+ * carried and read back (`carried`, Fable 3c PR 1): while the old seed's receipts still
+ * hash to it there is nothing to do, in any tab. Otherwise a tab that no longer holds the
+ * passkey (closed or reloaded since prepare) refuses: Undo, and a fresh upgrade carries it
+ * all. Throws the words to show; nothing has changed past prepare. Returns the marker as
+ * it now is.
  */
 export async function carryReceipts(
   d: Pick<PrepareDeps, "oldSeed" | "readReceipts" | "readPending" | "writeReceipts" | "marker">,
@@ -339,17 +340,22 @@ export async function carryReceipts(
 ): Promise<UpgradeMarker> {
   const seed = await d.oldSeed();
   if (!seed || deriveFeedSignerKey(seed).address.toLowerCase() !== marker.oldFeedSigner) throw new Error(READ_FAILED_MESSAGE);
-  const [receipts, pending] = await Promise.all([d.readReceipts(seed), d.readPending(seed)]);
-  if (receipts === "unavailable" || pending === "unavailable") throw new Error(READ_FAILED_MESSAGE);
+  // The server's list FIRST, the saved copies after: a collection that saves and then
+  // erases a sale between the two reads is then seen in the second, never missed by both.
+  // (`readReceipts` waits for any receipt save under the old seed already going here.)
+  const pending = await d.readPending(seed);
+  if (pending === "unavailable") throw new Error(READ_FAILED_MESSAGE);
+  const receipts = await d.readReceipts(seed);
+  if (receipts === "unavailable") throw new Error(READ_FAILED_MESSAGE);
   const saved = receipts ?? [];
   // A sale already saved under the old seed is carried from its copy, once.
   const all = [...saved, ...pending.filter((p) => !saved.some((s) => s.entry.pickupId === p.entry.pickupId))];
   if (all.length === 0) return marker;
   const digest = await carriedDigest(all);
-  if (!live || live.passkey !== marker.passkey) {
-    if (marker.carried === digest) return marker;
-    throw new Error(RECEIPTS_NEED_RESTART_MESSAGE);
-  }
+  // Carried and read back already, and nothing changed since: done, with or without the
+  // passkey - and a quick "Try again" does not ask bee again for versions it just probed.
+  if (marker.carried === digest) return marker;
+  if (!live || live.passkey !== marker.passkey) throw new Error(RECEIPTS_NEED_RESTART_MESSAGE);
   progress("Copying your ticket receipts…");
   try {
     const { holdingGenKeysOf } = await import("../holding/account-copy.js");
@@ -358,7 +364,6 @@ export async function carryReceipts(
     console.warn("[upgrade] receipts not carried:", e);
     throw new Error(RECEIPTS_FAILED_MESSAGE);
   }
-  if (marker.carried === digest) return marker;
   const next: UpgradeMarker = { ...marker, carried: digest };
   d.marker.write(next);
   return next;

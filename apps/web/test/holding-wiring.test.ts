@@ -43,7 +43,10 @@ test("passkey removal: every generation this device holds, to the new secret, da
 test("upgrade: the old seed's receipts read whole or not at all, saved with the keys handed in", () => {
   const read = body(UPGRADE, "readReceipts: async (oldSeed) => {");
   assert.match(read, /if \(!FEATURES\.holdingReceiptsAllowed\) return null;/);
-  assert.match(read, /readAllHoldingCopies\(\[await holdingGenKeysOf\(oldSeed\)\], liveHoldingFeedIO\)/);
+  assert.match(read, /const gen = await holdingGenKeysOf\(oldSeed\);/);
+  // A save under the old seed already going in this browser finishes before the read (Fable 3c PR 2, 4).
+  const pass = read.indexOf("await liveHoldingFeedIO.exclusive?.(gen.signer.address, async () => {});");
+  assert.ok(pass > 0 && pass < read.indexOf("readAllHoldingCopies([gen], liveHoldingFeedIO)"));
   assert.match(read, /if \(!complete\) return "unavailable";/);
   const write = body(UPGRADE, "writeReceipts: async (to, saved) => {");
   assert.match(write, /await writeHoldingCopies\(to, saved, liveHoldingFeedIO\);/);

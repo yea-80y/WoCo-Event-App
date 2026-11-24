@@ -202,18 +202,18 @@ test("a box refused, naming an unknown ledger, or gone since the list: skipped, 
   assert.equal(h.feeds.writes.length, 0);
 });
 
-test("a sale an upgrade already carried (no key here opens it): our copy erased with the secret its copy keeps", async () => {
+test("a sale an upgrade already carried (no key here opens it): the secret its copy keeps takes the normal path, then the erase", async () => {
   const oldSeed = await holdingGenKeysOf(STRANGER);
   const g = await holdingGenKeysOf(S0);
   const feeds = fakeFeeds();
   // The upgrade saved it under the passkey's seed without erasing (Undo must stay possible).
   await saveHoldingCopy(g, R1, makeBox(R1, 1), feeds.io);
   const writes = feeds.writes.length;
-  const carried = await row(oldSeed, R1, 1, { inline: true });
+  const carried = await row(oldSeed, R1, 1, { inline: true, box: makeBox(R1, 1) });
   const h = harness({ rows: [carried], gens: [g], feeds });
   assert.deepEqual(await collectReceipts(h.deps), { saved: 1, erased: 1, left: 0, skipped: 0, done: true });
   assert.deepEqual(h.erased, [holdingPickupId(R1)]);
-  assert.equal(feeds.writes.length, writes, "nothing written again");
+  assert.equal(feeds.writes.length, writes, "already saved and listed: two reads, nothing written");
 
   // Its erase answered "later": counted as saved, and left for the next run.
   const busy = harness({ rows: [carried], gens: [g], feeds, erase: () => "later" });
@@ -236,6 +236,51 @@ test("a sale an upgrade already carried (no key here opens it): our copy erased 
   const moved = harness({ rows: [carried], gens: [g], feeds, stillCurrent: () => false });
   assert.deepEqual(await collectReceipts(moved.deps), { saved: 0, erased: 0, left: 1, skipped: 0, done: false });
   assert.ok(!moved.log.some((x) => x.startsWith("erase:")));
+
+  // A box the server now holds that is not this order's: skipped, never erased on.
+  const refused = harness({ rows: [{ ...carried, box: undefined }], gens: [g], feeds });
+  refused.deps.fetchBox = async () => ({ kind: "refused", reason: "not-this-order" });
+  assert.deepEqual(await collectReceipts(refused.deps), { saved: 0, erased: 0, left: 0, skipped: 1, done: true });
+  assert.ok(!refused.log.some((x) => x.startsWith("erase:")));
+});
+
+test("a copy alone is never enough to erase on: one with no list line is listed first (Fable 3c PR 2, 1)", async () => {
+  const oldSeed = await holdingGenKeysOf(STRANGER);
+  const g = await holdingGenKeysOf(S0);
+  const feeds = fakeFeeds();
+  // A carry whose copies landed and whose list write did not (a best-effort carry after a landed switch).
+  const { writeHoldingCopy, listHeldOrders } = await import("../src/lib/holding/account-copy.ts");
+  assert.equal(await writeHoldingCopy(g, holdingCopyOf(R1, makeBox(R1, 1)), feeds.io), "saved");
+  assert.deepEqual((await listHeldOrders([g], feeds.io)).orders, []);
+  const h = harness({ rows: [await row(oldSeed, R1, 1, { inline: true, box: makeBox(R1, 1) })], gens: [g], feeds });
+  assert.deepEqual(await collectReceipts(h.deps), { saved: 1, erased: 1, left: 0, skipped: 0, done: true });
+  const pid = holdingPickupId(R1);
+  assert.ok(h.log.indexOf("write") >= 0 && h.log.indexOf("write") < h.log.indexOf(`erase:${pid}`), "the line before the erase");
+  assert.deepEqual((await listHeldOrders([g], feeds.io)).orders.map((o) => o.pickupId), [pid], "findable once our copy is gone");
+
+  // The line could not be confirmed: nothing erased.
+  const g2 = await holdingGenKeysOf(S1);
+  const f2 = fakeFeeds();
+  await writeHoldingCopy(g2, holdingCopyOf(R2, makeBox(R2, 1)), f2.io);
+  f2.unconfirmAfter = 0;
+  const h2 = harness({ rows: [await row(oldSeed, R2, 2, { inline: true, box: makeBox(R2, 1) })], gens: [g2], feeds: f2 });
+  assert.deepEqual(await collectReceipts(h2.deps), { saved: 0, erased: 0, left: 1, skipped: 0, done: false });
+  assert.ok(!h2.log.some((x) => x.startsWith("erase:")));
+});
+
+test("a copy under an OLDER generation is saved and listed under the current one before the erase", async () => {
+  const oldSeed = await holdingGenKeysOf(STRANGER);
+  const g0 = await holdingGenKeysOf(S0);
+  const g1 = await holdingGenKeysOf(S1);
+  const feeds = fakeFeeds();
+  await saveHoldingCopy(g0, R1, makeBox(R1, 1), feeds.io);
+  const h = harness({ rows: [await row(oldSeed, R1, 1, { inline: true, box: makeBox(R1, 1) })], gens: [g0, g1], feeds });
+  assert.deepEqual(await collectReceipts(h.deps), { saved: 1, erased: 1, left: 0, skipped: 0, done: true });
+  const under1 = await readAllHoldingCopies([g1], feeds.io);
+  assert.deepEqual(under1.copies.map((c) => c.entry.pickupId), [holdingPickupId(R1)]);
+  const lastWrite = h.log.lastIndexOf("write");
+  assert.ok(lastWrite < h.log.indexOf(`erase:${holdingPickupId(R1)}`));
+  assert.ok(feeds.writes.slice(-2).every((w) => w.owner.toLowerCase() === g1.signer.address.toLowerCase()), "written under the current signer");
 });
 
 test("an erase answered 'later' is finished by the next run, which writes nothing again", async () => {
@@ -274,7 +319,7 @@ test("an unanswered list, a box not fetched, or a short list: never 'done'", asy
   assert.deepEqual(await collectReceipts(empty.deps), { saved: 0, erased: 0, left: 0, skipped: 0, done: true });
 });
 
-test("the upgrade's read opens and checks every sale the old seed opens, and saves or erases nothing", async () => {
+test("the upgrade's read opens and checks every sale the old seed opens, whatever its ledger, and saves or erases nothing", async () => {
   const old = await holdingGenKeysOf(S0);
   const other = await holdingGenKeysOf(S1);
   const rows = [
@@ -286,7 +331,9 @@ test("the upgrade's read opens and checks every sale the old seed opens, and sav
   const h = harness({ rows, gens: [old], swarm: new Map([[rootOf(2), { r: R2, box: makeBox(R2, 1, 20) }]]) });
   const got = await pendingCopies(h.deps);
   assert.ok(got !== "unavailable");
-  assert.deepEqual(got.map((c) => c.entry.pickupId), [R1, R2].map((r) => holdingPickupId(r)), "not another seed's, not an unknown ledger");
+  // Another seed's is not this seed's to carry. One naming a ledger this build does not know
+  // IS carried: a mover never filters, and the seed it is sealed to is about to go (Fable 3c PR 2, 5).
+  assert.deepEqual(got.map((c) => c.entry.pickupId), [R1, R2, secret(14)].map((r) => holdingPickupId(r)));
   assert.ok(sameHoldingCopy(got[1]!.copy, holdingCopyOf(R2, makeBox(R2, 1, 20))));
   assert.equal(h.feeds.writes.length, 0);
   assert.ok(!h.log.some((x) => x.startsWith("erase:")));

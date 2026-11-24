@@ -168,7 +168,11 @@ export async function liveUpgradeDeps(
         import("../holding/holding-io.js"),
       ]);
       // An email or Google account has no key ring: its seed is its one generation.
-      const { copies, complete } = await readAllHoldingCopies([await holdingGenKeysOf(oldSeed)], liveHoldingFeedIO);
+      const gen = await holdingGenKeysOf(oldSeed);
+      // A receipt save under this seed already going in this browser (the automatic
+      // collection, the Keep page) finishes first, so this read sees it (Fable 3c PR 2, 4).
+      await liveHoldingFeedIO.exclusive?.(gen.signer.address, async () => {});
+      const { copies, complete } = await readAllHoldingCopies([gen], liveHoldingFeedIO);
       if (!complete) return "unavailable";
       return copies.length > 0 ? copies : null;
     },

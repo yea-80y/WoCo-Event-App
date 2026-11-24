@@ -12,8 +12,9 @@
  *  - it is saved under the CONFIRMED-current generation and read back, and only then is
  *    the server's copy erased (`keepInAccount`).
  * A sale whose secret no key here opens is either already in the account - carried by an
- * upgrade to a passkey, which saves but never erases - and then only the server's copy is
- * erased, or sealed to keys this device does not hold, and is left alone.
+ * upgrade to a passkey, which saves but never erases - and then takes the same path with
+ * the secret its copy keeps (the copy re-saved and LISTED under the current generation
+ * before any erase), or sealed to keys this device does not hold, and is left alone.
  *
  * Nothing is ever dropped: the server's copy stays until a save reads back, and a run that
  * could not finish is tried again at a later unlock.
@@ -97,32 +98,25 @@ async function knownLedger(box: HoldingBoxV1): Promise<boolean> {
 }
 
 /**
- * A sale no key here opens, already in the account (its copy, under any generation this
- * device holds): the server's copy is erased with the secret the copy keeps.
+ * A sale no key here opens: its secret from a copy already in the account, under any
+ * generation this device holds - carried there by an upgrade to a passkey, or a save
+ * whose list line never landed. Null when there is none; "later" when one could not be
+ * read. The sale then takes the SAME path as any other (Fable 3c PR 2, 1): a copy alone is
+ * never enough to erase on, since only the current generation's LIST makes a receipt
+ * findable again once our copy is gone.
  */
-async function eraseIfKept(pickupId: string, deps: CollectDeps): Promise<"erased" | "kept" | "absent" | "later"> {
-  const [{ readHoldingCopy }, { eraseServerCopy }, { hexToBytes }] = await Promise.all([
-    import("./account-copy.js"),
-    import("./keep.js"),
-    import("@noble/hashes/utils.js"),
-  ]);
+async function secretFromCopy(pickupId: string, deps: CollectDeps): Promise<Uint8Array | null | "later"> {
+  const [{ readHoldingCopy }, { hexToBytes }] = await Promise.all([import("./account-copy.js"), import("@noble/hashes/utils.js")]);
   let unsure = false;
   for (const keys of [...deps.gens].reverse()) {
-    const copy = await readHoldingCopy(keys, pickupId, deps.io);
+    const copy = await readHoldingCopy(keys, pickupId, deps.io).catch(() => "unavailable" as const);
     if (copy === "unavailable") {
       unsure = true;
       continue;
     }
-    if (!copy) continue;
-    const r = hexToBytes(copy.r);
-    try {
-      const erase = await eraseServerCopy(r, deps.keep);
-      return erase === "erased" || erase === "gone" ? "erased" : "kept";
-    } finally {
-      r.fill(0);
-    }
+    if (copy) return hexToBytes(copy.r);
   }
-  return unsure ? "later" : "absent";
+  return unsure ? "later" : null;
 }
 
 /** One run over the account's sales on the server. Throws only for a fault in this code; every I/O fault is "left". */
@@ -134,20 +128,14 @@ export async function collectReceipts(deps: CollectDeps): Promise<CollectReport>
   const stillCurrent = () => deps.stillCurrent().catch(() => false);
 
   for (const row of mine.holdings) {
-    const r = await openSaleSecret(row, deps.gens);
+    const r = (await openSaleSecret(row, deps.gens)) ?? (await secretFromCopy(row.pickupId, deps));
+    if (r === "later") {
+      report.left++;
+      continue;
+    }
+    // Sealed to keys this device does not hold, and not in the account: left alone.
     if (!r) {
-      if (!(await stillCurrent())) {
-        report.left++;
-        continue;
-      }
-      const kept = await eraseIfKept(row.pickupId, deps).catch(() => "later" as const);
-      if (kept === "absent") report.skipped++;
-      else if (kept === "later") report.left++;
-      else {
-        report.saved++;
-        if (kept === "erased") report.erased++;
-        else report.left++;
-      }
+      report.skipped++;
       continue;
     }
     try {
@@ -202,7 +190,9 @@ export async function pendingCopies(deps: Pick<CollectDeps, "mine" | "gens" | "f
     try {
       const got = await boxOf(r, row, deps.fetchBox);
       if (got.kind === "later") return "unavailable";
-      if (got.kind !== "ok" || !(await knownLedger(got.box))) continue;
+      // Whatever ledger it names: a mover never filters (`readAllHoldingCopies` does not),
+      // and a sale left out here is sealed to a seed about to leave the device.
+      if (got.kind !== "ok") continue;
       out.push({ copy: holdingCopyOf(r, got.box), entry: holdingIndexEntryOf(row.pickupId, got.box) });
     } finally {
       r.fill(0);
