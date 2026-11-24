@@ -36,6 +36,7 @@
  */
 
 import { addCalendarMonthsUtc, isNoticeRetentionMonths } from "@woco/shared";
+import { HOLDING_RETENTION_MONTHS } from "@woco/shared/holding/request";
 import { chainTimeMs, contractKey, type EventContractTarget } from "../chain/event-contract.js";
 import { chainEventEndMsAt } from "../event/end-date-guard.js";
 import { lookupOnChainEventId, registrationContractFor } from "../event/onchain-registry.js";
@@ -226,11 +227,14 @@ async function classify(work: Work[], deps: RetentionDeps): Promise<void> {
   const serverNow = deps.now();
   for (const w of work) {
     const it = w.item;
-    const months = it.retainMonths;
-    if (!isNoticeRetentionMonths(months)) {
+    const stated = it.retainMonths;
+    // A receipt box is the buyer's, kept on WoCo's own period, never an organiser notice's.
+    const periodOk = it.kind === "holding" ? stated === HOLDING_RETENTION_MONTHS : isNoticeRetentionMonths(stated);
+    if (!periodOk || stated === null) {
       it.reason = "noRetainMonths";
       continue;
     }
+    const months: number = stated;
     if (!it.eventId || !it.seriesId) {
       it.reason = "noEventSeries";
       continue;

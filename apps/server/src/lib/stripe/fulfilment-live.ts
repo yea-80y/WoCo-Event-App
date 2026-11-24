@@ -39,7 +39,27 @@ import { addRefundRow, cancellationGate } from "../event/cancellations.js";
 import { kickCancellationRefunds } from "./cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "./cancellation-refunds-live.js";
 import { eventKeys } from "../keyring/event-keys.js";
-import type { FulfilmentDeps } from "./fulfilment.js";
+import { FEATURES } from "@woco/shared";
+import { newHoldingSecret } from "@woco/shared/holding/derive";
+import { signTicketHolding } from "@woco/shared/holding/receipt";
+import { getHolding } from "../holding/store.js";
+import { keepHoldingReceipts } from "../holding/keep.js";
+import { recordSaleReceipts } from "./ticket-sales.js";
+import type { Burner, FulfilmentDeps } from "./fulfilment.js";
+
+/**
+ * A one-time ticket key. Its private key never leaves this closure: it signs the
+ * ticket's QR and, with receipts on, the ticket's receipt, then goes with the burner.
+ */
+function liveBurner(): Burner {
+  const wallet = generateBurner();
+  const key = () => Buffer.from(wallet.privateKey.slice(2), "hex");
+  return {
+    address: wallet.address,
+    signMessage: (message) => wallet.signMessage(message),
+    signHolding: (target, holding) => signTicketHolding(target, holding, key()),
+  };
+}
 
 /**
  * The order key a held ticket is sealed to, by its ref. Content-addressed and verified
@@ -78,7 +98,17 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   isOrderStored: (ref) => !!getOrderRecord(ref) && !isOrderErased(ref),
   fetchOrderKey: (ref) => fetchOrderKey(ref, BEE_URL),
   orderRefInOtherSale,
-  generateBurner,
+  generateBurner: liveBurner,
+  holdingReceiptsOn: () => FEATURES.holdingReceiptsAllowed,
+  holdingRequest: (sessionId) => {
+    const r = getHolding(sessionId);
+    return r && r.keep === "account" && !r.issued ? r : null;
+  },
+  newHoldingSecret,
+  keepHoldingReceipts: (input) => keepHoldingReceipts(input),
+  recordSaleReceipts: (sessionId, receipts) => {
+    recordSaleReceipts(sessionId, receipts);
+  },
   batchClaimForOnChain,
   onChainBatchMax: ON_CHAIN_BATCH_MAX,
   registrationSeatingFor,

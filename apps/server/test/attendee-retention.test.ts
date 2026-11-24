@@ -167,6 +167,24 @@ test("no period, or one an organiser cannot pick, is never erased - and needs no
   assert.ok(items.every((it) => it.reason === "noRetainMonths" && it.daysOverdue === null));
 });
 
+test("a ticket-receipt box is kept for WoCo's 12 months, never an organiser notice's 6", async () => {
+  await fresh();
+  const box = (months: number, seriesId: string) =>
+    writer.storeAttendeePayload(`box ${++seq} `.repeat(300), { kind: "holding", eventId: "ev", seriesId, retainMonths: months }, storeDeps as never);
+  const longAgo = Date.parse("2025-09-30T18:00:00.000Z"); // + 12 months = 2026-09-30, before NOW
+  const due = await box(12, "h1");
+  const onSix = await box(6, "h2");
+  const notYet = await box(12, "h3"); // END + 12 months = 2027-01-31, after NOW
+  const { deps } = fakeDeps({ ends: { h1: longAgo, h2: longAgo, h3: END } });
+  const { summary } = ok(await live(deps));
+  assert.equal(ledger.isOrderErased(due), true);
+  assert.equal(ledger.getOrderRecord(due)?.retentionRule?.retainMonths, 12);
+  assert.equal(ledger.isOrderErased(onSix), false, "a receipt box never runs on the notice's period");
+  assert.equal(ledger.isOrderErased(notYet), false);
+  assert.equal(summary.skipped.noRetainMonths, 1);
+  assert.equal(ledger.getOrderRecord(notYet)?.organiser, undefined, "a receipt box is never filed under the organiser");
+});
+
 test("the sweep reads no notice: the period is the sale's snapshot", () => {
   const src = readFileSync(new URL("../src/lib/attendee-batch/retention.ts", import.meta.url), "utf8");
   assert.doesNotMatch(src, /notice-gate|organiser-notice|organiserNotice/);

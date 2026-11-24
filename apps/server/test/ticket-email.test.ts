@@ -81,6 +81,18 @@ test("the plain-text part carries the facts and a link per ticket", () => {
   assert.match(text, /WoCo Network Ltd/);
 });
 
+test("a guest's receipt link appears in both parts only when fulfilment passes one", () => {
+  const url = `https://woco.eth.limo/#/keep?k=${"A".repeat(43)}&b=${"ef".repeat(32)}`;
+  assert.doesNotMatch(buildTicketHtml(base), /Your private receipt|#\/keep/);
+  assert.doesNotMatch(buildTicketText(base), /private receipt|#\/keep/);
+  const html = buildTicketHtml({ ...base, holdingKeepUrl: url });
+  assert.match(html, /Your private receipt/);
+  // In an attribute the & is written &amp;, which a mail client decodes back to the same link.
+  assert.equal(html.split(`href="${url.replace(/&/g, "&amp;")}"`).length - 1, 1, "one Keep button, the link unaltered");
+  assert.match(buildTicketText({ ...base, holdingKeepUrl: url }), new RegExp(`private receipt.*${url.replace(/[.?#/]/g, "\\$&")}`));
+  assert.match(buildTicketHtml({ ...group, holdingKeepUrl: url }), /these tickets/);
+});
+
 test("attachments: photo inline once, one image per ticket, a calendar file", async () => {
   const seen: Array<{ position: unknown; photo: unknown }> = [];
   const { attachments, hero } = await buildTicketAttachments(group, {

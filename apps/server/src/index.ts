@@ -144,6 +144,9 @@ import { doorEntriesHealth } from "./lib/checkin/door-entries.js";
 import { doorSeatsHealth } from "./lib/checkin/pack-series.js";
 import { seatStateGateHealth } from "./lib/seating/seat-state-gate.js";
 import { ticketHoldsHealth } from "./lib/ticket-hold/store.js";
+import { holdingReceiptsHealth, sweepHoldings } from "./lib/holding/store.js";
+import { retryUnstoredHoldings } from "./lib/holding/keep.js";
+import { isOrderErased } from "./lib/attendee-batch/ledger.js";
 import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
 import { getAttendeeStamper, retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
 import { tickOrderGateway } from "./lib/attendee-batch/order-gateway.js";
@@ -559,6 +562,10 @@ function healthReport() {
     // minutes to reach Swarm (the retry worker keeps failing: bee down, bucket
     // full - activate a fresh batch) or the hold file is unreadable.
     heldOrders: heldOrdersHealth(),
+    // Ticket receipts held for collection (woco-ops/spec-receipt-note-20261123.md 5.3).
+    // Red when a record is unreadable (never overwritten: restore it) or a sealed box has
+    // waited over an hour to reach the attendee batch (the retry worker keeps failing).
+    holdingReceipts: holdingReceiptsHealth(),
     // Door rosters deleted after their event (#883). Reported, not alarmed, like
     // the consent sweep: `lastError` says a roster waits for the next pass;
     // `undated` counts rosters with no onchain end to go by, kept until one exists.
@@ -1071,6 +1078,14 @@ setInterval(refreshSiteRuntime, SITE_RUNTIME_REFRESH_MS).unref();
 setInterval(() => {
   sweepHeldOrders();
   retryPaidHeldOrders().catch((err) => console.warn("[attendee-batch] held-order retry failed:", (err as Error).message));
+  // Ticket receipts: store boxes whose first upload failed, and drop records no longer
+  // owed (unpaid requests after a day, boxes the attendee batch has erased).
+  retryUnstoredHoldings().catch((err) => console.warn("[holding] retry failed:", (err as Error).message));
+  try {
+    sweepHoldings(isOrderErased);
+  } catch (err) {
+    console.warn("[holding] sweep failed:", (err as Error).message);
+  }
 }, 60_000).unref();
 // A line in the journal each time a health check turns red or green, so a page
 // from the uptime monitor can be traced after the alarm has cleared. Two minutes

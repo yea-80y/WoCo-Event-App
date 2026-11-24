@@ -130,7 +130,8 @@ export async function storeAttendeePayload(
   const { root, chunks } = await splitPayload(payload);
   // The organiser from the record pinned at create (#676) - server state, never
   // a feed value - so their orders can be grouped and moved to their own batch.
-  const organiser = meta.eventId ? getRecordedFeedSigner(meta.eventId)?.creatorAddress : undefined;
+  // A receipt box is the buyer's, never the organiser's: it must not move with their orders.
+  const organiser = meta.eventId && meta.kind !== "holding" ? getRecordedFeedSigner(meta.eventId)?.creatorAddress : undefined;
   const { root: rootHex, record } = allocateOrder(root, chunks.map((c) => c.address), {
     ...meta,
     ...(organiser ? { organiser } : {}),

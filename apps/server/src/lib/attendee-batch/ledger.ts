@@ -38,7 +38,8 @@ import { bucketOf, decodeTimestampNs, encodeTimestampNs, nextTimestampNs, slotsP
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "attendee-slots.json");
 
-export type OrderKind = "prepared" | "checkout" | "fallback";
+/** "holding": a ticket-receipt box, the BUYER's (lib/holding/keep.ts), never an organiser's order. */
+export type OrderKind = "prepared" | "checkout" | "fallback" | "holding";
 export type OrderState = "allocated" | "stored" | "burned";
 /** Who started an erasure: a data subject's or organiser's request, or the retention sweep (#547). */
 export type ErasedBy = "request" | "retention";

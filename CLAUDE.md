@@ -66,6 +66,7 @@ FEATURE FLAGS — READ BEFORE ASSUMING A RAIL IS LIVE
   accountBackupsAllowed = false   # email accounts' Protect backups; passkey accounts add passkeys (#186)
   webhooksAllowed       = false   # dashboard order webhook: its relay was our server's one plaintext attendee path
   seatedEventsAllowed   = false   # allocated seating (docs/SEATING.md): on only when every slice there has shipped
+  holdingReceiptsAllowed = false  # private ticket receipts: on only with the app's Keep page, and email click tracking OFF
   (also off: agentCommerceAllowed, coinbaseLoginAllowed, organiserSendingDomains)
 
 Flags gate UI AND server validation in lockstep — an old client cannot reach a disabled
@@ -729,6 +730,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     restart) = rows that never reached the list. NOT on the list, with no alarm: anything stored before
     it existed, by a build without it (a rollback), or by a dev server holding the production Etherna
     key (it lists into its own `.data`). A batch change must not take the list as complete on its own)
+  holding-receipts/ (ticket receipts, behind FEATURES.holdingReceiptsAllowed - per sale, the order's public
+    values and the attendee-batch root of its sealed receipt box; the box itself until stored there. Losing
+    it loses the buyer's way to find their receipt. Unreadable = never overwritten, `/api/health`
+    `holdingReceipts` alarm; also red when a box has waited over an hour to be stored)
   ticket-holds/ (#983 — per sale, each emailed ticket's QR sealed to the organiser's order key: the ONLY copy
     a bounced ticket can be resent from (the signing key is discarded at mint). Losing it leaves those
     tickets reissue-only. Unreadable = never overwritten, `/api/health` `email.ticketHolds` alarm)

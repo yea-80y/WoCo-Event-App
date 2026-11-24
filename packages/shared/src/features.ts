@@ -107,6 +107,13 @@ export const FEATURES = {
   // check, seated checkout and mint, dashboard holds and seat moves. Gates the UI AND,
   // in lockstep, the server's seated create and seat holds.
   seatedEventsAllowed: false,
+  // Private ticket receipts (woco-ops/spec-receipt-note-20261123.md): at a card sale
+  // each ticket's one-time key signs a receipt only the buyer can open, and a guest's
+  // ticket email carries the link that keeps it. OFF until the buyer's side ships
+  // (the Keep page, the account copy): a link must never lead to a page that is not
+  // there. Gates checkout's acceptance of the buyer's values AND fulfilment's signing
+  // and the email link, in lockstep.
+  holdingReceiptsAllowed: false,
 } as const;
 
 /**
