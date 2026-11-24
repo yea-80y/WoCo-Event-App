@@ -18,8 +18,9 @@
  *   6. adopt     this device holds S' as current
  *   7. after     the server told; the passkey's device record removed; any events the flip
  *                could not carry moved to the new organiser key; site pointers, live sites,
- *                event pages and names moved; the contact list re-sealed; likes and follows
- *                re-made under the new signer
+ *                event pages and names moved; the contact list re-sealed; ticket receipts
+ *                re-sealed at the new generation's topics; likes and follows re-made under
+ *                the new signer
  *
  * A step before the flip that fails leaves the account exactly as it was (the removed
  * passkey still works, nothing changed). After the flip the removal is done; what is
@@ -50,11 +51,11 @@ export interface PendingRotation {
   after?: AfterStep[];
 }
 
-export type AfterStep = "server" | "sites" | "pages" | "list" | "records" | "organiser" | "social";
+export type AfterStep = "server" | "sites" | "pages" | "list" | "receipts" | "records" | "organiser" | "social";
 // The removed passkey's device record goes right after the server is told: it is what
 // signs that passkey out, and the redeploys after it can take minutes. The organiser key
 // next: an event left on the old key is one the removed passkey can still sign for.
-export const AFTER_STEPS: readonly AfterStep[] = ["server", "records", "organiser", "sites", "pages", "list", "social"];
+export const AFTER_STEPS: readonly AfterStep[] = ["server", "records", "organiser", "sites", "pages", "list", "receipts", "social"];
 
 export type RotationProgress =
   | { step: "keys" }

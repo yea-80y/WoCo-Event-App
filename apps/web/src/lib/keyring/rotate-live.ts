@@ -6,7 +6,7 @@
  * signer this device holds (only the lists of ids come from the platform indexes), so
  * what is re-signed is exactly what the organiser signed.
  */
-import { eventPageFeedTopic, multisiteFeedTopic } from "@woco/shared";
+import { FEATURES, eventPageFeedTopic, multisiteFeedTopic } from "@woco/shared";
 import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import type { AccountChain } from "../auth/account-chain.js";
 import type { PasskeyKeys } from "./members.js";
@@ -413,6 +413,20 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
         const payload = await openJsonWithAnyKey<{ version: 1; contacts: { email: string }[] }>(secretKeys, resp.sealedList, ctx);
         const sealed = await sealBoxJsonCompressed(keys.orderPublicKey, payload, ctx);
         await uploadMarketingList(sealed, payload.contacts.map((c) => c.email));
+      },
+      // Ticket receipts the account saved (spec-receipt-note 5.1): re-sealed under the new
+      // generation at its own topics, so receipts saved from now on are out of the removed
+      // passkey's reach. What it already opened, it keeps. Every generation this device
+      // holds is read, so a receipts step an earlier removal left unfinished is carried too.
+      receipts: async (keys: NewKeys) => {
+        // Dark until receipts are switched on: none can exist before.
+        if (!FEATURES.holdingReceiptsAllowed) return;
+        const [{ holdingGenKeysOf, moveHoldingCopies }, { liveHoldingFeedIO }] = await Promise.all([
+          import("../holding/account-copy.js"),
+          import("../holding/holding-io.js"),
+        ]);
+        const from = await Promise.all(h.oldSecrets.map((s) => holdingGenKeysOf(s)));
+        await moveHoldingCopies(from, await holdingGenKeysOf(keys.secret), liveHoldingFeedIO);
       },
       // The removed passkeys' device records, off the list first (#746 order) - the
       // flip already did that.

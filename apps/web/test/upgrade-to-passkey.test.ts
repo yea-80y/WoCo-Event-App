@@ -24,6 +24,7 @@ import { deriveFeedSignerKey, passkeyAccountKeys, passkeyIdentitySeed, type Hex0
 import {
   BACKUPS_FAILED_MESSAGE,
   COPY_FAILED_MESSAGE,
+  RECEIPTS_FAILED_MESSAGE,
   ENVELOPE_FAILED_MESSAGE,
   HOSTS_SOMETHING_MESSAGE,
   LOCKED_DEPLOYED_MESSAGE,
@@ -53,6 +54,7 @@ import {
   type UpgradeStoreHost,
 } from "../src/lib/auth/upgrade-to-passkey.js";
 import { parseUpgradeMarker, upgradeMarkerKey } from "../src/lib/auth/upgrade-marker.js";
+import type { SavedHoldingCopies } from "../src/lib/holding/account-copy.js";
 
 const PARENT = "0x1111111111111111111111111111111111111111";
 const EMAIL_KEY = "0x2222222222222222222222222222222222222222";
@@ -70,6 +72,8 @@ const LIKE_B = `0x${"0b".repeat(32)}` as Hex0x;
 const FOLLOW_C = `0x${"0c".repeat(32)}` as Hex0x;
 const REFERRER = `0x${"0d".repeat(20)}` as Hex0x;
 const CREDENTIAL = { credentialId: "cred-1", rpId: "woco.test" };
+/** What the old seed's receipt read found: passed to the write untouched. */
+const SAVED_RECEIPTS = [{ copy: { v: 1, r: "c4".repeat(32), box: { v: 1, receipts: [] } }, entry: { pickupId: "c5".repeat(32) } }] as unknown as SavedHoldingCopies;
 
 type Call = { name: string; args: unknown[] };
 
@@ -124,6 +128,8 @@ function fakes(over: Partial<PrepareDeps> & { writeOk?: (signer: FeedKey, subjec
     readEnvelope: async (prf) => (rec("readEnvelope")(prf), { parent: PARENT, seed: NEW_SEED }),
     writeProfile: async (signer, copy) => rec("writeProfile")(signer.address, copy),
     writeReferral: async (signer, referrer) => rec("writeReferral")(signer.address, referrer),
+    readReceipts: async (seed) => (rec("readReceipts")(seed), SAVED_RECEIPTS),
+    writeReceipts: async (to, saved) => rec("writeReceipts")(to, saved),
     ...over,
   };
   /** True when some subject reads `true` under BOTH feed signers - the account counted twice. */
@@ -238,7 +244,7 @@ test("marker: it holds no secret - no seed, no PRF output, no private key", () =
 test("prepare: reads first, then the passkey, backups off, its hold, the copies, the marker - in that order", async () => {
   const f = fakes();
   const { marker, live } = await prepareUpgrade(f.deps);
-  const order = f.names().filter((n) => n !== "readLive" && n !== "readReferrer" && n !== "readProfile");
+  const order = f.names().filter((n) => n !== "readLive" && n !== "readReferrer" && n !== "readProfile" && n !== "readReceipts");
   assert.deepEqual(order, [
     "hostsSomething",
     "backupsRemovable",
@@ -251,9 +257,10 @@ test("prepare: reads first, then the passkey, backups off, its hold, the copies,
     "readEnvelope",
     "writeProfile",
     "writeReferral",
+    "writeReceipts",
   ]);
   const mint = f.names().indexOf("mintPasskey");
-  for (const read of ["readLive", "readReferrer", "readProfile"]) {
+  for (const read of ["readLive", "readReferrer", "readProfile", "readReceipts"]) {
     assert.ok(f.names().lastIndexOf(read) < mint, `${read} before the passkey is made`);
   }
   assert.deepEqual(f.marker.map.get(PARENT), marker);
@@ -272,7 +279,7 @@ test("PQ1: the new seed is passkeyIdentitySeed(PRF) - and the email side never s
   assert.notEqual(NEW_SEED, OLD_SEED);
   // The email key's own steps - the backup removal it signs, the reads of its feed -
   // were handed nothing derived from the passkey.
-  for (const c of f.calls.filter((c) => ["removeBackups", "hostsSomething", "backupsRemovable", "oldSeed", "readLive", "readReferrer", "readProfile"].includes(c.name))) {
+  for (const c of f.calls.filter((c) => ["removeBackups", "hostsSomething", "backupsRemovable", "oldSeed", "readLive", "readReferrer", "readProfile", "readReceipts"].includes(c.name))) {
     const args = everyArg([c]);
     assert.ok(!args.includes(NEW_SEED) && !args.includes(KEK), `${c.name} saw the passkey's secret`);
   }
@@ -289,6 +296,12 @@ test("PQ4: the new seed reaches only its PRF-locked copy and the PRF-sealed enve
   // The copies are SIGNED by the new feed key (a KDF child of the seed), never handed the seed.
   assert.deepEqual(f.calls.find((c) => c.name === "writeProfile")!.args[0], NEW_FEED.address);
   assert.deepEqual(f.calls.find((c) => c.name === "writeReferral")!.args, [NEW_FEED.address, REFERRER]);
+  // Receipts: read under the OLD seed, saved with keys the NEW seed gives - its feed signer
+  // among them - and never the seed itself (the `seen` list above).
+  assert.deepEqual(f.calls.find((c) => c.name === "readReceipts")!.args, [OLD_SEED]);
+  const [to, saved] = f.calls.find((c) => c.name === "writeReceipts")!.args as [{ signer: { address: string } }, unknown];
+  assert.equal(to.signer.address, NEW_FEED.address.toLowerCase());
+  assert.equal(saved, SAVED_RECEIPTS);
 });
 
 test("PQ2: an account hosting events or websites is refused before any passkey is made", async () => {
@@ -313,6 +326,7 @@ test("prepare: a read that cannot answer stops before any passkey is made", asyn
     { oldSeed: async () => null },
     { readReferrer: async () => "unavailable" },
     { readProfile: async () => "unavailable" },
+    { readReceipts: async () => "unavailable" },
   ];
   for (const over of cases) {
     const f = fakes(over);
@@ -351,6 +365,21 @@ test("prepare: a profile or referral copy that fails undoes the passkey's hold, 
     await assert.rejects(prepareUpgrade(f.deps), { message: COPY_FAILED_MESSAGE });
     assert.ok(f.names().includes("clearPasskeyState"));
     assert.equal(f.marker.map.size, 0);
+  }
+});
+
+test("prepare: saved receipts that will not copy to the new seed undo the passkey's hold, no marker", async () => {
+  const f = fakes({ writeReceipts: async () => { throw new Error("a saved receipt could not be confirmed yet"); } });
+  await assert.rejects(prepareUpgrade(f.deps), { message: RECEIPTS_FAILED_MESSAGE });
+  assert.deepEqual(f.calls.find((c) => c.name === "clearPasskeyState")?.args, [PASSKEY]);
+  assert.equal(f.marker.map.size, 0);
+});
+
+test("prepare: no saved receipts means no receipt copy", async () => {
+  for (const none of [null, [] as unknown as SavedHoldingCopies]) {
+    const f = fakes({ readReceipts: async () => none });
+    await prepareUpgrade(f.deps);
+    assert.ok(!f.names().includes("writeReceipts"));
   }
 });
 
