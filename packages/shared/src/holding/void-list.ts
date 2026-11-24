@@ -160,11 +160,17 @@ export function checkVoidList(args: {
   seen: { seq: number; entriesHash: string } | null;
 }): VoidListVerdict {
   const { header: h } = args;
+  let tag: string;
   try {
     if (h.eventId !== args.eventId) return { kind: "unverified", reason: "wrong-event" };
     if (!isValidVoidEntries(args.entries) || voidEntriesHash(args.entries) !== h.entriesHash) return { kind: "unverified", reason: "malformed" };
     if (recoverVoidListSigner(args.target, h, args.signature) !== args.expectedSigner.toLowerCase()) return { kind: "unverified", reason: "bad-signer" };
+    tag = voidTag(args.receiptDigest);
   } catch {
+    return { kind: "unverified", reason: "malformed" };
+  }
+  // A broken clock or a broken stored seq (NaN) would pass every comparison below.
+  if (!Number.isFinite(args.nowSecs) || (args.seen && !Number.isSafeInteger(args.seen.seq))) {
     return { kind: "unverified", reason: "malformed" };
   }
   if (args.seen) {
@@ -172,5 +178,5 @@ export function checkVoidList(args: {
     if (h.seq === args.seen.seq && h.entriesHash !== args.seen.entriesHash) return { kind: "unverified", reason: "equivocated" };
   }
   if (args.nowSecs > h.validUntil) return { kind: "unverified", reason: "stale" };
-  return { kind: "fresh", voided: args.entries.includes(voidTag(args.receiptDigest)) };
+  return { kind: "fresh", voided: args.entries.includes(tag) };
 }

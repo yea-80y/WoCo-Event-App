@@ -180,6 +180,8 @@ export function checkHoldingPresentation(args: {
   if (p.audience !== args.expectedAudience.toLowerCase()) return { ok: false, reason: "wrong-audience" };
   if (p.context !== args.expectedContext.toLowerCase()) return { ok: false, reason: "wrong-context" };
   if (p.expiresAt <= p.issuedAt || p.expiresAt - p.issuedAt > HOLDING_PRESENTATION_MAX_SECS) return { ok: false, reason: "window-too-long" };
+  // A broken clock (NaN, undefined) would pass both comparisons below.
+  if (!Number.isFinite(args.nowSecs)) return { ok: false, reason: "malformed" };
   if (args.nowSecs < p.issuedAt) return { ok: false, reason: "not-yet-valid" };
   if (args.nowSecs > p.expiresAt) return { ok: false, reason: "expired" };
   const signer = recoverTypedStatementSigner(holdingPresentationStatement(target, p), signature);

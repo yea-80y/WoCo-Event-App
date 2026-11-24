@@ -34,6 +34,11 @@ export const G = {
   ],
   holder9: "0x5e304de9e2b255369c3017a05c743da1d210ec73",
   answer9: "0xb912ce0ec71f8c0c52507b149404c0a6c796c338",
+  // Two-digit indexes: the decimal index is frozen (hex would pass with 0..9 alone).
+  holder10: "0x5f2a08ba4b45c5f6d6fc9cc851f3fa84a2f7f842",
+  answer10: "0xc135c15fa20f9ab4945b4db5ed8cad778228a6a4",
+  holder99: "0xc86fb8d77d00fbf059caae25a2effcfc34fb38a7",
+  answer99: "0x547be1f74dad2910ed979bb6568dd678574190f0",
   nk: "002743f4d210fe2b727de32606120b28fb3d7d000d7e4337454789382923eda2",
   nkCommit: "0x35c00f5290574ca0e06482cc1203398631ed488c01fad28832a4c2e3aa4e7f7b",
   pickupId: "51e3ae07b949f7ebd89b1729397646d05bb1ad29d1daaa5ac43889c3b375b9bf",
@@ -64,6 +69,8 @@ export const G = {
   ],
   entriesHash: "0x6925e1ecbbad7c1fb39b4289563976ff887e674e0d23df5a86624163975bd79f",
   voidListDigest: "0xda70ea4f532cd5297d2a8aa7729f37ff10092260dae1042e3b725d4eb1ee3712",
+  /** The same list, CLOSED (validUntil = 2^53 - 1). */
+  closedVoidListDigest: "0x331ff27ffddfab53969cd8de68cf54874154a46bd26c4d2b2331d4ef9e0a158e",
   voidListSig:
     "0x6c8b023ad9126953932792c09c383c02df4af0331915758a78468fdd03fa84e058a3db1b9a1c0dda4eaf37cd1d66b79fe12e4e715f65b832d35d431eb2608a861c",
   eraseDigest: "0x9eb284a31e1e97929cccb55d53dd65ee3876221bcaebba3d7d8913f5a4e74cf0",

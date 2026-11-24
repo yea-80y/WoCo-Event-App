@@ -138,6 +138,26 @@ test("presentation checks: accepted, and each way it is refused", () => {
   assert.equal(refused({ signature: byHolder }), "wrong-signer");
   assert.equal(refused({ signature: "0x00" }), "wrong-signer");
   assert.throws(() => signHoldingPresentation(TARGET, { ...PRESENTATION, expiresAt: T0 + HOLDING_PRESENTATION_MAX_SECS + 1 }, BURNER_KEY));
+  // A broken clock never passes the time checks.
+  assert.equal(refused({ nowSecs: Number.NaN }), "malformed");
+  assert.equal(refused({ nowSecs: undefined as unknown as number }), "malformed");
+  assert.equal(refused({ nowSecs: Number.POSITIVE_INFINITY }), "malformed");
+});
+
+test("presentation edges: valid at its first and last second, and over exactly 30 days", () => {
+  const base = {
+    target: TARGET,
+    receipt: HOLDING,
+    presentation: PRESENTATION,
+    signature: G.presentationSig,
+    expectedAudience: AUDIENCE,
+    expectedContext: CONTEXT,
+  };
+  assert.deepEqual(checkHoldingPresentation({ ...base, nowSecs: PRESENTATION.issuedAt }), { ok: true });
+  assert.deepEqual(checkHoldingPresentation({ ...base, nowSecs: PRESENTATION.expiresAt }), { ok: true });
+  const month = { ...PRESENTATION, expiresAt: T0 + HOLDING_PRESENTATION_MAX_SECS };
+  const sig = signHoldingPresentation(TARGET, month, holdingAnswerKey(R, 0).privateKey);
+  assert.deepEqual(checkHoldingPresentation({ ...base, presentation: month, signature: sig, nowSecs: month.expiresAt }), { ok: true });
 });
 
 test("five messages about one slot never share a digest", () => {

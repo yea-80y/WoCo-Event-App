@@ -34,6 +34,11 @@ test("pinned per-ticket and per-order values", () => {
   assert.deepEqual(pv.answerKeys, G.answerKeys);
   assert.equal(holdingHolderKey(R, 9).address, G.holder9);
   assert.equal(holdingAnswerKey(R, 9).address, G.answer9);
+  assert.equal(holdingHolderKey(R, 10).address, G.holder10);
+  assert.equal(holdingAnswerKey(R, 10).address, G.answer10);
+  assert.equal(holdingHolderKey(R, 99).address, G.holder99);
+  assert.equal(holdingAnswerKey(R, 99).address, G.answer99);
+  assert.equal(HOLDING_MAX_TICKETS, 100);
   assert.equal(bytesToHex(holdingNk(R)), G.nk);
   assert.equal(pv.nkCommit, G.nkCommit);
   assert.equal(pv.pickupId, G.pickupId);

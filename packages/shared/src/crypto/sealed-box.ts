@@ -166,7 +166,7 @@ export function holdingCopySealContext(pickupId: string): SealContext {
   return holdingContext(HOLDING_COPY_SEAL_INFO, pickupId);
 }
 
-const suite =new CipherSuite({ kem: new XWingKem(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
+const suite = new CipherSuite({ kem: new XWingKem(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
 
 function toBytes(key: Uint8Array | string): Uint8Array {
   if (typeof key !== "string") return key;

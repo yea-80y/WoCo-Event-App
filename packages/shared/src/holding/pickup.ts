@@ -103,6 +103,8 @@ export function checkErasePickup(args: {
   nowSecs: number;
 }): boolean {
   try {
+    // A broken clock (NaN, undefined) would pass the window check below.
+    if (!Number.isFinite(args.nowSecs)) return false;
     if (Math.abs(args.nowSecs - args.issuedAt) > HOLDING_ERASE_WINDOW_SECS) return false;
     const signer = recoverTypedStatementSigner(erasePickupStatement(args.pickupId, args.issuedAt), args.signature);
     return signer !== null && signer === args.expectedSigner.toLowerCase();

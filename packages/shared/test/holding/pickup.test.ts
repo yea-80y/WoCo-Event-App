@@ -77,6 +77,9 @@ test("erase: golden, equal to ethers, and checked by signer, pickup id and windo
   assert.equal(checkErasePickup({ ...base, pickupId: "00".repeat(32) }), false);
   assert.equal(checkErasePickup({ ...base, issuedAt: T0 + 1, nowSecs: T0 + 1 }), false);
   assert.equal(checkErasePickup({ ...base, pickupId: "not-hex" }), false);
+  // A broken clock never passes the window.
+  assert.equal(checkErasePickup({ ...base, nowSecs: Number.NaN }), false);
+  assert.equal(checkErasePickup({ ...base, nowSecs: undefined as unknown as number }), false);
   assert.throws(() => erasePickupStatement(G.pickupId.toUpperCase(), T0));
 });
 

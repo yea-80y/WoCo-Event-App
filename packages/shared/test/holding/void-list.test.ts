@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { AbiCoder, TypedDataEncoder, Wallet, concat, keccak256, toUtf8Bytes } from "ethers";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
+  VOID_LIST_CLOSED,
   VOID_LIST_FIELDS,
   checkVoidList,
   isValidVoidEntries,
@@ -93,4 +94,32 @@ test("a verifier: fresh lists answer, untrustworthy ones are unverified", () => 
   assert.equal(reason({ seen: { seq: 3, entriesHash: `0x${"00".repeat(32)}` } }), "equivocated");
   assert.equal(reason({ signature: "0x00" }), "bad-signer");
   assert.equal(reason({ target: { ...TARGET, chainId: 8453 } }), "bad-signer");
+  // Broken inputs are unverified, never a pass and never a throw.
+  assert.equal(reason({ nowSecs: Number.NaN }), "malformed");
+  assert.equal(reason({ nowSecs: undefined as unknown as number }), "malformed");
+  assert.equal(reason({ seen: { seq: Number.NaN, entriesHash: G.entriesHash } }), "malformed");
+  assert.equal(reason({ receiptDigest: "0x12" }), "malformed");
+  // Edges: fresh at its last second, and a newer seq replaces an older one with another hash.
+  assert.equal(reason({ nowSecs: HEADER.validUntil }), "fresh");
+  assert.equal(reason({ seen: { seq: 2, entriesHash: `0x${"00".repeat(32)}` } }), "fresh");
+});
+
+test("a CLOSED list never goes stale", () => {
+  assert.equal(VOID_LIST_CLOSED, 9_007_199_254_740_991);
+  const closed = { ...HEADER, validUntil: VOID_LIST_CLOSED };
+  const s = voidListStatement(TARGET, closed);
+  assert.equal(TypedDataEncoder.hash(s.domain, { VoidList: [...s.fields] }, s.message), G.closedVoidListDigest);
+  assert.equal(voidListDigest(TARGET, closed), G.closedVoidListDigest);
+  const v = checkVoidList({
+    target: TARGET,
+    eventId: EVENT_ID,
+    header: closed,
+    entries: G.entries,
+    signature: signVoidList(TARGET, closed, VOID_SIGNER_KEY),
+    expectedSigner: SIGNER,
+    receiptDigest: G.receiptDigest,
+    nowSecs: 4_000_000_000,
+    seen: null,
+  });
+  assert.deepEqual(v, { kind: "fresh", voided: true });
 });
