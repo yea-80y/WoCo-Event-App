@@ -1145,6 +1145,38 @@ export async function getEventForDisplay(
   return getEvent(eventId);
 }
 
+// The public event page reads this on every visit, and its two inputs (the key ring
+// anchor and the feed's latest version) are each cached for only 30 s, so a page seen a
+// few times an hour paid a chain read and a feed scan each time: 2-3 s before its title
+// showed (measured 2026-11-24). Display only - the money path never reads it.
+// Keyed by event AND the caller's signer hint: a hint is client input, and a key of the
+// event alone would let one caller's hint decide what every visitor sees.
+// A found event is answered for 30 s, then answered stale for up to an hour while one
+// read refreshes it behind; "not found" for 5 s and never stale (a new event would hide).
+// invalidateEventCache clears every key of an event, so a server-side edit shows at once.
+// The order key it carries may lag a key-ring change by that much: checkout's
+// ORDER_KEY_STALE answer names the current key and the buyer's client retries with it.
+const eventDisplayMemo = createDisplayReadMemo<EventFeed | null>({
+  ttlMs: 30_000,
+  emptyTtlMs: 5_000,
+  staleMs: 60 * 60_000,
+  isEmpty: (event) => event === null,
+  maxKeys: 2048,
+});
+
+const eventDisplayKeyPrefix = (eventId: string) => `${eventId}|`;
+
+/**
+ * {@link getEventForDisplay} through the display memo. `error` = the read threw (the
+ * route's 500); null = not found (404), as from the uncached read.
+ */
+export async function getEventForDisplayMemo(eventId: string, untrustedSigner?: string): Promise<DisplayRead<EventFeed | null>> {
+  return eventDisplayMemo.read(`${eventDisplayKeyPrefix(eventId)}${untrustedSigner ?? ""}`, async () => ({
+    status: "ok",
+    data: await getEventForDisplay(eventId, untrustedSigner),
+  }));
+}
+
 /**
  * Event read for an AUTHENTICATED route acting on the caller's own event.
  *
@@ -1243,6 +1275,7 @@ export async function getEventBySigner(eventId: string, signer: string): Promise
 /** Invalidate the event cache after a publish/update so the next read is fresh. */
 export function invalidateEventCache(eventId: string): void {
   _eventCache.delete(eventId);
+  eventDisplayMemo.invalidatePrefix(eventDisplayKeyPrefix(eventId));
 }
 
 /**
