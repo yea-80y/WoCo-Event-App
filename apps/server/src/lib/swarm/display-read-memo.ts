@@ -23,7 +23,8 @@
  * created is not hidden for that long.
  */
 
-export type DisplayRead<T> = { status: "ok"; data: T } | { status: "error" };
+/** `keep: false`: an answer the caller may show but that must not be memoized (it leaned on a fallback). */
+export type DisplayRead<T> = { status: "ok"; data: T; keep?: false } | { status: "error" };
 
 export interface DisplayReadMemoOptions<T> {
   ttlMs: number;
@@ -40,6 +41,8 @@ export interface DisplayReadMemo<T> {
   invalidate(key: string): void;
   /** `invalidate` for every key that starts with `prefix`. */
   invalidatePrefix(prefix: string): void;
+  /** Drops every memoized entry `match` picks, and detaches EVERY read in flight (its data is not known yet). */
+  invalidateWhere(match: (data: T, key: string) => boolean): void;
 }
 
 let clock = () => Date.now();
@@ -63,7 +66,7 @@ export function createDisplayReadMemo<T>(opts: DisplayReadMemoOptions<T>): Displ
     const p = (async () => load())().catch((): DisplayRead<T> => ({ status: "error" }));
     inFlight.set(key, p);
     return p.then((res) => {
-      if (res.status === "ok" && inFlight.get(key) === p) {
+      if (res.status === "ok" && res.keep !== false && inFlight.get(key) === p) {
         memo.delete(key);
         memo.set(key, { at: clock(), data: res.data });
         if (memo.size > maxKeys) memo.delete(memo.keys().next().value!);
@@ -94,6 +97,10 @@ export function createDisplayReadMemo<T>(opts: DisplayReadMemoOptions<T>): Displ
     invalidatePrefix(prefix) {
       for (const key of [...memo.keys()]) if (key.startsWith(prefix)) memo.delete(key);
       for (const key of [...inFlight.keys()]) if (key.startsWith(prefix)) inFlight.delete(key);
+    },
+    invalidateWhere(match) {
+      for (const [key, m] of [...memo.entries()]) if (match(m.data, key)) memo.delete(key);
+      inFlight.clear();
     },
   };
 }

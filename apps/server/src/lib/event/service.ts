@@ -23,6 +23,7 @@ import {
 import { setListed, setTombstoned } from "./listing-state.js";
 import { acceptEventFeed, getRecordedFeedSigner, recordEventFeedSigner } from "./feed-signer-record.js";
 import { assertCurrentKeys, eventKeys, feedSignerFor, withAuthoritativeOrderKey } from "../keyring/event-keys.js";
+import { onKeyRingGeneration } from "../keyring/current-ring.js";
 import { cardFromFeed, getEventsSnapshot, scheduleSnapshotRebuild } from "./directory-snapshot.js";
 import {
   readFeedPageWithRetry,
@@ -1119,30 +1120,52 @@ const TRUSTED_CARRIER_TIMEOUT_MS = 4000;
  * (the global directory can be slow/cold), and read the SOC with the trusted
  * carrier when present. The client hint is used ONLY when the event has no trusted
  * carrier (a skipAutoList/unlisted client event — the hint is then the sole way to
- * read it) or the directory lookup times out. Either way this is NON-CACHING, so a
- * forged hint can never reach the money path — every money read uses the trusted
- * {@link getEvent}, never this.
+ * read it) or the directory lookup times out. It never feeds the money-path cache,
+ * so a forged hint can never reach the money path — every money read uses the
+ * trusted {@link getEvent}, never this. Its own display memo is keyed by the hint
+ * ({@link getEventForDisplayMemo}).
  */
 export async function getEventForDisplay(
   eventId: string,
   untrustedSigner?: string,
 ): Promise<EventFeed | null> {
+  return (await readEventForDisplay(eventId, untrustedSigner)).event;
+}
+
+const CARRIER_TIMED_OUT = Symbol("carrier timed out");
+
+/**
+ * {@link getEventForDisplay} saying whether the answer leaned on a fallback
+ * (`degraded`): the hint used because the trusted carrier lookup timed out or threw,
+ * or the directory read because the organiser's keys could not be read. A degraded
+ * answer is shown, never memoized: it is what the read could do this time, not what
+ * the event is.
+ */
+async function readEventForDisplay(
+  eventId: string,
+  untrustedSigner?: string,
+): Promise<{ event: EventFeed | null; degraded: boolean }> {
   if (untrustedSigner) {
     let trustedCarrier: string | null = null;
+    let carrierFailed = false;
     try {
-      trustedCarrier = await Promise.race([
+      const found = await Promise.race([
         resolveCreatorFeedSigner(eventId),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), TRUSTED_CARRIER_TIMEOUT_MS)),
+        new Promise<typeof CARRIER_TIMED_OUT>((resolve) => setTimeout(() => resolve(CARRIER_TIMED_OUT), TRUSTED_CARRIER_TIMEOUT_MS)),
       ]);
+      if (found === CARRIER_TIMED_OUT) carrierFailed = true;
+      else trustedCarrier = found;
     } catch {
-      trustedCarrier = null;
+      carrierFailed = true;
     }
     // Trusted carrier wins; the hint is the fallback only when there is none. The
     // creator check too, so the page and the checkout give one answer (#670).
-    const soc = acceptEventFeed(eventId, await readEventFeedSoc(eventId, trustedCarrier ?? untrustedSigner));
-    if (soc) return soc.deleted ? null : soc;
+    const res = await readEventFeedSocResult(eventId, trustedCarrier ?? untrustedSigner);
+    const soc = acceptEventFeed(eventId, res.status === "found" ? res.feed : null);
+    if (soc) return { event: soc.deleted ? null : soc, degraded: carrierFailed };
+    if (res.status === "unavailable") return { event: await getEvent(eventId), degraded: true };
   }
-  return getEvent(eventId);
+  return { event: await getEvent(eventId), degraded: false };
 }
 
 // The public event page reads this on every visit, and its two inputs (the key ring
@@ -1154,8 +1177,12 @@ export async function getEventForDisplay(
 // A found event is answered for 30 s, then answered stale for up to an hour while one
 // read refreshes it behind; "not found" for 5 s and never stale (a new event would hide).
 // invalidateEventCache clears every key of an event, so a server-side edit shows at once.
-// The order key it carries may lag a key-ring change by that much: checkout's
-// ORDER_KEY_STALE answer names the current key and the buyer's client retries with it.
+// A degraded read (readEventForDisplay) is answered but never memoized. A new key-ring
+// generation for an organiser (#186: a passkey removed) drops every entry of their
+// events, so nothing read under keys they have left outlives the moment this server
+// learns of it. The order key a memoized entry carries can still trail a ring change
+// this server has not seen yet: checkout's ORDER_KEY_STALE names the current key and
+// the buyer's client retries with it.
 const eventDisplayMemo = createDisplayReadMemo<EventFeed | null>({
   ttlMs: 30_000,
   emptyTtlMs: 5_000,
@@ -1164,6 +1191,10 @@ const eventDisplayMemo = createDisplayReadMemo<EventFeed | null>({
   maxKeys: 2048,
 });
 
+onKeyRingGeneration((account) =>
+  eventDisplayMemo.invalidateWhere((event) => event?.creatorAddress?.toLowerCase() === account),
+);
+
 const eventDisplayKeyPrefix = (eventId: string) => `${eventId}|`;
 
 /**
@@ -1171,10 +1202,10 @@ const eventDisplayKeyPrefix = (eventId: string) => `${eventId}|`;
  * route's 500); null = not found (404), as from the uncached read.
  */
 export async function getEventForDisplayMemo(eventId: string, untrustedSigner?: string): Promise<DisplayRead<EventFeed | null>> {
-  return eventDisplayMemo.read(`${eventDisplayKeyPrefix(eventId)}${untrustedSigner ?? ""}`, async () => ({
-    status: "ok",
-    data: await getEventForDisplay(eventId, untrustedSigner),
-  }));
+  return eventDisplayMemo.read(`${eventDisplayKeyPrefix(eventId)}${untrustedSigner ?? ""}`, async () => {
+    const r = await readEventForDisplay(eventId, untrustedSigner);
+    return r.degraded ? { status: "ok", data: r.event, keep: false } : { status: "ok", data: r.event };
+  });
 }
 
 /**

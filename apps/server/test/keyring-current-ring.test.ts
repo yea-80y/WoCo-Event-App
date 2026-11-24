@@ -13,7 +13,7 @@ import { newAccountSecret } from "@woco/shared/keyring/account-secret";
 import { passkeyBoxKeypair } from "@woco/shared/keyring/passkey-box";
 import { signBoxKeyStatement } from "@woco/shared/keyring/box-key";
 import { boxKeyRefOf } from "@woco/shared/keyring/ring";
-import { ANCHOR_TTL_MS, _setCurrentRingDepsForTests, currentRing } from "../src/lib/keyring/current-ring.js";
+import { ANCHOR_TTL_MS, _setCurrentRingDepsForTests, currentRing, onKeyRingGeneration } from "../src/lib/keyring/current-ring.js";
 
 const ACCOUNT = "0x" + "ab".repeat(20);
 const chunks = new Map<string, Uint8Array>();
@@ -217,6 +217,23 @@ test("bytes that verify but are no ring are not fetched again; a ring not found 
   missing = false;
   clock += 60_000;
   assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "ring", "and is tried again after a minute");
+});
+
+test("listeners hear each higher generation once, as it is first seen, and a throwing one stops nothing", async () => {
+  const heard: string[] = [];
+  onKeyRingGeneration(() => {
+    throw new Error("a listener that fails");
+  });
+  onKeyRingGeneration((a) => heard.push(a));
+  const g1 = await ringFor(ACCOUNT, 1);
+  const g2 = await ringFor(ACCOUNT, 2);
+  anchor.set(ACCOUNT, `0x${g1.ref}`);
+  assert.equal((await currentRing(ACCOUNT)).status, "ring");
+  await currentRing(ACCOUNT, { fresh: true });
+  assert.deepEqual(heard, [ACCOUNT], "the same generation again is not news");
+  anchor.set(ACCOUNT, `0x${g2.ref}`);
+  assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "ring");
+  assert.deepEqual(heard, [ACCOUNT, ACCOUNT], "a passkey removed: generation 2 is heard");
 });
 
 test("the highest generation seen survives a restart: a lagging read after it is not taken", async () => {

@@ -234,8 +234,8 @@ test("an owner edit's base skips the version cache - a re-sign relayed since doe
 });
 
 test("the public page applies the same creator check, so it never shows what checkout refuses", () => {
-  const display = between("export async function getEventForDisplay(", "\n}\n");
-  assert.match(display, /const soc = acceptEventFeed\(eventId, await readEventFeedSoc\(/);
+  const display = between("async function readEventForDisplay(", "\n}\n");
+  assert.match(display, /const soc = acceptEventFeed\(eventId, res\.status === "found" \? res\.feed : null\);/);
 });
 
 test("create never hands the organiser the store's operator text", () => {

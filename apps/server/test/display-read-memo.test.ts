@@ -178,6 +178,40 @@ test("invalidatePrefix drops every key under the prefix and nothing else", async
   assert.equal(calls.n, 6, "ev10 and ev2 untouched");
 });
 
+test("keep: false is answered but never memoized, and never replaces a stale entry", async () => {
+  const m = staleMemo();
+  let answer: DisplayRead<string[]> = { status: "ok", data: ["good"] };
+  const { calls, load } = counting(() => answer);
+  await m.read("k", load);
+  now += 400;
+  answer = { status: "ok", data: ["fallback"], keep: false };
+  assert.deepEqual(await m.read("k", load), { status: "ok", data: ["good"] });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(await m.read("k", load), { status: "ok", data: ["good"] }, "the fallback did not replace it");
+  const fresh = staleMemo();
+  assert.deepEqual(await fresh.read("x", load), { status: "ok", data: ["fallback"], keep: false });
+  await fresh.read("x", load);
+  assert.equal(calls.n, 5, "nothing memoized under x either");
+});
+
+test("invalidateWhere drops the entries it picks, keeps the rest, and detaches every read in flight", async () => {
+  const m = memo();
+  const { calls, load } = counting(() => ({ status: "ok", data: ["a"] }));
+  await m.read("drop", async () => ({ status: "ok", data: ["creator-1"] }));
+  await m.read("keep", async () => ({ status: "ok", data: ["creator-2"] }));
+  let release!: (v: DisplayRead<string[]>) => void;
+  const inflight = m.read("pending", () => new Promise((r) => (release = r)));
+  m.invalidateWhere((data) => data[0] === "creator-1");
+  await m.read("drop", load);
+  assert.equal(calls.n, 1, "the picked entry is read again");
+  assert.deepEqual(await m.read("keep", load), { status: "ok", data: ["creator-2"] });
+  assert.equal(calls.n, 1, "the other entry stays");
+  await m.read("pending", load);
+  assert.equal(calls.n, 2, "a read in flight was detached, not joined");
+  release({ status: "ok", data: ["creator-1"] });
+  await inflight;
+});
+
 test("at most maxKeys are held; the oldest goes first", async () => {
   const m = memo(2);
   const { calls, load } = counting(() => ({ status: "ok", data: ["a"] }));

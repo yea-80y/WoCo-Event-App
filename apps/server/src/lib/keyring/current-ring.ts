@@ -125,6 +125,17 @@ let highWater: Map<string, { gen: number; ref: string }> | null = null;
 let highWaterUnreadable = false;
 /** Accounts whose chain read is below the generation seen, and since when. */
 const behind = new Map<string, number>();
+const generationListeners = new Set<(account: string) => void>();
+
+/**
+ * `fn(account)` each time this server first sees a higher key-ring generation for an
+ * account (its first sighting too): for anything held under the account's older keys
+ * that must go at once, such as the event display memo. It decides nothing here, and
+ * a listener that throws is ignored.
+ */
+export function onKeyRingGeneration(fn: (account: string) => void): void {
+  generationListeners.add(fn);
+}
 /** Behind for longer than this is no lagging replica: an alarm. */
 const BEHIND_ALARM_MS = 10 * 60_000;
 
@@ -234,6 +245,13 @@ async function holdHighWater(a: string, r: CurrentRing): Promise<CurrentRing> {
   behind.delete(a);
   if (r.status === "ring" && (!hw || r.ring.gen > hw.gen)) {
     marks.set(a, { gen: r.ring.gen, ref: r.ref });
+    for (const fn of generationListeners) {
+      try {
+        fn(a);
+      } catch {
+        // a listener's failure is its own
+      }
+    }
     if (!highWaterUnreadable && !deps.saveHighWater(Object.fromEntries(marks))) {
       console.error(`[keyring] ${a}: generation ${r.ring.gen} not made durable - held in memory only`);
     }

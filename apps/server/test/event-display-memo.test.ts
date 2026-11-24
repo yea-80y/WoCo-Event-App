@@ -31,6 +31,23 @@ test("a found event is answered stale while it refreshes; not-found is only memo
   assert.match(memo, /staleMs: 60 \* 60_000/);
 });
 
+test("a degraded read (hint used because the carrier lookup failed, or keys unreadable) is answered, never memoized", () => {
+  const read = between(service, "async function readEventForDisplay(", "\n}\n");
+  assert.match(read, /if \(found === CARRIER_TIMED_OUT\) carrierFailed = true;/);
+  assert.match(read, /\} catch \{\s*carrierFailed = true;\s*\}/);
+  assert.match(read, /if \(soc\) return \{ event: soc\.deleted \? null : soc, degraded: carrierFailed \};/);
+  assert.match(read, /if \(res\.status === "unavailable"\) return \{ event: await getEvent\(eventId\), degraded: true \};/);
+  const memoRead = between(service, "export async function getEventForDisplayMemo(", "\n}\n");
+  assert.match(memoRead, /return r\.degraded \? \{ status: "ok", data: r\.event, keep: false \} : \{ status: "ok", data: r\.event \};/);
+});
+
+test("a new key-ring generation for an organiser drops every display entry of their events (#186)", () => {
+  assert.match(
+    service,
+    /onKeyRingGeneration\(\(account\) =>\s*eventDisplayMemo\.invalidateWhere\(\(event\) => event\?\.creatorAddress\?\.toLowerCase\(\) === account\),\s*\);/,
+  );
+});
+
 test("a server-side edit (invalidateEventCache) clears every display key of that event", () => {
   const fn = between(service, "export function invalidateEventCache(", "\n}\n");
   assert.match(fn, /eventDisplayMemo\.invalidatePrefix\(eventDisplayKeyPrefix\(eventId\)\);/);
