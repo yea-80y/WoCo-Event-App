@@ -4,10 +4,16 @@
  *
  * One copy per order: the order's secret `r` and its checked receipt box, sealed to the
  * account's CURRENT order key (`holdingCopySealContext`) and stored as a content feed
- * owned by the account's current feed signer. Its topic is salted from the CURRENT
- * account secret, so nobody without that secret can even find it, and a passkey removed
- * from the account cannot find copies made after the removal. One index per account
- * generation lists the orders, sealed the same way (`holdingIndexSealContext`).
+ * owned by the account's own copy signer (`holdingCopySigner`). Its topic is salted from
+ * the CURRENT account secret, so nobody without that secret can look a copy up, open it,
+ * or tie it to an order, and a passkey removed from the account cannot find copies made
+ * after the removal. One index per account generation lists the orders, sealed the same
+ * way (`holdingIndexSealContext`).
+ *
+ * What a save still shows: each one is a signed chunk sent through WoCo's relay under the
+ * buyer's session, which pays for storage. So WoCo's server sees that the account stored
+ * sealed data, how much and when; Etherna and any node holding a chunk see the copy
+ * signer's address, sizes and times, but not whose account it is.
  *
  * VERSIONED, NOT FROZEN: a passkey removal or an upgrade to a passkey rewrites all of
  * it under new keys, so the layout can change with a reader that reads both.
@@ -17,10 +23,12 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { deriveSecpFromSeed } from "../crypto/secp-hkdf.js";
 import { parseHoldingBox, type HoldingBoxV1 } from "./box.js";
 import { HOLDING_MAX_TICKETS, HOLDING_SECRET_BYTES } from "./derive.js";
 
 export const HOLDING_TOPIC_SALT_INFO = "woco/holding/v1/topic-salt";
+export const HOLDING_COPY_SIGNER_INFO = "woco/holding/v1/copy-signer";
 export const HOLDING_TOPIC_PREFIX = "woco/holding/v1/";
 const INDEX_LABEL = "woco/holding/v1/index";
 
@@ -37,6 +45,17 @@ const ID_RE = /^[0-9a-z-]{1,64}$/;
 export function holdingTopicSalt(accountSecret: Uint8Array): Uint8Array {
   if (!(accountSecret instanceof Uint8Array) || accountSecret.length !== 32) throw new Error("account secret must be 32 bytes");
   return hkdf(sha256, accountSecret, new Uint8Array(0), utf8ToBytes(HOLDING_TOPIC_SALT_INFO), 32);
+}
+
+/**
+ * The key that owns the account's copies and their list, from the same account secret
+ * (owner decision 2026-11-24). Its OWN key, never the public content-feed signer: every
+ * stored chunk names its owner, and the content-feed signer also owns the public
+ * profile, so with it anyone holding a chunk could tie the save to that profile.
+ */
+export function holdingCopySigner(accountSecret: Uint8Array): { privateKey: Uint8Array; address: string } {
+  if (!(accountSecret instanceof Uint8Array) || accountSecret.length !== 32) throw new Error("account secret must be 32 bytes");
+  return deriveSecpFromSeed(bytesToHex(accountSecret), HOLDING_COPY_SIGNER_INFO, "account secret");
 }
 
 function topicOf(salt: Uint8Array, message: Uint8Array): string {

@@ -8,10 +8,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac, hkdfSync } from "node:crypto";
+import { Wallet } from "ethers";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { deriveFeedSignerKey } from "../../src/crypto/feed-signer.js";
 import {
   HOLDING_INDEX_MAX_ORDERS,
   holdingCopyOf,
+  holdingCopySigner,
   holdingCopyTopic,
   holdingIndexEntryOf,
   holdingIndexTopic,
@@ -55,6 +58,19 @@ test("topic salt and topics: golden, and equal to node:crypto", () => {
   );
   assert.equal(holdingIndexTopic(salt), GOLDEN.index);
   assert.equal(holdingIndexTopic(salt), "woco/holding/v1/" + createHmac("sha256", salt).update("woco/holding/v1/index").digest("hex"));
+});
+
+test("copy signer: golden, equal to node:crypto + ethers, and never the public content-feed signer", () => {
+  const signer = holdingCopySigner(S);
+  assert.equal(signer.address, "0x18fcb41ecae56ca8729eced270bee9bfb1f6c374");
+  const okm = Buffer.from(hkdfSync("sha256", S, Buffer.alloc(0), Buffer.from("woco/holding/v1/copy-signer"), 48));
+  const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+  const scalar = (BigInt(`0x${okm.toString("hex")}`) % (N - 1n)) + 1n;
+  assert.equal(new Wallet(`0x${scalar.toString(16).padStart(64, "0")}`).address.toLowerCase(), signer.address);
+  assert.equal(bytesToHex(signer.privateKey), scalar.toString(16).padStart(64, "0"));
+  assert.notEqual(signer.address, deriveFeedSignerKey(bytesToHex(S)).address.toLowerCase());
+  assert.notEqual(signer.address, holdingCopySigner(new Uint8Array(32).fill(1)).address);
+  assert.throws(() => holdingCopySigner(S.slice(1)));
 });
 
 test("topics differ by order, by generation, and the index from every order", () => {

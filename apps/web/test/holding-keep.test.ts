@@ -150,6 +150,16 @@ test("box: a refused box is the answer when nothing better turns up; the same ro
   assert.deepEqual(await fetchHoldingBox(R, undefined, unopenable.d), { kind: "refused", reason: "unopenable" });
 });
 
+test("box: a malformed root is never fetched; the server is asked instead", async () => {
+  const sealed = await sealFor(R, makeBox(R, 1));
+  for (const bad of ["", "AA".repeat(32), "aa".repeat(31), `${ROOT_A}/../x`]) {
+    const s = source({ swarm: { [bad]: sealed }, pickup: { kind: "ok", boxRoot: ROOT_B, box: sealed as never } });
+    const got = await fetchHoldingBox(R, bad, s.d);
+    assert.equal(got.kind === "ok" && got.boxRoot, ROOT_B, bad);
+    assert.deepEqual(s.asked, [], bad);
+  }
+});
+
 test("box: nothing anywhere - not found, or later when nobody could answer", async () => {
   assert.deepEqual(await fetchHoldingBox(R, ROOT_A, source({}).d), { kind: "not-found" });
   assert.deepEqual(await fetchHoldingBox(R, ROOT_A, source({ pickup: { kind: "later" } }).d), { kind: "later" });

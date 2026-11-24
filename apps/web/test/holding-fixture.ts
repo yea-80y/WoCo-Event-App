@@ -52,6 +52,8 @@ export interface FakeFeeds {
   failReads: Set<string>;
   /** Topics whose given version exists and will never read: "unavailable" with `unusableAt`. */
   spent: Map<string, number>;
+  /** Topics whose scan stops one version short of the head: found, `scanClean` false. */
+  dirty: Set<string>;
   /** Every read, by topic. */
   reads: string[];
   /** Writes after this many accepted go unconfirmed (the bytes still land). */
@@ -72,6 +74,7 @@ export function fakeFeeds(): FakeFeeds {
     writes,
     failReads: new Set(),
     spent: new Map(),
+    dirty: new Set(),
     reads: [],
     unconfirmAfter: Infinity,
     latest: (owner, topic) => {
@@ -92,13 +95,20 @@ export function fakeFeeds(): FakeFeeds {
     if (spentAt !== undefined) return { status: "unavailable", reason: "spent", unusableAt: spentAt };
     const v = feeds.get(key(owner, topic));
     if (!v?.length) return { status: "absent" };
+    if (f.dirty.has(topic)) {
+      // The probe past this version could not be answered: it may not be the head.
+      const at = Math.max(0, v.length - 2);
+      return { status: "found", value: JSON.parse(v[at]!), version: at, scanClean: false };
+    }
     return { status: "found", value: JSON.parse(v[v.length - 1]!), version: v.length - 1, scanClean: true };
   };
   const base = (owner: string, topic: string): ContentFeedWriteBase<unknown> => {
     const r = read(owner, topic);
     // As `nextVersionAfter`: a spent version is written past.
     const nextVersion =
-      r.status === "absent" ? 0 : r.status === "found" ? r.version + 1 : r.unusableAt !== undefined ? r.unusableAt + 1 : null;
+      r.status === "absent" ? 0
+      : r.status === "found" ? (r.scanClean ? r.version + 1 : null)
+      : r.unusableAt !== undefined ? r.unusableAt + 1 : null;
     return { read: r, nextVersion, owner: owner.toLowerCase().replace(/^0x/, ""), topic, route: FEED_ROUTES.holding };
   };
   f.io = {

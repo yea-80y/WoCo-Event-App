@@ -258,6 +258,56 @@ test("move: every generation's copies land under the new keys, read back; a seco
   assert.equal((await readAllHoldingCopies([g0], f.io)).copies.length, 1);
 });
 
+test("a list or copy read that may have stopped short of the head is never taken as complete (Fable 3a, 1)", async () => {
+  const f = fakeFeeds();
+  const g0 = await gen(S0);
+  const g1 = await gen(S1);
+  await saveHoldingCopy(g0, R1, makeBox(R1, 1), f.io);
+  await saveHoldingCopy(g0, R2, makeBox(R2, 1, 20), f.io);
+  // The list's scan stops one version early: it would show R1 only.
+  f.dirty.add(indexTopic(g0));
+  assert.equal(await readHoldingIndex(g0, f.io), "unavailable");
+  assert.equal((await readAllHoldingCopies([g0], f.io)).complete, false);
+  const n = f.writes.length;
+  await assert.rejects(moveHoldingCopies([g0], g1, f.io));
+  assert.equal(f.writes.length, n, "nothing carried off a short list");
+  f.dirty.clear();
+
+  // A copy read the same way.
+  f.dirty.add(holdingCopyTopic(g0.salt, holdingPickupId(R1)));
+  assert.equal(await readHoldingCopy(g0, holdingPickupId(R1), f.io), "unavailable");
+  assert.equal((await readAllHoldingCopies([g0], f.io)).complete, false);
+});
+
+test("'already there' is said only off a read that is certainly the head", async () => {
+  const f = fakeFeeds();
+  const k = await gen(S0);
+  // v0 = the first box, v1 = a box re-made later; a short scan sees v0.
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io);
+  await saveHoldingCopy(k, R1, makeBox(R1, 1, 40), f.io);
+  f.dirty.add(holdingCopyTopic(k.salt, holdingPickupId(R1)));
+  await assert.rejects(saveHoldingCopy(k, R1, makeBox(R1, 1), f.io), "never 'saved' off v0");
+  f.dirty.clear();
+  // The list the same way: a short scan of it never decides "already listed".
+  await saveHoldingCopy(k, R2, makeBox(R2, 1, 20), f.io);
+  f.dirty.add(indexTopic(k));
+  const writes = f.writes.length;
+  await assert.rejects(addToHoldingIndex(k, [holdingIndexEntryOf(holdingPickupId(R1), makeBox(R1, 1, 40))], f.io));
+  assert.equal(f.writes.length, writes);
+});
+
+test("copies are owned by the account's own copy signer, never its public content-feed signer", async () => {
+  const { deriveFeedSignerKey } = await import("@woco/shared");
+  const { holdingCopySigner } = await import("@woco/shared/holding/copy");
+  const { hexToBytes } = await import("@noble/hashes/utils.js");
+  const k = await gen(S0);
+  assert.equal(k.signer.address, holdingCopySigner(hexToBytes(S0.slice(2))).address);
+  assert.notEqual(k.signer.address, deriveFeedSignerKey(S0).address.toLowerCase());
+  const f = fakeFeeds();
+  await saveHoldingCopy(k, R1, makeBox(R1, 1), f.io);
+  for (const w of f.writes) assert.equal(w.owner, k.signer.address);
+});
+
 test("move: an incomplete read moves nothing; nothing to move writes nothing", async () => {
   const f = fakeFeeds();
   const g0 = await gen(S0);

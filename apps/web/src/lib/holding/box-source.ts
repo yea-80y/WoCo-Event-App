@@ -55,7 +55,8 @@ export async function fetchHoldingBox(r: Uint8Array, boxRoot: string | undefined
   };
 
   const tried = new Set<string>();
-  if (boxRoot) {
+  // A root that is not one is not a place to look: ask the server instead.
+  if (boxRoot !== undefined && /^[0-9a-f]{64}$/.test(boxRoot)) {
     tried.add(boxRoot);
     const sealed = await deps.fromSwarm(boxRoot);
     const got = sealed === null ? null : await open(sealed, boxRoot);

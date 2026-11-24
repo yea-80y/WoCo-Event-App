@@ -4,9 +4,10 @@
  * `@woco/shared/holding/copy` (versioned, not frozen).
  *
  * Per account generation: one copy per order (the secret and its checked receipts,
- * sealed to that generation's order key, owned by its feed signer, at a topic salted
- * from its secret) and one index listing the orders. Nothing here is readable or even
- * findable without the generation's secret.
+ * sealed to that generation's order key, owned by its own copy signer, at a topic salted
+ * from its secret) and one index listing the orders. Without the generation's secret
+ * nobody can look a copy up, open it or tie it to an order; what a save still shows is
+ * in `@woco/shared/holding/copy`.
  *
  * Every save is READ BACK before it counts: `saved` means the bytes we wrote are what
  * Swarm holds at our version and they open under our key. `unconfirmed` means the upload
@@ -51,15 +52,17 @@ export type SaveResult = "saved" | "unconfirmed";
 
 /** A generation's keys from its account secret (0x-hex). Lazy: loads the lattice code. */
 export async function holdingGenKeysOf(secretHex: string): Promise<HoldingGenKeys> {
-  const [{ accountKeysOf }, { holdingTopicSalt }, { hexToBytes }] = await Promise.all([
+  const [{ accountKeysOf }, { holdingCopySigner, holdingTopicSalt }, { bytesToHex, hexToBytes }] = await Promise.all([
     import("@woco/shared/keyring/account-secret"),
     import("@woco/shared/holding/copy"),
     import("@noble/hashes/utils.js"),
   ]);
   const secret = hexToBytes(secretHex.startsWith("0x") ? secretHex.slice(2) : secretHex);
   const keys = accountKeysOf(secret);
+  // The copies' own signer, never the content-feed signer that owns the public profile.
+  const signer = holdingCopySigner(secret);
   return {
-    signer: { privKey: keys.feedSigner.privKey, address: keys.feedSigner.address.toLowerCase() },
+    signer: { privKey: `0x${bytesToHex(signer.privateKey)}`, address: signer.address },
     orderPublicKey: keys.orderKey.publicKey,
     orderSecretKey: keys.orderKey.secretKey,
     salt: holdingTopicSalt(secret),
@@ -90,13 +93,23 @@ async function openAs<T>(
 // Reading
 // ---------------------------------------------------------------------------
 
+/**
+ * A found version that is CERTAINLY the latest. A scan that could not see past it
+ * (`scanClean` false) may have stopped short of the head: a list read one version early
+ * misses the orders added since, and a mover would carry less and call it complete.
+ */
+function headOf(read: ContentFeedResult<unknown>): { value: unknown } | null | "unavailable" {
+  if (read.status === "absent") return null;
+  if (read.status !== "found" || !read.scanClean) return "unavailable";
+  return { value: read.value };
+}
+
 /** The generation's index: null when it has none, "unavailable" when it could not be read or opened. */
 export async function readHoldingIndex(keys: HoldingGenKeys, io: HoldingFeedIO): Promise<HoldingIndexV1 | null | "unavailable"> {
   const s = await shared();
   const topic = s.holdingIndexTopic(keys.salt);
-  const read = await io.read(keys.signer.address, topic).catch(() => ({ status: "unavailable" as const }));
-  if (read.status === "absent") return null;
-  if (read.status !== "found") return "unavailable";
+  const read = headOf(await io.read(keys.signer.address, topic).catch(() => ({ status: "unavailable" as const })));
+  if (read === null || read === "unavailable") return read;
   // Present but not ours to read is never "none": a write on top would drop its orders.
   return (await openAs(keys, read.value, s.holdingIndexSealContext(topic), s.parseHoldingIndex)) ?? "unavailable";
 }
@@ -105,9 +118,8 @@ export async function readHoldingIndex(keys: HoldingGenKeys, io: HoldingFeedIO):
 export async function readHoldingCopy(keys: HoldingGenKeys, pickupId: string, io: HoldingFeedIO): Promise<HoldingCopyV1 | null | "unavailable"> {
   const s = await shared();
   const topic = s.holdingCopyTopic(keys.salt, pickupId);
-  const read = await io.read(keys.signer.address, topic).catch(() => ({ status: "unavailable" as const }));
-  if (read.status === "absent") return null;
-  if (read.status !== "found") return "unavailable";
+  const read = headOf(await io.read(keys.signer.address, topic).catch(() => ({ status: "unavailable" as const })));
+  if (read === null || read === "unavailable") return read;
   const copy = await openAs(keys, read.value, s.holdingCopySealContext(pickupId), s.parseHoldingCopy);
   return copy && (await copyIsFor(copy, pickupId)) ? copy : "unavailable";
 }
@@ -166,7 +178,8 @@ export async function writeHoldingCopy(keys: HoldingGenKeys, copy: HoldingCopyV1
   const topic = s.holdingCopyTopic(keys.salt, pickupId);
   const ctx = s.holdingCopySealContext(pickupId);
   const base = await io.readBase(keys.signer.address, topic);
-  if (base.read.status === "found") {
+  // Only a read that is certainly the head may say "already there".
+  if (base.read.status === "found" && base.read.scanClean) {
     const there = await openAs(keys, base.read.value, ctx, s.parseHoldingCopy);
     // A thorough read found it: that IS the read-back.
     if (there && s.sameHoldingCopy(there, copy)) return "saved";
@@ -203,7 +216,9 @@ export async function addToHoldingIndex(keys: HoldingGenKeys, entries: HoldingIn
     entries.filter((e) => !index?.orders.some((o) => s.sameHoldingIndexEntry(o, e)));
 
   const base = await io.readBase(keys.signer.address, topic);
-  if (missing(await current(base.read)).length === 0) return "saved";
+  // A base that names no next version may not be the head: never "already listed" off it
+  // (the write below reads again, and refuses while it stays inconclusive).
+  if (base.nextVersion !== null && missing(await current(base.read)).length === 0) return "saved";
   let sealed: unknown;
   const written = await io.write({
     signer: keys.signer,

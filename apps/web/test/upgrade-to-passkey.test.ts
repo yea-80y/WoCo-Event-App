@@ -55,6 +55,7 @@ import {
 } from "../src/lib/auth/upgrade-to-passkey.js";
 import { parseUpgradeMarker, upgradeMarkerKey } from "../src/lib/auth/upgrade-marker.js";
 import type { SavedHoldingCopies } from "../src/lib/holding/account-copy.js";
+import { holdingCopySigner } from "@woco/shared/holding/copy";
 
 const PARENT = "0x1111111111111111111111111111111111111111";
 const EMAIL_KEY = "0x2222222222222222222222222222222222222222";
@@ -296,11 +297,11 @@ test("PQ4: the new seed reaches only its PRF-locked copy and the PRF-sealed enve
   // The copies are SIGNED by the new feed key (a KDF child of the seed), never handed the seed.
   assert.deepEqual(f.calls.find((c) => c.name === "writeProfile")!.args[0], NEW_FEED.address);
   assert.deepEqual(f.calls.find((c) => c.name === "writeReferral")!.args, [NEW_FEED.address, REFERRER]);
-  // Receipts: read under the OLD seed, saved with keys the NEW seed gives - its feed signer
-  // among them - and never the seed itself (the `seen` list above).
+  // Receipts: read under the OLD seed, saved with keys the NEW seed gives - its receipt
+  // copy signer among them - and never the seed itself (the `seen` list above).
   assert.deepEqual(f.calls.find((c) => c.name === "readReceipts")!.args, [OLD_SEED]);
   const [to, saved] = f.calls.find((c) => c.name === "writeReceipts")!.args as [{ signer: { address: string } }, unknown];
-  assert.equal(to.signer.address, NEW_FEED.address.toLowerCase());
+  assert.equal(to.signer.address, holdingCopySigner(Buffer.from(NEW_SEED.slice(2), "hex")).address);
   assert.equal(saved, SAVED_RECEIPTS);
 });
 
