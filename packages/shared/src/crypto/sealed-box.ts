@@ -137,6 +137,35 @@ export function doorKeyProofSealContext(eventId: string, parent: string, challen
   return { info: DOOR_KEY_PROOF_SEAL_INFO, aad: `${DOOR_KEY_PROOF_SEAL_INFO}:${eventId}:${parent}:${challengeId}` };
 }
 
+/**
+ * Ticket receipts (`holding/`, spec woco-ops/spec-receipt-note-20261123.md section 5). Each
+ * is bound to its order's pickup id, so a box opened under another order fails its tag.
+ * FROZEN, all three:
+ *   SECRET - a signed-in buyer's order secret, sealed to their account's order key;
+ *   BOX    - the receipts of one order, sealed to the order's pickup key;
+ *   COPY   - the buyer's own copy (secret + receipts), sealed to their account's order key.
+ */
+export const HOLDING_SECRET_SEAL_INFO = "woco/holding/v1/secret";
+export const HOLDING_BOX_SEAL_INFO = "woco/holding/v1/box";
+export const HOLDING_COPY_SEAL_INFO = "woco/holding/v1/copy";
+
+function holdingContext(info: string, pickupId: string): SealContext {
+  if (!/^[0-9a-f]{64}$/.test(pickupId)) throw new Error("holding seal context: pickup id must be 64 lowercase hex");
+  return { info, aad: `${info}:${pickupId}` };
+}
+
+export function holdingSecretSealContext(pickupId: string): SealContext {
+  return holdingContext(HOLDING_SECRET_SEAL_INFO, pickupId);
+}
+
+export function holdingBoxSealContext(pickupId: string): SealContext {
+  return holdingContext(HOLDING_BOX_SEAL_INFO, pickupId);
+}
+
+export function holdingCopySealContext(pickupId: string): SealContext {
+  return holdingContext(HOLDING_COPY_SEAL_INFO, pickupId);
+}
+
 const suite = new CipherSuite({ kem: new XWingKem(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
 
 function toBytes(key: Uint8Array | string): Uint8Array {
