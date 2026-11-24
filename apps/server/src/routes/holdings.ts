@@ -26,11 +26,11 @@ import { clientIp } from "../lib/http/client-ip.js";
 import { errorClass } from "../lib/http/error-class.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { eraseOrder, type EraseOutcome } from "../lib/attendee-batch/erase.js";
-import { erasureStarted } from "../lib/attendee-batch/order-gateway.js";
 import {
   holdingByPickupId,
   holdingsForAccount,
   holdingStoreUnreadable,
+  isHoldingBoxStoring,
   markHoldingErased,
   type HoldingRecordV1,
 } from "../lib/holding/store.js";
@@ -38,16 +38,22 @@ import {
 export interface HoldingsRouteDeps {
   /** Erase the box on the attendee batch, wherever it is (`eraseOrder`). Resumable. */
   eraseBox(root: string): Promise<EraseOutcome>;
-  /** The attendee ledger's own answer: has an erasure of this root begun? */
-  erasureStarted(root: string): boolean;
   now(): number;
 }
 
 const liveDeps: HoldingsRouteDeps = {
   eraseBox: (root) => eraseOrder(root, { by: "request" }),
-  erasureStarted: (root) => erasureStarted(root),
   now: () => Date.now(),
 };
+
+function tryLater(c: Context<AppEnv>) {
+  return c.json({ ok: false, error: "Could not erase it right now - try again later" }, 503);
+}
+
+function storingNow(c: Context<AppEnv>) {
+  c.header("Retry-After", "60");
+  return c.json({ ok: false, error: "Your receipt is being saved right now - try again in a minute" }, 409);
+}
 
 const PICKUP_ID_RE = /^[0-9a-f]{64}$/;
 /** A 65-byte signature as 0x-hex is 132 characters; anything much longer is not one. */
@@ -123,36 +129,37 @@ export function holdingsRoutes(deps: HoldingsRouteDeps = liveDeps) {
     if (!r) return notFound(c);
     const nowSecs = Math.floor(deps.now() / 1000);
     if (!checkErasePickup({ pickupId, issuedAt, signature: sig, expectedSigner: r.pickupSigner, nowSecs })) {
+      // An id `/pickup` calls unknown (unpaid, erased) reads the same here to anyone without its key.
+      if (!collectable(r)) return notFound(c);
       return c.json({ ok: false, error: "Not signed by this receipt's key, or the signature is out of date" }, 403);
     }
     if (!r.issued) return c.json({ ok: false, error: "There is no receipt to erase yet" }, 409);
-
-    // Run every time, even for a record already marked erased: the erase is resumable,
-    // so a retry finishes a burn an earlier attempt left part done.
     const root = r.issued.boxRoot;
+    if (isHoldingBoxStoring(root)) return storingNow(c);
+
+    // The buyer's erase is recorded BEFORE the burn, as the ledger records an erasure
+    // before its first chunk: the minute sweep then leaves the record (its public values
+    // stay until the event's end), and a crash or a failed burn leaves the intent on disk
+    // for the retry. A box not yet stored goes with this write.
+    if (!markHoldingErased(r.sessionId, deps.now())) return tryLater(c);
+
+    // Every time, even for a record already erased: the erase is resumable, so a retry
+    // finishes a burn an earlier attempt left part done.
     let out: EraseOutcome;
     try {
       out = await deps.eraseBox(root);
     } catch (err) {
       console.error(`[holdings] erase of ${r.sessionId}'s box failed (${errorClass(err)})`);
-      // Once a burn has started the box is hidden from every reader, and the minute sweep
-      // would delete the whole record (public values included) as "erased elsewhere".
-      // Record the buyer's erase now; the retry this answer asks for finishes the burn.
-      if (deps.erasureStarted(root)) markHoldingErased(r.sessionId, deps.now());
-      return c.json({ ok: false, error: "Could not erase it right now - try again later" }, 503);
+      return tryLater(c);
     }
-    if (out.kind === "in-flight") {
-      c.header("Retry-After", "60");
-      return c.json({ ok: false, error: "Your receipt is being saved right now - try again in a minute" }, 409);
-    }
-    if (out.kind === "hold-not-deleted") {
-      return c.json({ ok: false, error: "Could not erase it right now - try again later" }, 503);
-    }
-    // "not-found": the attendee batch holds no record of it (never stored, nothing left
-    // here either), so there is nothing more to erase there.
-    if (out.kind === "not-found") console.warn(`[holdings] ${r.sessionId}: no attendee-batch record of its box; erasing ours`);
-    if (!markHoldingErased(r.sessionId, deps.now())) {
-      return c.json({ ok: false, error: "Could not erase it right now - try again later" }, 503);
+    if (out.kind === "in-flight") return storingNow(c);
+    if (out.kind === "hold-not-deleted") return tryLater(c);
+    // A box never stored is tombstoned, never "not found" (and the tombstone write refuses
+    // an unreadable ledger). So "not-found" means a STORED box the ledger does not know
+    // (unreadable, or restored from an older backup): still on Swarm, never "erased".
+    if (out.kind === "not-found") {
+      console.error(`[holdings] ${r.sessionId}: the attendee ledger has no record of its stored box; not confirming the erase`);
+      return tryLater(c);
     }
     return c.json({ ok: true, data: { erased: true } });
   });

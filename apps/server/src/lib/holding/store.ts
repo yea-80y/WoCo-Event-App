@@ -22,8 +22,9 @@
  * commitments (spec 5.2, 8). That "erased" record then goes at the end.
  *
  * One key, one sale: a pickup id, a holder or answer key, a pickup signer or a count-once
- * commitment that another record already names is refused (no receipt). An order secret is
- * random, so a repeat is a broken or hostile client.
+ * commitment that another record already names is refused. An order secret is random, so
+ * a repeat is a broken or hostile client. A refused signed-in request is not "no receipt":
+ * with an email, fulfilment then makes a guest's receipt instead (`planHolding`).
  *
  * MUST SURVIVE RESTARTS until then. Losing a record loses that buyer's way to find
  * their receipt (the box on Swarm stays, at an address only the record and a guest's
@@ -561,8 +562,8 @@ export async function sweepHoldingsDue(deps: HoldingDueDeps): Promise<{ removed:
 }
 
 /**
- * A paid sale owed receipts got none (a plan, signing or keeping fault): counted, and red
- * until the next restart. Never throws.
+ * A paid sale owed receipts got none (a plan, signing or keeping fault): counted since
+ * boot, and red for a day after the latest. Never throws.
  */
 export function noteHoldingMissed(sessionId: string, why: string, now = Date.now()): void {
   health.missed++;
@@ -570,16 +571,20 @@ export function noteHoldingMissed(sessionId: string, why: string, now = Date.now
   console.error(`[holding] ${sessionId}: a paid sale got no receipt (${health.lastMissed.why})`);
 }
 
+/** How long one missed receipt keeps the section red: long enough to be seen, never cleared only by a restart. */
+export const MISSED_RECEIPT_RED_MS = 24 * 60 * 60 * 1000;
+
 /**
  * `/api/health`: red while a record is unreadable, a box has waited over an hour to be
- * stored, or (since boot) a paid sale owed receipts got none.
+ * stored, or for a day after a paid sale owed receipts got none (`missed` counts since boot).
  */
 export function holdingReceiptsHealth(now = Date.now()) {
   scanOnce();
   const waiting = unstoredHoldings().filter((r) => now - Date.parse(r.issued!.issuedAt) > 60 * 60 * 1000).length;
   const erased = [...cache.values()].filter((r) => r.erasedAt).length;
+  const missedRecently = health.lastMissed !== null && now - Date.parse(health.lastMissed.at) < MISSED_RECEIPT_RED_MS;
   return {
-    ok: unreadable.size === 0 && waiting === 0 && health.missed === 0,
+    ok: unreadable.size === 0 && waiting === 0 && !missedRecently,
     unreadable: unreadable.size,
     unstoredOverAnHour: waiting,
     records: cache.size,

@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
@@ -73,7 +73,7 @@ const honestBurns = {
 let clock = Date.now();
 let eraseBox: (root: string) => ReturnType<typeof eraseOrder> = (root) => eraseOrder(root, { by: "request" }, honestBurns as never);
 const app = new Hono();
-app.route("/api/holdings", holdingsRoutes({ eraseBox: (root) => eraseBox(root), erasureStarted, now: () => clock }));
+app.route("/api/holdings", holdingsRoutes({ eraseBox: (root) => eraseBox(root), now: () => clock }));
 app.route("/api/ops", ops);
 
 let sessions = 0;
@@ -251,7 +251,7 @@ test("erase, box not yet stored: tombstoned as a receipt so it can never be stor
   assert.equal(tomb.kind, "holding", "never read as an organiser's order");
   assert.equal(tomb.erasedBy, "request");
   assert.equal(tomb.retainMonths, 12);
-  assert.equal(tomb.emailHash, "e5".repeat(32), "a later request by email is answered 'erased'");
+  assert.equal(tomb.emailHash, undefined, "the buyer's erase unlinks the email before the tombstone is written");
 
   const after = store.getHolding(sale.sessionId)!;
   assert.ok(after.erasedAt);
@@ -322,7 +322,7 @@ test("erase before payment: nothing to erase yet; unknown id: not found", async 
   assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(ghost, "0d".repeat(32)))).status, 404);
 });
 
-test("erase while the box is being stored: try again in a minute, nothing changes; a failed burn: try later", async () => {
+test("erase while the box is being stored: try again in a minute, nothing changes", async () => {
   const sale = await guestSale({ stored: false });
   store.setHoldingBoxStoring(sale.boxRoot, true);
   try {
@@ -335,16 +335,6 @@ test("erase while the box is being stored: try again in a minute, nothing change
   assert.ok(store.getHolding(sale.sessionId)!.issued!.box);
   assert.equal(ledger.getOrderRecord(sale.boxRoot), null);
 
-  const stored = await guestSale({ stored: true });
-  eraseBox = async () => {
-    throw new Error("bee unreachable");
-  };
-  try {
-    assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(stored.r, stored.pv.pickupId))).status, 503);
-  } finally {
-    eraseBox = (root) => eraseOrder(root, { by: "request" }, honestBurns as never);
-  }
-  assert.equal(store.getHolding(stored.sessionId)!.erasedAt, undefined, "nothing marked erased that was not");
 });
 
 test("a burn that fails part done: the buyer's erase is recorded at once, the sweep keeps the public values, a retry finishes the burn", async () => {
@@ -368,7 +358,7 @@ test("a burn that fails part done: the buyer's erase is recorded at once, the sw
   assert.equal(ledger.getOrderRecord(sale.boxRoot)!.state, "burned");
 });
 
-test("a failed erase that never started a burn changes nothing", async () => {
+test("a failed erase still records the buyer's erase before anything else; the retry finishes it", async () => {
   const sale = await guestSale({ stored: true });
   eraseBox = async () => {
     throw new Error("no stamper");
@@ -378,7 +368,56 @@ test("a failed erase that never started a burn changes nothing", async () => {
   } finally {
     eraseBox = (root) => eraseOrder(root, { by: "request" }, honestBurns as never);
   }
-  assert.equal(store.getHolding(sale.sessionId)!.erasedAt, undefined);
+  assert.ok(store.getHolding(sale.sessionId)!.erasedAt, "the intent is on disk");
+  assert.equal(ledger.getOrderRecord(sale.boxRoot)!.state, "stored");
+  assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(sale.r, sale.pv.pickupId))).status, 200);
+  assert.equal(ledger.getOrderRecord(sale.boxRoot)!.state, "burned");
+});
+
+test("the minute sweep firing inside the burn's upload never deletes the buyer's record, with or without a failing burn", async () => {
+  for (const failing of [false, true]) {
+    const sale = await guestSale({ stored: true });
+    let swept = 0;
+    const sweepingBurns = {
+      stamper: writer.getAttendeeStamper,
+      upload: async (burner: { identifier: Uint8Array; owner: Uint8Array }) => {
+        // The chunk's burn is planned (the ledger already reads it erased); the minute tick fires now.
+        store.sweepHoldings(ledger.isOrderErased);
+        swept++;
+        if (failing) throw new Error("bee down mid-burn");
+        return keccak256(concat([burner.identifier, burner.owner])).slice(2);
+      },
+    };
+    eraseBox = (root) => eraseOrder(root, { by: "request" }, sweepingBurns as never);
+    let status: number;
+    try {
+      status = (await post("/api/holdings/pickup/erase", await eraseBody(sale.r, sale.pv.pickupId))).status;
+    } finally {
+      eraseBox = (root) => eraseOrder(root, { by: "request" }, honestBurns as never);
+    }
+    assert.ok(swept > 0, "the sweep ran inside the burn");
+    assert.equal(status, failing ? 503 : 200);
+    const rec = store.getHolding(sale.sessionId);
+    assert.ok(rec?.erasedAt, `record kept, marked erased (failing=${failing})`);
+    assert.deepEqual(rec!.holders, sale.pv.holders, "public values kept");
+    if (failing) {
+      assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(sale.r, sale.pv.pickupId))).status, 200, "the retry still reaches it");
+    }
+    assert.equal(ledger.getOrderRecord(sale.boxRoot)!.state, "burned");
+  }
+});
+
+test("a bad signature on an id /pickup calls unknown reads the same here: not found", async () => {
+  const erased = await guestSale({ stored: false });
+  store.markHoldingErased(erased.sessionId);
+  const unpaid = await accountSale("0x" + "a4".repeat(20), { paid: false });
+  const stranger = new Uint8Array(32).fill(224);
+  for (const s of [erased, unpaid]) {
+    assert.equal((await post("/api/holdings/pickup", { pickupId: s.pv.pickupId })).status, 404);
+    assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(s.r, s.pv.pickupId, undefined, stranger))).status, 404);
+  }
+  const live = await guestSale({ stored: false });
+  assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(live.r, live.pv.pickupId, undefined, stranger))).status, 403);
 });
 
 test("an erasure meeting a real store in flight waits for it, then burns it", async () => {
@@ -496,4 +535,54 @@ test("the organiser's orders view never lists a receipt box, erased or asked abo
   assert.equal(ledger.isOrderErased(sale.boxRoot), true);
   const status = ordersStatus({ eventId: EVENT, title: "t", series: [] }, [sale.boxRoot]);
   assert.equal(status.erased.includes(sale.boxRoot), false);
+});
+
+// ── When the attendee ledger cannot say (last: these swap the ledger file) ──────
+
+const SLOTS = () => join(process.cwd(), ".data", "attendee-slots.json");
+const opsBurn = (root: string) => opsPost(`/api/ops/attendee-batch/orders/${root}/burn`, { by: "test", reason: "erasure request" });
+
+test("an unreadable attendee ledger: neither route confirms an erase, nothing is burned or deleted", async () => {
+  const sale = await guestSale({ stored: true });
+  const good = readFileSync(SLOTS(), "utf-8");
+  writeFileSync(SLOTS(), "{ not json", { mode: 0o600 });
+  ledger._resetAttendeeLedgerForTests();
+  const before = burns;
+  try {
+    assert.equal(ledger.ledgerReadable(), false);
+    assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(sale.r, sale.pv.pickupId))).status, 503);
+    assert.equal(burns, before, "nothing burned");
+    assert.ok(store.getHolding(sale.sessionId), "the record stays");
+    assert.equal((await opsBurn(sale.boxRoot)).status, 503);
+    assert.ok(store.getHolding(sale.sessionId), "an empty answer deletes nothing");
+    assert.equal((await opsBurn("0b".repeat(32))).status, 503, "any root: an empty ledger cannot say 'no such order'");
+    // A receipt never stored: the tombstone write itself refuses an unreadable ledger.
+    const waiting = await guestSale({ stored: false });
+    assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(waiting.r, waiting.pv.pickupId))).status, 503);
+  } finally {
+    writeFileSync(SLOTS(), good, { mode: 0o600 });
+    ledger._resetAttendeeLedgerForTests();
+  }
+  assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(sale.r, sale.pv.pickupId))).status, 200, "restored, the retry finishes");
+  assert.equal(ledger.getOrderRecord(sale.boxRoot)!.state, "burned");
+});
+
+test("a ledger restored from before the box was stored: no route confirms or deletes", async () => {
+  const older = readFileSync(SLOTS(), "utf-8");
+  const sale = await guestSale({ stored: true });
+  const current = readFileSync(SLOTS(), "utf-8");
+  writeFileSync(SLOTS(), older, { mode: 0o600 });
+  ledger._resetAttendeeLedgerForTests();
+  try {
+    assert.equal(ledger.ledgerReadable(), true);
+    assert.equal(ledger.getOrderRecord(sale.boxRoot), null);
+    assert.equal((await post("/api/holdings/pickup/erase", await eraseBody(sale.r, sale.pv.pickupId))).status, 503);
+    const res = await opsBurn(sale.boxRoot);
+    assert.equal(res.status, 503);
+    assert.match(((await res.json()) as { error: string }).error, /restore the ledger/);
+    assert.ok(store.getHolding(sale.sessionId), "the only pointer to a box still on Swarm is kept");
+  } finally {
+    writeFileSync(SLOTS(), current, { mode: 0o600 });
+    ledger._resetAttendeeLedgerForTests();
+  }
 });

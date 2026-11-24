@@ -873,6 +873,11 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
   const by = (body?.by || "").trim().slice(0, 100);
   const reason = (body?.reason || "").trim().slice(0, 500);
   if (!by || !reason) return c.json({ ok: false, error: "`by` and `reason` are required - who decided this, and why?" }, 400);
+  // An unreadable ledger loads empty: every stored order would read "not found", and a
+  // receipt record deleted on that answer was the only pointer to a box still on Swarm.
+  if (!ledgerReadable()) {
+    return c.json({ ok: false, error: "The attendee ledger is unreadable - see /api/health; no erasure until restored" }, 503);
+  }
   try {
     const receipt = holdingByBoxRoot(root);
     const out = await eraseOrder(root, { by: "request" });
@@ -892,13 +897,14 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
         return c.json({ ok: false, error: "This order is being stored right now - retry in a minute and it will be burned" }, 409);
       case "hold-not-deleted":
         return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
-      case "not-found": {
-        // A receipt record whose box the ledger never knew and that holds no copy: only the record is left.
-        const deleted = receiptGone();
-        if (deleted === null) return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
-        console.log(`[ops] receipt record for ${root} (no box anywhere) deleted by ${by} (${reason})`);
-        return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null, receiptRecordDeleted: deleted } });
-      }
+      case "not-found":
+        // A receipt never stored is tombstoned, never "not found": this one was stored,
+        // and the ledger (restored from an older backup?) has lost its slots.
+        if (receipt) {
+          console.error(`[ops] receipt box ${root} was stored but the attendee ledger has no record of it - nothing erased`);
+          return c.json({ ok: false, error: "This receipt box was stored, but the attendee ledger has no record of it - restore the ledger before erasing" }, 503);
+        }
+        return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
       case "deleted-before-store": {
         const deleted = receiptGone();
         console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);

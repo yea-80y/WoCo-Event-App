@@ -18,9 +18,9 @@
  * the event.
  *
  * A buyer's ticket-receipt box (kind "holding", lib/holding/) is erased the same way,
- * but it is never an organiser's order: no door entry or held ticket is touched. One not
- * yet stored lives in the holding record, not in held orders: its local copy is dropped
- * and its root tombstoned (kind "holding"), so the retry worker can never store it. What
+ * but it is never an organiser's order: no door entry or held ticket is touched. One never
+ * stored lives in the holding record, not in held orders: its local copy (if any is left)
+ * is dropped and its root tombstoned (kind "holding"), so nothing can ever store it. What
  * else of the record goes is the caller's choice (the buyer's erase keeps the public
  * values; a data-subject request deletes the record).
  *
@@ -53,7 +53,9 @@ export async function eraseOrder(rawRoot: string, erasure: Erasure, burnDeps?: B
   if (heldBefore && !releaseHeldOrder(root)) return { kind: "hold-not-deleted" };
   if (!getOrderRecord(root)) {
     const receipt = heldBefore ? null : holdingByBoxRoot(root);
-    if (receipt?.issued?.box) {
+    // Never stored: whether its local copy is still here (an erasure request) or the
+    // buyer's own erase already dropped it, the root is tombstoned so nothing stores it.
+    if (receipt?.issued && !receipt.issued.storedAt) {
       recordErasedBeforeStore(
         root,
         {

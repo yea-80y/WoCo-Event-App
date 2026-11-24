@@ -579,14 +579,19 @@ test("each record on its own clock: 12 months after the on-chain end, the end it
   for (const s of [noEnd, rpcDown, sUnpaid]) store.deleteHolding(s);
 });
 
-test("a paid sale owed receipts that got none turns health red, and says why", () => {
+test("a paid sale owed receipts that got none turns health red for a day, and says why; the count stays", () => {
   store._resetHoldingStoreForTests();
-  assert.equal(store.holdingReceiptsHealth().ok, true);
-  store.noteHoldingMissed(nextSession(), "2 of 2 receipts not signed", Date.parse("2026-11-24T10:00:00Z"));
-  const h = store.holdingReceiptsHealth();
+  const at = Date.parse("2026-11-24T10:00:00Z");
+  assert.equal(store.holdingReceiptsHealth(at).ok, true);
+  store.noteHoldingMissed(nextSession(), "2 of 2 receipts not signed", at);
+  const h = store.holdingReceiptsHealth(at + 1000);
   assert.equal(h.ok, false);
   assert.equal(h.missed, 1);
   assert.deepEqual(h.lastMissed, { at: "2026-11-24T10:00:00.000Z", why: "2 of 2 receipts not signed" });
+  assert.equal(store.holdingReceiptsHealth(at + store.MISSED_RECEIPT_RED_MS - 1).ok, false, "still red just inside the day");
+  const later = store.holdingReceiptsHealth(at + store.MISSED_RECEIPT_RED_MS);
+  assert.equal(later.ok, true, "green a day on, with no restart");
+  assert.equal(later.missed, 1, "the count since boot is kept");
   store._resetHoldingStoreForTests();
 });
 
