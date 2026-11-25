@@ -32,6 +32,12 @@ export interface StripeAccountStatus {
    * onboarding, in which case every currency stays offered.
    */
   defaultCurrency?: string;
+  /**
+   * Our fee rate on this account's card sales now, in basis points, and the
+   * launch rate's last day (YYYY-MM-DD; null until the first paid sale starts it).
+   * Organiser Terms §6. Absent from older servers: price estimates at the standard rate.
+   */
+  launchRate?: { bp: number; lastDay: string | null };
   /** Business details the organiser gave Stripe - pre-fills their privacy notice only. */
   businessProfile?: { name?: string; supportEmail?: string; supportAddress?: string };
   requirements?: {

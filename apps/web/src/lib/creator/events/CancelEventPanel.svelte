@@ -8,7 +8,6 @@
   import {
     CANCELLATION_RETURNS_PLATFORM_FEE,
     ORGANISER_CANCEL_WINDOW_DAYS,
-    PLATFORM_FEE_BP,
     organiserCancelClosesAt,
     type EventFeed,
   } from "@woco/shared";
@@ -47,7 +46,6 @@
     const closesAt = organiserCancelClosesAt(event);
     return closesAt !== null && Date.now() > closesAt;
   });
-  const platformFeePct = `${PLATFORM_FEE_BP / 100}%`;
 
   async function openForm() {
     if (asking) return;
@@ -241,7 +239,7 @@
         <strong>What it costs you:</strong> the refunds come out of your Stripe balance. Stripe doesn't return its
         processing fee on a refund{CANCELLATION_RETURNS_PLATFORM_FEE
           ? "."
-          : `, and WoCo's ${platformFeePct} platform fee isn't returned either (see the organiser terms).`}
+          : ", and WoCo's platform fee isn't returned either (see the organiser terms)."}
         Your balance needs to cover every refund in full. Stripe holds any refund it can't cover yet and sends it
         once your balance can.
       </p>

@@ -285,7 +285,7 @@ smart-account (passkey) organiser; a wallet account gets 403 `PASSKEY_ACCOUNT_RE
 | Payout schedule | `manual` at creation | unaffected by Managed Risk (chat, 2026-07-29) |
 
 The £2/monthly-active and 0.25%+10p payout fees fall away (`fees.payer=account`);
-`application_fee_amount` (1.5%) continues — confirmed in writing, twice (§6.5).
+`application_fee_amount` (1.5%, or the 0.9% launch rate: PRICING_AND_EMAIL §7) continues — confirmed in writing, twice (§6.5).
 
 The loss waterfall for a refund/dispute on an empty balance: the organiser's
 connected account is debited first (they are merchant of record on direct

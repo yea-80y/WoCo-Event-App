@@ -1,4 +1,4 @@
-import type { PaymentConfig, CoverFeeRates } from "./types.js";
+import type { PaymentConfig, CoverFeeRates, PlatformFeeBp } from "./types.js";
 import { PLATFORM_FEE_BP } from "./types.js";
 import { FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, ACCEPTED_COVER_FEE_RATES } from "../features.js";
 
@@ -58,9 +58,14 @@ export function bookingFeePercent(payment: FeeSettings): number {
     : 0;
 }
 
-/** Our 1.5% of the ticket subtotal - the checkout's application_fee_amount. */
-export function platformFeeMinor(subtotalMinor: number): number {
-  return Math.round((subtotalMinor * PLATFORM_FEE_BP) / 10_000);
+/**
+ * Our fee on a ticket subtotal, rounded to the nearest minor unit. Checkout
+ * passes the rate it decided for the organiser's account (the launch rate or
+ * PLATFORM_FEE_BP); buyer pricing always uses the default, so no page price
+ * depends on whose launch rate is running.
+ */
+export function platformFeeMinor(subtotalMinor: number, bp: PlatformFeeBp = PLATFORM_FEE_BP): number {
+  return Math.round((subtotalMinor * bp) / 10_000);
 }
 
 /** True when checkout may charge with these stored rates. */
@@ -110,14 +115,17 @@ export interface CardOrderAmounts {
   bookingFeeMinor: number;
   /** What the buyer pays. */
   totalMinor: number;
-  applicationFeeMinor: number;
+  /** Ticket prices only: what our fee is taken on. */
+  subtotalMinor: number;
 }
 
 /**
- * What a card order costs, in minor units: the one arithmetic the checkout
- * charges (apps/server checkout-fees.ts) and every receipt and listing shows.
- * Organiser Terms §6 states it. Percent mode rounds per ticket and folds into
- * the ticket line; cover mode is one order-level line.
+ * What a card order costs the BUYER, in minor units: the one arithmetic the
+ * checkout charges (apps/server checkout-fees.ts) and every receipt and listing
+ * shows. Organiser Terms §6 states it. Percent mode rounds per ticket and folds
+ * into the ticket line; cover mode is one order-level line. Our own fee is not
+ * here: it depends on the organiser's launch rate, which no buyer price may, so
+ * checkout takes it from `subtotalMinor` with `platformFeeMinor`.
  */
 export function cardOrderAmounts(payment: FeeSettings, unitMinor: number, quantity: number): CardOrderAmounts {
   const qty = Math.max(1, quantity);
@@ -133,7 +141,7 @@ export function cardOrderAmounts(payment: FeeSettings, unitMinor: number, quanti
     orderFeeMinor: orderFee,
     bookingFeeMinor: unitFee * qty + orderFee,
     totalMinor: (unitMinor + unitFee) * qty + orderFee,
-    applicationFeeMinor: platformFeeMinor(subtotal),
+    subtotalMinor: subtotal,
   };
 }
 
@@ -151,13 +159,13 @@ export interface CardOrderAmountsMulti {
   bookingFeeMinor: number;
   /** What the buyer pays. */
   totalMinor: number;
-  applicationFeeMinor: number;
 }
 
 /**
  * `cardOrderAmounts` for tickets at different prices (allocated seating: one price per
  * band). The same rules: percent mode rounds each ticket's fee and folds it into that
- * ticket, cover mode is one order-level fee on the subtotal, our fee is on the subtotal.
+ * ticket, cover mode is one order-level fee on the subtotal, our fee is on the subtotal
+ * (taken by checkout, as for `cardOrderAmounts`).
  * With every price equal it is exactly `cardOrderAmounts` (test/event/fees.test.ts).
  * Throws on no tickets or a price that is not a whole number of minor units.
  */
@@ -179,7 +187,6 @@ export function cardOrderAmountsMulti(payment: FeeSettings, unitMinors: readonly
     orderFeeMinor: orderFee,
     bookingFeeMinor: charged - subtotal + orderFee,
     totalMinor: charged + orderFee,
-    applicationFeeMinor: platformFeeMinor(subtotal),
   };
 }
 

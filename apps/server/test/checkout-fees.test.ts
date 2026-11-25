@@ -8,12 +8,16 @@ import assert from "node:assert/strict";
 
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../src/lib/stripe/checkout-fees.js";
 import { readFileSync } from "node:fs";
-import { BUYER_FEE_FLOOR_PCT, COVER_FEE_RATES, headlinePrice, MIN_TICKET_PRICE, platformFeeMinor, type PaymentConfig } from "@woco/shared";
+import { BUYER_FEE_FLOOR_PCT, COVER_FEE_RATES, headlinePrice, LAUNCH_RATE_FEE_BP, MIN_TICKET_PRICE, platformFeeMinor, type PaymentConfig } from "@woco/shared";
+
+/** Our fee on a computeCardFees result, at the standard rate unless given. */
+const ourFee = (f: { subtotalAmount: number }, bp?: typeof LAUNCH_RATE_FEE_BP) => platformFeeMinor(f.subtotalAmount, bp);
 
 // Allocated seating (S4 departure D3): one seat of the cheapest band a plan may price
 // already carries a fee our provenance check can prove, so no per-band check is needed.
 it("the minimum ticket price carries at least the minimum application fee, per seat", () => {
   assert.ok(platformFeeMinor(MIN_TICKET_PRICE * 100) >= MIN_APPLICATION_FEE_MINOR);
+  assert.ok(platformFeeMinor(MIN_TICKET_PRICE * 100, LAUNCH_RATE_FEE_BP) >= MIN_APPLICATION_FEE_MINOR, "at the launch rate too");
 });
 
 describe("computeCardFees", () => {
@@ -22,14 +26,16 @@ describe("computeCardFees", () => {
     const f = computeCardFees({ feePassedToCustomer: true, buyerFeePercent: 10 }, 20, 1);
     assert.equal(f.buyerFeePct, 10);
     assert.equal(f.chargeAmount, 2200); // £22.00
-    assert.equal(f.totalApplicationFee, 30); // £0.30 = 1.5% of £20
+    assert.equal(f.subtotalAmount, 2000);
+    assert.equal(ourFee(f), 30); // £0.30 = 1.5% of £20
+    assert.equal(ourFee(f, LAUNCH_RATE_FEE_BP), 18); // £0.18 = 0.9% at the launch rate
   });
 
   it("absorb: buyer pays the ticket price alone; platform fee unchanged", () => {
     const f = computeCardFees({ feePassedToCustomer: false }, 20, 1);
     assert.equal(f.buyerFeePct, 0);
     assert.equal(f.chargeAmount, 2000);
-    assert.equal(f.totalApplicationFee, 30);
+    assert.equal(ourFee(f), 30);
   });
 
   it("absent flag means absorb — legacy series without the field", () => {
@@ -53,13 +59,14 @@ describe("computeCardFees", () => {
   it("application fee scales with quantity on the ticket subtotal, not the marked-up charge", () => {
     const f = computeCardFees({ feePassedToCustomer: true, buyerFeePercent: 10 }, 20, 3);
     assert.equal(f.chargeAmount, 2200); // per unit — Stripe multiplies by quantity
-    assert.equal(f.totalApplicationFee, 90); // 1.5% of £60, NOT of £66
+    assert.equal(f.subtotalAmount, 6000);
+    assert.equal(ourFee(f), 90); // 1.5% of £60, NOT of £66
   });
 
   it("sub-£1 tickets round per unit in integer cents", () => {
     const f = computeCardFees({ feePassedToCustomer: true, buyerFeePercent: 10 }, 0.55, 2);
     assert.equal(f.chargeAmount, 55 + Math.round(5.5)); // 61p per unit
-    assert.equal(f.totalApplicationFee, Math.round((110 * 150) / 10_000)); // 2p
+    assert.equal(ourFee(f), Math.round((110 * 150) / 10_000)); // 2p
   });
 });
 
@@ -67,9 +74,12 @@ describe("computeCardFees", () => {
 // whose fee rounds to 0 would be charged and never fulfilled.
 describe("the fee floor", () => {
   it("a 30p ticket rounds to no fee, so it sits below the floor", () => {
-    assert.equal(computeCardFees({}, 0.3, 1).totalApplicationFee, 0);
-    assert.ok(computeCardFees({}, 0.3, 1).totalApplicationFee < MIN_APPLICATION_FEE_MINOR);
-    assert.ok(computeCardFees({}, 0.34, 1).totalApplicationFee >= MIN_APPLICATION_FEE_MINOR);
+    assert.equal(ourFee(computeCardFees({}, 0.3, 1)), 0);
+    assert.ok(ourFee(computeCardFees({}, 0.3, 1)) < MIN_APPLICATION_FEE_MINOR);
+    assert.ok(ourFee(computeCardFees({}, 0.34, 1)) >= MIN_APPLICATION_FEE_MINOR);
+    // At the launch rate the floor sits at 56p, still under the £1 minimum ticket.
+    assert.ok(ourFee(computeCardFees({}, 0.55, 1), LAUNCH_RATE_FEE_BP) < MIN_APPLICATION_FEE_MINOR);
+    assert.ok(ourFee(computeCardFees({}, 0.56, 1), LAUNCH_RATE_FEE_BP) >= MIN_APPLICATION_FEE_MINOR);
   });
 
   it("both card checkouts refuse a sale below the floor before creating a session", () => {
@@ -83,6 +93,20 @@ describe("the fee floor", () => {
       assert.ok(g >= 0, `${rel} must refuse a fee below the floor`);
       assert.ok(g < src.indexOf(create), `${rel}: the refusal comes before the session`);
     }
+  });
+});
+
+describe("the launch rate at checkout", () => {
+  it("decides our fee once, for the organiser's account, before the floor check, the tag and the session", () => {
+    const src = readFileSync(new URL("../src/routes/stripe.ts", import.meta.url), "utf-8");
+    const decide = src.indexOf("platformFeeBpAt(firstSaleAtMs(organiserRecord.stripeAccountId), Date.now())");
+    const fee = src.indexOf("const totalApplicationFee = platformFeeMinor(subtotalAmount, feeBp)");
+    const floor = src.indexOf("totalApplicationFee < MIN_APPLICATION_FEE_MINOR");
+    const tag = src.indexOf("applicationFee: totalApplicationFee,");
+    const intent = src.indexOf("application_fee_amount: totalApplicationFee,");
+    assert.ok(decide >= 0 && decide < fee && fee < floor && floor < tag && tag < intent);
+    // One decision: no second fee computation anywhere in the route.
+    assert.equal(src.split("platformFeeMinor(").length - 1, 1);
   });
 });
 
@@ -115,7 +139,7 @@ describe("cover the fees", () => {
     assert.equal(f.chargeAmount, 2000);
     assert.ok(f.orderFeeAmount > 0);
     assert.equal(f.sessionAmount, 2000 * 3 + f.orderFeeAmount);
-    assert.equal(f.totalApplicationFee, 90); // 1.5% of the tickets, never of the fee
+    assert.equal(ourFee(f), 90); // 1.5% of the tickets, never of the fee
   });
 
   it("checkout refuses unaccepted stored rates and sends the fee as its own line", () => {

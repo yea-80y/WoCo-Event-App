@@ -18,6 +18,8 @@ Every statement is computed on request from:
 - A sale earns if it is a ticket sale (never shop, never reconciliation) made at or after its organiser's `confirmedAt`.
 - Base = the platform fee WoCo kept on it, in the fee's currency. Never the charge amount.
 - Share = the schedule entry in force on the SALE date. A change is a new entry from the date in its notice, so it never touches earnings already accrued.
+- FLOOR (ToS §9 since 2026-11-25, printed on the organiser flyer): 40% for at least 12 months from a referred organiser's first earning sale, for every organiser referred before a change's notice date. A sale-date schedule cannot express that, so a second schedule entry needs a per-organiser floor first; `packages/shared/test/event/referral-share-floor.test.ts` fails on one.
+- During a referred organiser's launch rate WoCo keeps 0.9%, so the base is smaller; the share is still 40% of it (PRICING_AND_EMAIL §7).
 - Payable when: the organiser's sale is `released`, the event is over (`releaseAfter` passed, and not the 14-day no-date fallback), and Stripe reads that payout `paid`, or the ledger settled it with no payout (`settle_…`). Before that: pending. A release with a negative net (a debt) still earns if the rules below say so.
 - Earns nothing (owner 2026-11-03): refunded in full (a ledger `void` for no net proceeds is the same case), chargeback lost, fee returned in full. An open dispute is pending, not zero; a won one earns. A partial refund that keeps the fee earns the full fee, even one above the organiser's net.
 - Withholds (§9: self-referral, fraud, breach) hold a referrer, a referee or one sale. Held earnings stay on the statement; a lift releases them. A withhold on a sale already paid for acts as a reversal (below).
@@ -35,4 +37,4 @@ Withhold: `POST /api/ops/referral-earnings/withholds {by, scope, key, reason}`; 
 
 ## Not built
 
-Per-referrer rates, caps and an end period (§9 allows them; add them to the schedule when one is decided). A referrer-facing view. Automated sending. No statement is ever published: 40% of 1.5% gives away the organiser's takings.
+Per-referrer rates, caps and an end period (§9 allows them, subject to the 12-month floor; add them to the schedule when one is decided). A referrer-facing view. Automated sending. No statement is ever published: 40% of a known fee rate gives away the organiser's takings.

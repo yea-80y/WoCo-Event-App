@@ -197,11 +197,27 @@ export interface PaymentQuote {
 export const PLATFORM_FEE_BP = 150; // 1.5%
 
 /**
+ * The launch rate (Organiser Terms §6, printed on the organiser flyer): a
+ * time-limited DISCOUNT off PLATFORM_FEE_BP for a payment account's first
+ * LAUNCH_RATE_MONTHS from its first paid sale. It is not a lowering of the fee,
+ * so it never lowers the §6 cap. Card ticket sales only; buyer prices never see
+ * it (the booking fee still prices at PLATFORM_FEE_BP). The clock lives in
+ * apps/server lib/stripe/launch-rate.ts.
+ */
+export const LAUNCH_RATE_FEE_BP = 90; // 0.9%
+export const LAUNCH_RATE_MONTHS = 3;
+
+/** The two rates our application fee on a card ticket sale can be. */
+export type PlatformFeeBp = typeof PLATFORM_FEE_BP | typeof LAUNCH_RATE_FEE_BP;
+
+/**
  * Whether our application fee goes back to the organiser when they cancel an
  * event and every buyer is refunded (#644). OFF: we keep it, as ORGANISER_TERMS
  * §6 says (owner decision 2026-09-25, option A). A future USP may turn it on —
  * change the terms in the same PR. Each cancellation captures the value at the
  * moment it is made, so flipping this never changes one already under way.
+ * Turning it on also changes which sales start the launch-rate clock: a sale
+ * whose fee we return in full is not a first sale (lib/stripe/first-sales.ts).
  */
 export const CANCELLATION_RETURNS_PLATFORM_FEE = false;
 
@@ -219,9 +235,14 @@ export interface ReferralShareTerms {
  * force when it was made, so a change cannot touch earnings already accrued.
  * Sorted by `from`. §9 also allows per-referrer rates, caps and an end period;
  * none is set, and none is modelled until one is.
+ *
+ * FLOOR (ToS §9, printed on the organiser flyer): a referred organiser's sales
+ * earn 40% for at least the first 12 months from the first sale that earns a
+ * share. A new entry here would cut that by sale date alone, so adding one needs
+ * a per-organiser rule first (packages/shared/test/event/referral-share-floor.test.ts trips).
  */
 export const REFERRAL_SHARE_SCHEDULE: readonly ReferralShareTerms[] = [
-  // Launch rate: 40% of the 1.5% fee, from launch day.
+  // The referral share at launch: 40% of the platform fee WoCo keeps, from launch day.
   { from: "2026-10-23T00:00:00.000Z", bp: 4000 },
 ];
 

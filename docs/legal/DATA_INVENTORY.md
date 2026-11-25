@@ -300,7 +300,7 @@ Consequences:
 - WoCo is a **disclosed agent / platform intermediary**. Fee model (RESOLVED 2026-08-01,
   `lib/stripe/checkout-fees.ts` + `checkout-fees.test.ts`): the organiser chooses per series
   a booking fee - its own % (`buyerFeePercent`, the default, 10%, floor 4.5%), "Buyer pays
-  fees" (`coverFees`) or none - and the buyer's total includes it; `application_fee_amount` = **1.5% of the ticket subtotal** (`PLATFORM_FEE_BP`);
+  fees" (`coverFees`) or none - and the buyer's total includes it; `application_fee_amount` = **1.5% of the ticket subtotal** (`PLATFORM_FEE_BP`), 0.9% for an account's first three months (`LAUNCH_RATE_FEE_BP`, Organiser Terms §6);
   Stripe's processing fee is charged to the connected account (`fees.payer = "account"`,
   `account-params.ts:40`). Confirmed against Stripe's direct-charge docs: connected account nets
   charge − processing fee − application fee. `ORGANISER_TERMS.md` §6 carries the worked example.

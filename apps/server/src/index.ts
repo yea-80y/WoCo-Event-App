@@ -74,7 +74,8 @@ import { onchainRegistryHealth } from "./lib/event/onchain-registry.js";
 import { issuerBindingHealth } from "./lib/issuer/binding.js";
 import { directoryHealth, startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { listingStateHealth } from "./lib/event/listing-state.js";
-import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
+import { startPayoutReleaseJob, payoutSweepHealth, payoutSweepRunning } from "./lib/stripe/payout-release.js";
+import { firstSalesHealth } from "./lib/stripe/first-sales.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
 import { siteRuntimeReleases, SITE_RUNTIME_REFRESH_MS } from "./lib/site/runtime-release.js";
@@ -351,6 +352,12 @@ function healthReport() {
     // half-truth on an endpoint an operator acts on is worse than no claim.
     build: buildInfo(),
     payoutSweep: payoutSweepHealth(),
+    // The launch-rate clock (Organiser Terms §6): each account's first paid sale,
+    // read from our Stripe fees. Red = no scan for a day, no full rebuild for 8
+    // days, or a ledgered sale the scan has not found (`uncovered`). Every one of
+    // these errs towards the launch rate: income lost, never an organiser
+    // overcharged. Flags and times only: no count of selling organisers.
+    launchRate: firstSalesHealth(payoutSweepRunning()),
     // Auto-refunds that could not be created (#367). `pending` or `abandoned`
     // non-zero is an alarm: a buyer paid, got no ticket, and has no money back
     // yet — and until it lands the organiser is still scheduled to be paid for

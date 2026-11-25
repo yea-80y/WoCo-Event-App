@@ -591,6 +591,8 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
   stripe-payout-surplus.json (#781 part 2 — surplus clocks. Losing it only restarts the 7-day
     wait before money the ledger cannot explain is paid out; it never pays early)
+  stripe-first-sales.json (launch rate — each account's first paid sale, read from our Stripe fees. A
+    CACHE: lost or unreadable = every account on 0.9% until the next hourly sweep rebuilds it; never overcharges)
   stripe-unledgered-charges.json (#805 — WoCo charges with no ledger row; each holds its account's
     surplus. Losing it costs one full rescan of our fees and re-opens operator resolutions; never pays)
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
