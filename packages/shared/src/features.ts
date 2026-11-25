@@ -119,8 +119,8 @@ export const FEATURES = {
 /**
  * The lowest ticket price, in major units of the ticket's currency (£1, $1, €1 -
  * the only currencies offered). Below it Stripe's own per-card fee eats most of
- * the price, and below 34p our 1.5% fee rounds to nothing, which checkout refuses
- * (#645, MIN_APPLICATION_FEE_MINOR). Checked at publish, in the editor and on the
+ * the price, and below 34p our 1.5% fee rounds to nothing (56p at the 0.9% launch
+ * rate), which checkout refuses (#645, MIN_APPLICATION_FEE_MINOR). Checked at publish, in the editor and on the
  * server, so an organiser never publishes a ticket nobody can buy.
  */
 export const MIN_TICKET_PRICE = 1;

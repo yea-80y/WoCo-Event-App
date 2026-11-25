@@ -125,15 +125,16 @@
       <span class="mono-kicker offer-kicker">// LAUNCH OFFER</span>
       <h2>Bring someone over. Take 40% of our fee.<span class="star">*</span></h2>
       <p>
-        Share your link. When someone starts selling through it, 40% of the
-        1.5% we take comes back to you.
+        Share your link. When someone starts selling through it, 40% of our
+        fee on their sales comes back to you, for at least their first 12 months.
       </p>
       <button class="btn btn--primary" onclick={() => navigate("/profile")}>
         Get your link
         <ArrowRight size={18} strokeWidth={2.5} />
       </button>
       <p class="offer-fine">
-        * Launch rate, and it can change - we'll tell you before it does. Your
+        * Launch offer. It can change, and we'll tell you before it does, but never
+        within the first 12 months of anyone who has signed up through your link. Your
         share builds up from each sale and is paid monthly in stablecoin once
         the event has taken place. We're aiming for the first payout on or
         before 31 December 2026.
@@ -190,8 +191,8 @@
       </p>
     </article>
 
-    <!-- 30p on a £20 ticket is exact: checkout-fees.ts charges the 1.5% on the
-         ticket subtotal, not the total. -->
+    <!-- 30p on a £20 ticket is exact at the standard rate: checkout takes our
+         fee on the ticket subtotal, not the total (18p at the launch rate). -->
     <article class="reason">
       <div class="reason-top">
         <span class="reason-num mono">03</span>
@@ -200,7 +201,8 @@
       <h3>Charge a booking fee. Keep it.</h3>
       <p>
         Most platforms add a booking fee and pocket it. Set yours here and it's
-        yours. We take 1.5% of the ticket price, nothing else.
+        yours. We take 1.5% of the ticket price, nothing else - and 0.9% for
+        your first three months.
       </p>
       <p>
         A £20 ticket with a 10% booking fee: the buyer pays £22. We take 30p,
@@ -432,8 +434,8 @@
         <SprayCan size={42} color="var(--text)" paintColor="var(--accent)" />
         <h2>Put your next event on sale.</h2>
         <p>
-          Free to set up. 1.5% when you sell, and never more. The following you
-          build is yours to keep.
+          Free to set up. 0.9% for your first three months, then 1.5%, never
+          higher. The following you build is yours to keep.
         </p>
         <div class="closing-actions">
           <button class="btn btn--primary btn--lg" onclick={() => navigate("/creator")}>

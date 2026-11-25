@@ -288,7 +288,8 @@
           organiser's own Stripe account. We don't hold the money, and we
           normally release each event's takings after the event. Our fee is 1.5%
           of the ticket price, and it only goes down: the organiser terms cap it
-          at 1.5% and stop any update to those terms raising the cap.
+          at 1.5% and stop any update to those terms raising the cap. At launch,
+          new organisers pay 0.9% for their first three months.
         </p>
         <button class="doc-link" onclick={() => navigate("/legal/organiser-terms")}>
           Organiser terms <ArrowRight size={14} strokeWidth={2.5} />

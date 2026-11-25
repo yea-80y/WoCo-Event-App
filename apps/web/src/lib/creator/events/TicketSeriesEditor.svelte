@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PaymentConfig, PaymentChainId, Hex0x, ObjectGate, ObjectGateGroup } from "@woco/shared";
   import ObjectGateEditor from "../../components/object/ObjectGateEditor.svelte";
-  import { CHAIN_NAMES, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, STRIPE_UK_STANDARD_CARD, cardOrderAmounts } from "@woco/shared";
+  import { CHAIN_NAMES, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, STRIPE_UK_STANDARD_CARD, cardOrderAmounts, platformFeeMinor, PLATFORM_FEE_BP, LAUNCH_RATE_FEE_BP, type PlatformFeeBp } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import ConnectWalletModal from "../../components/profile/ConnectWalletModal.svelte";
@@ -136,6 +136,27 @@
     stripeStatus?.defaultCurrency?.toUpperCase() as Ccy | undefined,
   );
   const currencyOptions = $derived<readonly Ccy[]>(currencyChoices(payoutCurrency));
+
+  /**
+   * Our card fee rate for this organiser's estimate (Organiser Terms §6): the
+   * launch rate while their account is on it, and for an organiser with no
+   * payment account yet, whose first sale will start it. A status we could not
+   * read estimates at the standard rate, never below what we will charge.
+   */
+  const cardFeeBp = $derived<PlatformFeeBp>(
+    stripeStatus?.launchRate?.bp === LAUNCH_RATE_FEE_BP || stripeStatus?.connected === false
+      ? LAUNCH_RATE_FEE_BP
+      : PLATFORM_FEE_BP,
+  );
+  const pct = (bp: number) => `${bp / 100}%`;
+  const launchRateNote = $derived.by(() => {
+    if (cardFeeBp !== LAUNCH_RATE_FEE_BP) return null;
+    const lastDay = stripeStatus?.launchRate?.lastDay;
+    const until = lastDay
+      ? `until ${new Date(`${lastDay}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })}`
+      : "for three months from your first paid sale";
+    return `Launch rate: our fee is ${pct(LAUNCH_RATE_FEE_BP)} ${until}, then ${pct(PLATFORM_FEE_BP)}.`;
+  });
   /** True when the organiser banks in a currency WoCo does not sell in. */
   const payoutCurrencyUnsupported = $derived(
     !!payoutCurrency && !(ALL_CURRENCIES as readonly string[]).includes(payoutCurrency),
@@ -398,6 +419,8 @@
     const unitMinor = Math.round(amount * 100);
     const a = cardOrderAmounts(tierFeeSettings(tier), unitMinor, 1);
     const stripeFee = Math.round((a.totalMinor * STRIPE_UK_STANDARD_CARD.bp) / 10_000) + STRIPE_UK_STANDARD_CARD.fixedMinor;
+    const cardPlatformFee = platformFeeMinor(a.subtotalMinor, cardFeeBp);
+    const cryptoPlatformFee = platformFeeMinor(a.subtotalMinor);
     const hasStripe = tier.stripeEnabled;
     const hasCrypto = tier.cryptoEnabled;
     const passed = a.mode !== "none";
@@ -407,13 +430,13 @@
       basePrice: fmt(unitMinor),
       buyerMarkup: fmt(a.bookingFeeMinor),
       stripeFee: hasStripe ? fmt(stripeFee) : null,
-      platformFeeCard: hasStripe ? fmt(a.applicationFeeMinor) : null,
-      platformFeeCrypto: hasCrypto ? fmt(a.applicationFeeMinor) : null,
+      platformFeeCard: hasStripe ? fmt(cardPlatformFee) : null,
+      platformFeeCrypto: hasCrypto ? fmt(cryptoPlatformFee) : null,
       cardTotal: hasStripe && passed ? fmt(a.totalMinor) : null,
       // Card arithmetic; the crypto column is moot while cryptoPaymentsAllowed is off.
       cryptoTotal: hasCrypto && passed ? fmt(a.totalMinor) : null,
-      payoutCard: hasStripe ? fmt(Math.max(0, a.totalMinor - stripeFee - a.applicationFeeMinor)) : null,
-      payoutCrypto: hasCrypto ? fmt(Math.max(0, a.totalMinor - a.applicationFeeMinor)) : null,
+      payoutCard: hasStripe ? fmt(Math.max(0, a.totalMinor - stripeFee - cardPlatformFee)) : null,
+      payoutCrypto: hasCrypto ? fmt(Math.max(0, a.totalMinor - cryptoPlatformFee)) : null,
     };
   }
 
@@ -770,7 +793,7 @@
                         <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
                         <div class="fee-row fee-deduction"><span>{fees.feeLabel}</span><span>+{fees.buyerMarkup}</span></div>
                         <div class="fee-row fee-total"><span>Buyer pays</span><span>{fees.cryptoTotal}</span></div>
-                        <div class="fee-row fee-deduction"><span>Platform fee (1.5%)</span><span>−{fees.platformFeeCrypto}</span></div>
+                        <div class="fee-row fee-deduction"><span>Platform fee ({pct(PLATFORM_FEE_BP)})</span><span>−{fees.platformFeeCrypto}</span></div>
                         <div class="fee-row fee-total"><span>You receive</span><span>{fees.payoutCrypto}</span></div>
                       </div>
                     {/if}
@@ -783,7 +806,7 @@
                       <div class="fee-row fee-total"><span>You receive (card)</span><span>{fees.payoutCard}</span></div>
                     {/if}
                     {#if tier.cryptoEnabled}
-                      <div class="fee-row fee-deduction"><span>Platform fee (1.5%)</span><span>−{fees.platformFeeCrypto}</span></div>
+                      <div class="fee-row fee-deduction"><span>Platform fee ({pct(PLATFORM_FEE_BP)})</span><span>−{fees.platformFeeCrypto}</span></div>
                       <div class="fee-row fee-total"><span>You receive (crypto)</span><span>{fees.payoutCrypto}</span></div>
                     {/if}
                   {/if}
@@ -792,6 +815,9 @@
                   <p class="advertise-hint">
                     Buyers see {fees.cardTotal ?? fees.basePrice} wherever this ticket is listed - quote that price when you advertise it.
                   </p>
+                  {#if launchRateNote}
+                    <p class="advertise-hint">{launchRateNote}</p>
+                  {/if}
                 {/if}
               {/if}
             {/if}

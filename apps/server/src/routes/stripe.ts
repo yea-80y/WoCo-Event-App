@@ -39,6 +39,7 @@ import {
   marketingWording,
   noticeMarketingMode,
   parseMarketingChoice,
+  platformFeeMinor,
   sameMarketingWording,
 } from "@woco/shared";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
@@ -49,6 +50,8 @@ import { ledger2SaleStatus, noteChainCancelled } from "../lib/event/ledger2-sale
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
+import { firstSaleAtMs } from "../lib/stripe/first-sales.js";
+import { launchRateEnd, platformFeeBpAt } from "../lib/stripe/launch-rate.js";
 import { CHECKOUT_PAYMENT_METHOD_TYPES } from "../lib/stripe/checkout-payment-methods.js";
 import { claimerEmailRefusal } from "../lib/stripe/claimer-email.js";
 import type { PayoutsResponse } from "@woco/shared";
@@ -241,6 +244,17 @@ stripe.post("/onboarding-link", requireAuth, requireSmartAccountOrganiser, async
 });
 
 /** GET /api/stripe/account-status — check if onboarding is complete */
+/**
+ * The organiser's own fee rate now (Organiser Terms §6), for their payout
+ * estimates. `lastDay` (YYYY-MM-DD) is the launch rate's last day, null until
+ * the first paid sale starts the clock. From the local record only, so it
+ * answers while Stripe is unreachable too.
+ */
+function launchRateView(stripeAccountId: string): { bp: number; lastDay: string | null } {
+  const first = firstSaleAtMs(stripeAccountId);
+  return { bp: platformFeeBpAt(first, Date.now()), lastDay: first === null ? null : launchRateEnd(first).lastDay };
+}
+
 stripe.get("/account-status", requireAuth, async (c) => {
   const organiserAddress = c.get("parentAddress").toLowerCase();
   const record = getStripeAccount(organiserAddress);
@@ -316,6 +330,7 @@ stripe.get("/account-status", requireAuth, async (c) => {
       // Drives the pricing-currency picker (#84). Absent while Stripe has not
       // assigned one yet — the client must then offer every currency, not none.
       defaultCurrency,
+      launchRate: launchRateView(record.stripeAccountId),
       // Pre-fills the organiser's privacy notice with the business details they
       // already gave Stripe. The organiser's own data, back to them, stored nowhere.
       // Public-facing business fields ONLY - never `individual.*` (KYC data).
@@ -343,6 +358,7 @@ stripe.get("/account-status", requireAuth, async (c) => {
       // Stripe is unreachable, so serve the cached value rather than none: an
       // outage must not silently widen the currency picker back open.
       defaultCurrency: record.defaultCurrency,
+      launchRate: launchRateView(record.stripeAccountId),
     });
   }
 });
@@ -1110,22 +1126,29 @@ stripe.post("/create-checkout", async (c) => {
   const seatedLines = seatedHold
     ? seatedCheckoutLines(seatedHold.seatInfo!, series.payment, stripeCurrency, { series: series.name, event: event.title })
     : null;
-  const { chargeAmount, orderFeeAmount, sessionAmount, totalApplicationFee } = seatedLines
+  const { chargeAmount, orderFeeAmount, sessionAmount, subtotalAmount } = seatedLines
     ? {
         chargeAmount: 0,
         orderFeeAmount: seatedLines.amounts.orderFeeMinor,
         sessionAmount: seatedLines.amounts.totalMinor,
-        totalApplicationFee: seatedLines.amounts.applicationFeeMinor,
+        subtotalAmount: seatedLines.amounts.subtotalMinor,
       }
     : computeCardFees(series.payment, priceFloat, quantity);
-  if (totalApplicationFee < MIN_APPLICATION_FEE_MINOR) {
-    return c.json({ ok: false, error: "This ticket's price is too low to sell by card" }, 400);
-  }
 
   // Find the organiser's connected account
   const organiserRecord = getStripeAccount(event.creatorAddress.toLowerCase());
   if (!organiserRecord?.onboardingComplete) {
     return c.json({ ok: false, error: "Event organiser has not completed Stripe onboarding" }, 400);
+  }
+
+  // Our fee, at the launch rate while this account is within three months of
+  // its first paid sale (Organiser Terms §6, lib/stripe/launch-rate.ts). The
+  // buyer's amounts above never depend on it. Decided here, once: the fee goes
+  // into the integrity tag and the PaymentIntent below.
+  const feeBp = platformFeeBpAt(firstSaleAtMs(organiserRecord.stripeAccountId), Date.now());
+  const totalApplicationFee = platformFeeMinor(subtotalAmount, feeBp);
+  if (totalApplicationFee < MIN_APPLICATION_FEE_MINOR) {
+    return c.json({ ok: false, error: "This ticket's price is too low to sell by card" }, 400);
   }
 
   // Sponsor-readiness gate. The webhook mints via the sponsor wallet's

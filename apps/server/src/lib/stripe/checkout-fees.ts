@@ -7,7 +7,8 @@
  * The organiser chooses per series: no booking fee (absorb), their own booking
  * fee % (`buyerFeePercent` ≥ floor, default 10%, folded into the ticket line),
  * or "cover the fees" (`coverFees`, one order-level Booking fee line). The
- * platform's application fee is PLATFORM_FEE_BP (1.5%) of the ticket subtotal.
+ * platform's application fee is not computed here: create-checkout takes it on
+ * `subtotalAmount` at the rate the organiser's account is on (launch-rate.ts).
  * Stripe's processing fee is charged to the organiser's connected account
  * separately (fees.payer = "account" — account-params.ts) and never appears here.
  */
@@ -23,8 +24,8 @@ export interface CardFees {
   orderFeeAmount: number;
   /** What the buyer pays for the whole order, in minor units. */
   sessionAmount: number;
-  /** Platform application fee for the whole session, in minor units. */
-  totalApplicationFee: number;
+  /** Ticket prices only, in minor units: what our application fee is taken on. */
+  subtotalAmount: number;
 }
 
 /**
@@ -46,6 +47,6 @@ export function computeCardFees(
     chargeAmount: a.unitChargeMinor,
     orderFeeAmount: a.orderFeeMinor,
     sessionAmount: a.totalMinor,
-    totalApplicationFee: a.applicationFeeMinor,
+    subtotalAmount: a.subtotalMinor,
   };
 }

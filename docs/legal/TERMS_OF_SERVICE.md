@@ -1,7 +1,7 @@
 # Terms of Service
 
-**Last updated:** 3 November 2026
-**Version:** 1.2
+**Last updated:** 25 November 2026
+**Version:** 1.3
 
 These terms cover **using WoCo as an attendee** — browsing events, buying tickets, holding tickets.
 If you run events, the [Organiser Terms](./ORGANISER_TERMS.md) also apply.
@@ -163,14 +163,19 @@ may close your account; tickets you already hold remain valid.
 
 ## 9. Referral scheme
 
-If you share a referral link and an organiser signs up through it, WoCo pays you **40% of its
-1.5% platform fee** on ticket sales that organiser makes.
+If you share a referral link and an organiser signs up through it, WoCo pays you **40% of the
+platform fee WoCo keeps** on ticket sales that organiser makes.
 
-**This is a launch rate.** WoCo may vary or withdraw it at any time on reasonable notice. That
+**At least 12 months for every organiser you refer.** For each organiser who signs up through your
+link, you earn 40% on their sales for at least 12 months from their first sale that earns you a
+share. No change to this scheme shortens that period or lowers the 40% within it.
+
+**Beyond that, the scheme can change.** WoCo may vary or withdraw it on reasonable notice. That
 includes setting a different rate for different referrers or periods, a maximum you can earn from
 any one referred organiser or in total, and a period after which earnings from a referred organiser
-stop. Any change applies from the date given in the notice and **does not affect earnings you have
-already accrued**.
+stop, always subject to the 12 months above for organisers who signed up through your link before
+the date given in the notice. Any change applies from that date and **does not affect earnings you
+have already accrued**.
 
 Earnings accrue from the referred organiser's first sale after their referral is confirmed, and are
 calculated from the platform fee WoCo keeps on each sale, net of any fee WoCo returns. A sale's

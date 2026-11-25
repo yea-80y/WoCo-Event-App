@@ -1,7 +1,7 @@
 # Organiser Terms
 
-**Last updated:** 19 October 2026
-**Version:** 1.2
+**Last updated:** 25 November 2026
+**Version:** 1.3
 
 These terms apply if you use WoCo to **sell tickets, run events, publish a site, or contact an
 audience**. They are in addition to the [Terms of Service](./TERMS_OF_SERVICE.md).
@@ -186,8 +186,25 @@ suspension.
     processing and our platform fee come out of it.
 
   Whichever you choose, every price we show buyers includes the booking fee.
-- **Our platform fee is 1.5% of your ticket price** (the booking fee is not fee'd), collected
-  automatically from each sale.
+- **Our platform fee is 1.5% of your ticket price** (the booking fee is not fee'd), rounded to
+  the nearest penny (or cent) and collected automatically from each sale.
+- **Launch rate: 0.9% for your first three months.** We discount our platform fee to 0.9% of
+  your ticket price, rounded the same way, for three months from your first paid sale. Then it
+  is 1.5%, never higher. In detail:
+  - The three months start on the date of the first card sale through WoCo on your payment
+    account (the account you connect to receive your sales) on which we keep our fee. A sale
+    whose fee we return in full, for example because we could not issue the ticket, does not
+    start them.
+  - They end at the end of the same date three months later (or the last day of that month, if
+    it is shorter), wherever you are in the world. We show you the date when you price your
+    tickets. A checkout
+    started before then is charged at 0.9%, even if the buyer pays just after.
+  - What buyers pay does not change: booking fees are always worked out on the 1.5% fee, so
+    during your launch rate the difference is yours.
+  - The launch rate applies to every organiser who connects a payment account while we offer
+    it. We may stop offering it to new organisers by giving notice here. That never shortens a
+    launch rate already running, or takes it from anyone who connected a payment account
+    before the date in the notice.
 - **Card processing fees are charged to your connected account** by the payment provider, at the
   provider's published rates for the card used.
 - **Whatever remains of the booking fee after those deductions is yours**, on top of your ticket
@@ -202,14 +219,19 @@ suspension.
   price list (overseas, 3.15% + 20p) you receive **£20.00**.
 - **You pay fees:** the buyer pays £20.00 and you receive **£19.20**.
 
+During your launch rate our platform fee on that ticket is £0.18 instead of £0.30, so in each case
+you receive £0.12 more and the buyer pays the same.
+
 Processing rates vary by card type; the figures use the provider's published UK rates at the
 time of writing. With "Buyer pays fees", an order of several tickets carries one booking fee, so
 it costs the buyer less per ticket.
 
 **Our platform fee will never go above 1.5%.** This is a cap, not today's price. We will not
-raise the platform fee above 1.5% of your ticket price, and we will not introduce any other
-charge on your ticket sales in its place. If we lower it, the lower rate becomes the cap and we
-cannot put it back up. **Section 10 does not let us change this**: no update to these terms may
+raise the platform fee above 1.5% of your ticket price (rounded to the nearest penny, as above),
+and we will not introduce any other charge on your ticket sales in its place. If we lower it, the
+lower rate becomes the cap and we cannot put it back up. A discount we offer for a stated period,
+such as the launch rate, is not a lowering of the fee: when the period ends, the fee is the rate
+the discount was taken from, never more. **Section 10 does not let us change this**: no update to these terms may
 raise the cap or add a ticket-sale charge alongside it. Services we may offer separately, and
 price openly, are not charges on your ticket sales and are not covered by this cap.
 

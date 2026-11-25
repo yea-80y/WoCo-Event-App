@@ -65,6 +65,7 @@ import {
   scanUnledgeredSales,
   unledgeredSalesHealth,
 } from "./unledgered-sales.js";
+import { currentLivemode, liveFirstSaleReads, scanFirstSales } from "./first-sales.js";
 import { OPEN_DISPUTE_STATUSES } from "./dispute-status.js";
 import { cancellationGate, getCancellation, isSaleRefundSettled } from "../event/cancellations.js";
 import {
@@ -161,6 +162,12 @@ export interface PayoutGateway {
    * nothing of them holds nothing.
    */
   unledgeredSales?(now: Date): Promise<Map<string, number> | null>;
+  /**
+   * Refresh each account's first paid sale, the launch-rate clock (first-sales.ts).
+   * Once per sweep. Moves no money and decides nothing here; a failure is the
+   * scan's own health alarm, never a reason to hold a payout.
+   */
+  firstSales?(now: Date): Promise<void>;
 }
 
 export type ResolvedNet = { net: number; currency: string; unsettled?: "dispute" | "refund" };
@@ -392,6 +399,10 @@ export const liveGateway: PayoutGateway = {
 
   unledgeredSales(now) {
     return scanUnledgeredSales(liveUnledgeredReads, liveAccountedFor(), now);
+  },
+
+  async firstSales(now) {
+    await scanFirstSales(liveFirstSaleReads, currentLivemode(), now);
   },
 
   async accountCountry(stripeAccountId) {
@@ -1001,6 +1012,11 @@ export async function runReleaseSweep(
     console.error("[payout-release] Unledgered-sales scan threw:", err);
     unledgered = null;
   }
+  try {
+    if (gateway.firstSales) await gateway.firstSales(now);
+  } catch (err) {
+    console.error("[payout-release] First-sales scan threw:", err);
+  }
   // Per account, not per currency: the currency a sale settled in needs its
   // balance transaction, which the scan does not read, so an open GBP sale
   // holds a EUR surplus too.
@@ -1219,6 +1235,11 @@ export function __resetSweepStateForTests(): void {
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
+
+/** Whether the hourly sweep is on: the scans it drives can only be stale while it is. */
+export function payoutSweepRunning(): boolean {
+  return timer !== null;
+}
 
 /** Start the hourly sweep. Safe to call once at boot; no-op if already running. */
 export function startPayoutReleaseJob(): void {

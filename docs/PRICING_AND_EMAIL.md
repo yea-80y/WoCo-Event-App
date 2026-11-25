@@ -7,7 +7,7 @@ post-event payouts and the Managed Risk controller block ship (`PAYOUTS.md`), th
 is floored at list size (E2). Fees as charged: `PLATFORM_FEE_BP` (`packages/shared/src/event/types.ts`),
 the booking-fee floor and default and `MIN_TICKET_PRICE` (`packages/shared/src/features.ts`),
 `checkout-fees.ts`. Not built: tiers, entitlements, organiser sending domains
-(`organiserSendingDomains` off). The platform fee is a flat percentage with no per-ticket cap (§7). Stripe is on test keys (pre-launch).
+(`organiserSendingDomains` off). The platform fee is a flat percentage with no per-ticket cap, discounted to a 0.9% launch rate for each organiser's first three months (§7). Stripe is on test keys (pre-launch).
 
 When written, nothing here was built except §8 item 1. Treat §3 (the free/paid line) and §7 (tiers) as
 the decisions to lock before any billing code is written.
@@ -233,7 +233,15 @@ Marginal cost per active organiser/year, assuming model 1 confirmed:
 
 If the £2 does apply, add ~$24/yr and the total becomes ~$38/yr — enough to make a $50/yr price break-even rather than a business. **This single dashboard check is the difference between those two worlds.**
 
-**Fee floor (#645):** the platform fee on a card sale is `round(subtotal × 1.5%)` (`checkout-fees.ts`), and it must be at least 1 minor unit (`MIN_APPLICATION_FEE_MINOR`). The webhook proves a session is ours by that fee, so a sale with no fee could never be fulfilled. Below the floor (a subtotal under 34p/34c, e.g. one 30p ticket), checkout refuses: "price too low". Organisers never reach it: the minimum ticket price is £1/$1/€1 (`MIN_TICKET_PRICE`, shared `features.ts`, #694), enforced in the editor, at publish and by the server. The 34p floor stays at checkout as the backstop, and for shop orders (shop rail off, `shopAllowed`).
+**Launch rate (owner, 2026-11-25; printed on the organiser flyer, Organiser Terms §6):** **0.9%** (`LAUNCH_RATE_FEE_BP` = 90) for three months from a payment account's first paid sale, then the standard 1.5%. Mechanics:
+- Clock per Stripe connected account (KYC'd, so a restart needs a new WoCo account and fresh verification). First paid sale = the earliest of OUR application fees on the account that we did not return in full (`lib/stripe/first-sales.ts`, read from the platform fee list by the hourly payout sweep, rebuilt in full weekly; `.data/stripe-first-sales.json` is a cache, never the only record).
+- Ends at the end of the corresponding date three months on (clamped to month end), anywhere on earth: 12:00 UTC the next day (`launch-rate.ts`). Decided at checkout creation, the only point: the fee goes into the integrity tag and the PaymentIntent there.
+- Fails towards the organiser: no first sale on record, for any reason, is 0.9%. `/api/health` `launchRate` is red on no scan for a day, no full rebuild for 8 days, or a ledgered sale with no first sale on record (`uncovered`).
+- Buyer prices never change: `coverFeeMinor` and every page price at 1.5%, so during the launch rate the organiser keeps the 0.6%. The organiser's own rate and last day come back on `GET /api/stripe/account-status` (`launchRate`) for the editor's payout estimate.
+- It is a time-limited DISCOUNT off 1.5%, written so in §6, so it never lowers the §6 cap. No closing date; it can be closed to new organisers on notice (§6 wording: anyone who connected a payment account before the notice date keeps it).
+- Referral earnings need no change: their base is the fee WoCo keeps, so a referrer earns 40% of 0.9% during a referred organiser's launch rate. ToS §9 commits 40% for at least 12 months from a referred organiser's first earning sale; `REFERRAL_SHARE_SCHEDULE` has a tripwire test against a second entry.
+
+**Fee floor (#645):** the platform fee on a card sale is `round(subtotal × rate)` (`platformFeeMinor`, rate 1.5% or the 0.9% launch rate), and it must be at least 1 minor unit (`MIN_APPLICATION_FEE_MINOR`). The webhook proves a session is ours by that fee, so a sale with no fee could never be fulfilled. Below the floor (a subtotal under 34p/34c at 1.5%, 56p/56c at 0.9%), checkout refuses: "price too low". Rounding is to the nearest penny, so a £1 ticket pays 2p (1p at the launch rate); §6 states the rounding. Organisers never reach it: the minimum ticket price is £1/$1/€1 (`MIN_TICKET_PRICE`, shared `features.ts`, #694), enforced in the editor, at publish and by the server. The 34p floor stays at checkout as the backstop, and for shop orders (shop rail off, `shopAllowed`).
 
 **Headline price (CMA209):** every listing - app event page, sites, embed button, JSON-LD offers - shows one ticket's price with the booking fee included (`headlinePrice`, shared `event/fees.ts`); the checkout itemises it. A server test pins it to `computeCardFees`, so the advertised price is the charged price. The organiser picks per ticket type: **Set your own fee** (default 10%, floor 4.5%), **Buyer pays fees** or **You pay fees** (no booking fee).
 

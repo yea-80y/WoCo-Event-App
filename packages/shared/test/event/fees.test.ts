@@ -13,6 +13,7 @@ import {
 } from "../../src/event/fees.js";
 import { BUYER_FEE_FLOOR_PCT, FEATURES, COVER_FEE_RATES, ACCEPTED_COVER_FEE_RATES, STRIPE_UK_STANDARD_CARD } from "../../src/features.js";
 import type { PaymentConfig, CoverFeeRates } from "../../src/event/types.js";
+import { LAUNCH_RATE_FEE_BP, PLATFORM_FEE_BP } from "../../src/event/types.js";
 
 const payment = (over: Partial<PaymentConfig> = {}): PaymentConfig => ({
   price: "10.00",
@@ -151,11 +152,40 @@ test("cover fee is one order-level line, cheaper per ticket for bigger orders", 
   assert.equal(one.unitChargeMinor, 2_000);
   assert.equal(one.orderFeeMinor, 117);
   assert.equal(one.totalMinor, 2_117);
-  assert.equal(one.applicationFeeMinor, 30);
+  assert.equal(one.subtotalMinor, 2_000);
+  assert.equal(platformFeeMinor(one.subtotalMinor), 30);
   const four = cardOrderAmounts(cover, 2_000, 4);
   assert.equal(four.totalMinor, 2_000 * 4 + four.orderFeeMinor);
   assert.ok(four.orderFeeMinor < 4 * one.orderFeeMinor);
-  assert.equal(four.applicationFeeMinor, 120);
+  assert.equal(platformFeeMinor(four.subtotalMinor), 120);
+});
+
+test("our fee: 1.5% by default, 0.9% at the launch rate, on the ticket subtotal, rounded half up", () => {
+  assert.equal(platformFeeMinor(2_000), 30);
+  assert.equal(platformFeeMinor(2_000, PLATFORM_FEE_BP), 30);
+  assert.equal(platformFeeMinor(2_000, LAUNCH_RATE_FEE_BP), 18);
+  // The £1 minimum ticket: 0.9p rounds to 1p, so the launch rate never trips the 1p floor.
+  assert.equal(platformFeeMinor(100, LAUNCH_RATE_FEE_BP), 1);
+  assert.equal(platformFeeMinor(100), 2);
+  // 0.5 of a penny rounds up, below it rounds down: the subtotal where 0.9% first reaches 1p is 56p.
+  assert.equal(platformFeeMinor(55, LAUNCH_RATE_FEE_BP), 0);
+  assert.equal(platformFeeMinor(56, LAUNCH_RATE_FEE_BP), 1);
+});
+
+test("buyer prices never depend on our fee rate: the cover fee always prices at the standard rate", () => {
+  // The launch rate is the organiser's discount, not the buyer's: a cover-fee page
+  // prices with PLATFORM_FEE_BP whoever the organiser is, so what a page shows is
+  // what checkout charges with no account lookup. The organiser keeps the difference.
+  for (const subtotal of [100, 999, 2_000, 12_345]) {
+    const fee = coverFeeMinor(subtotal, COVER_FEE_RATES);
+    const total = subtotal + fee;
+    const stripe = Math.round((total * COVER_FEE_RATES.stripeBp) / 10_000) + COVER_FEE_RATES.stripeFixedMinor;
+    const atLaunch = total - stripe - platformFeeMinor(subtotal, LAUNCH_RATE_FEE_BP);
+    const atStandard = total - stripe - platformFeeMinor(subtotal);
+    assert.ok(atStandard >= subtotal, `${subtotal}`);
+    assert.ok(atLaunch >= atStandard, `${subtotal}`);
+  }
+  assert.equal(coverFeeMinor.length, 2, "coverFeeMinor takes no fee rate");
 });
 
 test("cover mode headline and receipt: fee included and labelled without a percent", () => {
@@ -230,7 +260,7 @@ test("multi-price amounts equal cardOrderAmounts when every ticket costs the sam
         assert.equal(multi.orderFeeMinor, one.orderFeeMinor, at);
         assert.equal(multi.bookingFeeMinor, one.bookingFeeMinor, at);
         assert.equal(multi.totalMinor, one.totalMinor, at);
-        assert.equal(multi.applicationFeeMinor, one.applicationFeeMinor, at);
+        assert.equal(multi.subtotalMinor, one.subtotalMinor, at);
         assert.equal(multi.mode, one.mode, at);
         assert.equal(multi.feePercent, one.feePercent, at);
       }
@@ -238,21 +268,20 @@ test("multi-price amounts equal cardOrderAmounts when every ticket costs the sam
   }
 });
 
-test("multi-price: the % fee rounds per ticket, cover and our fee are on the subtotal", () => {
+test("multi-price: the % fee rounds per ticket, cover is on the subtotal", () => {
   // 10% of £3.33 is 33.3p -> 33p; of £5.55 is 55.5p -> 56p (half up). Subtotal £8.88.
   const pct = cardOrderAmountsMulti({ feePassedToCustomer: true, buyerFeePercent: 10 }, [333, 555]);
   assert.deepEqual(pct.chargeMinor, [366, 611]);
   assert.equal(pct.subtotalMinor, 888);
   assert.equal(pct.bookingFeeMinor, 89);
   assert.equal(pct.totalMinor, 977);
-  assert.equal(pct.applicationFeeMinor, platformFeeMinor(888));
 
   const cover = cardOrderAmountsMulti({ feePassedToCustomer: true, coverFees: COVER_FEE_RATES }, [2_200, 2_800, 2_800]);
   assert.deepEqual(cover.chargeMinor, [2_200, 2_800, 2_800]);
   assert.equal(cover.orderFeeMinor, coverFeeMinor(7_800, COVER_FEE_RATES));
   assert.equal(cover.totalMinor, 7_800 + cover.orderFeeMinor);
   assert.equal(cover.bookingFeeMinor, cover.orderFeeMinor);
-  assert.equal(cover.applicationFeeMinor, platformFeeMinor(7_800));
+  assert.equal(cover.subtotalMinor, 7_800);
 
   const none = cardOrderAmountsMulti({}, [2_200, 2_800]);
   assert.equal(none.totalMinor, 5_000);
