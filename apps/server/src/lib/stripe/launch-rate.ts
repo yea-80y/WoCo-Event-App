@@ -24,13 +24,16 @@ export interface LaunchRateEnd {
 }
 
 /**
- * The corresponding date LAUNCH_RATE_MONTHS after the first sale's UTC date,
- * clamped to the end of a shorter month (30 Nov -> 28 Feb), is the last day. The
- * rate runs through the end of that day everywhere on earth, which is 12:00 UTC
- * the day after: an organiser in any time zone gets the whole of their last day.
+ * The corresponding date LAUNCH_RATE_MONTHS after the first sale's date, clamped
+ * to the end of a shorter month (30 Nov -> 28 Feb), is the last day. Both ends
+ * are read the way most generous to the organiser, wherever they are (§6 says
+ * "wherever you are in the world"): the first sale's date is the latest calendar
+ * date anywhere on earth at that moment (UTC+14), so nobody's own date is later;
+ * and the rate runs through the end of the last day everywhere, which is 12:00
+ * UTC the day after. The cost is at most one extra day at the launch rate.
  */
 export function launchRateEnd(firstSaleMs: number): LaunchRateEnd {
-  const first = new Date(firstSaleMs);
+  const first = new Date(firstSaleMs + 14 * HOUR_MS);
   const months = first.getUTCMonth() + LAUNCH_RATE_MONTHS;
   const year = first.getUTCFullYear() + Math.floor(months / 12);
   const month = months % 12;
